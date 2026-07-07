@@ -15,6 +15,8 @@ uv.lock
 node_modules/
 frontend/dist/
 .vite/
+# Built frontend (built at release time, not committed)
+modelmri/static/app/
 
 # ModelMRI runtime data
 *.mri

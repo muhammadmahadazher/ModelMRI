@@ -9,6 +9,7 @@ from importlib.resources import files
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -30,9 +31,17 @@ def create_app() -> FastAPI:
     runtime = ModelRuntime()
     app.state.runtime = runtime
 
+    # Serve the built React app when present (frontend/ builds into static/app);
+    # fall back to the legacy single-file playground otherwise.
+    static = files("modelmri") / "static"
+    app_index = static / "app" / "index.html"
+    if app_index.is_file():
+        app.mount("/app", StaticFiles(directory=str(static / "app")), name="app")
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return files("modelmri").joinpath("static/index.html").read_text("utf-8")
+        page = app_index if app_index.is_file() else static / "index.html"
+        return page.read_text("utf-8")
 
     @app.get("/api/session")
     def session() -> dict:
