@@ -13,11 +13,12 @@
   body{margin:0;background:var(--bg);color:var(--text);
     font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
   .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
-  main{max-width:840px;margin:0 auto;padding:40px 20px;display:grid;gap:18px}
+  main{max-width:900px;margin:0 auto;padding:40px 20px;display:grid;gap:18px}
   header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
   h1{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
     font-size:22px;margin:0;letter-spacing:-0.01em}
   h1 span{color:var(--accent)}
+  h2{font-family:ui-monospace,Consolas,monospace;font-size:14px;margin:8px 0 0;color:var(--model)}
   #status{font-family:ui-monospace,Consolas,monospace;font-size:12px;
     padding:4px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted)}
   #status.on{color:var(--accent);border-color:var(--accent)}
@@ -29,11 +30,25 @@
     padding:9px 18px;font:600 14px system-ui;cursor:pointer}
   button:disabled{opacity:.45;cursor:default}
   button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  select{background:var(--surface);color:var(--text);border:1px solid var(--line);
+    border-radius:6px;padding:6px 8px;font:13px ui-monospace,Consolas,monospace}
   #out{background:var(--surface);border:1px solid var(--line);border-radius:8px;
-    padding:16px;min-height:120px;white-space:pre-wrap;
+    padding:16px;min-height:100px;white-space:pre-wrap;
     font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:14px}
   #out .cursor{color:var(--accent);animation:blink 1s step-end infinite}
   @keyframes blink{50%{opacity:0}}
+  #attn{display:none;background:var(--surface);border:1px solid var(--line);
+    border-radius:8px;padding:16px}
+  #attnScroll{overflow-x:auto;padding-bottom:4px}
+  #attnInner{width:max-content;min-width:100%}
+  #tokens{display:flex;gap:3px;white-space:pre}
+  .tok{font-family:ui-monospace,Consolas,monospace;font-size:12.5px;
+    padding:3px 5px;border:1px solid var(--line);border-radius:4px;cursor:default;
+    background:var(--bg)}
+  .tok:hover,.tok.pin{border-color:var(--model);color:var(--model)}
+  #arcs{display:block}
+  .hint{color:var(--muted);font-size:12.5px;margin-top:8px;
+    font-family:ui-monospace,Consolas,monospace}
   footer{color:var(--muted);font-size:12.5px}
   footer a{color:var(--accent)}
 </style>
@@ -57,15 +72,31 @@
 
   <div id="out"><span style="color:var(--muted)">Output appears here — streamed token by token.</span></div>
 
+  <div id="attn">
+    <h2>ATTENTION — where each token looked</h2>
+    <div class="row" style="margin:10px 0">
+      <label class="mono" style="font-size:12px;color:var(--muted)">layer</label>
+      <select id="layerSel"></select>
+      <label class="mono" style="font-size:12px;color:var(--muted)">head</label>
+      <select id="headSel"></select>
+      <span class="mono" id="attnMeta" style="color:var(--muted);font-size:12px"></span>
+    </div>
+    <div id="attnScroll"><div id="attnInner">
+      <div id="tokens"></div>
+      <canvas id="arcs" height="110"></canvas>
+    </div></div>
+    <div class="hint">hover a token → arcs show what it attended to · click to pin · arc thickness = attention weight</div>
+  </div>
+
   <footer>
-    v0.1 playground — attention visualization lands next.
+    v0.1 playground — SAE features land next.
     <a href="https://github.com/muhammadmahadazher/ModelMRI">github.com/muhammadmahadazher/ModelMRI</a>
   </footer>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
-let ws = null;
+let matrix = null, chipEls = [], pinned = -1;
 
 async function refresh() {
   const s = await fetch("/api/session").then(r => r.json());
@@ -82,25 +113,23 @@ async function refresh() {
 $("load").onclick = async () => {
   $("load").disabled = true;
   $("load").textContent = "Loading… (first run downloads ~1 GB)";
-  const t0 = performance.now();
   const r = await fetch("/api/model/load", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({}),
   });
   if (!r.ok) { $("load").textContent = "Load failed — see server logs"; return; }
-  $("meta").textContent = `loaded in ${((performance.now()-t0)/1000).toFixed(1)}s`;
   await refresh();
 };
 
 function generate() {
   if ($("go").disabled) return;
   $("go").disabled = true;
+  $("attn").style.display = "none";
   $("out").innerHTML = '<span class="cursor">▋</span>';
-  let text = "";
+  let text = "", n = 0;
   const t0 = performance.now();
-  let n = 0;
-  ws = new WebSocket(`ws://${location.host}/ws/generate`);
+  const ws = new WebSocket(`ws://${location.host}/ws/generate`);
   ws.onopen = () => ws.send(JSON.stringify({ prompt: $("prompt").value }));
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data);
@@ -113,10 +142,10 @@ function generate() {
       $("out").append(c);
     } else if (msg.type === "done") {
       $("out").textContent = text;
-      const dt = (performance.now() - t0) / 1000;
-      $("meta").textContent = `${n} pieces · ${dt.toFixed(1)}s`;
+      $("meta").textContent = `${n} pieces · ${((performance.now()-t0)/1000).toFixed(1)}s`;
       $("go").disabled = false;
       ws.close();
+      initAttention();
     } else if (msg.type === "error") {
       $("out").textContent = "Error: " + msg.message;
       $("go").disabled = false;
@@ -127,6 +156,99 @@ $("go").onclick = generate;
 $("prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && e.ctrlKey) generate();
 });
+
+async function initAttention() {
+  const meta = await fetch("/api/attention/meta").then(r => r.json());
+  if (!meta.available) return;
+  const fill = (sel, count, def) => {
+    sel.innerHTML = "";
+    for (let i = 0; i < count; i++) {
+      const o = document.createElement("option");
+      o.value = i; o.textContent = i;
+      sel.append(o);
+    }
+    sel.value = def;
+  };
+  fill($("layerSel"), meta.n_layers, Math.floor(meta.n_layers / 2));
+  fill($("headSel"), meta.n_heads, 0);
+  $("attnMeta").textContent = `${meta.n_layers} layers · ${meta.n_heads} heads · ${meta.n_tokens} tokens`;
+  $("layerSel").onchange = $("headSel").onchange = fetchMatrix;
+  $("attn").style.display = "block";
+  await fetchMatrix();
+}
+
+async function fetchMatrix() {
+  const layer = $("layerSel").value, head = $("headSel").value;
+  const t0 = performance.now();
+  const data = await fetch(`/api/attention?layer=${layer}&head=${head}`).then(r => r.json());
+  matrix = data.matrix;
+  renderTokens(data.tokens);
+  $("attnMeta").textContent =
+    `layer ${layer} · head ${head} · ${data.tokens.length} tokens · ${((performance.now()-t0)/1000).toFixed(2)}s`;
+  if (pinned >= 0 && pinned < matrix.length) drawArcs(pinned);
+  else clearArcs();
+}
+
+function renderTokens(tokens) {
+  const row = $("tokens");
+  row.innerHTML = "";
+  chipEls = tokens.map((t, i) => {
+    const el = document.createElement("span");
+    el.className = "tok";
+    el.textContent = t.replace(/ /g, "·") || "·";
+    el.onmouseenter = () => { if (pinned < 0) drawArcs(i); };
+    el.onmouseleave = () => { if (pinned < 0) clearArcs(); };
+    el.onclick = () => {
+      if (pinned === i) { pinned = -1; el.classList.remove("pin"); clearArcs(); }
+      else {
+        chipEls.forEach(c => c.classList.remove("pin"));
+        pinned = i; el.classList.add("pin"); drawArcs(i);
+      }
+    };
+    row.append(el);
+    return el;
+  });
+  const canvas = $("arcs");
+  canvas.width = row.scrollWidth;
+  canvas.style.width = row.scrollWidth + "px";
+}
+
+function clearArcs() {
+  const canvas = $("arcs");
+  canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawArcs(i) {
+  if (!matrix) return;
+  const canvas = $("arcs"), ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const rowRect = $("tokens").getBoundingClientRect();
+  const centers = chipEls.map(el => {
+    const r = el.getBoundingClientRect();
+    return r.left - rowRect.left + r.width / 2;
+  });
+  // top-12 attended tokens for target i (causal: j <= i)
+  const weights = matrix[i]
+    .map((w, j) => ({ w, j }))
+    .filter(({ w, j }) => j <= i && w >= 0.02)
+    .sort((a, b) => b.w - a.w)
+    .slice(0, 12);
+  const accent = getComputedStyle(document.documentElement)
+    .getPropertyValue("--model").trim();
+  for (const { w, j } of weights) {
+    const x1 = centers[i], x2 = centers[j];
+    const depth = Math.min(100, 18 + Math.abs(x1 - x2) * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(x1, 4);
+    ctx.quadraticCurveTo((x1 + x2) / 2, depth, x2, 4);
+    ctx.lineWidth = 1 + 7 * w;
+    ctx.strokeStyle = accent;
+    ctx.globalAlpha = Math.min(1, 0.18 + w);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
 refresh();
 </script>
 </body>

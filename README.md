@@ -35,7 +35,8 @@ Click **Load Qwen2.5-0.5B-Instruct** (~1 GB one-time download), type a prompt, w
 |---|---|
 | FastAPI backend: model loading, REST, WebSocket token streaming | ✅ working |
 | Built-in playground page (temporary, pre-React) | ✅ working |
-| Activation hooks + WebGL attention arcs | 🏗️ next (week 2) |
+| **Attention inspector: hover any token, see what it attended to** | ✅ working |
+| SAE feature browser | 🏗️ next |
 | Frontend (React + WebGL) | 🏗️ next |
 | `pip install modelmri` | placeholder published (real release at v0.1) |
 

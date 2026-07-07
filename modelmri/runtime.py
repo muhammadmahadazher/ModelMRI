@@ -1,9 +1,13 @@
-"""Model loading and streaming generation.
+"""Model loading, streaming generation, and attention capture.
 
 One ModelRuntime owns the currently loaded model + tokenizer. Generation
 runs in a worker thread and yields text pieces through a
-TextIteratorStreamer, so callers (REST or WebSocket) can stream tokens
-as they are produced.
+TextIteratorStreamer. After a generation completes, the full token
+sequence is retained so attention maps can be computed on demand.
+
+Attention capture requires eager attention: SDPA / flash attention never
+materializes the attention matrix, so models are loaded with
+attn_implementation="eager".
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ class ModelStatus:
 
 
 class ModelRuntime:
-    """Owns the loaded model; thread-safe load, streaming generate."""
+    """Owns the loaded model; thread-safe load, streaming generate, attention."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -39,6 +43,10 @@ class ModelRuntime:
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # Last completed generation (prompt + output), for attention capture.
+        self.last_ids: torch.Tensor | None = None
+        self._attn: list[torch.Tensor] | None = None  # per layer: [H, S, S] fp16
+        self._attn_tokens: list[str] | None = None
 
     @property
     def loaded(self) -> bool:
@@ -60,10 +68,17 @@ class ModelRuntime:
         with self._lock:
             dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
             tokenizer = AutoTokenizer.from_pretrained(hf_id)
-            model = AutoModelForCausalLM.from_pretrained(hf_id, torch_dtype=dtype)
+            model = AutoModelForCausalLM.from_pretrained(
+                hf_id,
+                torch_dtype=dtype,
+                attn_implementation="eager",  # required to materialize attention
+            )
             model.to(self.device)
             model.eval()
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
+            self.last_ids = None
+            self._attn = None
+            self._attn_tokens = None
             return self.status()
 
     def generate_stream(
@@ -96,8 +111,67 @@ class ModelRuntime:
         else:
             gen_kwargs["do_sample"] = False
 
-        worker = threading.Thread(
-            target=self.model.generate, kwargs=gen_kwargs, daemon=True
-        )
+        result: dict = {}
+
+        def _generate() -> None:
+            result["ids"] = self.model.generate(**gen_kwargs)
+
+        worker = threading.Thread(target=_generate, daemon=True)
         worker.start()
         yield from streamer
+        worker.join(timeout=30)
+
+        ids = result.get("ids")
+        if ids is not None:
+            self.last_ids = ids[0].detach().to("cpu")
+            self._attn = None  # invalidate cache; recomputed on demand
+            self._attn_tokens = None
+
+    # ---------------- attention ----------------
+
+    def attention_meta(self) -> dict:
+        """Shape info for the last generation's attention, without computing it."""
+        if not self.loaded or self.last_ids is None:
+            return {"available": False}
+        cfg = self.model.config
+        return {
+            "available": True,
+            "n_layers": cfg.num_hidden_layers,
+            "n_heads": cfg.num_attention_heads,
+            "n_tokens": int(self.last_ids.shape[0]),
+        }
+
+    def attention(self, layer: int, head: int) -> dict:
+        """Token strings + [S, S] attention matrix for one layer/head.
+
+        Computed with a single full forward pass over the last generated
+        sequence; all layers are cached so switching heads is instant.
+        """
+        if not self.loaded or self.last_ids is None:
+            raise RuntimeError("Generate something first, then inspect attention.")
+
+        with self._lock:
+            if self._attn is None:
+                with torch.no_grad():
+                    out = self.model(
+                        self.last_ids.unsqueeze(0).to(self.device),
+                        output_attentions=True,
+                    )
+                self._attn = [
+                    a[0].detach().to(torch.float16).cpu() for a in out.attentions
+                ]
+                self._attn_tokens = [
+                    self.tokenizer.decode([tid]) for tid in self.last_ids.tolist()
+                ]
+
+        n_layers, n_heads = len(self._attn), self._attn[0].shape[0]
+        if not (0 <= layer < n_layers and 0 <= head < n_heads):
+            raise ValueError(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
+
+        matrix = self._attn[layer][head].to(torch.float32)
+        return {
+            "layer": layer,
+            "head": head,
+            "tokens": self._attn_tokens,
+            "matrix": [[round(v, 4) for v in row] for row in matrix.tolist()],
+        }

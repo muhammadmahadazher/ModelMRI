@@ -32,3 +32,14 @@ def test_index_serves_playground():
 def test_prompt_without_model_is_409():
     r = client().post("/api/model/prompt", json={"prompt": "hi"})
     assert r.status_code == 409
+
+
+def test_attention_meta_unavailable_without_model():
+    r = client().get("/api/attention/meta")
+    assert r.status_code == 200
+    assert r.json()["available"] is False
+
+
+def test_attention_without_model_is_409():
+    r = client().get("/api/attention?layer=0&head=0")
+    assert r.status_code == 409

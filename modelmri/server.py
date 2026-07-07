@@ -59,6 +59,19 @@ def create_app() -> FastAPI:
 
         return {"generation": await asyncio.to_thread(run)}
 
+    @app.get("/api/attention/meta")
+    def attention_meta() -> dict:
+        return runtime.attention_meta()
+
+    @app.get("/api/attention")
+    async def attention(layer: int = 0, head: int = 0):
+        try:
+            return await asyncio.to_thread(runtime.attention, layer, head)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
     @app.websocket("/ws/generate")
     async def ws_generate(ws: WebSocket) -> None:
         await ws.accept()
