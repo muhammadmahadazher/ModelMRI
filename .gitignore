@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+uv.lock
+
+# Node
+node_modules/
+frontend/dist/
+.vite/
+
+# ModelMRI runtime data
+*.mri
+activations/
+*.zarr/
+sessions.sqlite*
+
+# Models & weights — never commit
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Secrets
+.env
+.env.*
+*.token

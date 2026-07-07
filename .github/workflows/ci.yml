@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint, format, test
+        run: |
+          uv sync --dev
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest -q || [ $? -eq 5 ]   # exit 5 = no tests collected; OK pre-v0.1
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Lint & build (skips until frontend exists)
+        run: |
+          if [ -f frontend/package.json ]; then
+            cd frontend
+            npm ci
+            npm run lint --if-present
+            npm run build --if-present
+          else
+            echo "Frontend not scaffolded yet — skipping."
+          fi
