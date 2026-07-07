@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ModelMRI</title>
+<style>
+  :root{
+    --bg:#0D1117; --surface:#151B23; --line:#2A323C; --text:#E6EDF3;
+    --muted:#93A1B0; --accent:#59C2C9; --model:#58AEE0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .mono{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+  main{max-width:840px;margin:0 auto;padding:40px 20px;display:grid;gap:18px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  h1{font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
+    font-size:22px;margin:0;letter-spacing:-0.01em}
+  h1 span{color:var(--accent)}
+  #status{font-family:ui-monospace,Consolas,monospace;font-size:12px;
+    padding:4px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted)}
+  #status.on{color:var(--accent);border-color:var(--accent)}
+  textarea{width:100%;min-height:90px;background:var(--surface);color:var(--text);
+    border:1px solid var(--line);border-radius:8px;padding:12px;font:inherit;resize:vertical}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button{background:var(--accent);color:#08272a;border:0;border-radius:7px;
+    padding:9px 18px;font:600 14px system-ui;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  #out{background:var(--surface);border:1px solid var(--line);border-radius:8px;
+    padding:16px;min-height:120px;white-space:pre-wrap;
+    font-family:ui-monospace,"Cascadia Code",Consolas,monospace;font-size:14px}
+  #out .cursor{color:var(--accent);animation:blink 1s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+  footer{color:var(--muted);font-size:12.5px}
+  footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1><span>Model</span>MRI</h1>
+    <span id="status" class="mono">no model loaded</span>
+  </header>
+
+  <div class="row">
+    <button id="load" class="ghost">Load Qwen2.5-0.5B-Instruct</button>
+  </div>
+
+  <textarea id="prompt" placeholder="Type a prompt… (Ctrl+Enter to generate)">Explain in two sentences why the sky is blue.</textarea>
+  <div class="row">
+    <button id="go" disabled>Generate</button>
+    <span class="mono" id="meta" style="color:var(--muted);font-size:12px"></span>
+  </div>
+
+  <div id="out"><span style="color:var(--muted)">Output appears here — streamed token by token.</span></div>
+
+  <footer>
+    v0.1 playground — attention visualization lands next.
+    <a href="https://github.com/muhammadmahadazher/ModelMRI">github.com/muhammadmahadazher/ModelMRI</a>
+  </footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ws = null;
+
+async function refresh() {
+  const s = await fetch("/api/session").then(r => r.json());
+  const m = s.model;
+  if (m.loaded) {
+    $("status").textContent = `${m.hf_id} · ${m.device} · ${m.dtype}`;
+    $("status").classList.add("on");
+    $("go").disabled = false;
+    $("load").textContent = "Model loaded ✓";
+    $("load").disabled = true;
+  }
+}
+
+$("load").onclick = async () => {
+  $("load").disabled = true;
+  $("load").textContent = "Loading… (first run downloads ~1 GB)";
+  const t0 = performance.now();
+  const r = await fetch("/api/model/load", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({}),
+  });
+  if (!r.ok) { $("load").textContent = "Load failed — see server logs"; return; }
+  $("meta").textContent = `loaded in ${((performance.now()-t0)/1000).toFixed(1)}s`;
+  await refresh();
+};
+
+function generate() {
+  if ($("go").disabled) return;
+  $("go").disabled = true;
+  $("out").innerHTML = '<span class="cursor">▋</span>';
+  let text = "";
+  const t0 = performance.now();
+  let n = 0;
+  ws = new WebSocket(`ws://${location.host}/ws/generate`);
+  ws.onopen = () => ws.send(JSON.stringify({ prompt: $("prompt").value }));
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "token") {
+      text += msg.text; n += 1;
+      $("out").innerHTML = "";
+      $("out").append(text);
+      const c = document.createElement("span");
+      c.className = "cursor"; c.textContent = "▋";
+      $("out").append(c);
+    } else if (msg.type === "done") {
+      $("out").textContent = text;
+      const dt = (performance.now() - t0) / 1000;
+      $("meta").textContent = `${n} pieces · ${dt.toFixed(1)}s`;
+      $("go").disabled = false;
+      ws.close();
+    } else if (msg.type === "error") {
+      $("out").textContent = "Error: " + msg.message;
+      $("go").disabled = false;
+    }
+  };
+}
+$("go").onclick = generate;
+$("prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && e.ctrlKey) generate();
+});
+refresh();
+</script>
+</body>
+</html>

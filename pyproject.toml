@@ -1,17 +1,25 @@
 [project]
 name = "modelmri"
-version = "0.0.1a0"
-description = "Chrome DevTools for AI models and agents — see attention, features, and agent steps inside any local model. Placeholder release; v0.1 in active development."
+version = "0.1.0a1"
+description = "Chrome DevTools for AI models and agents — see attention, features, and agent steps inside any local model."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Muhammad Mahad Azher", email = "mahadazher@gmail.com" }]
 keywords = ["interpretability", "llm", "agents", "debugging", "devtools", "sparse-autoencoder"]
 classifiers = [
-  "Development Status :: 1 - Planning",
+  "Development Status :: 2 - Pre-Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.32",
+  "pydantic>=2.9",
+  "transformers>=4.48",
+  "torch>=2.5",
+  "accelerate>=1.2",
 ]
 
 [project.urls]
@@ -19,10 +27,13 @@ Homepage = "https://github.com/muhammadmahadazher/ModelMRI"
 Repository = "https://github.com/muhammadmahadazher/ModelMRI"
 
 [project.scripts]
-modelmri = "modelmri:main"
+modelmri = "modelmri.cli:main"
 
 [dependency-groups]
-dev = ["ruff>=0.8", "pytest>=8"]
+dev = ["ruff>=0.8", "pytest>=8", "httpx>=0.27"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["modelmri"]
 
 [build-system]
 requires = ["hatchling"]

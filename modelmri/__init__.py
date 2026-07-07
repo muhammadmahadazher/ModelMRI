@@ -1,14 +1,9 @@
 """ModelMRI — Chrome DevTools for AI models and agents.
 
-This is a placeholder release reserving the package name.
-v0.1 (live attention playground for local HuggingFace models)
-is in active development, in public:
+Load a local model, watch it think: attention, features, agent steps.
+Run `modelmri serve` and open http://localhost:5900
 
     https://github.com/muhammadmahadazher/ModelMRI
 """
 
-__version__ = "0.0.1a0"
-
-
-def main() -> None:
-    print(__doc__)
+__version__ = "0.1.0a1"
