@@ -97,8 +97,12 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
 
   if (!sae.loaded) {
     return (
-      <div className="panel">
-        <h2 className="h-feat">FEATURES — the concepts inside</h2>
+      <div className="panel feat">
+        <div className="sect">
+          <span className="dot d-feat" />
+          <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>
+          <span className="rule" />
+        </div>
         <div className="row" style={{ marginTop: 12 }}>
           <button className="violet" onClick={onLoadSAE} disabled={busy !== ""}>
             {busy === "sae"
@@ -113,10 +117,14 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
   }
 
   return (
-    <div className="panel">
-      <h2 className="h-feat">FEATURES — the concepts inside</h2>
+    <div className="panel feat">
+      <div className="sect">
+        <span className="dot d-feat" />
+        <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>
+        <span className="rule" />
+      </div>
       <div className="row" style={{ margin: "10px 0" }}>
-        <span className="pill on" style={{ borderColor: "rgba(160,140,255,.5)", color: "var(--feat)" }}>
+        <span className="pill violet">
           {sae.repo?.split("/")[1]} · L{sae.layer} · {sae.d_sae?.toLocaleString()} features
         </span>
         <span className="meta">
@@ -151,8 +159,8 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
       )}
 
       {summary && tokenSel >= 0 && (
-        <div style={{ marginTop: 12, maxWidth: 460 }}>
-          <div className="meta" style={{ marginBottom: 6 }}>
+        <div className="feat-list">
+          <div className="meta" style={{ marginBottom: 2 }}>
             top features on {summary.tokens[tokenSel].replace(/ /g, "·")}
           </div>
           {(summary.top[tokenSel] ?? []).map(([fid, act]) => {

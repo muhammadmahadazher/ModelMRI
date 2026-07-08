@@ -9,8 +9,8 @@ interface Props {
 }
 
 const MODELS = [
-  { id: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen2.5-0.5B-Instruct — chat + attention" },
-  { id: "gpt2", label: "GPT-2 small — features + steering (SAE)" },
+  { id: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen2.5 · chat + attention" },
+  { id: "gpt2", label: "GPT-2 · features + steering" },
 ];
 
 export default function Playground({ model, onModelChange }: Props) {
@@ -74,13 +74,18 @@ export default function Playground({ model, onModelChange }: Props) {
   return (
     <>
       <div className="row">
-        <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy !== ""}>
+        <div className="seg" role="tablist" aria-label="model picker">
           {MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
+            <button
+              key={m.id}
+              className={pick === m.id ? "on" : ""}
+              onClick={() => setPick(m.id)}
+              disabled={busy !== ""}
+            >
               {m.label}
-            </option>
+            </button>
           ))}
-        </select>
+        </div>
         <button className="ghost" onClick={onLoad} disabled={busy !== ""}>
           {model?.hf_id === pick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load model"}
         </button>
@@ -95,7 +100,7 @@ export default function Playground({ model, onModelChange }: Props) {
         placeholder="Type a prompt… (Ctrl+Enter to generate)"
       />
       <div className="row">
-        <button onClick={onGenerate} disabled={!loaded || busy !== ""}>
+        <button className="cta" onClick={onGenerate} disabled={!loaded || busy !== ""}>
           Generate
         </button>
         <span className="meta">{meta}</span>

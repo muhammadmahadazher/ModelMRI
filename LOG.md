@@ -1,5 +1,12 @@
 # Working log
 
+## 2026-07-08 — Week 1, day 6: STORAGE MIGRATION + design system v2 "scanner glass"
+- Everything moved off C: per owner request: repo now at `J:\My Drive\Claude_Experiments\special\ModelMRI`, HF model cache (21.8 GB incl. other projects' models) at `special\models\huggingface`. **C: freed 20.7 GB** (72.6 → 93.3).
+- DriveFS lessons (now standing knowledge): junctions/symlinks CANNOT be created on DriveFS; npm .bin shims break on it → venv lives at `C:\venvs\modelmri` (UV_PROJECT_ENVIRONMENT, registry-persisted), frontend builds in `C:\venvs\mri-build` temp and deploys back to J:. Old default HF path symlinked → J: so every process resolves models without env vars.
+- Verified end-to-end from new locations: 11/11 tests, gpt2 loads from J: cache in 9.8s (no re-download), server serves the app.
+- Design system v2: aurora ground (drifting radial washes + masked dot grid), orbiting scanner mark, gradient-ink wordmark, gradient-border glass panels (per-section tint), segmented model picker, shine-sweep buttons, custom violet slider, feature bars with grow-in, section headers with glow dots + fading rules. All motion on one easing; reduced-motion kills everything.
+- Verified: computed styles confirm glass (blur 22px sat 1.5) + mark live; page interactive. (Preview screenshotter times out on infinite animations — page itself healthy; owner should eyeball localhost:5900.)
+
 ## 2026-07-08 — Week 1, day 5: FEATURES UI + liquid-glass design system. "We moved the Eiffel Tower to Berlin."
 - Design system v1: liquid glass (backdrop-blur panels, layered radial-glow background, inset borders), per-section palettes (teal brand / blue attention / violet features), 200-300ms eased micro-animations, reduced-motion respected. Bar: design.google / Apple.
 - FeaturesPanel shipped: model picker (Qwen chat / GPT-2 SAE) → generate → load SAE → click any token → its top-8 features with bars → click a feature → per-token heat view → steering slider → one-click deterministic A/B with side-by-side glass cards (always leaves steering cleared).

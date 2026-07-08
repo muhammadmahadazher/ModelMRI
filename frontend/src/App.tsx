@@ -25,14 +25,19 @@ export default function App() {
   return (
     <main>
       <header>
-        <h1>
-          <span>Model</span>MRI
-        </h1>
+        <div className="mark" aria-hidden="true" />
+        <div className="brand">
+          <h1>
+            <span className="g">Model</span>MRI
+          </h1>
+          <p className="tagline">see inside the model — attention · features · steering</p>
+        </div>
+        <div className="spacer" />
         <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
       </header>
       <Playground model={model} onModelChange={refresh} />
       <footer>
-        v0.2 — attention + SAE features + steering. Agent traces land next.{" "}
+        v0.2 · local-first · MIT ·{" "}
         <a href="https://github.com/muhammadmahadazher/ModelMRI">
           github.com/muhammadmahadazher/ModelMRI
         </a>
