@@ -56,7 +56,7 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
 
   return (
     <div className="panel">
-      <h2>ATTENTION — where each token looked</h2>
+      <h2 className="h-attn">ATTENTION — where each token looked</h2>
       <div className="row" style={{ margin: "10px 0" }}>
         <label className="meta">layer</label>
         <select value={layer} onChange={(e) => setLayer(Number(e.target.value))}>

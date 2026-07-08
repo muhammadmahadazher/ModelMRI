@@ -49,6 +49,62 @@ export const getAttention = (layer: number, head: number) =>
     json<AttentionData>(r),
   );
 
+export interface SAEStatus {
+  loaded: boolean;
+  repo: string | null;
+  hook: string | null;
+  layer: number | null;
+  d_in: number | null;
+  d_sae: number | null;
+}
+
+export interface FeaturesSummary {
+  tokens: string[];
+  top: [number, number][][]; // per token: [feature_id, activation][]
+}
+
+export interface FeatureDetail {
+  feature_id: number;
+  activations: number[];
+  max: number;
+  argmax: number;
+}
+
+export const getSAE = () => fetch("/api/sae").then((r) => json<SAEStatus>(r));
+
+export const loadSAE = () =>
+  fetch("/api/sae/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  }).then((r) => json<SAEStatus>(r));
+
+export const getFeaturesSummary = (topK = 8) =>
+  fetch(`/api/features/summary?top_k=${topK}`).then((r) =>
+    json<FeaturesSummary>(r),
+  );
+
+export const getFeatureDetail = (id: number) =>
+  fetch(`/api/features/${id}`).then((r) => json<FeatureDetail>(r));
+
+export const setSteer = (feature_id: number | null, scale = 0) =>
+  fetch("/api/steer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feature_id, scale }),
+  }).then((r) => json<{ active: boolean }>(r));
+
+export const promptOnce = (
+  prompt: string,
+  max_new_tokens = 24,
+  temperature = 0,
+) =>
+  fetch("/api/model/prompt", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, max_new_tokens, temperature }),
+  }).then((r) => json<{ generation: string }>(r));
+
 export type StreamHandlers = {
   onToken: (text: string) => void;
   onDone: () => void;

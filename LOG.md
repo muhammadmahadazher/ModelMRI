@@ -1,5 +1,12 @@
 # Working log
 
+## 2026-07-08 — Week 1, day 5: FEATURES UI + liquid-glass design system. "We moved the Eiffel Tower to Berlin."
+- Design system v1: liquid glass (backdrop-blur panels, layered radial-glow background, inset borders), per-section palettes (teal brand / blue attention / violet features), 200-300ms eased micro-animations, reduced-motion respected. Bar: design.google / Apple.
+- FeaturesPanel shipped: model picker (Qwen chat / GPT-2 SAE) → generate → load SAE → click any token → its top-8 features with bars → click a feature → per-token heat view → steering slider → one-click deterministic A/B with side-by-side glass cards (always leaves steering cleared).
+- Browser-verified end to end: GPT-2 sampled an Eiffel-in-Berlin hallucination; clicked "·Berlin", top feature #12884 (51.0); steered +40 → baseline " Paris, France." vs steered " Berlin, Germany." — amplifying the Berlin concept relocates the tower. Screenshot taken.
+- Standing rules recorded (Blueprint/06): always share the localhost URL; Chrome posting on request; Gemini Pro (Nano Banana Pro / Veo) for premium assets; premium design bar.
+- Next: GIF-ready polish + agent mode (v0.3), or Gemini-generated brand assets for README.
+
 ## 2026-07-08 — Week 1, day 4: SAE FEATURES + STEERING (backend). We turned off "Paris".
 - New `modelmri/saes.py`: loads SAELens-format SAEs straight from HF (cfg.json + safetensors) — no sae-lens dependency chain. Default: jbloom/GPT2-Small-SAEs-Reformatted @ blocks.8.hook_resid_pre (24,576 features).
 - Runtime: chat-template fallback for base models (GPT-2 has none), residual capture via forward_pre_hook, per-token feature computation (cached), single-feature steering (adds scale × unit decoder direction to the residual stream during generation, hook removed in finally).

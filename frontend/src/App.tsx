@@ -32,7 +32,7 @@ export default function App() {
       </header>
       <Playground model={model} onModelChange={refresh} />
       <footer>
-        v0.1 playground — SAE features land next.{" "}
+        v0.2 — attention + SAE features + steering. Agent traces land next.{" "}
         <a href="https://github.com/muhammadmahadazher/ModelMRI">
           github.com/muhammadmahadazher/ModelMRI
         </a>

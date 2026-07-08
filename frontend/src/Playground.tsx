@@ -1,20 +1,28 @@
 import { useRef, useState } from "react";
 import { loadModel, ModelStatus, streamGenerate } from "./api";
 import AttentionPanel from "./AttentionPanel";
+import FeaturesPanel from "./FeaturesPanel";
 
 interface Props {
   model: ModelStatus | null;
   onModelChange: () => Promise<void>;
 }
 
+const MODELS = [
+  { id: "Qwen/Qwen2.5-0.5B-Instruct", label: "Qwen2.5-0.5B-Instruct — chat + attention" },
+  { id: "gpt2", label: "GPT-2 small — features + steering (SAE)" },
+];
+
 export default function Playground({ model, onModelChange }: Props) {
+  const [pick, setPick] = useState(MODELS[0].id);
   const [prompt, setPrompt] = useState(
     "Explain in two sentences why the sky is blue.",
   );
   const [output, setOutput] = useState("");
   const [busy, setBusy] = useState<"" | "loading" | "generating">("");
   const [meta, setMeta] = useState("");
-  const [attnEpoch, setAttnEpoch] = useState(0);
+  const [epoch, setEpoch] = useState(0);
+  const [lastPrompt, setLastPrompt] = useState("");
   const t0 = useRef(0);
   const pieces = useRef(0);
 
@@ -22,12 +30,14 @@ export default function Playground({ model, onModelChange }: Props) {
 
   async function onLoad() {
     setBusy("loading");
-    setMeta("loading model… first run downloads ~1 GB");
+    setMeta("loading model… first run downloads the weights");
     try {
       const t = performance.now();
-      await loadModel();
+      await loadModel(pick);
       setMeta(`loaded in ${((performance.now() - t) / 1000).toFixed(1)}s`);
       await onModelChange();
+      setEpoch(0);
+      setOutput("");
     } catch (err) {
       setMeta(`load failed: ${String(err)}`);
     } finally {
@@ -41,7 +51,8 @@ export default function Playground({ model, onModelChange }: Props) {
     setOutput("");
     pieces.current = 0;
     t0.current = performance.now();
-    streamGenerate(prompt, {
+    const p = prompt;
+    streamGenerate(p, {
       onToken: (text) => {
         pieces.current += 1;
         setOutput((o) => o + text);
@@ -50,7 +61,8 @@ export default function Playground({ model, onModelChange }: Props) {
         const dt = (performance.now() - t0.current) / 1000;
         setMeta(`${pieces.current} pieces · ${dt.toFixed(1)}s`);
         setBusy("");
-        setAttnEpoch((e) => e + 1);
+        setLastPrompt(p);
+        setEpoch((e) => e + 1);
       },
       onError: (message) => {
         setOutput(`Error: ${message}`);
@@ -62,8 +74,15 @@ export default function Playground({ model, onModelChange }: Props) {
   return (
     <>
       <div className="row">
-        <button className="ghost" onClick={onLoad} disabled={loaded || busy !== ""}>
-          {loaded ? "Model loaded ✓" : "Load Qwen2.5-0.5B-Instruct"}
+        <select value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy !== ""}>
+          {MODELS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <button className="ghost" onClick={onLoad} disabled={busy !== ""}>
+          {model?.hf_id === pick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load model"}
         </button>
       </div>
 
@@ -95,7 +114,8 @@ export default function Playground({ model, onModelChange }: Props) {
         )}
       </div>
 
-      {attnEpoch > 0 && <AttentionPanel epoch={attnEpoch} />}
+      {epoch > 0 && <AttentionPanel epoch={epoch} />}
+      {epoch > 0 && <FeaturesPanel epoch={epoch} prompt={lastPrompt} />}
     </>
   );
 }
