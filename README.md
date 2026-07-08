@@ -19,15 +19,23 @@ ModelMRI packages that research into a tool with the ergonomics of browser DevTo
 - **v0.4** — the first interactive tool for looking inside a robot policy (SmolVLA + LeRobot)
 - **v0.5** — polish, zero-install hosted demo, launch
 
-## Try it now (early)
+## Install
+
+```bash
+pip install modelmri
+modelmri serve               # then open http://localhost:5900
+```
+
+Or from source (dev):
 
 ```bash
 git clone https://github.com/muhammadmahadazher/ModelMRI && cd ModelMRI
+cd frontend && npm install && npm run build && cd ..
 uv sync
-uv run modelmri serve        # → open http://localhost:5900
+uv run modelmri serve
 ```
 
-Click **Load Qwen2.5-0.5B-Instruct** (~1 GB one-time download), type a prompt, watch tokens stream.
+Click **Load Qwen2.5-0.5B-Instruct** (~1 GB one-time download), type a prompt, watch tokens stream — then hover any token to see what the model attended to.
 
 ## Status
 

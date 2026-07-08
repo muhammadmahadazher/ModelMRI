@@ -1,6 +1,6 @@
 [project]
 name = "modelmri"
-version = "0.1.0a1"
+version = "0.1.0"
 description = "Chrome DevTools for AI models and agents — see attention, features, and agent steps inside any local model."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,7 +8,7 @@ license = { text = "MIT" }
 authors = [{ name = "Muhammad Mahad Azher", email = "mahadazher@gmail.com" }]
 keywords = ["interpretability", "llm", "agents", "debugging", "devtools", "sparse-autoencoder"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
@@ -34,6 +34,14 @@ dev = ["ruff>=0.8", "pytest>=8", "httpx>=0.27"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["modelmri"]
+
+# The built frontend is gitignored (built at release time), and hatchling
+# skips VCS-ignored files by default — force it into both artifacts.
+[tool.hatch.build.targets.wheel.force-include]
+"modelmri/static/app" = "modelmri/static/app"
+
+[tool.hatch.build.targets.sdist.force-include]
+"modelmri/static/app" = "modelmri/static/app"
 
 [build-system]
 requires = ["hatchling"]

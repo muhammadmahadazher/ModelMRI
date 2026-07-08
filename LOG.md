@@ -1,5 +1,12 @@
 # Working log
 
+## 2026-07-08 — Week 1, day 3 (later): v0.1.0 RELEASE PREP + Day-3 post live
+- Day-3 X post published (the "Paris attends to capital/France" find).
+- Version bumped 0.1.0a1 → 0.1.0. README gains the pip install path.
+- RELEASE-KILLING BUG caught by verification: the wheel had ZERO frontend assets — hatchling skips VCS-ignored files and `modelmri/static/app/` is gitignored. Fixed with `force-include` on both wheel and sdist (sdist matters: uv builds the wheel FROM it). Anyone pip-installing would have gotten a backend with no UI. Verify-before-ship pays again.
+- Full release gate passed: wheel contains index.html + JS + CSS; clean-venv install → `modelmri 0.1.0` → server up → root serves the React app → assets 200.
+- Tagged v0.1.0 + GitHub release. PyPI publish awaits the token (user action).
+
 ## 2026-07-08 — Week 1, day 3: REACT FRONTEND
 - Real frontend shipped: React 18 + Vite + TypeScript (strict), no component libs, no state libs — 5 components, 150KB JS (49KB gz), builds in <1s.
 - `npm run build` emits into `modelmri/static/app/`; FastAPI serves it at `/` (falls back to the legacy single-file page when no build exists). Built assets are NOT committed — built at release time.
