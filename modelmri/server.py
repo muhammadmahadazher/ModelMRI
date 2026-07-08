@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import asdict
 from importlib.resources import files
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,10 +15,21 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .runtime import DEFAULT_MODEL, ModelRuntime
+from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 
 
 class LoadRequest(BaseModel):
     hf_id: str = DEFAULT_MODEL
+
+
+class SAELoadRequest(BaseModel):
+    repo: str = DEFAULT_SAE_REPO
+    hook: str = DEFAULT_SAE_HOOK
+
+
+class SteerRequest(BaseModel):
+    feature_id: int | None = None  # None clears steering
+    scale: float = Field(default=0.0, ge=-100.0, le=100.0)
 
 
 class PromptRequest(BaseModel):
@@ -71,6 +83,49 @@ def create_app() -> FastAPI:
     @app.get("/api/attention/meta")
     def attention_meta() -> dict:
         return runtime.attention_meta()
+
+    @app.get("/api/sae")
+    def sae_status() -> dict:
+        return asdict(runtime.sae_status())
+
+    @app.post("/api/sae/load")
+    async def sae_load(req: SAELoadRequest):
+        try:
+            status = await asyncio.to_thread(runtime.load_sae, req.repo, req.hook)
+            return asdict(status)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/features/summary")
+    async def features_summary(top_k: int = 8):
+        try:
+            return await asyncio.to_thread(runtime.features_summary, top_k)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+    @app.get("/api/features/{feature_id}")
+    async def feature_detail(feature_id: int):
+        try:
+            return await asyncio.to_thread(runtime.feature_detail, feature_id)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/steer")
+    def steer(req: SteerRequest):
+        try:
+            return runtime.set_steering(req.feature_id, req.scale)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/steer")
+    def steer_status() -> dict:
+        return runtime.steering_status()
 
     @app.get("/api/attention")
     async def attention(layer: int = 0, head: int = 0):

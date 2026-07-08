@@ -43,3 +43,32 @@ def test_attention_meta_unavailable_without_model():
 def test_attention_without_model_is_409():
     r = client().get("/api/attention?layer=0&head=0")
     assert r.status_code == 409
+
+
+def test_sae_status_unloaded():
+    r = client().get("/api/sae")
+    assert r.status_code == 200
+    assert r.json()["loaded"] is False
+
+
+def test_sae_load_without_model_is_409():
+    r = client().post("/api/sae/load", json={})
+    assert r.status_code == 409
+
+
+def test_features_without_sae_is_409():
+    r = client().get("/api/features/summary")
+    assert r.status_code == 409
+
+
+def test_steer_without_sae_is_409():
+    r = client().post("/api/steer", json={"feature_id": 7, "scale": 4.0})
+    assert r.status_code == 409
+
+
+def test_steer_clear_is_ok_without_sae():
+    c = client()
+    r = c.post("/api/steer", json={"feature_id": None})
+    assert r.status_code == 200
+    assert r.json()["active"] is False
+    assert c.get("/api/steer").json()["active"] is False

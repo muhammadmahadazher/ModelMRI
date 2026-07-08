@@ -1,5 +1,14 @@
 # Working log
 
+## 2026-07-08 — Week 1, day 4: SAE FEATURES + STEERING (backend). We turned off "Paris".
+- New `modelmri/saes.py`: loads SAELens-format SAEs straight from HF (cfg.json + safetensors) — no sae-lens dependency chain. Default: jbloom/GPT2-Small-SAEs-Reformatted @ blocks.8.hook_resid_pre (24,576 features).
+- Runtime: chat-template fallback for base models (GPT-2 has none), residual capture via forward_pre_hook, per-token feature computation (cached), single-feature steering (adds scale × unit decoder direction to the residual stream during generation, hook removed in finally).
+- Endpoints: POST /api/sae/load, GET /api/sae, GET /api/features/summary, GET /api/features/{id}, POST/GET /api/steer. 11 tests green.
+- VERIFIED END-TO-END (all real numbers):
+  - Features are consistent: feature 1066 fires on both " Tower" occurrences, 19941 on both " E"s, 974 on " Paris" (60.9), 7310 on " France" (56.0).
+  - THE steering A/B: baseline greedy → " Paris, France." · steer 974 at -40 → " San Diego, and is located in the San Diego State University" · clear → byte-identical " Paris, France." Deterministic, reversible, mechanistic.
+- Next: FeaturesPanel in the React frontend (token → top features → steering slider → side-by-side steered output).
+
 ## 2026-07-08 — Week 1, day 3 (later): v0.1.0 RELEASE PREP + Day-3 post live
 - Day-3 X post published (the "Paris attends to capital/France" find).
 - Version bumped 0.1.0a1 → 0.1.0. README gains the pip install path.
