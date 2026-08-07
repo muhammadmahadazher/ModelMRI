@@ -72,6 +72,13 @@ export default function ArcCanvas({ tokens, matrix }: Props) {
     const row = rowRef.current;
     if (!canvas || !row) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    // Collapse the canvas before measuring. .attn-inner is width:max-content
+    // and the canvas is its widest child, so measuring the row while the
+    // canvas still carries the PREVIOUS generation's width just returns that
+    // width again -- the strip could grow but never shrink, and a 23-token
+    // generation kept rendering into a 12,645px box left over from a 267-token
+    // one, which looked like an empty panel.
+    canvas.style.width = "0px";
     const w = row.scrollWidth;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(CANVAS_H * dpr);
