@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useScanOnData } from "./useScanOnData";
 import {
   analyseVLA,
   getVLA,
@@ -22,6 +23,7 @@ export default function VLAPanel() {
   const [frame, setFrame] = useState<VLAFrame | null>(null);
   const [heat, setHeat] = useState<number[][] | null>(null);
   const [heatKey, setHeatKey] = useState<string>("");
+  const scanRef = useScanOnData(heatKey);
   const [layer, setLayer] = useState(0);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
@@ -120,7 +122,7 @@ export default function VLAPanel() {
   const ep = ds.episodes.find((e) => e.index === episode) ?? ds.episodes[0];
 
   return (
-    <div className="panel vla">
+    <div ref={scanRef} className="panel vla">
       <div className="sect">
         <span className="dot d-vla" />
         <h2 className="h-vla">ROBOT POLICY — WHAT IT LOOKS AT</h2>

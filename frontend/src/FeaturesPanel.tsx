@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useScanOnData } from "./useScanOnData";
 import {
   FeaturesSummary,
   getFeatureDetail,
@@ -17,6 +18,7 @@ interface Props {
 
 /** SAE feature browser: token -> top features -> heat view -> steering A/B. */
 export default function FeaturesPanel({ epoch, prompt }: Props) {
+  const scanRef = useScanOnData(epoch);
   const [sae, setSae] = useState<SAEStatus | null>(null);
   const [busy, setBusy] = useState("");
   const [summary, setSummary] = useState<FeaturesSummary | null>(null);
@@ -106,7 +108,7 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
 
   if (!sae.loaded) {
     return (
-      <div className="panel feat">
+      <div ref={scanRef} className="panel feat">
         <div className="sect">
           <span className="dot d-feat" />
           <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>
@@ -126,7 +128,7 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
   }
 
   return (
-    <div className="panel feat">
+    <div ref={scanRef} className="panel feat">
       <div className="sect">
         <span className="dot d-feat" />
         <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { useScanOnData } from "./useScanOnData";
 import { AttentionData, getAttention, getAttentionMeta } from "./api";
 import ArcCanvas from "./ArcCanvas";
 
 export default function AttentionPanel({ epoch }: { epoch: number }) {
+  const scanRef = useScanOnData(epoch);
   const [layers, setLayers] = useState(0);
   const [heads, setHeads] = useState(0);
   const [layer, setLayer] = useState(0);
@@ -69,7 +71,7 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
     ));
 
   return (
-    <div className="panel attn">
+    <div ref={scanRef} className="panel attn">
       <div className="sect">
         <span className="dot d-attn" />
         <h2 className="h-attn">ATTENTION — WHERE EACH TOKEN LOOKED</h2>

@@ -723,11 +723,58 @@ button.model-btn:hover:not(:disabled) {
   border-radius: var(--r-panel);
   padding: var(--sp-5);
   box-shadow: var(--e1);
-  animation: rise 0.45s var(--ease) both;
+  position: relative;
+  overflow: hidden;
+  animation: panelIn var(--dur-medium) var(--ease-out) both;
 }
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: none; }
+}
+/* Panels settle rather than fly: 6px, not 10, and no bounce. A panel is
+   furniture; it should not perform on arrival. */
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* SIGNATURE — the specular scan.
+   One 640ms sweep of light across a panel's top edge when genuinely NEW
+   data lands. Not on mount, not on re-render: on arrival. It replaces an
+   entrance animation that fired every time and therefore said nothing.
+   Composite-only (transform + opacity on a pseudo-element), so it cannot
+   cost layout however many tokens the panel is holding. */
+.panel::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 22%;
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform;
+  background: linear-gradient(100deg,
+    transparent 0%,
+    color-mix(in oklab, var(--acc) 14%, transparent) 46%,
+    transparent 100%);
+  /* top edge only -- light grazes the surface, it does not wash it */
+  mask-image: linear-gradient(#000 0%, transparent 34%);
+  transform: translate3d(-120%, 0, 0);
+}
+[data-theme="dark"] .panel::after {
+  background: linear-gradient(100deg,
+    transparent 0%,
+    color-mix(in oklab, var(--acc) 10%, transparent) 46%,
+    transparent 100%);
+}
+@keyframes scan {
+  0%   { opacity: 0; transform: translate3d(-120%, 0, 0); }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { opacity: 0; transform: translate3d(560%, 0, 0); }
+}
+.panel[data-scan]::after { animation: scan 640ms var(--ease-out-soft) 1; }
+@media (prefers-reduced-motion: reduce) {
+  .panel[data-scan]::after { animation: none; }
 }
 
 .sect { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
