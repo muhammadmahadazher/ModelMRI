@@ -1,5 +1,13 @@
 # Working log
 
+## 2026-08-07 (late) — v0.4 VLA MODE: inside a real robot policy
+- Recon workflow (4 parallel scouts) verified everything empirically before a line was written: AV1 decode 0.02-0.05s, PushT parquet 1.4MB/0.74s, and the blocker — **lerobot pins torch<2.12/numpy<2.3 but the venv runs torch 2.12.1/numpy 2.5.1**, so installing it would downgrade the working LLM path.
+- Decision: **read the dataset directly** (pyarrow + pyav, no lerobot) and **lift the vision tower straight out of `lerobot/smolvla_base/model.safetensors`** — 197 tensors under `model.vlm_with_expert.vlm.model.vision_model.`, loaded into `SmolVLMVisionTransformer` with 0 missing. These are the policy's real weights, not a stand-in.
+- Gotchas paid for: PushT's cache ref is `v3.0` (assuming `main` breaks discovery); dataset lives under `$HF_HOME/lerobot/hub`, models under `$HF_HOME/hub`; sdpa silently returns `attentions=None` → must force `_attn_implementation="eager"`; raw attention is [1,12,1024,1024] ≈50MB/layer → reduce to per-head 32×32 inside `no_grad`.
+- Shipped: `vla_data.py` (episodes/state/action/frames), `vla.py` (VLAHandle), 7 endpoints, `VLAPanel` + `FrameCanvas` (scrubber + heat overlay + layer slider + stale badge), `vla-lite` extra. 25 tests.
+- **Verified numbers:** 206 episodes · frame decode 60ms · tower load 5.2s · analysis 1.7s · heatmap paints 156 samples in the UI · **attention concentration rises with depth (top-5% mass 27% → 56% → 60% across layers 0/6/11)** — the expected diffuse→focused pattern, measured on real robot frames.
+- Honest scope: this is the perception half. The action expert needs lerobot in a separate venv (`full` mode, designed, not built). The UI says so.
+
 ## 2026-08-07 (night) — blank-page bug + verification lesson
 - Owner reported the whole app blank (only the header pill rendered). Cause: `AsciiField` measured its PARENT then wrote its OWN style size — canvas grows → hero grows → ResizeObserver refires → unbounded loop. Page inflated to thousands of px of empty canvas; all panels pushed off-screen.
 - Fix: CSS owns the canvas box; JS only syncs the pixel buffer (no style writes, no-op when unchanged), observes the canvas itself, repaints on resize.

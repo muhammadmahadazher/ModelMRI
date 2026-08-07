@@ -19,6 +19,7 @@ from . import __version__
 from .runtime import DEFAULT_MODEL, ModelRuntime
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore
+from .vla import VLAHandle
 
 
 class LoadRequest(BaseModel):
@@ -36,16 +37,29 @@ class SteerRequest(BaseModel):
     scale: float = Field(default=0.0, ge=-100.0, le=100.0)
 
 
+class VLALoadRequest(BaseModel):
+    repo: str = "lerobot/smolvla_base"
+
+
+class VLAAnalyseRequest(BaseModel):
+    episode: int = Field(default=0, ge=0)
+    t: int = Field(default=0, ge=0)
+
+
 class PromptRequest(BaseModel):
     prompt: str
     max_new_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
 
-def create_app(trace_db: str | None = None) -> FastAPI:
+def create_app(
+    trace_db: str | None = None, dataset_repo: str = "lerobot/pusht"
+) -> FastAPI:
     app = FastAPI(title="ModelMRI", version=__version__)
     runtime = ModelRuntime()
     app.state.runtime = runtime
+    app.state.vla = VLAHandle()
+    app.state.vla_reader = None
     db_path = trace_db or str(Path.home() / ".modelmri" / "traces.sqlite")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
@@ -156,6 +170,75 @@ def create_app(trace_db: str | None = None) -> FastAPI:
     @app.get("/api/steer")
     def steer_status() -> dict:
         return runtime.steering_status()
+
+    # ---------------- VLA (robot policy) ----------------
+
+    def _reader():
+        """Lazily open the cached LeRobot dataset (kept on app.state)."""
+        from .vla_data import LeRobotV3Reader
+
+        if getattr(app.state, "vla_reader", None) is None:
+            app.state.vla_reader = LeRobotV3Reader.discover(repo_id=dataset_repo)
+        return app.state.vla_reader
+
+    @app.get("/api/vla")
+    def vla_status() -> dict:
+        return app.state.vla.status().to_dict()
+
+    @app.post("/api/vla/load")
+    async def vla_load(req: VLALoadRequest):
+        try:
+            status = await asyncio.to_thread(app.state.vla.load, req.repo)
+            return status.to_dict()
+        except FileNotFoundError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/vla/episodes")
+    async def vla_episodes():
+        try:
+            return await asyncio.to_thread(lambda: _reader().summary())
+        except (FileNotFoundError, ImportError) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+    @app.get("/api/vla/frame")
+    async def vla_frame(episode: int = 0, t: int = 0):
+        try:
+            sample = await asyncio.to_thread(lambda: _reader().frame(episode, t))
+            return asdict(sample)
+        except (FileNotFoundError, ImportError) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/vla/analyse")
+    async def vla_analyse(req: VLAAnalyseRequest):
+        def run() -> dict:
+            rgb = _reader().raw_frame(req.episode, req.t)
+            return app.state.vla.analyse(rgb, key=(req.episode, req.t))
+
+        try:
+            return await asyncio.to_thread(run)
+        except (FileNotFoundError, ImportError, RuntimeError) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/vla/attention/meta")
+    def vla_attention_meta() -> dict:
+        return app.state.vla.attention_meta()
+
+    @app.get("/api/vla/attention")
+    async def vla_attention(layer: int = 0, head: int = -1):
+        try:
+            return await asyncio.to_thread(app.state.vla.attention, layer, head)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
 
     @app.post("/api/traces/import")
     async def traces_import(doc: dict):

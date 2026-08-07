@@ -3,6 +3,7 @@ import { getSession, ModelStatus } from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
 import Playground from "./Playground";
+import VLAPanel from "./VLAPanel";
 
 export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
@@ -55,6 +56,7 @@ export default function App() {
       </div>
 
       <Playground model={model} onModelChange={refresh} />
+      <VLAPanel />
       <AgentsPanel />
       <footer>
         <span>MRI-0.3</span>

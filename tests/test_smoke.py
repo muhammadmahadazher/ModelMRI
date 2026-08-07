@@ -1,5 +1,6 @@
 """Smoke tests — no model download, just the app surface."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from modelmri import __version__
@@ -72,6 +73,51 @@ def test_steer_clear_is_ok_without_sae():
     assert r.status_code == 200
     assert r.json()["active"] is False
     assert c.get("/api/steer").json()["active"] is False
+
+
+def test_vla_status_unloaded():
+    r = client().get("/api/vla")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["loaded"] is False
+    assert body["mode"] == "unavailable"
+
+
+def test_vla_attention_meta_always_200():
+    r = client().get("/api/vla/attention/meta")
+    assert r.status_code == 200
+    assert r.json()["available"] is False
+
+
+def test_vla_attention_without_analysis_is_409():
+    assert client().get("/api/vla/attention?layer=0").status_code == 409
+
+
+def test_vla_load_missing_cache_is_409(monkeypatch, tmp_path):
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    r = client().post("/api/vla/load", json={"repo": "lerobot/does-not-exist"})
+    assert r.status_code == 409
+    assert "not cached" in r.json()["error"]
+
+
+def test_vla_snapshot_path_requires_a_ref(tmp_path):
+    from modelmri.vla_data import snapshot_path
+
+    base = tmp_path / "lerobot" / "hub" / "datasets--lerobot--pusht"
+    (base / "refs").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError, match="No snapshot ref"):
+        snapshot_path(tmp_path)
+
+
+def test_vla_snapshot_path_reads_non_main_ref(tmp_path):
+    """PushT's ref is 'v3.0' — assuming 'main' would break discovery."""
+    from modelmri.vla_data import snapshot_path
+
+    base = tmp_path / "lerobot" / "hub" / "datasets--lerobot--pusht"
+    (base / "refs").mkdir(parents=True)
+    (base / "refs" / "v3.0").write_text("abc123")
+    (base / "snapshots" / "abc123").mkdir(parents=True)
+    assert snapshot_path(tmp_path).name == "abc123"
 
 
 def test_local_models_endpoint(tmp_path, monkeypatch):

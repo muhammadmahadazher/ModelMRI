@@ -105,6 +105,79 @@ export const promptOnce = (
     body: JSON.stringify({ prompt, max_new_tokens, temperature }),
   }).then((r) => json<{ generation: string }>(r));
 
+export interface VLAStatus {
+  loaded: boolean;
+  mode: string;
+  reason: string;
+  repo: string | null;
+  n_layers: number;
+  n_heads: number;
+  grid: number[];
+  warmup_ms: number | null;
+}
+
+export interface VLAEpisode {
+  index: number;
+  length: number;
+  task: string;
+  from_ts: number;
+  to_ts: number;
+}
+
+export interface VLADataset {
+  repo_id: string;
+  fps: number;
+  image_shape: number[];
+  n_episodes: number;
+  episodes: VLAEpisode[];
+}
+
+export interface VLAFrame {
+  episode: number;
+  t: number;
+  timestamp: number;
+  state: number[];
+  action: number[];
+  task: string;
+  image: string;
+  width: number;
+  height: number;
+}
+
+export interface VLAHeat {
+  layer: number;
+  head: number;
+  grid: number[];
+  heat: number[][];
+  min: number;
+  max: number;
+}
+
+export const getVLA = () => fetch("/api/vla").then((r) => json<VLAStatus>(r));
+
+export const loadVLA = () =>
+  fetch("/api/vla/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  }).then((r) => json<VLAStatus>(r));
+
+export const getVLAEpisodes = () =>
+  fetch("/api/vla/episodes").then((r) => json<VLADataset>(r));
+
+export const getVLAFrame = (episode: number, t: number) =>
+  fetch(`/api/vla/frame?episode=${episode}&t=${t}`).then((r) => json<VLAFrame>(r));
+
+export const analyseVLA = (episode: number, t: number) =>
+  fetch("/api/vla/analyse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ episode, t }),
+  }).then((r) => json<{ layers: number; heads: number; latency_ms: number }>(r));
+
+export const getVLAAttention = (layer: number, head = -1) =>
+  fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
+
 export interface LocalModel {
   id: string;
   size_gb: number;

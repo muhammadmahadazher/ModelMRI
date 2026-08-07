@@ -158,6 +158,45 @@ main {
 .h-attn { color: var(--color-attn); } .d-attn { background: var(--color-attn); }
 .h-feat { color: var(--color-feat); } .d-feat { background: var(--color-feat); }
 .h-agent { color: var(--color-agent); } .d-agent { background: var(--color-agent); }
+.h-vla { color: var(--color-vla); } .d-vla { background: var(--color-vla); }
+
+/* ---------- VLA ---------- */
+.pill.vla { color: var(--color-vla); border-color: rgb(30 122 70 / 0.45); }
+button.green {
+  border: 0;
+  border-radius: 9px;
+  padding: 10px 20px;
+  font: 600 13.5px var(--font-sans);
+  cursor: pointer;
+  background: var(--color-vla);
+  color: #fff;
+  transition: transform 0.2s var(--ease), box-shadow 0.3s var(--ease), opacity 0.2s;
+}
+button.green:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgb(30 122 70 / 0.28);
+}
+button.green:disabled { opacity: 0.35; cursor: default; }
+
+.vla-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 720px) { .vla-grid { grid-template-columns: 1fr; } }
+.vla-frame {
+  position: relative;
+  line-height: 0;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-paper);
+}
+.vla-frame canvas { display: block; }
+.vla-frame canvas.vla-heat { position: absolute; inset: 0; pointer-events: none; }
+.vla-side { display: grid; gap: 8px; align-content: start; max-width: 420px; }
+.vla-side label { margin-top: 4px; }
 
 /* ---------- controls ---------- */
 .seg {
