@@ -108,6 +108,10 @@
   --r-panel: 16px;
   --r-sheet: 26px;
   --r-pill: 999px;
+
+  /* optical tracking: tighter as type grows, in one line */
+  --track: calc(-0.030em + 0.30px);
+  --r-min: 8px;
 }
 
 /* ── light: warm paper. Three planes, and the plate is BRIGHTER than the
@@ -254,6 +258,7 @@
 
 body {
   margin: 0;
+  letter-spacing: var(--track);
   background: var(--color-paper);
   color: var(--color-ink);
   font: 15px/1.65 var(--font-sans);
@@ -266,7 +271,7 @@ main {
   margin: 0 auto;
   padding: 0 22px 90px;
   display: grid;
-  gap: 16px;
+  gap: var(--sp-6);
 }
 /* Grid items default to min-width:auto, i.e. min-content -- so one panel
    holding a 167-token attention strip grew to 7800px and dragged the whole
@@ -331,7 +336,7 @@ main > * {
   font-family: var(--font-sans);
   font-weight: 720;
   font-size: 17px;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--track);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -377,7 +382,7 @@ main > * {
   font-family: var(--font-sans);
   font-size: clamp(34px, 6vw, 58px);
   font-weight: 640;
-  letter-spacing: -0.03em;
+  letter-spacing: var(--track);
   line-height: 1.04;
   margin: 0;
 }
@@ -456,7 +461,7 @@ main > * {
 .loadbar-stage {
   font-weight: 600;
   font-size: 13px;
-  letter-spacing: -0.01em;
+  letter-spacing: var(--track);
 }
 .loadbar-id {
   font-size: 12px;
@@ -500,7 +505,7 @@ main > * {
   display: block;
   margin: 0 0 12px;
   padding: 10px 13px;
-  border-radius: 13px;
+  border-radius: var(--r-min);
   border: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
   background: color-mix(in oklab, var(--ink) 4%, transparent);
   color: var(--color-mute);
@@ -601,7 +606,7 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   align-items: center;
   gap: 9px;
   padding: 10px 12px;
-  border-radius: 13px;
+  border-radius: var(--r-min);
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -863,7 +868,7 @@ button.green:disabled {
   position: relative;
   line-height: 0;
   border: 1px solid var(--hair);
-  border-radius: 10px;
+  border-radius: var(--r-min);
   overflow: hidden;
   background: var(--color-paper);
 }
@@ -876,7 +881,7 @@ button.green:disabled {
 .seg {
   display: inline-flex;
   border: 1px solid var(--hair);
-  border-radius: 10px;
+  border-radius: var(--r-min);
   overflow: hidden;
   background: var(--color-card);
 }
@@ -1042,6 +1047,7 @@ input[type="range"]:focus-visible { outline: none; }
 .tokens { display: flex; gap: 3px; white-space: pre; padding: 2px 0; }
 .tok {
   font-family: var(--font-mono);
+  letter-spacing: 0;
   font-size: 12px;
   padding: 3px 6px;
   border: 1px solid var(--hair-soft);
@@ -1073,6 +1079,7 @@ input[type="range"]:focus-visible { outline: none; }
   border-radius: 8px;
   cursor: pointer;
   font-family: var(--font-mono);
+  letter-spacing: 0;
   font-size: 12px;
   transition: background-color var(--dur-micro) var(--ease-hover),
     border-color var(--dur-micro) var(--ease-hover),
@@ -1107,7 +1114,7 @@ input[type="range"]:focus-visible { outline: none; }
 .compare .card {
   background: var(--color-paper);
   border: 1px solid var(--hair);
-  border-radius: 10px;
+  border-radius: var(--r-min);
   padding: 14px;
   font-family: var(--font-mono);
   font-size: 12.5px;
@@ -1148,6 +1155,7 @@ input[type="range"]:focus-visible { outline: none; }
   border: 1px solid transparent;
   border-radius: 8px;
   font-family: var(--font-mono);
+  letter-spacing: 0;
   font-size: 12px;
   transition: background-color var(--dur-micro) var(--ease-hover),
     border-color var(--dur-micro) var(--ease-hover),
@@ -1162,7 +1170,7 @@ input[type="range"]:focus-visible { outline: none; }
 .timeline {
   position: relative;
   border: 1px solid var(--hair);
-  border-radius: 10px;
+  border-radius: var(--r-min);
   background:
     repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--hair-soft) calc(10% - 1px) 10%),
     var(--color-paper);
@@ -1196,7 +1204,7 @@ input[type="range"]:focus-visible { outline: none; }
   margin-top: 12px;
   background: var(--color-paper);
   border: 1px solid var(--hair);
-  border-radius: 10px;
+  border-radius: var(--r-min);
   padding: 14px;
   animation: rise 0.35s var(--ease) both;
 }
