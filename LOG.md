@@ -1,5 +1,69 @@
 # Working log
 
+## 2026-08-07 (night, later) — an audit against the field, and the bar that painted nothing
+
+Ran 4 research agents over Apple's Liquid Glass spec, the interaction craft of
+Linear/Raycast/Vercel/Stripe, the WAI-ARIA dialog pattern, and inspector UIs
+(DevTools, Perfetto, BertViz). Then audited this frontend against that standard
+across 5 dimensions, with an adversarial pass whose job was to *refute* each
+finding. 13 survived, 12 were killed. Only the survivors were acted on.
+
+**The worst finding was mine, from three hours earlier.** `--color-accent` does
+not exist — the palette name is `--color-cobalt`. An undefined `var()`
+invalidates the whole declaration, so the load-progress fill fell back to
+transparent. I had verified that bar by reading its *width*. Width was never
+the question. Fixed, and confirmed this time by reading computed
+`backgroundImage`.
+
+The same bug was already in the codebase: `--model` doesn't exist either, and
+`ArcCanvas` read it for the arc stroke. Canvas ignores an unparseable
+`strokeStyle`, so the attention arcs had been drawing in **default black**
+instead of the attention blue since they were written. Now measured: 6,115
+pixels of `rgb(26,96,209)`.
+
+**Correctness**
+- `ws/generate` had `try/finally` with no `except`. A generation that raised
+  died in the worker thread, the `finally` posted the sentinel, and the browser
+  was told `"done"` — CUDA OOM and unsupported architectures arrived as
+  successful *empty answers*. The new test was run against the reverted code
+  first to confirm it actually fails without the fix.
+- A failed Hub search left the picker on "searching…" forever (`models === null`
+  is the loading sentinel and the catch never cleared it).
+- The attention panel had no loading or failure state, despite a first fetch
+  that runs a full `output_attentions` pass.
+
+**Access** — keyboard focus was invisible app-wide: `all: unset` on `.model-row`
+resets `outline-style` in the *author* origin, which outranks the UA focus ring,
+and nothing defined a replacement. Two component `outline: none` rules at
+(0,2,0) were then quietly beating the new global rule; they now suppress the
+ring for pointer focus only. The picker sheet was a plain div — now a real
+dialog (role, `aria-modal`, initial focus, Tab trap, scroll lock, focus restored
+to the opener). Attention and feature chips were pointer-only spans, so the arc
+view and the whole SAE workflow had **no keyboard path at all**.
+
+**Craft** — `ArcCanvas` drew at 1 device pixel per CSS pixel; thin arcs are the
+panel's entire payload and were being upscaled on every retina screen. The
+feature panel discarded the `argmax` the API already returns, so in a 256-token
+strip the one chip worth seeing was unfindable. "sign out" composited to 3.32:1
+through `opacity`, under AA, and it is the only way to sign out.
+
+**Two bugs in my own fix**, found by testing rather than reasoning: React's
+`autoFocus` fires during commit, so the effect captured the *search input* as
+"the opener" and Esc restored focus to a dead node (body). And `onClose` is an
+inline arrow, so depending on it re-ran the modal effect on every parent render
+and would yank focus mid-keystroke.
+
+**And one found by simply looking at the panel** rather than its numbers: the
+attention strip could grow but never shrink. `.attn-inner` is
+`width: max-content` and the canvas is its widest child, so measuring
+`row.scrollWidth` while the canvas still held the previous generation's width
+just returned that width again. A 23-token generation was rendering into a
+12,645px box. Reproduced the sequence, fixed, re-verified: 267 tokens
+(11,207px) → 5 tokens (741px), arcs still painting.
+
+44 unit tests, 42 e2e checks, every visual claim checked against computed
+styles or canvas pixels.
+
 ## 2026-08-07 (night) — the model picker meets real models
 
 Ran five current open models through the actual HTTP API on the 4060, and the
