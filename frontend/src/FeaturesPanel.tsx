@@ -183,20 +183,33 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
           <div className="meta" style={{ marginBottom: 2 }}>
             top features on {summary.tokens[tokenSel].replace(/ /g, "·")}
           </div>
-          {(summary.top[tokenSel] ?? []).map(([fid, act]) => {
-            const maxAct = summary.top[tokenSel][0]?.[1] || 1;
-            return (
+          {(() => {
+            const rows = summary.top[tokenSel] ?? [];
+            const maxAct = rows[0]?.[1] || 1;
+            // SIGNATURE — reveal ordered by magnitude, not by DOM order. The
+            // strongest activation starts at t=0 and the rest follow by rank,
+            // so the eye lands on the maximum before the others exist. Every
+            // row is the same violet, so rank is the only channel left to say
+            // which one matters; spending time instead of colour is free.
+            const rank = new Map(
+              rows
+                .map((r, i) => [i, r[1]] as const)
+                .sort((a, b) => b[1] - a[1])
+                .map(([i], r) => [i, r]),
+            );
+            return rows.map(([fid, act], i) => (
               <div
                 key={fid}
                 className={`feat-row ${featSel === fid ? "sel" : ""}`}
+                style={{ ["--i" as string]: rank.get(i) ?? 0 }}
                 onClick={() => void onPickFeature(fid)}
               >
                 <span className="feat-id">#{fid}</span>
                 <div className="feat-bar" style={{ width: `${(160 * act) / maxAct}px` }} />
                 <span className="feat-act">{act.toFixed(1)}</span>
               </div>
-            );
-          })}
+            ));
+          })()}
         </div>
       )}
 

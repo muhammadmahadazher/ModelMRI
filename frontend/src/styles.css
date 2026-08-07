@@ -740,7 +740,42 @@ button.model-btn:hover:not(:disabled) {
   font-weight: 600;
   text-transform: uppercase;
 }
-.sect .rule { flex: 1; height: 1px; background: var(--hair-soft); }
+/* SIGNATURE — the divider is a measurement rule, not a line.
+   Minor ticks sit on an 8px pitch and major ticks every 40px, so the header
+   carries the same grid as the token strip below it. A decorative divider
+   says nothing; this one says where the axis is. Two gradients, no DOM. */
+.sect .rule {
+  flex: 1;
+  height: 9px;
+  align-self: center;
+  background-image:
+    repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--line) 55%, transparent) 0 1px, transparent 1px 8px);
+  background-size: 100% 100%, 100% 40%;
+  background-position: 0 0, 0 bottom;
+  background-repeat: no-repeat;
+  /* fade both ends so the rule reads as an axis, not a fence */
+  mask-image: linear-gradient(to right, transparent 0, #000 20px,
+    #000 calc(100% - 20px), transparent 100%);
+}
+/* the active panel's rule picks up its own accent */
+.panel:has(.tok.pin) .sect .rule,
+.panel:has(.feat-row.sel) .sect .rule {
+  background-image:
+    repeating-linear-gradient(90deg, var(--acc-strong) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--acc-strong) 55%, transparent) 0 1px, transparent 1px 8px);
+}
+
+/* SIGNATURE — zero-jitter numerics. Every number that updates in place gets
+   tabular figures and a slashed zero. Proportional digits make a streaming
+   token count visibly shiver as glyph widths change; on an instrument that
+   reads as instability in the measurement, not in the font. */
+.meta, .chip, .pill, .loadbar-row, .feat-val, .tl-dur, code, .mid,
+.tok, .lbl, .domain {
+  font-variant-numeric: tabular-nums slashed-zero;
+}
 .h-attn { color: var(--color-attn); } .d-attn { background: var(--color-attn); }
 .h-feat { color: var(--color-feat); } .d-feat { background: var(--color-feat); }
 .h-agent { color: var(--color-agent); } .d-agent { background: var(--color-agent); }
@@ -965,11 +1000,21 @@ input[type="range"]::-webkit-slider-thumb {
 .feat-bar {
   height: 6px;
   border-radius: 3px;
-  background: var(--color-feat);
+  background: var(--sem-feat);
   transform-origin: left;
-  animation: grow 0.45s var(--ease) both;
+  /* --i is the row's RANK by activation, set in FeaturesPanel: the largest
+     bar starts at 0ms and the rest follow by magnitude, capped so a long
+     list never turns into a wait. */
+  animation: grow var(--dur-medium) var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0) * 22, 176) * 1ms);
 }
-@keyframes grow { from { transform: scaleX(0); } }
+@keyframes grow { from { transform: scaleX(0); opacity: 0.3; } }
+/* the row itself arrives with its bar, same rank, no travel */
+.feat-row {
+  animation: featIn var(--dur-small) var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0) * 22, 176) * 1ms);
+}
+@keyframes featIn { from { opacity: 0; } }
 .feat-id { color: var(--color-feat); min-width: 62px; font-weight: 600; }
 .feat-act { color: var(--color-mute); margin-left: auto; font-variant-numeric: tabular-nums; }
 
