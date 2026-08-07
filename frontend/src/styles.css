@@ -65,6 +65,19 @@ main > * {
   align-items: center;
   gap: 12px;
   padding: 20px 0 0;
+  /* Two status pills plus a wordmark do not fit a phone in one line, and
+     the GPU name was being sliced mid-word. Wrap instead of truncate --
+     "RTX 4060 Laptop GPU · 8.6 GB" is the whole point of the badge. */
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+@media (max-width: 640px) {
+  /* The spacer forces a break so the pills start their own line together
+     rather than orphaning one next to the wordmark. */
+  .topbar .spacer {
+    flex-basis: 100%;
+    height: 0;
+  }
 }
 .logomark {
   font-family: var(--font-sans);
