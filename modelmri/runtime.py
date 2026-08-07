@@ -25,6 +25,29 @@ from .saes import SAEHandle, SAEStatus
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
+def _hub_error_message(hf_id: str, err: Exception) -> str:
+    """Turn a HuggingFace hub failure into one actionable sentence."""
+    text = str(err)
+    if "gated repo" in text or "restricted" in text or "403" in text:
+        return (
+            f"'{hf_id}' is a gated model: accept its license at "
+            f"https://huggingface.co/{hf_id} while signed in, then run "
+            f"`huggingface-cli login` so ModelMRI can download it. "
+            f"Ungated alternatives: Qwen/Qwen3-0.6B, Qwen/Qwen2.5-0.5B-Instruct, gpt2."
+        )
+    if "not a local folder" in text or "Repository Not Found" in text or "404" in text:
+        return (
+            f"'{hf_id}' was not found on the HuggingFace Hub. Check the id "
+            f"(it is case-sensitive and looks like 'owner/name')."
+        )
+    if "offline" in text.lower() or "connection" in text.lower():
+        return (
+            f"Could not reach the HuggingFace Hub to fetch '{hf_id}'. "
+            f"Check your connection, or pick a model already cached locally."
+        )
+    return f"Could not load '{hf_id}': {text.splitlines()[0]}"
+
+
 def local_hf_models() -> list[dict]:
     """Models already in the HuggingFace cache (offline-usable)."""
     import os
@@ -132,12 +155,17 @@ class ModelRuntime:
 
         with self._lock:
             dtype = devices.torch_dtype(self.accel)
-            tokenizer = AutoTokenizer.from_pretrained(hf_id)
-            model = AutoModelForCausalLM.from_pretrained(
-                hf_id,
-                torch_dtype=dtype,
-                attn_implementation="eager",  # required to materialize attention
-            )
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(hf_id)
+                model = AutoModelForCausalLM.from_pretrained(
+                    hf_id,
+                    torch_dtype=dtype,
+                    attn_implementation="eager",  # materialises attention
+                )
+            except OSError as err:
+                # Gated repos, typos and private models all land here with a
+                # multi-screen traceback. Say what to actually do instead.
+                raise ValueError(_hub_error_message(hf_id, err)) from err
             try:
                 model.to(self.device)
             except Exception as err:

@@ -180,6 +180,61 @@ export const analyseVLA = (episode: number, t: number) =>
 export const getVLAAttention = (layer: number, head = -1) =>
   fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
 
+export interface HubAuth {
+  signed_in: boolean;
+  user: string | null;
+  source: string | null;
+}
+
+export interface HubModel {
+  id: string;
+  downloads: number;
+  likes: number;
+  gated: boolean;
+  usable: boolean;
+  updated: string;
+  params: string | null;
+  suggested?: boolean;
+}
+
+export interface OllamaModel {
+  name: string;
+  size_gb: number;
+  family: string;
+  params: string;
+  quant: string;
+}
+
+export interface OllamaState {
+  up: boolean;
+  models: string[];
+  installed: OllamaModel[];
+  suggested: { name: string; size: string; note: string }[];
+  host: string;
+}
+
+export const getHubAuth = () => fetch("/api/hub/auth").then((r) => json<HubAuth>(r));
+
+export const hubSignIn = (token: string) =>
+  fetch("/api/hub/signin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  }).then((r) => json<HubAuth>(r));
+
+export const hubSignOut = () =>
+  fetch("/api/hub/signout", { method: "POST" }).then((r) => json<HubAuth>(r));
+
+export const getHubModels = (q = "") =>
+  fetch(`/api/hub/models?q=${encodeURIComponent(q)}`).then((r) => json<HubModel[]>(r));
+
+export const pullOllama = (name: string) =>
+  fetch("/api/ollama/pull", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  }).then((r) => json<{ pulled: string }>(r));
+
 export interface Accelerator {
   kind: string; // cuda | rocm | xpu | mps | cpu
   torch_device: string;
@@ -200,8 +255,7 @@ export interface LocalModel {
 export const getLocalModels = () =>
   fetch("/api/models/local").then((r) => json<LocalModel[]>(r));
 
-export const getOllama = () =>
-  fetch("/api/ollama").then((r) => json<{ up: boolean; models: string[] }>(r));
+export const getOllama = () => fetch("/api/ollama").then((r) => json<OllamaState>(r));
 
 export interface TraceSummary {
   id: string;

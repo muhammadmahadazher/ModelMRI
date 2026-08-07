@@ -1,5 +1,7 @@
 """Smoke tests — no model download, just the app surface."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -73,6 +75,52 @@ def test_steer_clear_is_ok_without_sae():
     assert r.status_code == 200
     assert r.json()["active"] is False
     assert c.get("/api/steer").json()["active"] is False
+
+
+def test_hub_auth_shape():
+    r = client().get("/api/hub/auth")
+    assert r.status_code == 200
+    assert isinstance(r.json()["signed_in"], bool)
+
+
+def test_hub_signin_rejects_a_bad_token(monkeypatch):
+    from modelmri import hub
+
+    monkeypatch.setattr(hub, "whoami", lambda tok=None: hub.HubAuth(signed_in=False))
+    r = client().post("/api/hub/signin", json={"token": "hf_not_a_real_token"})
+    assert r.status_code == 422
+    assert "rejected" in r.json()["error"]
+
+
+def test_hub_signin_requires_a_token():
+    assert client().post("/api/hub/signin", json={"token": ""}).status_code == 422
+
+
+def test_hub_signin_never_writes_the_token_into_the_repo(tmp_path, monkeypatch):
+    """The credential must live in the user's home dir, never in the project."""
+    from modelmri import hub
+
+    target = tmp_path / "hub.json"
+    monkeypatch.setattr(hub, "CONFIG", target)
+    monkeypatch.setattr(
+        hub, "whoami", lambda tok=None: hub.HubAuth(signed_in=True, user="tester")
+    )
+    auth = hub.sign_in("hf_fake")
+    assert auth.user == "tester"
+    assert json.loads(target.read_text())["token"] == "hf_fake"
+
+
+def test_ollama_pull_when_daemon_is_down(monkeypatch):
+    from modelmri import ollama
+
+    def boom(name, host=ollama.DEFAULT_HOST):
+        raise RuntimeError("ollama unreachable at 127.0.0.1:11434")
+        yield  # pragma: no cover - generator signature
+
+    monkeypatch.setattr(ollama, "pull", boom)
+    r = client().post("/api/ollama/pull", json={"name": "qwen3:0.6b"})
+    assert r.status_code == 409
+    assert "unreachable" in r.json()["error"]
 
 
 def test_accelerator_endpoint():

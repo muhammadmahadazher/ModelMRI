@@ -37,6 +37,14 @@ class SteerRequest(BaseModel):
     scale: float = Field(default=0.0, ge=-100.0, le=100.0)
 
 
+class HubSignInRequest(BaseModel):
+    token: str = Field(min_length=1, max_length=400)
+
+
+class OllamaPullRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
 class VLALoadRequest(BaseModel):
     repo: str = "lerobot/smolvla_base"
 
@@ -103,6 +111,55 @@ def create_app(
     @app.get("/api/accelerator")
     def accelerator() -> dict:
         return runtime.accelerator()
+
+    # ---------------- HuggingFace account + model browsing ----------------
+
+    @app.get("/api/hub/auth")
+    def hub_auth() -> dict:
+        from . import hub
+
+        return hub.whoami().to_dict()
+
+    @app.post("/api/hub/signin")
+    def hub_signin(req: HubSignInRequest):
+        from . import hub
+
+        try:
+            return hub.sign_in(req.token).to_dict()
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/hub/signout")
+    def hub_signout() -> dict:
+        from . import hub
+
+        return hub.sign_out().to_dict()
+
+    @app.get("/api/hub/models")
+    async def hub_models(q: str = "", limit: int = 24):
+        from . import hub
+
+        try:
+            if not q.strip():
+                return await asyncio.to_thread(hub.suggested)
+            return await asyncio.to_thread(hub.search, q, limit)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+    @app.post("/api/ollama/pull")
+    async def ollama_pull(req: OllamaPullRequest):
+        from . import ollama as _ollama
+
+        def run() -> dict:
+            last = {}
+            for update in _ollama.pull(req.name):
+                last = update
+            return {"pulled": req.name, "last": last}
+
+        try:
+            return await asyncio.to_thread(run)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
 
     @app.get("/api/models/local")
     def models_local() -> list[dict]:
