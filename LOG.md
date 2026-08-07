@@ -1,5 +1,52 @@
 # Working log
 
+## 2026-08-08 — design v5, and dark mode
+
+Researched how Google and Apple actually build colour, motion and type
+systems (Material 3 tonal palettes, HIG spring params, OKLCH ramps, and what
+Linear/Vercel/Stripe do in CSS), then rebuilt the foundation rather than
+adjusting hex codes. Spec: `Blueprint/08-design-system-v5.md`.
+
+**Colour.** Six hues on one lightness schedule, chroma bounded by the real
+sRGB gamut. `--color-cobalt` and `--color-attn` were 7 degrees apart -- a
+duplicate, not a distinction -- so attention now IS the primary and violet
+moved +9.5 to open a 32-degree gap. Neutrals disagreed (warm ground, cool
+ink); light is one warm hue now, dark one cool graphite, and that temperature
+flip is the theme boundary rather than an accident.
+
+Two AA failures caught by measuring, not looking: amber at 3.76 under a
+10.5px heading (now 7.22), and crimson at 4.49 which I introduced during the
+rebuild (now 5.9). Every text role passes AA against every surface in both
+themes.
+
+**Dark mode.** Three states, because a binary toggle strands you off the OS
+setting with no way back. The failure this was always going to have is
+canvases -- CSS re-cascades free, rasterised pixels do not. Verified the hero
+repaints on switch: mean pixel 530 -> 356 -> 532.
+
+**Signature moves, each carrying data.** The section divider is a measurement
+rule with ticks on the token strip's own 8px pitch. Feature rows arrive
+ranked by activation (28.4 at 0ms, 27.1 at 22ms, monotonic down) because
+every row is the same violet and rank is the only channel left. Numbers use
+tabular figures so a streaming count does not shiver. And a 640ms specular
+scan crosses a panel only when genuinely new data lands, replacing an
+entrance animation that fired on every mount and therefore meant nothing.
+
+**Two bugs testing caught that reasoning did not.** FeaturesPanel has two
+return paths rendering `.panel feat`; my scan ref attached to whichever came
+first in the file, which was the EMPTY state, so the panel that shows data
+never scanned. And a MutationObserver silently watched stale nodes across a
+remount and reported a false negative -- polling the live DOM showed both
+panels firing correctly.
+
+Also: nested backdrop-filter double-blurring the same pixels, disabled
+buttons dissolving to 0.35 so the ground showed through, a steering slider
+Firefox never drew, all seven `transition: all` (worst on ~256 token chips),
+hover transforms latching on touch, and the `!important` reduced-motion nuke
+that breaks transitionend.
+
+Colour literals in the rules: 89 -> 0. 52 unit tests, 42 e2e checks.
+
 ## 2026-08-07 (night, last) — Gemma runs; the gate check was wrong twice
 
 Chasing the one model explicitly asked for turned up two bugs in a row, both
