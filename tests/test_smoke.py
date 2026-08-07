@@ -119,10 +119,41 @@ def test_a_token_is_not_access_to_a_gated_repo(monkeypatch):
     assert by_id["Qwen/Qwen3-0.6B"]["usable"] is True
 
 
-def test_gated_access_check_is_not_fooled_by_a_missing_token(monkeypatch):
+def test_gated_access_check_is_not_fooled_by_a_missing_token():
     from modelmri import hub
 
     assert hub._has_access("google/gemma-3-270m-it", None) is False
+
+
+def test_access_check_reads_the_status_not_the_body(monkeypatch):
+    """auth-check answers 200 with an EMPTY body. Routing it through the JSON
+    helper made json.load raise, so every repo — including ones the account
+    HAD accepted — reported no access. It looked right only because the repos
+    on hand were inaccessible anyway."""
+    import urllib.error
+    import urllib.request
+    from contextlib import contextmanager
+
+    from modelmri import hub
+
+    @contextmanager
+    def empty_200(_req, timeout=None):
+        class R:
+            status = 200
+
+            def read(self):
+                return b""  # exactly what the Hub sends
+
+        yield R()
+
+    monkeypatch.setattr(urllib.request, "urlopen", empty_200)
+    assert hub._has_access("meta-llama/Llama-3.2-1B", "hf_tok") is True
+
+    def forbidden(_req, timeout=None):
+        raise urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden)
+    assert hub._has_access("google/gemma-3-270m-it", "hf_tok") is False
 
 
 def test_hub_signin_requires_a_token():

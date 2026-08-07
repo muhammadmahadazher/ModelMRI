@@ -181,9 +181,17 @@ def _has_access(repo: str, tok: str | None) -> bool:
     """
     if not tok:
         return False
+    # Deliberately not _api(): auth-check answers 200 with an EMPTY body, so
+    # json.load() raises and every repo -- gated, ungated, accepted or not --
+    # came back False. The first version of this shipped that way and looked
+    # correct, because the repos I tested were ones I could not access anyway.
+    # The status code is the answer: 200 yes, 403 licence not accepted,
+    # 404 no such repo.
+    req = urllib.request.Request(f"{HUB_API}/models/{repo}/auth-check")
+    req.add_header("Authorization", f"Bearer {tok}")
     try:
-        _api(f"/models/{repo}/auth-check", tok)
-        return True
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return 200 <= r.status < 300
     except Exception:
         return False
 
