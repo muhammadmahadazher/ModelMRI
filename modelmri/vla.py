@@ -76,6 +76,7 @@ class VLAHandle:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.model = None
+        self.accel = None
         self.status_ = VLAStatus()
         # attention for the last analysed frame: list per layer of [heads, G, G]
         self._attn: list = []
@@ -107,6 +108,9 @@ class VLAHandle:
                 f"SmolVLA's vision config comes from {VLM_REPO}, which is not cached. {err}"
             ) from err
 
+        from . import devices
+
+        accel = devices.detect()
         cfg = AutoConfig.from_pretrained(str(vlm_snap)).vision_config
         cfg._attn_implementation = "eager"  # sdpa returns no attention weights
         model = SmolVLMVisionTransformer(cfg)
@@ -129,6 +133,12 @@ class VLAHandle:
                 "to show attention from a partially-initialised model."
             )
         model.eval()
+        try:
+            model.to(accel.torch_device)
+        except Exception:
+            accel = devices.detect(prefer="cpu")
+            model.to("cpu")
+        self.accel = accel
 
         grid = cfg.image_size // cfg.patch_size
         with self._lock:
@@ -143,7 +153,7 @@ class VLAHandle:
                     "needs the optional lerobot extra"
                 ),
                 repo=repo,
-                device="cpu",
+                device=accel.torch_device,
                 n_layers=int(cfg.num_hidden_layers),
                 n_heads=int(cfg.num_attention_heads),
                 grid=[grid, grid],
@@ -153,7 +163,9 @@ class VLAHandle:
             )
 
         # warm up so the user's first click isn't the lazy-init click
-        dummy = torch.zeros(1, 3, cfg.image_size, cfg.image_size)
+        dummy = torch.zeros(
+            1, 3, cfg.image_size, cfg.image_size, device=accel.torch_device
+        )
         with torch.no_grad():
             model(pixel_values=dummy, output_attentions=False)
         self.status_.warmup_ms = int((time.time() - t0) * 1000)
@@ -184,7 +196,7 @@ class VLAHandle:
         img = torch.nn.functional.interpolate(
             img, size=(size, size), mode="bilinear", align_corners=False
         )
-        img = img * 2.0 - 1.0
+        img = (img * 2.0 - 1.0).to(self.status_.device)
 
         t0 = time.time()
         with self._lock, torch.no_grad():

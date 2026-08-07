@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getSession, ModelStatus } from "./api";
+import { Accelerator, getAccelerator, getSession, ModelStatus } from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
 import { DEMO } from "./demo";
@@ -8,6 +8,17 @@ import VLAPanel from "./VLAPanel";
 
 export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
+  const [accel, setAccel] = useState<Accelerator | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void getAccelerator()
+      .then((a) => live && setAccel(a))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -33,6 +44,17 @@ export default function App() {
           <span className="ast">✳</span> ModelMRI
         </span>
         <span className="spacer" />
+        {accel && (
+          <span
+            className={`pill accel ${accel.kind !== "cpu" ? "gpu" : ""}`}
+            title={accel.reason}
+          >
+            <i className="accel-dot" />
+            {accel.kind === "cpu"
+              ? "CPU"
+              : `${accel.name}${accel.vram_gb ? ` · ${accel.vram_gb} GB` : ""}`}
+          </span>
+        )}
         <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
       </div>
 

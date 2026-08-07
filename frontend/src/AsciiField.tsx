@@ -4,16 +4,30 @@ import { useEffect, useRef } from "react";
  *  grid (the machine's eye rendering itself). Cheap: ~10fps, one canvas,
  *  pauses when hidden, static single frame under prefers-reduced-motion. */
 
-const RAMP = [" ", " ", ".", "·", ":", ";", "+", "=", "x", "#", "@"];
-const CELL = 17;
-const FPS = 10;
+const RAMP = [" ", " ", ".", "·", ":", ";", "+", "=", "*", "x", "#", "@"];
+const CELL = 14;
+const FPS = 24;
 
-function field(x: number, y: number, t: number): number {
-  // layered trig flow — organic enough, no noise lib needed
-  const a = Math.sin(x * 0.011 + t * 0.35) + Math.cos(y * 0.013 - t * 0.22);
-  const b = Math.sin((x + y) * 0.007 + t * 0.18);
-  const c = Math.sin(Math.hypot(x - 900, y - 80) * 0.004 - t * 0.4);
-  return (a + b + c + 3) / 6; // 0..1
+// Pointer influence: the field leans toward the cursor, so the hero feels
+// like an instrument you're touching rather than a looping background.
+let px = -1e4;
+let py = -1e4;
+let pInfluence = 0;
+
+function field(x: number, y: number, t: number, w: number, h: number): number {
+  // three drifting wave systems + a slow radial pulse from the centre
+  const a = Math.sin(x * 0.010 + t * 0.30) + Math.cos(y * 0.012 - t * 0.20);
+  const b = Math.sin((x + y) * 0.006 + t * 0.16);
+  const r = Math.hypot(x - w * 0.5, y - h * 0.55);
+  const c = Math.sin(r * 0.020 - t * 0.9) * 0.8;
+  let v = (a + b + c + 3) / 6;
+
+  // a soft lens that follows the cursor, brightening nearby cells
+  if (pInfluence > 0.01) {
+    const d = Math.hypot(x - px, y - py);
+    v += pInfluence * Math.exp(-(d * d) / 9000) * 0.55;
+  }
+  return v;
 }
 
 export default function AsciiField() {
@@ -26,6 +40,7 @@ export default function AsciiField() {
     let raf = 0;
     let last = 0;
     let running = true;
+    let hovering = false;
 
     const size = () => {
       // CSS owns the canvas box — we only match the pixel buffer to it.
@@ -47,17 +62,21 @@ export default function AsciiField() {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
       ctx.clearRect(0, 0, w, h);
+      // ease the pointer lens in/out so entering and leaving both feel soft
+      pInfluence += ((hovering ? 1 : 0) - pInfluence) * 0.08;
+
       for (let y = 0; y < h; y += CELL) {
         for (let x = 0; x < w; x += CELL) {
-          const v = field(x, y, t);
-          const glyph = RAMP[Math.min(RAMP.length - 1, (v * RAMP.length) | 0)];
+          const v = field(x, y, t, w, h);
+          const glyph = RAMP[Math.min(RAMP.length - 1, Math.max(0, (v * RAMP.length) | 0))];
           if (glyph === " ") continue;
-          // cobalt-on-paper (the VANTAGE recipe): deep blue, density = ink
-          const hueMix = (Math.sin(x * 0.004 - t * 0.12) + 1) / 2;
-          const r = 25 + hueMix * 40; //  cobalt band
-          const g = 55 + hueMix * 30;
-          const b = 190 + hueMix * 50;
-          ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${0.18 + v * 0.6})`;
+          // cobalt -> magenta as density rises: the ink "heats up" where the
+          // field is strongest, echoing the attention heatmaps below
+          const heat = Math.max(0, Math.min(1, (v - 0.55) * 1.9));
+          const r = 25 + heat * 192;
+          const g = 55 - heat * 12;
+          const b = 224 - heat * 133;
+          ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${0.16 + v * 0.62})`;
           ctx.fillText(glyph, x, y);
         }
       }
@@ -77,6 +96,16 @@ export default function AsciiField() {
       if (running) raf = requestAnimationFrame(loop);
     };
 
+    const onMove = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      px = e.clientX - r.left;
+      py = e.clientY - r.top;
+      hovering = true;
+    };
+    const onLeave = () => {
+      hovering = false;
+    };
+
     size();
     const ro = new ResizeObserver(() => {
       size();
@@ -84,6 +113,10 @@ export default function AsciiField() {
     });
     ro.observe(canvas);
     document.addEventListener("visibilitychange", onVis);
+    if (!reduced) {
+      canvas.addEventListener("pointermove", onMove);
+      canvas.addEventListener("pointerleave", onLeave);
+    }
 
     draw(1.7); // paint frame 1 synchronously — no blank hero before rAF fires
     if (!reduced) {
@@ -95,6 +128,8 @@ export default function AsciiField() {
       cancelAnimationFrame(raf);
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVis);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerleave", onLeave);
     };
   }, []);
 

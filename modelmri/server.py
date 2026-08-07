@@ -100,6 +100,10 @@ def create_app(
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
 
+    @app.get("/api/accelerator")
+    def accelerator() -> dict:
+        return runtime.accelerator()
+
     @app.get("/api/models/local")
     def models_local() -> list[dict]:
         from .runtime import local_hf_models

@@ -117,6 +117,28 @@ main {
   color: var(--color-mute);
   font-size: 15px;
 }
+/* accelerator badge: green + pulsing when a GPU is actually in use */
+.pill.accel { display: inline-flex; align-items: center; gap: 7px; }
+.accel-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-mute);
+  flex: none;
+}
+.pill.accel.gpu {
+  color: var(--color-vla);
+  border-color: rgb(30 122 70 / 0.45);
+}
+.pill.accel.gpu .accel-dot {
+  background: var(--color-vla);
+  animation: livepulse 2.4s var(--ease) infinite;
+}
+@keyframes livepulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(30 122 70 / 0.5); }
+  50% { box-shadow: 0 0 0 5px rgb(30 122 70 / 0); }
+}
+
 .demo-banner {
   display: inline-block;
   margin: 16px auto 0;

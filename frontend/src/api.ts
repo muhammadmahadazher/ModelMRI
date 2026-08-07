@@ -180,6 +180,18 @@ export const analyseVLA = (episode: number, t: number) =>
 export const getVLAAttention = (layer: number, head = -1) =>
   fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
 
+export interface Accelerator {
+  kind: string; // cuda | rocm | xpu | mps | cpu
+  torch_device: string;
+  name: string;
+  vram_gb: number | null;
+  dtype: string;
+  reason: string;
+}
+
+export const getAccelerator = () =>
+  fetch("/api/accelerator").then((r) => json<Accelerator>(r));
+
 export interface LocalModel {
   id: string;
   size_gb: number;

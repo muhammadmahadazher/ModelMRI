@@ -75,6 +75,43 @@ def test_steer_clear_is_ok_without_sae():
     assert c.get("/api/steer").json()["active"] is False
 
 
+def test_accelerator_endpoint():
+    r = client().get("/api/accelerator")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["kind"] in {"cuda", "rocm", "xpu", "mps", "cpu"}
+    assert body["dtype"] in {"float16", "bfloat16", "float32"}
+    assert body["reason"]  # always explains itself
+
+
+def test_device_detect_forced_cpu():
+    from modelmri import devices
+
+    d = devices.detect(prefer="cpu")
+    assert d.kind == "cpu" and d.torch_device == "cpu" and d.dtype == "float32"
+
+
+def test_device_detect_unavailable_backend_falls_back():
+    """Asking for a backend this machine lacks must degrade, never raise."""
+    from modelmri import devices
+
+    d = devices.detect(prefer="definitely-not-a-backend")
+    assert d.kind == "cpu"
+    assert "not available" in d.reason
+
+
+def test_device_detect_survives_a_broken_driver(monkeypatch):
+    import torch
+
+    from modelmri import devices
+
+    def boom():
+        raise RuntimeError("driver exploded")
+
+    monkeypatch.setattr(torch.cuda, "is_available", boom)
+    assert devices.detect().kind in {"xpu", "mps", "cpu"}
+
+
 def test_vla_status_unloaded():
     r = client().get("/api/vla")
     assert r.status_code == 200

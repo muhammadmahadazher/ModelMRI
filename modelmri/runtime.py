@@ -19,7 +19,7 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import ollama
+from . import devices, ollama
 from .saes import SAEHandle, SAEStatus
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -64,7 +64,9 @@ class ModelRuntime:
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
         self.backend: str = "hf"  # "hf" (full introspection) | "ollama" (text only)
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        # GPU when one is usable (NVIDIA / AMD ROCm / Intel / Apple), else CPU
+        self.accel = devices.detect()
+        self.device = self.accel.torch_device
         # Last completed generation (prompt + output), for attention capture.
         self.last_ids: torch.Tensor | None = None
         self._attn: list[torch.Tensor] | None = None  # per layer: [H, S, S] fp16
@@ -77,6 +79,10 @@ class ModelRuntime:
     @property
     def loaded(self) -> bool:
         return self.model is not None or bool(self.backend == "ollama" and self.hf_id)
+
+    def accelerator(self) -> dict:
+        """What we're running on, and why (surfaced in the UI)."""
+        return self.accel.to_dict()
 
     def status(self) -> ModelStatus:
         if self.backend == "ollama" and self.hf_id:
@@ -125,14 +131,24 @@ class ModelRuntime:
             return self.status()
 
         with self._lock:
-            dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
+            dtype = devices.torch_dtype(self.accel)
             tokenizer = AutoTokenizer.from_pretrained(hf_id)
             model = AutoModelForCausalLM.from_pretrained(
                 hf_id,
                 torch_dtype=dtype,
                 attn_implementation="eager",  # required to materialize attention
             )
-            model.to(self.device)
+            try:
+                model.to(self.device)
+            except Exception as err:
+                # Out of VRAM, or a driver that says yes then fails: keep the
+                # tool usable instead of dying on the user's first click.
+                if self.accel.kind == "cpu":
+                    raise
+                self.accel = devices.detect(prefer="cpu")
+                self.accel.reason = f"fell back to CPU: {type(err).__name__}: {err}"
+                self.device = self.accel.torch_device
+                model = model.to(torch.float32).to(self.device)
             model.eval()
             self.backend = "hf"
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
