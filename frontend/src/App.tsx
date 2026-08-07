@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSession, ModelStatus } from "./api";
+import AsciiField from "./AsciiField";
 import Playground from "./Playground";
 
 export default function App() {
@@ -24,20 +25,27 @@ export default function App() {
 
   return (
     <main>
-      <header>
-        <div className="mark" aria-hidden="true" />
-        <div className="brand">
-          <h1>
-            <span className="g">Model</span>MRI
+      <div className="hero">
+        <AsciiField />
+        <div className="in">
+          <h1 className="wordmark">
+            Model<span className="pop">MRI</span>
           </h1>
-          <p className="tagline">see inside the model — attention · features · steering</p>
+          <div className="specrow">
+            <span className="bar" />
+            <span>see inside the model</span>
+            <span>attention / features / steering</span>
+            <span>local-first</span>
+            <span className="spacer" />
+            <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
+          </div>
         </div>
-        <div className="spacer" />
-        <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
-      </header>
+      </div>
       <Playground model={model} onModelChange={refresh} />
       <footer>
-        v0.2 · local-first · MIT ·{" "}
+        <span>MRI-0.2</span>
+        <span>MIT ©2026</span>
+        <span className="spacer" />
         <a href="https://github.com/muhammadmahadazher/ModelMRI">
           github.com/muhammadmahadazher/ModelMRI
         </a>

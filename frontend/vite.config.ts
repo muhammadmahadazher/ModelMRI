@@ -1,10 +1,11 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Dev: `npm run dev` on :5173 proxies API/WS to the Python backend on :5900.
 // Build: emits into the Python package so `modelmri serve` ships the app.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   base: "/app/",
   build: {
     outDir: "../modelmri/static/app",
