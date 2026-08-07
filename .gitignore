@@ -14,8 +14,11 @@ build/
 node_modules/
 frontend/dist/
 .vite/
-# Built frontend (built at release time, not committed)
-modelmri/static/app/
+# Built frontend (built at release time, not committed) — but keep the
+# directory itself: pyproject force-includes it, and hatchling errors out
+# on a fresh clone if the path does not exist.
+modelmri/static/app/*
+!modelmri/static/app/.gitkeep
 
 # ModelMRI runtime data
 *.mri

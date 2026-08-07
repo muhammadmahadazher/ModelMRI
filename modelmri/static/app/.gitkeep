@@ -1,0 +1,8 @@
+Placeholder so this directory exists in a fresh clone.
+
+`pyproject.toml` force-includes `modelmri/static/app` into the wheel and
+sdist; hatchling raises "Forced include not found" if the path is missing,
+which breaks `uv sync` / `pip install -e .` before the frontend is built.
+
+The real contents are produced by `cd frontend && npm run build` and are
+gitignored.
