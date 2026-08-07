@@ -1,4 +1,4 @@
-/* ModelMRI — design v4 "VANTAGE PAPER"
+/* ModelMRI — design v5 "VANTAGE / INSTRUMENT"
    From the owner's saved recipe (poistudio VANTAGE hero): warm paper ground,
    cobalt ASCII-dither artwork, Switzer type, centered editorial headline,
    white plates with hairlines. Light-first. */
@@ -13,25 +13,243 @@
 }
 
 @theme {
-  --color-paper: #f6f4ee;
-  --color-card: #ffffff;
-  --color-ink: #16161a;
-  --color-mute: #6e6b62;
-  --color-cobalt: #2743e0;
-  --color-attn: #1a5fd0;
-  --color-feat: #6c4ee0;
-  --color-agent: #b47710;
-  --color-vla: #1e7a46;
-  --color-pop: #d92b5b;
   --font-sans: "Switzer", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   v5 "VANTAGE / INSTRUMENT" — the token layer.
+
+   Six hues on ONE lightness schedule (L = 0.970 − 0.0667k) with chroma
+   bounded by the real sRGB gamut, so every ramp steps by the same
+   perceptual amount and no stop is ever channel-clipped. Hues sit at
+   14 / 72 / 152 / 208 / 264 / 296 — the old cobalt and "attn" blues were
+   7 degrees apart, which is not a distinction, it is a duplicate, so
+   attention now simply *is* the primary.
+
+   Everything below this block addresses tokens, never literals. That is
+   what makes a second theme a data change instead of a rewrite.
+   ═══════════════════════════════════════════════════════════════════════ */
+
 :root {
-  --hair: #e4e0d6;
-  --hair-soft: #edeae1;
-  --ease: cubic-bezier(0.22, 0.9, 0.24, 1);
-  --shadow: 0 1px 2px rgb(22 22 26 / 0.04), 0 8px 24px rgb(22 22 26 / 0.05);
+  /* ── crimson · H 14 · error, divergence, failed tool call ─────────── */
+  --crimson-100: oklch(0.903 0.046 14);
+  --crimson-200: oklch(0.837 0.082 14);
+  --crimson-400: oklch(0.703 0.173 14);
+  --crimson-500: oklch(0.637 0.216 14);
+  --crimson-600: oklch(0.570 0.194 14);
+  --crimson-700: oklch(0.503 0.171 14);
+
+  /* ── amber · H 72 · agent traces, tool spans ──────────────────────── */
+  --amber-200: oklch(0.837 0.117 72);
+  --amber-300: oklch(0.770 0.140 72);
+  --amber-400: oklch(0.703 0.128 72);
+  --amber-600: oklch(0.570 0.104 72);
+  --amber-700: oklch(0.503 0.092 72);
+  --amber-800: oklch(0.437 0.080 72);
+
+  /* ── green · H 152 · robot policy, success, GPU live ──────────────── */
+  --green-200: oklch(0.837 0.187 152);
+  --green-400: oklch(0.703 0.157 152);
+  --green-600: oklch(0.570 0.127 152);
+  --green-700: oklch(0.503 0.112 152);
+  --green-800: oklch(0.437 0.098 152);
+
+  /* ── teal · H 208 · baseline / unsteered / ground truth ───────────── */
+  --teal-200: oklch(0.837 0.098 208);
+  --teal-400: oklch(0.703 0.128 208);
+  --teal-600: oklch(0.570 0.116 208);
+  --teal-700: oklch(0.503 0.102 208);
+
+  /* ── cobalt · H 264 · the primary; attention IS the brand ─────────── */
+  --cobalt-200: oklch(0.837 0.088 264);
+  --cobalt-300: oklch(0.770 0.128 264);
+  --cobalt-400: oklch(0.703 0.170 264);
+  --cobalt-500: oklch(0.637 0.213 264);
+  --cobalt-600: oklch(0.570 0.243 264);
+  --cobalt-700: oklch(0.503 0.219 264);
+  --cobalt-800: oklch(0.437 0.190 264);
+
+  /* ── violet · H 296 · SAE features, steering ──────────────────────── */
+  --violet-200: oklch(0.837 0.098 296);
+  --violet-400: oklch(0.703 0.164 296);
+  --violet-500: oklch(0.637 0.213 296);
+  --violet-600: oklch(0.570 0.249 296);
+  --violet-700: oklch(0.503 0.224 296);
+
+  /* ── motion ───────────────────────────────────────────────────────── */
+  --dur-0: 0ms;
+  --dur-micro: 110ms;
+  --dur-small: 170ms;
+  --dur-medium: 240ms;
+  --dur-large: 380ms;
+  --dur-micro-out: 80ms;
+  --dur-small-out: 120ms;
+  --dur-medium-out: 170ms;
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --ease-in: cubic-bezier(0.3, 0, 1, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-hover: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Multiplied into every duration. Reduced motion sets it to 0.01 rather
+     than nuking animation with !important, which would break transitionend
+     and make state changes unattributable. */
+  --motion-scale: 1;
+
+  /* ── spacing + radii ──────────────────────────────────────────────── */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 20px; --sp-6: 24px; --sp-8: 32px; --sp-12: 48px;
+
+  --r-chip: 6px;
+  --r-ctrl: 8px;
+  --r-well: 8px;
+  --r-panel: 16px;
+  --r-sheet: 26px;
+  --r-pill: 999px;
+}
+
+/* ── light: warm paper. Three planes, and the plate is BRIGHTER than the
+      ground — that inversion is the paper metaphor and the one genuinely
+      distinctive idea the old design already had. ───────────────────── */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --sf-plate:  oklch(1.000 0.000 92);
+  --sf-ground: oklch(0.966 0.009 92);
+  --sf-sunk:   oklch(0.945 0.010 92);
+  --sf-float:  oklch(1.000 0.000 92);
+
+  --line-soft: oklch(0.930 0.008 92);
+  --line:      oklch(0.880 0.010 92);
+  --line-ctrl: oklch(0.640 0.012 92);
+
+  --ink:   oklch(0.215 0.010 92);
+  --ink-2: oklch(0.400 0.012 92);
+  --ink-3: oklch(0.520 0.014 92);
+  --ink-4: oklch(0.640 0.012 92); /* NON-TEXT ONLY */
+
+  --acc:        var(--cobalt-700);
+  --acc-hi:     var(--cobalt-600);
+  --acc-on:     var(--sf-plate);
+  --acc-tint:   oklch(0.925 0.055 264);
+  --acc-quiet:  oklch(0.965 0.030 264);
+  --acc-strong: oklch(0.880 0.078 264);
+
+  --sem-feat:  var(--violet-700);
+  --sem-agent: var(--amber-800); /* was 3.76:1 as amber-600 — fails AA at 10.5px */
+  --sem-vla:   var(--green-700);
+  --sem-base:  var(--teal-700);
+  --sem-error: var(--crimson-700); /* -600 measured 4.49 on ground: under AA */
+
+  /* shadow ink: the ground in shade, tinted to the brand. Never black. */
+  --sh: 21 35 65;
+
+  --glass-fill: rgb(255 255 255 / 0.62);
+  --glass-rim: rgb(255 255 255 / 0.55);
+  --glass-spec: rgb(255 255 255 / 0.85);
+  --glass-scrim: color-mix(in oklab, var(--ink) 28%, transparent);
+}
+
+/* ── dark: cool graphite. Never C 0 — flat grey reads as unfinished.
+      Elevation here is luminance, not shadow: there is no lighter ground
+      for a shadow to fall on. ───────────────────────────────────────── */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --sf-sunk:   oklch(0.160 0.012 264);
+  --sf-ground: oklch(0.185 0.012 264);
+  --sf-plate:  oklch(0.212 0.013 264);
+  --sf-float:  oklch(0.245 0.014 264);
+
+  --line-soft: oklch(0.265 0.014 264);
+  --line:      oklch(0.315 0.016 264);
+  --line-ctrl: oklch(0.520 0.016 264);
+
+  --ink:   oklch(0.930 0.012 264);
+  --ink-2: oklch(0.780 0.014 264);
+  --ink-3: oklch(0.640 0.016 264);
+  --ink-4: oklch(0.480 0.016 264); /* NON-TEXT ONLY */
+
+  --acc:        var(--cobalt-400);
+  --acc-hi:     var(--cobalt-300);
+  --acc-on:     var(--sf-sunk);
+  --acc-tint:   oklch(0.265 0.048 264);
+  --acc-quiet:  oklch(0.225 0.030 264);
+  --acc-strong: oklch(0.320 0.062 264);
+
+  --sem-feat:  var(--violet-400);
+  --sem-agent: var(--amber-300);
+  --sem-vla:   var(--green-400);
+  --sem-base:  var(--teal-400);
+  --sem-error: var(--crimson-400);
+
+  --sh: 0 0 0;
+
+  --glass-fill: rgb(30 34 44 / 0.62);
+  --glass-rim: rgb(255 255 255 / 0.10);
+  --glass-spec: rgb(255 255 255 / 0.16);
+  --glass-scrim: rgb(4 6 10 / 0.55);
+}
+
+/* ── elevation: one light source, above. Each layer ~2x the previous blur,
+      offset-y ~ blur/2, spread negative once blur > 16. A single flat
+      shadow is the clearest tell of an unconsidered surface. ────────── */
+:root {
+  --e0: none;
+  --e1:
+    0 0 0 1px rgb(var(--sh) / 0.045),
+    0 1px 1.5px -0.5px rgb(var(--sh) / 0.05),
+    0 3px 6px -2px rgb(var(--sh) / 0.05);
+  --e2:
+    0 0 0 1px rgb(var(--sh) / 0.05),
+    0 1px 2px -0.5px rgb(var(--sh) / 0.06),
+    0 4px 8px -3px rgb(var(--sh) / 0.06),
+    0 10px 18px -6px rgb(var(--sh) / 0.06);
+  --e3:
+    0 0 0 1px rgb(var(--sh) / 0.06),
+    0 1px 2px -1px rgb(var(--sh) / 0.07),
+    0 6px 12px -4px rgb(var(--sh) / 0.07),
+    0 16px 28px -10px rgb(var(--sh) / 0.08);
+  --e4:
+    0 0 0 1px rgb(var(--sh) / 0.07),
+    0 2px 4px -1px rgb(var(--sh) / 0.06),
+    0 10px 20px -7px rgb(var(--sh) / 0.08),
+    0 26px 48px -16px rgb(var(--sh) / 0.10),
+    0 48px 80px -26px rgb(var(--sh) / 0.10);
+  --ring: 0 0 0 1px rgb(var(--sh) / 0.09);
+}
+[data-theme="dark"] {
+  --e1: 0 0 0 1px rgb(255 255 255 / 0.05), 0 1px 2px rgb(0 0 0 / 0.30);
+  --e2: 0 0 0 1px rgb(255 255 255 / 0.06), 0 2px 6px rgb(0 0 0 / 0.38);
+  --e3: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.45);
+  --e4: 0 0 0 1px rgb(255 255 255 / 0.09), 0 24px 56px rgb(0 0 0 / 0.55);
+  --ring: 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+/* ── compatibility aliases ────────────────────────────────────────────
+   The rest of this stylesheet still speaks v4. Pointing the old names at
+   the new tokens makes every existing rule theme-aware in one move, and
+   keeps the tokenisation diff reviewable instead of a 900-line rewrite.
+   --color-attn is deliberately the same value as --color-cobalt now. */
+:root {
+  --color-paper: var(--sf-ground);
+  --color-card: var(--sf-plate);
+  --color-ink: var(--ink);
+  --color-mute: var(--ink-3);
+  --color-cobalt: var(--acc);
+  --color-attn: var(--acc);
+  --color-feat: var(--sem-feat);
+  --color-agent: var(--sem-agent);
+  --color-vla: var(--sem-vla);
+  --color-pop: var(--sem-error);
+  --hair: var(--line);
+  --hair-soft: var(--line-soft);
+  --shadow: var(--e1);
+  --ease: var(--ease-out-soft);
+  --glass-ease: var(--ease-out);
 }
 
 body {
@@ -40,9 +258,8 @@ body {
   color: var(--color-ink);
   font: 15px/1.65 var(--font-sans);
   min-height: 100vh;
-  overflow-x: hidden;
 }
-::selection { background: rgb(39 67 224 / 0.18); }
+::selection { background: color-mix(in oklab, var(--acc) 18%, transparent); }
 
 main {
   max-width: 980px;
@@ -68,9 +285,8 @@ main > * {
    3px at 2px offset against --color-cobalt clears the WCAG 2.2 focus
    appearance minimum on both the paper and the glass. */
 :focus-visible {
-  outline: 3px solid var(--color-cobalt);
+  outline: 3px solid var(--acc);
   outline-offset: 2px;
-  border-radius: 6px;
 }
 /* Pointer users should not see it; keyboard users must. */
 :focus:not(:focus-visible) {
@@ -132,11 +348,14 @@ main > * {
   border-radius: 99px;
   color: var(--color-mute);
   background: var(--color-card);
-  transition: all 0.3s var(--ease);
+  transition: color var(--dur-micro) var(--ease-hover),
+    background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover),
+    box-shadow var(--dur-small) var(--ease-out);
   white-space: nowrap;
 }
-.pill.on { color: var(--color-cobalt); border-color: rgb(39 67 224 / 0.45); }
-.pill.violet { color: var(--color-feat); border-color: rgb(108 78 224 / 0.45); }
+.pill.on { color: var(--color-cobalt); border-color: color-mix(in oklab, var(--acc) 45%, transparent); }
+.pill.violet { color: var(--color-feat); border-color: color-mix(in oklab, var(--sem-feat) 45%, transparent); }
 
 .hero {
   position: relative;
@@ -174,11 +393,11 @@ main > * {
    stay vibrant instead of going muddy grey; a 1px top specular rim simulates
    light hitting the polished bevel; the shadow is volumetric, not a flat drop. */
 :root {
-  --glass-fill: rgba(255, 255, 255, 0.62);
+  --glass-fill: var(--glass-fill);
   --glass-blur: blur(40px) saturate(190%);
-  --glass-border: 1px solid rgba(255, 255, 255, 0.55);
-  --glass-specular: inset 0 1px 1px 0 rgba(255, 255, 255, 0.85);
-  --glass-shadow: 0 24px 60px -18px rgba(22, 22, 26, 0.35), 0 0 0 1px rgba(22, 22, 26, 0.05);
+  --glass-border: 1px solid var(--glass-rim);
+  --glass-specular: inset 0 1px 1px 0 var(--glass-spec);
+  --glass-shadow: 0 24px 60px -18px color-mix(in oklab, var(--ink) 35%, transparent), 0 0 0 1px color-mix(in oklab, var(--ink) 5%, transparent);
   --glass-ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -204,19 +423,19 @@ main > * {
   border-radius: inherit;
   background: linear-gradient(
     90deg,
-    rgba(255, 255, 255, 0.95) 0%,
-    rgba(255, 255, 255, 0.35) 40%,
+    var(--glass-spec) 0%,
+    var(--glass-rim) 40%,
     transparent 100%
   );
   pointer-events: none;
 }
 .glass-inset {
-  background: rgba(255, 255, 255, 0.5);
+  background: var(--glass-fill);
   backdrop-filter: blur(20px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--glass-rim);
   border-radius: 16px;
   padding: 14px;
-  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.8);
+  box-shadow: inset 0 1px 1px 0 var(--glass-rim);
 }
 
 /* ---------- model load progress ----------
@@ -247,7 +466,7 @@ main > * {
   height: 5px;
   border-radius: 99px;
   overflow: hidden;
-  background: rgba(22, 22, 26, 0.09);
+  background: color-mix(in oklab, var(--ink) 9%, transparent);
 }
 .loadbar-fill {
   height: 100%;
@@ -255,9 +474,9 @@ main > * {
   /* --color-accent does not exist. An undefined var() invalidates the whole
      declaration at computed-value time, so this bar painted nothing but its
      own glow. The palette name is --color-cobalt. */
-  background: linear-gradient(90deg, var(--color-cobalt), #7a4de0);
+  background: linear-gradient(90deg, var(--color-cobalt), var(--sem-feat));
   transition: width 0.6s var(--glass-ease);
-  box-shadow: 0 0 12px rgba(39, 67, 224, 0.45);
+  box-shadow: 0 0 12px color-mix(in oklab, var(--acc) 45%, transparent);
 }
 .loadbar-track.indeterminate .loadbar-fill {
   width: 34%;
@@ -281,8 +500,8 @@ main > * {
   margin: 0 0 12px;
   padding: 10px 13px;
   border-radius: 13px;
-  border: 1px solid rgba(22, 22, 26, 0.08);
-  background: rgba(22, 22, 26, 0.035);
+  border: 1px solid color-mix(in oklab, var(--ink) 8%, transparent);
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
   color: var(--color-mute);
   font-size: 13px;
   line-height: 1.6;
@@ -312,7 +531,7 @@ main > * {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(22, 22, 26, 0.28);
+  background: color-mix(in oklab, var(--ink) 28%, transparent);
   backdrop-filter: blur(3px);
   display: flex;
   align-items: flex-start;
@@ -344,9 +563,11 @@ main > * {
   place-items: center;
   border-radius: 50%;
   color: var(--color-mute);
-  transition: all 0.25s var(--glass-ease);
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover),
+    box-shadow var(--dur-small) var(--ease-out);
 }
-.icon-btn:hover { background: rgba(22, 22, 26, 0.08); color: var(--color-ink); }
+.icon-btn:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--color-ink); }
 .linkish {
   all: unset;
   cursor: pointer;
@@ -359,7 +580,6 @@ main > * {
   opacity: 1;
 }
 .linkish:hover { opacity: 0.72; }
-.linkish:hover { opacity: 1; }
 button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
 .combo.grow { flex: 1; }
 .combo.search { width: 100%; }
@@ -385,10 +605,14 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   font-family: var(--font-mono);
   font-size: 12.5px;
   border: 1px solid transparent;
-  transition: all 0.22s var(--glass-ease);
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    transform var(--dur-micro) var(--ease-out),
+    box-shadow var(--dur-small) var(--ease-out);
 }
-.model-row:hover { background: rgba(255, 255, 255, 0.75); transform: translateX(2px); }
-.model-row.sel { border-color: rgba(39, 67, 224, 0.4); background: rgba(39, 67, 224, 0.08); }
+@media (hover: hover) and (pointer: fine) {
+  .model-row:hover { background: var(--acc-quiet); transform: translateX(2px); }
+}
+.model-row.sel { border-color: color-mix(in oklab, var(--acc) 40%, transparent); background: color-mix(in oklab, var(--acc) 8%, transparent); }
 .model-row.locked { opacity: 0.5; cursor: not-allowed; }
 .model-row.locked:hover { transform: none; }
 .model-row.static { cursor: default; }
@@ -399,12 +623,12 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   font-size: 10.5px;
   padding: 2px 8px;
   border-radius: 99px;
-  background: rgba(22, 22, 26, 0.06);
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
   color: var(--color-mute);
   white-space: nowrap;
 }
-.chip.warn { background: rgba(217, 43, 91, 0.12); color: var(--color-pop); }
-.chip.ok { background: rgba(30, 122, 70, 0.14); color: var(--color-vla); }
+.chip.warn { background: color-mix(in oklab, var(--sem-error) 12%, transparent); color: var(--color-pop); }
+.chip.ok { background: color-mix(in oklab, var(--sem-vla) 14%, transparent); color: var(--color-vla); }
 .hint.err { color: var(--color-pop); }
 
 /* the button that opens the picker */
@@ -417,11 +641,13 @@ button.model-btn {
   cursor: pointer;
   font: 500 13px var(--font-sans);
   color: var(--color-ink);
-  transition: all 0.28s var(--glass-ease);
+  transition: background-color var(--dur-small) var(--ease-hover),
+    border-color var(--dur-small) var(--ease-hover),
+    box-shadow var(--dur-small) var(--ease-out);
 }
 button.model-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: var(--glass-shadow), var(--glass-specular), 0 0 22px rgba(39, 67, 224, 0.14);
+  box-shadow: var(--glass-shadow), var(--glass-specular), 0 0 22px color-mix(in oklab, var(--acc) 14%, transparent);
 }
 .model-btn-label {
   font-family: var(--font-mono);
@@ -446,15 +672,15 @@ button.model-btn:hover:not(:disabled) {
 }
 .pill.accel.gpu {
   color: var(--color-vla);
-  border-color: rgb(30 122 70 / 0.45);
+  border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent);
 }
 .pill.accel.gpu .accel-dot {
   background: var(--color-vla);
   animation: livepulse 2.4s var(--ease) infinite;
 }
 @keyframes livepulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(30 122 70 / 0.5); }
-  50% { box-shadow: 0 0 0 5px rgb(30 122 70 / 0); }
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--sem-vla) 50%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in oklab, var(--sem-vla) 0%, transparent); }
 }
 
 .demo-banner {
@@ -466,7 +692,7 @@ button.model-btn:hover:not(:disabled) {
   background: var(--color-card);
   color: var(--color-mute);
   font-size: 13px;
-  box-shadow: var(--shadow);
+  box-shadow: var(--e1);
 }
 .demo-banner code {
   font-family: var(--font-mono);
@@ -494,9 +720,9 @@ button.model-btn:hover:not(:disabled) {
 .panel {
   background: var(--color-card);
   border: 1px solid var(--hair);
-  border-radius: 12px;
-  padding: 18px;
-  box-shadow: var(--shadow);
+  border-radius: var(--r-panel);
+  padding: var(--sp-5);
+  box-shadow: var(--e1);
   animation: rise 0.45s var(--ease) both;
 }
 @keyframes rise {
@@ -521,7 +747,7 @@ button.model-btn:hover:not(:disabled) {
 .h-vla { color: var(--color-vla); } .d-vla { background: var(--color-vla); }
 
 /* ---------- VLA ---------- */
-.pill.vla { color: var(--color-vla); border-color: rgb(30 122 70 / 0.45); }
+.pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
 button.green {
   border: 0;
   border-radius: 9px;
@@ -529,12 +755,12 @@ button.green {
   font: 600 13.5px var(--font-sans);
   cursor: pointer;
   background: var(--color-vla);
-  color: #fff;
+  color: var(--sf-plate);
   transition: transform 0.2s var(--ease), box-shadow 0.3s var(--ease), opacity 0.2s;
 }
 button.green:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 8px 22px rgb(30 122 70 / 0.28);
+  box-shadow: 0 8px 22px color-mix(in oklab, var(--sem-vla) 28%, transparent);
 }
 button.green:disabled { opacity: 0.35; cursor: default; }
 
@@ -572,12 +798,14 @@ button.green:disabled { opacity: 0.35; cursor: default; }
   font: 500 13px var(--font-sans);
   color: var(--color-mute);
   padding: 8px 14px;
-  transition: all 0.25s var(--ease);
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover);
   white-space: nowrap;
 }
 .seg button + button { border-left: 1px solid var(--hair); }
 .seg button:hover { color: var(--color-ink); }
-.seg button.on { color: #fff; background: var(--color-cobalt); }
+.seg button.on { color: var(--sf-plate); background: var(--color-cobalt); }
 
 .combo {
   font: 13px var(--font-mono);
@@ -590,8 +818,8 @@ button.green:disabled { opacity: 0.35; cursor: default; }
   transition: border-color 0.25s var(--ease), box-shadow 0.25s var(--ease);
 }
 .combo:focus {
-  border-color: rgb(39 67 224 / 0.55);
-  box-shadow: 0 0 0 3px rgb(39 67 224 / 0.12);
+  border-color: color-mix(in oklab, var(--acc) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--acc) 12%, transparent);
 }
 /* Suppress the ring for pointer focus only. A bare `outline: none` on :focus
    has specificity (0,2,0) and silently beat the global :focus-visible rule,
@@ -609,12 +837,12 @@ textarea {
   padding: 14px 15px;
   font: 14px/1.6 var(--font-mono);
   resize: vertical;
-  box-shadow: var(--shadow);
+  box-shadow: var(--e1);
   transition: border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
 }
 textarea:focus {
-  border-color: rgb(39 67 224 / 0.55);
-  box-shadow: 0 0 0 3px rgb(39 67 224 / 0.12);
+  border-color: color-mix(in oklab, var(--acc) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--acc) 12%, transparent);
 }
 textarea:focus:not(:focus-visible) { outline: none; }
 
@@ -629,15 +857,15 @@ button.cta, button.ghost, button.violet {
   transition: transform 0.2s var(--ease), box-shadow 0.3s var(--ease), opacity 0.2s,
     background-color 0.25s var(--ease), border-color 0.25s var(--ease), color 0.25s var(--ease);
 }
-button.cta { background: var(--color-cobalt); color: #fff; }
+button.cta { background: var(--color-cobalt); color: var(--sf-plate); }
 button.cta:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 8px 22px rgb(39 67 224 / 0.28);
+  box-shadow: 0 8px 22px color-mix(in oklab, var(--acc) 28%, transparent);
 }
-button.violet { background: var(--color-feat); color: #fff; }
+button.violet { background: var(--color-feat); color: var(--sf-plate); }
 button.violet:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 8px 22px rgb(108 78 224 / 0.28);
+  box-shadow: 0 8px 22px color-mix(in oklab, var(--sem-feat) 28%, transparent);
 }
 button.ghost {
   background: transparent;
@@ -657,7 +885,7 @@ input[type="range"] {
 }
 input[type="range"]::-webkit-slider-runnable-track {
   height: 3px;
-  background: rgb(108 78 224 / 0.35);
+  background: color-mix(in oklab, var(--sem-feat) 35%, transparent);
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -668,7 +896,9 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--color-feat);
   transition: transform 0.2s var(--ease);
 }
-input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+@media (hover: hover) and (pointer: fine) {
+  input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+}
 
 /* ---------- output & meta ---------- */
 .output {
@@ -689,7 +919,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 /* ---------- tokens ---------- */
 .attn-scroll { overflow-x: auto; padding-bottom: 6px; }
 .attn-scroll::-webkit-scrollbar { height: 6px; }
-.attn-scroll::-webkit-scrollbar-thumb { background: #d5d1c5; border-radius: 3px; }
+.attn-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
 .attn-inner { width: max-content; min-width: 100%; }
 .tokens { display: flex; gap: 3px; white-space: pre; padding: 2px 0; }
 .tok {
@@ -700,15 +930,17 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   border-radius: 5px;
   cursor: default;
   background: var(--color-paper);
-  transition: all 0.18s var(--ease);
+  transition: color var(--dur-micro) var(--ease-hover),
+    background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover);
 }
-.tok:hover, .tok.pin { border-color: var(--color-attn); color: var(--color-attn); background: #eef3fc; }
+.tok:hover, .tok.pin { border-color: var(--color-attn); color: var(--color-attn); background: var(--acc-quiet); }
 .tok.feat-sel { border-color: var(--color-feat); color: var(--color-feat); }
 /* The token where the selected feature fires hardest. In a 256-token strip
    this is the only chip most people are looking for. */
 .tok.peak {
   border-color: var(--color-feat);
-  box-shadow: 0 0 0 2px rgba(108, 78, 224, 0.22);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--sem-feat) 22%, transparent);
   font-weight: 600;
 }
 
@@ -724,10 +956,12 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   cursor: pointer;
   font-family: var(--font-mono);
   font-size: 12px;
-  transition: all 0.2s var(--ease);
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover);
 }
-.feat-row:hover { background: rgb(108 78 224 / 0.06); }
-.feat-row.sel { border-color: rgb(108 78 224 / 0.35); background: rgb(108 78 224 / 0.08); }
+.feat-row:hover { background: color-mix(in oklab, var(--sem-feat) 6%, transparent); }
+.feat-row.sel { border-color: color-mix(in oklab, var(--sem-feat) 35%, transparent); background: color-mix(in oklab, var(--sem-feat) 8%, transparent); }
 .feat-bar {
   height: 6px;
   border-radius: 3px;
@@ -764,8 +998,8 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   text-transform: uppercase;
   background: var(--color-card);
 }
-.card.steered { border-color: rgb(108 78 224 / 0.5); }
-.card.steered .lbl { color: var(--color-feat); border-color: rgb(108 78 224 / 0.5); }
+.card.steered { border-color: color-mix(in oklab, var(--sem-feat) 50%, transparent); }
+.card.steered .lbl { color: var(--color-feat); border-color: color-mix(in oklab, var(--sem-feat) 50%, transparent); }
 
 .hint {
   color: var(--color-mute);
@@ -787,10 +1021,12 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   border-radius: 8px;
   font-family: var(--font-mono);
   font-size: 12px;
-  transition: all 0.2s var(--ease);
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover);
 }
-.trace-row:hover { background: rgb(180 119 16 / 0.07); }
-.trace-row.sel { border-color: rgb(180 119 16 / 0.4); background: rgb(180 119 16 / 0.09); }
+.trace-row:hover { background: color-mix(in oklab, var(--sem-agent) 7%, transparent); }
+.trace-row.sel { border-color: color-mix(in oklab, var(--sem-agent) 40%, transparent); background: color-mix(in oklab, var(--sem-agent) 9%, transparent); }
 .trace-row .tname { color: var(--color-ink); font-weight: 600; }
 .trace-row .tmeta { color: var(--color-mute); }
 .trace-row .tmeta em { color: var(--color-pop); font-style: normal; }
@@ -816,7 +1052,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 .tl-block:hover { opacity: 1; }
 .tl-block.sel { opacity: 1; outline-color: var(--color-ink); }
-.tl-block.err { box-shadow: 0 0 12px rgb(217 43 91 / 0.6); }
+.tl-block.err { box-shadow: 0 0 12px color-mix(in oklab, var(--sem-error) 60%, transparent); }
 
 .tl-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
 .tl-legend i {
@@ -836,7 +1072,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
   padding: 14px;
   animation: rise 0.35s var(--ease) both;
 }
-.inspector.err { border-color: rgb(217 43 91 / 0.5); }
+.inspector.err { border-color: color-mix(in oklab, var(--sem-error) 50%, transparent); }
 .lbl-chip {
   font-family: var(--font-mono);
   font-size: 9.5px;
@@ -885,9 +1121,58 @@ footer a:hover { color: var(--color-cobalt); }
 footer .spacer { flex: 1; }
 
 @media (prefers-reduced-motion: reduce) {
+  :root { --motion-scale: 0.01; }
+  /* Kill travel and loops; keep colour and opacity so state is still
+     legible. "Reduce motion" is not "remove feedback". */
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation-name: none !important;
+    transition-property: color, background-color, border-color, box-shadow,
+      opacity, outline-color !important;
+    transition-duration: 120ms !important;
   }
+  .loadbar-track.indeterminate .loadbar-fill { width: 100%; transform: none; }
+}
+
+/* ---------- theme toggle ----------
+   Three states, in the order the eye expects: light, auto, dark. The
+   indicator is a filled plate that moves, not a colour change, so it stays
+   legible at a glance in either theme. */
+.theme-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--ink) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ink) 6%, transparent);
+}
+.theme-seg button {
+  all: unset;
+  cursor: pointer;
+  width: 26px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--ink-3);
+  transition:
+    background-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover);
+}
+@media (hover: hover) and (pointer: fine) {
+  .theme-seg button:hover { color: var(--ink); }
+}
+.theme-seg button.on {
+  background: var(--sf-plate);
+  color: var(--acc);
+  box-shadow: var(--e1);
+}
+/* 26x24 is under the 40px minimum target; grow the hit area, not the glyph */
+.theme-seg button { position: relative; }
+.theme-seg button::after {
+  content: "";
+  position: absolute;
+  inset: -8px -3px;
 }

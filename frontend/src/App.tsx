@@ -4,6 +4,7 @@ import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
+import ThemeToggle from "./ThemeToggle";
 import VLAPanel from "./VLAPanel";
 
 export default function App() {
@@ -44,6 +45,7 @@ export default function App() {
           <span className="ast">✳</span> ModelMRI
         </span>
         <span className="spacer" />
+        <ThemeToggle />
         {accel && (
           <span
             className={`pill accel ${accel.kind !== "cpu" ? "gpu" : ""}`}

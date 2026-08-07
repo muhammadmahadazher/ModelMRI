@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { cssColor, toRgb, useThemeVersion } from "./theme";
 
 /** Live ASCII-dither field — flowing gradient forms rendered as a character
  *  grid (the machine's eye rendering itself). Cheap: ~10fps, one canvas,
@@ -31,6 +32,7 @@ function field(x: number, y: number, t: number, w: number, h: number): number {
 }
 
 export default function AsciiField() {
+  const themeV = useThemeVersion();
   const ref = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -58,6 +60,12 @@ export default function AsciiField() {
       ctx.textBaseline = "top";
     };
 
+    // Both ends of the ink ramp come from the palette, resolved once per
+    // effect run -- this loop paints ~2500 glyphs a frame and cannot afford
+    // a getComputedStyle call inside it.
+    const cold = toRgb(cssColor("--acc", "#2743e0"), [39, 67, 224]);
+    const hot = toRgb(cssColor("--sem-feat", "#6c4ee0"), [108, 78, 224]);
+
     const draw = (t: number) => {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
@@ -73,9 +81,9 @@ export default function AsciiField() {
           // cobalt -> magenta as density rises: the ink "heats up" where the
           // field is strongest, echoing the attention heatmaps below
           const heat = Math.max(0, Math.min(1, (v - 0.55) * 1.9));
-          const r = 25 + heat * 192;
-          const g = 55 - heat * 12;
-          const b = 224 - heat * 133;
+          const r = cold[0] + (hot[0] - cold[0]) * heat;
+          const g = cold[1] + (hot[1] - cold[1]) * heat;
+          const b = cold[2] + (hot[2] - cold[2]) * heat;
           ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${0.16 + v * 0.62})`;
           ctx.fillText(glyph, x, y);
         }
@@ -131,7 +139,7 @@ export default function AsciiField() {
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", onLeave);
     };
-  }, []);
+  }, [themeV]);
 
   return <canvas ref={ref} className="ascii" aria-hidden="true" />;
 }
