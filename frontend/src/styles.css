@@ -117,6 +117,26 @@ main {
   color: var(--color-mute);
   font-size: 15px;
 }
+.demo-banner {
+  display: inline-block;
+  margin: 16px auto 0;
+  padding: 9px 16px;
+  border: 1px solid var(--hair);
+  border-radius: 99px;
+  background: var(--color-card);
+  color: var(--color-mute);
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+.demo-banner code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--color-cobalt);
+  background: var(--color-paper);
+  padding: 2px 7px;
+  border-radius: 5px;
+}
+
 .specrow {
   display: flex;
   justify-content: center;

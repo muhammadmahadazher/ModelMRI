@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getSession, ModelStatus } from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
+import { DEMO } from "./demo";
 import Playground from "./Playground";
 import VLAPanel from "./VLAPanel";
 
@@ -45,6 +46,13 @@ export default function App() {
           flight recorder for your agents. One pip install, everything on your
           machine.
         </p>
+        {DEMO && (
+          <p className="demo-banner">
+            Live demo — real recorded output from a local run. Install it to
+            point these instruments at your own models:{" "}
+            <code>pip install modelmri</code>
+          </p>
+        )}
         <div className="specrow">
           <span>local-first</span>
           <span>attention</span>

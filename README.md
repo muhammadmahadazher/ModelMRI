@@ -4,6 +4,8 @@
 
 Local-first. No cloud, no account, no telemetry. MIT.
 
+**[▶ Try the live demo](https://muhammadmahadazher.github.io/ModelMRI/)** — no install, no GPU, real recorded output.
+
 ```bash
 pip install modelmri
 modelmri serve          # open http://localhost:5900

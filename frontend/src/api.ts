@@ -1,3 +1,5 @@
+import { DEMO } from "./demo";
+
 export interface ModelStatus {
   loaded: boolean;
   hf_id: string | null;
@@ -231,6 +233,29 @@ export type StreamHandlers = {
 };
 
 export function streamGenerate(prompt: string, h: StreamHandlers): () => void {
+  if (DEMO) {
+    // No WebSocket on a static host: replay the baked generation word by
+    // word so the streaming UI behaves exactly as it does locally.
+    let cancelled = false;
+    void (async () => {
+      const { generation } = await fetch("/api/model/prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      }).then((r) => r.json());
+      const pieces = String(generation).match(/\s*\S+/g) ?? [];
+      for (const piece of pieces) {
+        if (cancelled) return;
+        h.onToken(piece);
+        await new Promise((r) => setTimeout(r, 45));
+      }
+      if (!cancelled) h.onDone();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }
+
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/generate`);
   let finished = false;
