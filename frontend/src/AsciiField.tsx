@@ -28,12 +28,16 @@ export default function AsciiField() {
     let running = true;
 
     const size = () => {
-      const r = canvas.parentElement!.getBoundingClientRect();
+      // CSS owns the canvas box — we only match the pixel buffer to it.
+      // (Never write style.width/height here: sizing from the parent and
+      // styling ourselves once caused an unbounded grow loop.)
+      const r = canvas.getBoundingClientRect();
       const dpr = Math.min(devicePixelRatio, 2);
-      canvas.width = r.width * dpr;
-      canvas.height = r.height * dpr;
-      canvas.style.width = `${r.width}px`;
-      canvas.style.height = `${r.height}px`;
+      const w = Math.round(r.width * dpr);
+      const h = Math.round(r.height * dpr);
+      if (canvas.width === w && canvas.height === h) return;
+      canvas.width = w;
+      canvas.height = h;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.font = `12px ui-monospace, Consolas, monospace`;
       ctx.textBaseline = "top";
@@ -74,8 +78,11 @@ export default function AsciiField() {
     };
 
     size();
-    const ro = new ResizeObserver(size);
-    ro.observe(canvas.parentElement!);
+    const ro = new ResizeObserver(() => {
+      size();
+      draw(1.7); // repaint after any resize so the field is never blank
+    });
+    ro.observe(canvas);
     document.addEventListener("visibilitychange", onVis);
 
     draw(1.7); // paint frame 1 synchronously — no blank hero before rAF fires
