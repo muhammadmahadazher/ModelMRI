@@ -430,11 +430,12 @@ main > * {
   pointer-events: none;
 }
 .glass-inset {
-  background: var(--glass-fill);
-  backdrop-filter: blur(20px) saturate(160%);
-  border: 1px solid var(--glass-rim);
-  border-radius: 16px;
-  padding: 14px;
+  /* No backdrop-filter here: this lives inside .glass, and stacking two
+     backdrop filters blurs the same pixels twice. Sunk surface, not glass. */
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-well);
+  padding: var(--sp-3);
   box-shadow: inset 0 1px 1px 0 var(--glass-rim);
 }
 
@@ -844,7 +845,12 @@ button.green:hover:not(:disabled) {
   transform: translateY(-1px);
   box-shadow: 0 8px 22px color-mix(in oklab, var(--sem-vla) 28%, transparent);
 }
-button.green:disabled { opacity: 0.35; cursor: default; }
+button.green:disabled {
+  cursor: default;
+  filter: saturate(0.25);
+  opacity: 0.75;
+  box-shadow: none;
+}
 
 .vla-grid {
   display: grid;
@@ -955,7 +961,12 @@ button.ghost {
   border: 1px solid var(--hair);
 }
 button.ghost:hover:not(:disabled) { border-color: var(--color-cobalt); color: var(--color-cobalt); }
-button:disabled { opacity: 0.35; cursor: default; }
+button:disabled {
+  cursor: default;
+  filter: saturate(0.25);
+  opacity: 0.75;
+  box-shadow: none;
+}
 
 input[type="range"] {
   -webkit-appearance: none;
@@ -981,6 +992,31 @@ input[type="range"]::-webkit-slider-thumb {
 @media (hover: hover) and (pointer: fine) {
   input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
+/* Firefox renders none of the -webkit- pseudo-elements, so the steering
+   slider had no track and no thumb there at all. */
+input[type="range"]::-moz-range-track {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--sem-feat) 35%, transparent);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border: none;
+  border-radius: 3px;
+  background: var(--sem-feat);
+  transition: transform var(--dur-micro) var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  input[type="range"]::-moz-range-thumb:hover { transform: scale(1.2); }
+}
+/* The thumb is the only part that moves; it needs its own focus ring,
+   because the input's ring sits around the whole 200px track. */
+input[type="range"]:focus-visible::-webkit-slider-thumb,
+input[type="range"]:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 3px var(--sf-ground), 0 0 0 6px var(--acc);
+}
+input[type="range"]:focus-visible { outline: none; }
 
 /* ---------- output & meta ---------- */
 .output {
