@@ -61,7 +61,7 @@ export default function App() {
       </div>
 
       <div className="hero">
-        <AsciiField />
+        <AsciiField modelId={model?.hf_id ?? null} />
         <h1 className="headline">
           See inside <span className="c">the model.</span>
         </h1>

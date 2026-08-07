@@ -231,7 +231,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
         )}
 
         {tab === "local" ? (
-          <div className="model-list" role="listbox" aria-label="Models on this machine">
+          <div className="model-list stagger" role="listbox" aria-label="Models on this machine">
             {disco === null && <div className="meta pad">scanning…</div>}
             {disco?.models.length === 0 && (
               <div className="meta pad">
@@ -240,9 +240,10 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                 MODELMRI_MODELS_DIR.
               </div>
             )}
-            {disco?.models.map((m) => (
+            {disco?.models.map((m, i) => (
               <button
                 key={m.path}
+                style={{ ["--i" as string]: i }}
                 className={`model-row ${m.id === current ? "sel" : ""} ${m.loadable ? "" : "locked"}`}
                 role="option"
                 aria-selected={m.id === current}
@@ -278,7 +279,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
               onChange={(e) => setQ(e.target.value)}
               ref={searchRef}
             />
-            <div className="model-list" role="listbox" aria-label="Models">
+            <div className="model-list stagger" role="listbox" aria-label="Models">
               {/* Results arrive asynchronously, so a screen reader is told the
                   count rather than left guessing whether anything happened. */}
               <div className="sr-only" role="status" aria-live="polite">

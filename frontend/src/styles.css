@@ -1312,3 +1312,19 @@ footer .spacer { flex: 1; }
   position: absolute;
   inset: -8px -3px;
 }
+
+/* ---------- stagger ----------
+   Enters only; exits dismiss together, because nobody waits to watch a list
+   leave. Capped at 7 items: item 8 and item 400 start at the same moment, so
+   a long list never becomes a queue. */
+.stagger > * {
+  animation: staggerIn var(--dur-small) var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0) * 24, 168) * 1ms);
+}
+@keyframes staggerIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stagger > * { animation: none; }
+}

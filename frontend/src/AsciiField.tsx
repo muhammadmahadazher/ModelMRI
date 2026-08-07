@@ -9,18 +9,65 @@ const RAMP = [" ", " ", ".", "·", ":", ";", "+", "=", "*", "x", "#", "@"];
 const CELL = 14;
 const FPS = 24;
 
+/* SIGNATURE — the field is a fingerprint, not a screensaver.
+ *
+ * The composition is seeded deterministically from the loaded checkpoint, so
+ * every model gets its own stable field: load Qwen3 and you always get the
+ * same one, load Gemma and you get a different one, and a reload does not
+ * reroll it. An introspection tool whose hero is unseeded noise is announcing
+ * that its visuals and its data have nothing to do with each other.
+ *
+ * Every parameter is drawn inside a hand-checked envelope rather than from an
+ * open range, so no seed can produce a composition nobody has ever seen. */
+const fnv1a = (s: string) => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+};
+
+const mulberry32 = (a: number) => () => {
+  a |= 0;
+  a = (a + 0x6d2b79f5) | 0;
+  let t = Math.imul(a ^ (a >>> 15), 1 | a);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+
+export interface FieldParams {
+  fx: number; fy: number; fd: number; fr: number;
+  phase: number; cx: number; cy: number;
+}
+
+export function paramsFor(modelId: string | null | undefined): FieldParams {
+  const rng = mulberry32(fnv1a(modelId ? `mri:${modelId}` : "vantage:0xC0FFEE"));
+  return {
+    fx: 0.008 + rng() * 0.005,
+    fy: 0.010 + rng() * 0.005,
+    fd: 0.004 + rng() * 0.004,
+    fr: 0.016 + rng() * 0.008,
+    phase: rng() * Math.PI * 2,
+    cx: 0.38 + rng() * 0.24, // centre stays in the middle quarter
+    cy: 0.46 + rng() * 0.18,
+  };
+}
+
 // Pointer influence: the field leans toward the cursor, so the hero feels
 // like an instrument you're touching rather than a looping background.
 let px = -1e4;
 let py = -1e4;
 let pInfluence = 0;
 
-function field(x: number, y: number, t: number, w: number, h: number): number {
-  // three drifting wave systems + a slow radial pulse from the centre
-  const a = Math.sin(x * 0.010 + t * 0.30) + Math.cos(y * 0.012 - t * 0.20);
-  const b = Math.sin((x + y) * 0.006 + t * 0.16);
-  const r = Math.hypot(x - w * 0.5, y - h * 0.55);
-  const c = Math.sin(r * 0.020 - t * 0.9) * 0.8;
+function field(
+  x: number, y: number, t: number, w: number, h: number, P: FieldParams,
+): number {
+  // three drifting wave systems + a slow radial pulse, all seeded
+  const a = Math.sin(x * P.fx + t * 0.30 + P.phase) + Math.cos(y * P.fy - t * 0.20);
+  const b = Math.sin((x + y) * P.fd + t * 0.16);
+  const r = Math.hypot(x - w * P.cx, y - h * P.cy);
+  const c = Math.sin(r * P.fr - t * 0.9) * 0.8;
   let v = (a + b + c + 3) / 6;
 
   // a soft lens that follows the cursor, brightening nearby cells
@@ -31,7 +78,7 @@ function field(x: number, y: number, t: number, w: number, h: number): number {
   return v;
 }
 
-export default function AsciiField() {
+export default function AsciiField({ modelId }: { modelId?: string | null }) {
   const themeV = useThemeVersion();
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -66,6 +113,8 @@ export default function AsciiField() {
     const cold = toRgb(cssColor("--acc", "#2743e0"), [39, 67, 224]);
     const hot = toRgb(cssColor("--sem-feat", "#6c4ee0"), [108, 78, 224]);
 
+    const P = paramsFor(modelId);
+
     const draw = (t: number) => {
       const w = canvas.clientWidth;
       const h = canvas.clientHeight;
@@ -75,7 +124,7 @@ export default function AsciiField() {
 
       for (let y = 0; y < h; y += CELL) {
         for (let x = 0; x < w; x += CELL) {
-          const v = field(x, y, t, w, h);
+          const v = field(x, y, t, w, h, P);
           const glyph = RAMP[Math.min(RAMP.length - 1, Math.max(0, (v * RAMP.length) | 0))];
           if (glyph === " ") continue;
           // cobalt -> magenta as density rises: the ink "heats up" where the
@@ -139,7 +188,7 @@ export default function AsciiField() {
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", onLeave);
     };
-  }, [themeV]);
+  }, [themeV, modelId]);
 
   return <canvas ref={ref} className="ascii" aria-hidden="true" />;
 }
