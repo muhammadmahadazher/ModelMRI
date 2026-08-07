@@ -269,6 +269,25 @@ export interface LocalModel {
 export const getLocalModels = () =>
   fetch("/api/models/local").then((r) => json<LocalModel[]>(r));
 
+export interface DiscoveredModel {
+  id: string;
+  name: string;
+  path: string;
+  kind: "hf-cache" | "folder" | "gguf";
+  size_gb: number;
+  loadable: boolean;
+  note: string;
+}
+
+export interface Discovery {
+  models: DiscoveredModel[];
+  roots: string[];
+  truncated: boolean;
+}
+
+export const getDiscovered = () =>
+  fetch("/api/models/discovered").then((r) => json<Discovery>(r));
+
 export const getOllama = () => fetch("/api/ollama").then((r) => json<OllamaState>(r));
 
 export interface TraceSummary {

@@ -174,6 +174,15 @@ def create_app(
 
         return local_hf_models()
 
+    @app.get("/api/models/discovered")
+    async def models_discovered():
+        """Everything already on disk: the HF cache plus any model folder or
+        .gguf found under the working directory. Walking a synced drive is
+        slow enough to belong off the event loop."""
+        from .discover import discover
+
+        return await asyncio.to_thread(discover)
+
     @app.get("/api/ollama")
     def ollama_status() -> dict:
         from . import ollama as _ollama

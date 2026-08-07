@@ -372,6 +372,85 @@ def test_ws_reports_a_mid_stream_crash_as_an_error(monkeypatch):
     assert "CUDA out of memory" in final["message"]
 
 
+def test_discovery_finds_all_three_shapes(tmp_path):
+    """A cache entry, a plain from_pretrained folder, and a .gguf."""
+    from modelmri.discover import scan
+
+    cache = tmp_path / "hub" / "models--Qwen--Qwen3-0.6B" / "snapshots" / "abc"
+    cache.mkdir(parents=True)
+    (cache / "model.safetensors").write_bytes(b"x" * 2048)
+
+    folder = tmp_path / "my-models" / "finetune-v3"
+    folder.mkdir(parents=True)
+    (folder / "config.json").write_text("{}")
+    (folder / "model.safetensors").write_bytes(b"x" * 4096)
+
+    (tmp_path / "my-models" / "phi.gguf").write_bytes(b"x" * 512)
+
+    found, truncated = scan(tmp_path)
+    assert truncated is False
+    by_kind = {f.kind: f for f in found}
+    assert by_kind["hf-cache"].id == "Qwen/Qwen3-0.6B"
+    assert by_kind["folder"].name == "finetune-v3"
+    assert by_kind["folder"].id == str(folder)  # a path transformers can load
+    assert by_kind["gguf"].loadable is False
+    assert "Ollama" in by_kind["gguf"].note
+
+
+def test_discovery_does_not_descend_into_a_model(tmp_path):
+    """A model dir full of shards must be one result, not one per shard."""
+    from modelmri.discover import scan
+
+    m = tmp_path / "big-model"
+    (m / "extra").mkdir(parents=True)
+    (m / "config.json").write_text("{}")
+    for i in range(4):
+        (m / f"model-0000{i}.safetensors").write_bytes(b"x" * 128)
+    (m / "extra" / "config.json").write_text("{}")
+    (m / "extra" / "model.safetensors").write_bytes(b"x" * 128)
+
+    found, _ = scan(tmp_path)
+    assert len(found) == 1
+    assert found[0].name == "big-model"
+
+
+def test_discovery_skips_the_expensive_useless_directories(tmp_path):
+    from modelmri.discover import scan
+
+    for junk in ("node_modules", ".git", ".venv", "site-packages"):
+        d = tmp_path / junk / "pretend-model"
+        d.mkdir(parents=True)
+        (d / "config.json").write_text("{}")
+        (d / "model.safetensors").write_bytes(b"x" * 64)
+    found, _ = scan(tmp_path)
+    assert found == []
+
+
+def test_discovery_reports_a_truncated_scan_instead_of_lying(tmp_path, monkeypatch):
+    """A cut-short walk that looks complete is how you conclude a model is
+    missing when it is not."""
+    from modelmri import discover as disc
+
+    deep = tmp_path
+    for i in range(4):
+        deep = deep / f"level{i}"
+    deep.mkdir(parents=True)
+    (deep / "config.json").write_text("{}")
+    (deep / "model.safetensors").write_bytes(b"x" * 64)
+
+    _, truncated = disc.scan(tmp_path, budget_s=-1.0)  # budget already spent
+    assert truncated is True
+
+
+def test_discovery_endpoint_shape():
+    r = client().get("/api/models/discovered")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["models"], list)
+    assert isinstance(body["roots"], list) and body["roots"]
+    assert isinstance(body["truncated"], bool)
+
+
 def test_accelerator_endpoint():
     r = client().get("/api/accelerator")
     assert r.status_code == 200

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Discovery,
+  getDiscovered,
   getHubAuth,
   getHubModels,
   getOllama,
@@ -21,7 +23,8 @@ interface Props {
 /** Model browser: search HuggingFace, sign in for gated repos, or pick /
  *  pull an Ollama model. Presented as a liquid-glass sheet. */
 export default function ModelPicker({ open, onClose, onPick, current }: Props) {
-  const [tab, setTab] = useState<"hf" | "ollama">("hf");
+  const [tab, setTab] = useState<"local" | "hf" | "ollama">("local");
+  const [disco, setDisco] = useState<Discovery | null>(null);
   const [auth, setAuth] = useState<HubAuth | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [showSignIn, setShowSignIn] = useState(false);
@@ -45,6 +48,9 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     let live = true;
     void getHubAuth().then((a) => live && setAuth(a));
     void getOllama().then((o) => live && setOllama(o));
+    void getDiscovered()
+      .then((d) => live && setDisco(d))
+      .catch(() => live && setDisco({ models: [], roots: [], truncated: false }));
     return () => {
       live = false;
     };
@@ -159,6 +165,12 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       >
         <div className="sheet-head">
           <div className="seg">
+            <button
+              className={tab === "local" ? "on" : ""}
+              onClick={() => setTab("local")}
+            >
+              On this machine{disco ? ` · ${disco.models.length}` : ""}
+            </button>
             <button className={tab === "hf" ? "on" : ""} onClick={() => setTab("hf")}>
               HuggingFace
             </button>
@@ -218,7 +230,46 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
           </div>
         )}
 
-        {tab === "hf" ? (
+        {tab === "local" ? (
+          <div className="model-list" role="listbox" aria-label="Models on this machine">
+            {disco === null && <div className="meta pad">scanning…</div>}
+            {disco?.models.length === 0 && (
+              <div className="meta pad">
+                Nothing found under {disco.roots.join(", ") || "the working directory"}.
+                Start ModelMRI from the folder your models live in, or set
+                MODELMRI_MODELS_DIR.
+              </div>
+            )}
+            {disco?.models.map((m) => (
+              <button
+                key={m.path}
+                className={`model-row ${m.id === current ? "sel" : ""} ${m.loadable ? "" : "locked"}`}
+                role="option"
+                aria-selected={m.id === current}
+                onClick={() => m.loadable && onPick(m.id, "hf")}
+                title={m.loadable ? m.path : `${m.path} — ${m.note}`}
+              >
+                <span className="mid">{m.name}</span>
+                <span className={`chip ${m.kind === "gguf" ? "warn" : ""}`}>
+                  {m.kind === "hf-cache" ? "cached" : m.kind === "folder" ? "folder" : "gguf"}
+                </span>
+                <span className="spacer" />
+                <span className="meta">{m.size_gb.toFixed(2)} GB</span>
+              </button>
+            ))}
+            {disco?.truncated && (
+              <div className="meta pad">
+                Scan stopped early — this drive is large. Set MODELMRI_MODELS_DIR to
+                point straight at your models folder.
+              </div>
+            )}
+            {disco && disco.models.length > 0 && (
+              <div className="meta pad">
+                looked in: {disco.roots.join(" · ")}
+              </div>
+            )}
+          </div>
+        ) : tab === "hf" ? (
           <>
             <input
               className="combo search"
