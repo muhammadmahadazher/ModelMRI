@@ -19,7 +19,7 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import devices, ollama
+from . import devices, ollama, progress
 from .saes import SAEHandle, SAEStatus
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -155,8 +155,10 @@ class ModelRuntime:
 
         with self._lock:
             dtype = devices.torch_dtype(self.accel)
+            progress.TRACKER.start(hf_id)
             try:
                 tokenizer = AutoTokenizer.from_pretrained(hf_id)
+                progress.TRACKER.stage("weights")
                 model = AutoModelForCausalLM.from_pretrained(
                     hf_id,
                     torch_dtype=dtype,
@@ -165,19 +167,28 @@ class ModelRuntime:
             except OSError as err:
                 # Gated repos, typos and private models all land here with a
                 # multi-screen traceback. Say what to actually do instead.
-                raise ValueError(_hub_error_message(hf_id, err)) from err
+                message = _hub_error_message(hf_id, err)
+                progress.TRACKER.finish(error=message)
+                raise ValueError(message) from err
+            except BaseException as err:
+                progress.TRACKER.finish(error=f"{type(err).__name__}: {err}")
+                raise
+            progress.TRACKER.stage("device", f"moving to {self.accel.name}")
             try:
                 model.to(self.device)
             except Exception as err:
                 # Out of VRAM, or a driver that says yes then fails: keep the
                 # tool usable instead of dying on the user's first click.
                 if self.accel.kind == "cpu":
+                    progress.TRACKER.finish(error=str(err))
                     raise
                 self.accel = devices.detect(prefer="cpu")
                 self.accel.reason = f"fell back to CPU: {type(err).__name__}: {err}"
                 self.device = self.accel.torch_device
+                progress.TRACKER.stage("device", "GPU rejected the model, using CPU")
                 model = model.to(torch.float32).to(self.device)
             model.eval()
+            progress.TRACKER.finish()
             self.backend = "hf"
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.last_ids = None

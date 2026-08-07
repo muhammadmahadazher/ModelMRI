@@ -108,6 +108,13 @@ def create_app(
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
 
+    @app.get("/api/model/progress")
+    def load_progress() -> dict:
+        """Polled while a load runs — a minutes-long wait needs a heartbeat."""
+        from .progress import TRACKER
+
+        return TRACKER.snapshot().to_dict()
+
     @app.get("/api/accelerator")
     def accelerator() -> dict:
         return runtime.accelerator()

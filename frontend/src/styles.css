@@ -51,6 +51,13 @@ main {
   display: grid;
   gap: 16px;
 }
+/* Grid items default to min-width:auto, i.e. min-content -- so one panel
+   holding a 167-token attention strip grew to 7800px and dragged the whole
+   page sideways with it, scrollbar and all. Letting items shrink to their
+   track is what lets the inner .attn-scroll actually scroll. */
+main > * {
+  min-width: 0;
+}
 
 /* ---------- top bar + hero ---------- */
 .topbar {
@@ -166,6 +173,91 @@ main {
   padding: 14px;
   box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.8);
 }
+
+/* ---------- model load progress ----------
+   Cold loads run for minutes. The bar is determinate once we know the
+   download size and sweeps indeterminately when we don't, so it never
+   fakes a percentage it cannot know. */
+.loadbar {
+  margin: 10px 0 2px;
+  animation: rise 0.3s var(--glass-ease) both;
+}
+.loadbar-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.loadbar-stage {
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+.loadbar-id {
+  font-size: 12px;
+  color: var(--color-mute);
+}
+.loadbar-track {
+  position: relative;
+  height: 5px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgba(22, 22, 26, 0.09);
+}
+.loadbar-fill {
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--color-accent), #7a4de0);
+  transition: width 0.6s var(--glass-ease);
+  box-shadow: 0 0 12px rgba(39, 67, 224, 0.45);
+}
+.loadbar-track.indeterminate .loadbar-fill {
+  width: 34%;
+  animation: sweep 1.5s var(--ease) infinite;
+}
+@keyframes sweep {
+  from { transform: translateX(-105%); }
+  to { transform: translateX(320%); }
+}
+.loadbar-detail {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+/* ---------- reasoning block ----------
+   Qwen3 and friends stream a <think> scratchpad before the answer. It is
+   set apart rather than stripped: on an introspection tool, the model's
+   working is the point. */
+.think {
+  display: block;
+  margin: 0 0 12px;
+  padding: 10px 13px;
+  border-radius: 13px;
+  border: 1px solid rgba(22, 22, 26, 0.08);
+  background: rgba(22, 22, 26, 0.035);
+  color: var(--color-mute);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.think > summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  user-select: none;
+}
+.think > summary::-webkit-details-marker { display: none; }
+.think > summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 7px;
+  transition: transform 0.2s var(--ease);
+}
+.think[open] > summary::before { transform: rotate(90deg); }
+.think[open] > summary { margin-bottom: 8px; }
 
 /* ---------- model picker sheet ---------- */
 .sheet-scrim {

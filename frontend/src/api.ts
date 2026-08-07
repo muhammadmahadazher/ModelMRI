@@ -43,6 +43,20 @@ export const loadModel = (hf_id?: string, source: "hf" | "ollama" = "hf") =>
     body: JSON.stringify(hf_id ? { hf_id, source } : { source }),
   }).then((r) => json<ModelStatus>(r));
 
+export interface LoadProgress {
+  active: boolean;
+  hf_id: string | null;
+  stage: string; // resolving | weights | device | ready | error
+  detail: string;
+  bytes_done: number;
+  bytes_total: number;
+  elapsed_s: number;
+  error: string | null;
+}
+
+export const getLoadProgress = () =>
+  fetch("/api/model/progress").then((r) => json<LoadProgress>(r));
+
 export const getAttentionMeta = () =>
   fetch("/api/attention/meta").then((r) => json<AttentionMeta>(r));
 

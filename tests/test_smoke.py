@@ -1,6 +1,7 @@
 """Smoke tests — no model download, just the app surface."""
 
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -121,6 +122,162 @@ def test_ollama_pull_when_daemon_is_down(monkeypatch):
     r = client().post("/api/ollama/pull", json={"name": "qwen3:0.6b"})
     assert r.status_code == 409
     assert "unreachable" in r.json()["error"]
+
+
+def test_load_progress_idle():
+    r = client().get("/api/model/progress")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["active"] is False
+    assert body["bytes_done"] == 0
+
+
+def test_load_progress_reports_stages_and_bytes(tmp_path, monkeypatch):
+    """A load must publish a legible stage before it finishes, not after."""
+    from modelmri import progress
+
+    blobs = tmp_path / "hub" / "models--acme--tiny" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "w").write_bytes(b"x" * 4096)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 8192)
+
+    tracker = progress._Tracker()
+    tracker.start("acme/tiny")
+    try:
+        for _ in range(40):  # the watcher thread polls; give it a beat
+            if tracker.snapshot().bytes_total:
+                break
+            time.sleep(0.05)
+        snap = tracker.snapshot()
+        assert snap.active is True
+        assert snap.stage == "resolving"
+        assert snap.bytes_done == 4096
+        assert snap.bytes_total == 8192
+        tracker.stage("weights", "downloading")
+        assert tracker.snapshot().stage == "weights"
+    finally:
+        tracker.finish()
+    done = tracker.snapshot()
+    assert done.active is False and done.stage == "ready" and done.error is None
+
+
+def test_load_progress_flags_a_stalled_download(tmp_path, monkeypatch):
+    """A dead download does not raise, it just stops moving. Observed in the
+    wild: 128 MB of 3 GB, unchanged, forever."""
+    from modelmri import progress
+
+    blobs = tmp_path / "models--acme--big" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "w").write_bytes(b"x" * 128)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 3000)
+    monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)  # stall immediately
+
+    tracker = progress._Tracker()
+    tracker.start("acme/big")
+    try:
+        for _ in range(60):
+            if "stalled" in tracker.snapshot().detail:
+                break
+            time.sleep(0.05)
+        assert "stalled" in tracker.snapshot().detail
+        assert tracker.snapshot().bytes_done == 128
+    finally:
+        tracker.finish()
+
+
+def test_load_progress_does_not_cry_stall_over_a_cached_model(tmp_path, monkeypatch):
+    """Bytes never move when nothing is downloading. That is not a stall."""
+    from modelmri import progress
+
+    blobs = tmp_path / "models--acme--warm" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "w").write_bytes(b"x" * 1000)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 1000)
+    monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)
+
+    tracker = progress._Tracker()
+    tracker.start("acme/warm")
+    try:
+        time.sleep(0.9)
+        detail = tracker.snapshot().detail
+        assert "stalled" not in detail
+        assert "local cache" in detail
+    finally:
+        tracker.finish()
+
+
+def test_load_progress_records_failure():
+    from modelmri import progress
+
+    tracker = progress._Tracker()
+    tracker.start("acme/nope")
+    tracker.finish(error="gated repo")
+    snap = tracker.snapshot()
+    assert snap.stage == "error" and snap.error == "gated repo"
+    assert snap.active is False
+
+
+def test_load_progress_never_raises_on_a_missing_cache(tmp_path, monkeypatch):
+    """The meter must not be able to break the load it is measuring."""
+    from modelmri import progress
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "absent"))
+    assert progress._bytes_on_disk("acme/tiny") == 0
+
+
+def test_expected_bytes_counts_only_what_a_load_downloads(monkeypatch):
+    """gpt2 ships tflite/rust/h5/flax copies of itself. Counting them made a
+    fully-cached model report 26% forever."""
+    from types import SimpleNamespace
+
+    import huggingface_hub
+
+    from modelmri import progress
+
+    files = [
+        SimpleNamespace(rfilename="model.safetensors", size=100),
+        SimpleNamespace(rfilename="pytorch_model.bin", size=100),
+        SimpleNamespace(rfilename="tf_model.h5", size=100),
+        SimpleNamespace(rfilename="rust_model.ot", size=100),
+        SimpleNamespace(rfilename="64-8bits.tflite", size=100),
+        SimpleNamespace(rfilename="config.json", size=3),
+        SimpleNamespace(rfilename="merges.txt", size=2),
+        SimpleNamespace(rfilename="onnx/model.onnx", size=999),
+        SimpleNamespace(rfilename="README.md", size=50),
+    ]
+    monkeypatch.setattr(
+        huggingface_hub.HfApi,
+        "model_info",
+        lambda self, _id, files_metadata=False: SimpleNamespace(siblings=files),
+    )
+    assert progress._expected_bytes("acme/tiny") == 105
+
+
+def test_bytes_on_disk_handles_every_cache_layout(tmp_path, monkeypatch):
+    """blobs-only, snapshots-only and both-populated must all report the truth."""
+    from modelmri import progress
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+
+    def layout(name: str, blob: int, snap: int) -> str:
+        root = tmp_path / f"models--acme--{name}"
+        (root / "blobs").mkdir(parents=True)
+        (root / "snapshots" / "abc").mkdir(parents=True)
+        if blob:
+            (root / "blobs" / "w").write_bytes(b"x" * blob)
+        if snap:
+            (root / "snapshots" / "abc" / "w.safetensors").write_bytes(b"x" * snap)
+        return f"acme/{name}"
+
+    # blobs moved into snapshots (current hub): blobs empty, bytes are real
+    assert progress._bytes_on_disk(layout("moved", 0, 900)) == 900
+    # mid-download: only the partial blob exists
+    assert progress._bytes_on_disk(layout("partial", 400, 0)) == 400
+    # Windows copies / Unix symlinks: both sides look full, must not double
+    assert progress._bytes_on_disk(layout("both", 900, 900)) == 900
 
 
 def test_accelerator_endpoint():

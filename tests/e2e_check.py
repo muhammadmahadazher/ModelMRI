@@ -82,12 +82,24 @@ def main() -> int:
     )
 
     section("3. model load + generation")
+    code, prog = get("/api/model/progress")
+    check(
+        "GET /api/model/progress idle",
+        code == 200 and prog.get("active") is False,
+        f"stage={prog.get('stage')!r}",
+    )
     t0 = time.time()
     code, st = post("/api/model/load", {"hf_id": "gpt2"})
     check(
         "POST /api/model/load gpt2",
         code == 200 and st.get("loaded"),
         f"{time.time() - t0:.1f}s",
+    )
+    code, prog = get("/api/model/progress")
+    check(
+        "progress settles to ready after a load",
+        code == 200 and prog.get("active") is False and prog.get("stage") == "ready",
+        f"{prog.get('stage')} in {prog.get('elapsed_s')}s",
     )
     code, gen = post(
         "/api/model/prompt",
