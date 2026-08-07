@@ -1,5 +1,57 @@
 # Working log
 
+## 2026-08-07 (night) — the model picker meets real models
+
+Ran five current open models through the actual HTTP API on the 4060, and the
+run found more than the code review did.
+
+**Verified on GPU (bf16, cuda:0), not predicted:**
+
+| model | params | load | shape | attention rows | causal |
+|---|---|---|---|---|---|
+| Qwen/Qwen3-0.6B | 596M | 10.0s | 28L x 16H | 1.001 | yes |
+| Qwen/Qwen2.5-0.5B-Instruct | 494M | 7.9s | 24L x 14H | 1.000 | yes |
+| HuggingFaceTB/SmolLM2-360M-Instruct | 362M | 6.1s | 32L x 15H | 1.002 | yes |
+| gpt2 | 124M | — | 12L x 12H | — | yes (+ SAE, steering) |
+
+OLMo-2-1B is untested: its download stalls from this network on both the xet
+and plain transports, and a probe straight to a local disk stalls identically.
+Not our bug — but the stall detector below is what proved that, instead of me
+guessing.
+
+**What the run surfaced:**
+
+- **Silent loads.** Minutes of nothing but the word "loading". `/api/model/progress`
+  now reports stage + real bytes. Determinate bar when the size is known,
+  indeterminate sweep when it isn't — a fake percentage is worse than none.
+- **Byte counting is not obvious.** Three cache layouts exist and I hit all
+  three; take the max of `blobs/` and `snapshots/`, never the sum. And size the
+  download from a whitelist of what `from_pretrained` fetches — blacklisting odd
+  formats left a fully-cached gpt2 reporting 26%, because gpt2 ships tflite,
+  rust, h5 and flax copies of itself.
+- **Dead downloads don't raise, they just stop.** Watched one sit at 128 MB of
+  3.0 GB indefinitely. Called out after 45s now.
+- **Qwen3 leaks `<think>` into the output.** Reasoning models stream a
+  scratchpad. It gets its own collapsible block — on an introspection tool the
+  model's working is the point, so hiding it would be the wrong fix.
+- **The page scrolled sideways to 7859px.** `main` is a grid; grid items default
+  to `min-width:auto` (= min-content), so a panel holding a 194-token attention
+  strip grew to 7813px and dragged the whole layout with it. `min-width:0`.
+  Every generation of any length hit this.
+- **The picker forgot which model was loaded** across a reload, so Generate
+  silently swapped models. It adopts the live one now.
+
+**Environment, the hard way:** DriveFS truncated `typescript/package.json` to
+zero bytes and refuses junctions, so `node_modules` cannot live beside the
+source here. `scripts/build_frontend.py --work C:/build/modelmri` builds off the
+synced drive — `npm ci` is 3s there against minutes on J:.
+
+Two e2e checks "failed" until I found the cause: a uvicorn started before the
+edit was still holding :5900, and my kill filter had missed it. Kill by port,
+then confirm the new route answers, before believing any e2e result.
+
+42 unit tests, 42 e2e checks, browser-confirmed at 194 tokens.
+
 ## 2026-08-07 (late) — v0.4 verification + hosted demo
 - **`tests/e2e_check.py`**: exercises every feature against a live server (real models, real SAEs, real robot frames). **40/40 pass** — session/static/no-cache header/bundle, model discovery incl. Ollama-off path, load+generate, attention (rows sum to 1.000) + 422s, SAE load/features/steer/restore-exactly, traces import/list/get/404/422, VLA episodes/frame/load/analyse/heatmaps + "sharpens with depth" assertion. Run before every release.
 - **Hosted demo shipped**: `scripts/bake_demo.py` captures real responses from a live server into `frontend/public/demo/*.json` (70 KB total); `VITE_DEMO=1` builds a static bundle whose `fetch` is patched once in main.tsx to serve those payloads, so every call site is identical to the real app and the demo can't drift. WS streaming is replayed word-by-word. `.github/workflows/pages.yml` deploys to GitHub Pages.
