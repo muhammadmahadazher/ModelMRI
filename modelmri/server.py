@@ -348,6 +348,7 @@ def create_app(
 
                 queue: asyncio.Queue[str | None] = asyncio.Queue()
                 loop = asyncio.get_running_loop()
+                failure: list[str] = []
 
                 def produce(request: dict = msg) -> None:
                     try:
@@ -358,13 +359,22 @@ def create_app(
                         )
                         for piece in pieces:
                             loop.call_soon_threadsafe(queue.put_nowait, piece)
+                    except BaseException as err:
+                        # Without this the generation dies in the worker thread,
+                        # the finally posts the sentinel, and the browser is told
+                        # "done" -- a CUDA OOM or an unsupported architecture
+                        # arrives as a successful empty answer.
+                        failure.append(f"{type(err).__name__}: {err}")
                     finally:
                         loop.call_soon_threadsafe(queue.put_nowait, None)
 
                 threading.Thread(target=produce, daemon=True).start()
                 while (piece := await queue.get()) is not None:
                     await ws.send_json({"type": "token", "text": piece})
-                await ws.send_json({"type": "done"})
+                if failure:
+                    await ws.send_json({"type": "error", "message": failure[0]})
+                else:
+                    await ws.send_json({"type": "done"})
         except WebSocketDisconnect:
             pass
 

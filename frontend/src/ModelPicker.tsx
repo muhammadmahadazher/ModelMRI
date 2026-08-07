@@ -31,6 +31,14 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const debounce = useRef<number | undefined>(undefined);
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // onClose is an inline arrow in the parent, so its identity changes on every
+  // parent render. Depending on it directly would re-run the modal effect --
+  // re-capturing the opener, re-locking scroll and yanking focus back to the
+  // search box mid-keystroke. The effect depends on `open` alone.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
@@ -50,20 +58,65 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     debounce.current = window.setTimeout(() => {
       void getHubModels(q)
         .then((m) => live && setModels(m))
-        .catch((e) => live && setErr(String(e)));
+        .catch((e) => {
+          if (!live) return;
+          setErr(e instanceof Error ? e.message : String(e));
+          // models===null is the "searching" sentinel, so a failure that only
+          // sets the error leaves the list spinning forever. An empty list is
+          // the honest terminal state.
+          setModels([]);
+        });
     }, 280);
     return () => {
       live = false;
     };
   }, [open, tab, q, auth?.signed_in]);
 
-  // Esc closes, like every other sheet on the platform
+  // Modal behaviour, per the ARIA dialog pattern: Esc closes, Tab cannot
+  // escape into the page behind the scrim, the page behind cannot scroll,
+  // and focus goes back where it came from on close. Without the trap, one
+  // Tab past the last model row landed on the topbar links underneath.
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Captured before we move focus ourselves. React's autoFocus fires during
+    // commit, i.e. before this effect, so an autoFocus'd input would have made
+    // this read the input instead of the button that opened the sheet -- and
+    // closing would then restore focus to a node that no longer exists, which
+    // means body. Hence the explicit focus() below rather than autoFocus.
+    const opener = document.activeElement as HTMLElement | null;
+    searchRef.current?.focus();
+    const { overflow } = document.body.style;
+    document.body.style.overflow = "hidden";
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = sheetRef.current?.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const here = document.activeElement;
+      if (e.shiftKey && (here === first || !sheetRef.current?.contains(here))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && here === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+      opener?.focus?.();
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -96,7 +149,14 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
 
   return (
     <div className="sheet-scrim" onClick={onClose}>
-      <div className="sheet glass" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="sheet glass"
+        ref={sheetRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Choose a model"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="sheet-head">
           <div className="seg">
             <button className={tab === "hf" ? "on" : ""} onClick={() => setTab("hf")}>
@@ -165,17 +225,31 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
               placeholder="Search HuggingFace models…  (empty = curated picks that fit your GPU)"
               value={q}
               onChange={(e) => setQ(e.target.value)}
-              autoFocus
+              ref={searchRef}
             />
-            <div className="model-list">
+            <div className="model-list" role="listbox" aria-label="Models">
+              {/* Results arrive asynchronously, so a screen reader is told the
+                  count rather than left guessing whether anything happened. */}
+              <div className="sr-only" role="status" aria-live="polite">
+                {models === null
+                  ? "Searching models"
+                  : `${models.length} model${models.length === 1 ? "" : "s"} found`}
+              </div>
               {models === null && <div className="meta pad">searching…</div>}
-              {models?.length === 0 && <div className="meta pad">no matches</div>}
+              {models?.length === 0 && (
+                <div className="meta pad">
+                  {err ? "search failed — see the message below" : "no matches"}
+                </div>
+              )}
               {models?.map((m) => {
                 const locked = m.gated && !auth?.signed_in;
                 return (
                   <button
                     key={m.id}
                     className={`model-row ${m.id === current ? "sel" : ""} ${locked ? "locked" : ""}`}
+                    role="option"
+                    aria-selected={m.id === current}
+                    aria-disabled={locked}
                     onClick={() => !locked && onPick(m.id, "hf")}
                     title={locked ? "Gated - sign in and accept the license" : m.id}
                   >

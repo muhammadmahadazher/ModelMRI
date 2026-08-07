@@ -280,6 +280,35 @@ def test_bytes_on_disk_handles_every_cache_layout(tmp_path, monkeypatch):
     assert progress._bytes_on_disk(layout("both", 900, 900)) == 900
 
 
+def test_ws_without_a_model_is_an_error_not_a_silent_done():
+    with client().websocket_connect("/ws/generate") as ws:
+        ws.send_text(json.dumps({"prompt": "hi"}))
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_ws_reports_a_mid_stream_crash_as_an_error(monkeypatch):
+    """A generation that raises used to reach the browser as {"type":"done"} —
+    an empty answer that read as "the model had nothing to say". CUDA OOM and
+    unsupported architectures both land here."""
+    from modelmri.server import create_app
+
+    app = create_app()
+
+    def boom(*_a, **_k):
+        yield "The"
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr(app.state.runtime, "generate_stream", boom)
+    monkeypatch.setattr(type(app.state.runtime), "loaded", property(lambda self: True))
+
+    with TestClient(app).websocket_connect("/ws/generate") as ws:
+        ws.send_text(json.dumps({"prompt": "hi"}))
+        assert ws.receive_json() == {"type": "token", "text": "The"}
+        final = ws.receive_json()
+    assert final["type"] == "error", f"crash surfaced as {final!r}"
+    assert "CUDA out of memory" in final["message"]
+
+
 def test_accelerator_endpoint():
     r = client().get("/api/accelerator")
     assert r.status_code == 200

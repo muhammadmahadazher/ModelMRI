@@ -10,11 +10,14 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
   const [data, setData] = useState<AttentionData | null>(null);
   const [info, setInfo] = useState("");
 
+  const [err, setErr] = useState("");
+
   useEffect(() => {
     let live = true;
     void (async () => {
-      const meta = await getAttentionMeta();
-      if (!live || !meta.available) return;
+      const meta = await getAttentionMeta().catch(() => null);
+      if (!live || !meta?.available) return;
+      setErr("");
       setLayers(meta.n_layers!);
       setHeads(meta.n_heads!);
       setLayer(Math.floor(meta.n_layers! / 2));
@@ -32,14 +35,25 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
     if (layers === 0) return;
     let live = true;
     const t = performance.now();
-    void getAttention(layer, head).then((d) => {
-      if (!live) return;
-      setData(d);
-      setInfo(
-        `layer ${d.layer} · head ${d.head} · ${d.tokens.length} tokens · ` +
-          `${((performance.now() - t) / 1000).toFixed(2)}s`,
-      );
-    });
+    // The first fetch for a generation runs a full output_attentions forward
+    // pass server-side and can take seconds, so say so rather than showing
+    // controls above an empty space.
+    setInfo(`layer ${layer} · head ${head} · computing…`);
+    void getAttention(layer, head)
+      .then((d) => {
+        if (!live) return;
+        setErr("");
+        setData(d);
+        setInfo(
+          `layer ${d.layer} · head ${d.head} · ${d.tokens.length} tokens · ` +
+            `${((performance.now() - t) / 1000).toFixed(2)}s`,
+        );
+      })
+      .catch((e) => {
+        if (!live) return;
+        setErr(e instanceof Error ? e.message : String(e));
+        setInfo("");
+      });
     return () => {
       live = false;
     };
@@ -72,11 +86,20 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
         </select>
         <span className="meta">{info}</span>
       </div>
-      {data && <ArcCanvas tokens={data.tokens} matrix={data.matrix} />}
-      <div className="hint">
-        hover a token → arcs show what it attended to · click to pin · arc
-        thickness = attention weight
-      </div>
+      {err ? (
+        <div className="hint err">
+          Could not compute this attention map — {err}. Generate again, or pick
+          a different layer.
+        </div>
+      ) : (
+        <>
+          {data && <ArcCanvas tokens={data.tokens} matrix={data.matrix} />}
+          <div className="hint">
+            hover or focus a token → arcs show what it attended to · click or
+            Enter to pin · arc thickness = attention weight
+          </div>
+        </>
+      )}
     </div>
   );
 }

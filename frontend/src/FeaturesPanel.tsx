@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   FeaturesSummary,
   getFeatureDetail,
@@ -23,6 +23,8 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
   const [tokenSel, setTokenSel] = useState(-1);
   const [featSel, setFeatSel] = useState(-1);
   const [heat, setHeat] = useState<number[] | null>(null);
+  const [peak, setPeak] = useState(-1);
+  const peakRef = useRef<HTMLSpanElement>(null);
   const [scale, setScale] = useState(-40);
   const [ab, setAb] = useState<{ base: string; steered: string } | null>(null);
   const [err, setErr] = useState("");
@@ -69,8 +71,15 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
       const d = await getFeatureDetail(fid);
       const max = d.max || 1;
       setHeat(d.activations.map((a) => a / max));
+      // The API already tells us which token fires hardest. A default
+      // generation is 256 tokens, so without this the one chip worth looking
+      // at is somewhere in a strip several thousand pixels wide.
+      setPeak(d.argmax);
+      requestAnimationFrame(() =>
+        peakRef.current?.scrollIntoView({ block: "nearest", inline: "center" }),
+      );
     } catch (e) {
-      setErr(String(e));
+      setErr(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -141,13 +150,24 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
                 return (
                   <span
                     key={i}
-                    className={`tok ${tokenSel === i ? "feat-sel" : ""}`}
+                    ref={i === peak ? peakRef : undefined}
+                    className={`tok ${tokenSel === i ? "feat-sel" : ""} ${i === peak ? "peak" : ""}`}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={tokenSel === i}
+                    aria-label={`token ${i + 1} of ${summary.tokens.length}: ${t.trim() || "space"}${i === peak ? ", peak activation" : ""}`}
                     style={
                       heat
                         ? { backgroundColor: `rgba(160,140,255,${(0.42 * h).toFixed(3)})` }
                         : undefined
                     }
                     onClick={() => setTokenSel(i)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setTokenSel(i);
+                      }
+                    }}
                   >
                     {t.replace(/ /g, "·") || "·"}
                   </span>
