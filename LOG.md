@@ -1,5 +1,11 @@
 # Working log
 
+## 2026-08-07 (night) — blank-page bug + verification lesson
+- Owner reported the whole app blank (only the header pill rendered). Cause: `AsciiField` measured its PARENT then wrote its OWN style size — canvas grows → hero grows → ResizeObserver refires → unbounded loop. Page inflated to thousands of px of empty canvas; all panels pushed off-screen.
+- Fix: CSS owns the canvas box; JS only syncs the pixel buffer (no style writes, no-op when unchanged), observes the canvas itself, repaints on resize.
+- **Verification lesson (permanent):** DOM-presence checks are not visibility checks. From now on, UI verification must assert LAYOUT — document.body.scrollHeight is sane, key elements' getBoundingClientRect().top is inside the first viewport, canvas box has a fixed expected height. That is how a blank page slipped past "all panels present".
+- Verified after fix: scrollHeight 1283 (was runaway), canvas 200px stable, 900 glyphs painted, headline at y=319, Generate at y=687.
+
 ## 2026-08-07 (evening) — v4 "VANTAGE PAPER" + one-click Generate + any-model support
 - **Root-caused the "Generate isn't working" report:** after any server restart the model unloads, leaving a silently disabled CTA. Fixed properly: Generate now auto-loads the selected model first (status shown), then streams. Verified from a cold server: one click → auto-load → 1,073 chars streamed.
 - **Design v4 "Vantage Paper"** — LIGHT theme, straight from the owner's saved poistudio VANTAGE recipe: warm paper #f6f4ee, cobalt #2743e0, white hairline plates, centered editorial headline, the ASCII field recolored cobalt-on-paper, and the actual **Switzer** variable font the recipe names (self-hosted from Fontshare, license bundled).
