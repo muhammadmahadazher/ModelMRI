@@ -21,31 +21,43 @@ export default function App() {
   }, [refresh]);
 
   const pill = model?.loaded
-    ? `${model.hf_id} · ${model.device} · ${model.dtype}`
+    ? `${model.hf_id} · ${model.device}`
     : "no model loaded";
 
   return (
     <main>
+      <div className="topbar">
+        <span className="logomark">
+          <span className="ast">✳</span> ModelMRI
+        </span>
+        <span className="spacer" />
+        <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
+      </div>
+
       <div className="hero">
         <AsciiField />
-        <div className="in">
-          <h1 className="wordmark">
-            Model<span className="pop">MRI</span>
-          </h1>
-          <div className="specrow">
-            <span className="bar" />
-            <span>see inside the model</span>
-            <span>attention / features / steering</span>
-            <span>local-first</span>
-            <span className="spacer" />
-            <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
-          </div>
+        <h1 className="headline">
+          See inside <span className="c">the model.</span>
+        </h1>
+        <p className="subline">
+          Attention, concepts, and steering for any local model — plus a
+          flight recorder for your agents. One pip install, everything on your
+          machine.
+        </p>
+        <div className="specrow">
+          <span>local-first</span>
+          <span>attention</span>
+          <span>sae features</span>
+          <span>steering</span>
+          <span>agent traces</span>
+          <span>mit ©2026</span>
         </div>
       </div>
+
       <Playground model={model} onModelChange={refresh} />
       <AgentsPanel />
       <footer>
-        <span>MRI-0.2</span>
+        <span>MRI-0.3</span>
         <span>MIT ©2026</span>
         <span className="spacer" />
         <a href="https://github.com/muhammadmahadazher/ModelMRI">

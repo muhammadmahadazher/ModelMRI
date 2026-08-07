@@ -48,12 +48,12 @@ export default function AsciiField() {
           const v = field(x, y, t);
           const glyph = RAMP[Math.min(RAMP.length - 1, (v * RAMP.length) | 0)];
           if (glyph === " ") continue;
-          // hue field: magenta -> violet -> blue across a second slow wave
+          // cobalt-on-paper (the VANTAGE recipe): deep blue, density = ink
           const hueMix = (Math.sin(x * 0.004 - t * 0.12) + 1) / 2;
-          const r = 255 - hueMix * 165; // 255 -> 90
-          const g = 46 + hueMix * 94; //  46 -> 140
-          const b = 136 + hueMix * 104; // 136 -> 240
-          ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${0.10 + v * 0.28})`;
+          const r = 25 + hueMix * 40; //  cobalt band
+          const g = 55 + hueMix * 30;
+          const b = 190 + hueMix * 50;
+          ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},${0.18 + v * 0.6})`;
           ctx.fillText(glyph, x, y);
         }
       }

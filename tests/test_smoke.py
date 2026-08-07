@@ -74,6 +74,43 @@ def test_steer_clear_is_ok_without_sae():
     assert c.get("/api/steer").json()["active"] is False
 
 
+def test_local_models_endpoint(tmp_path, monkeypatch):
+    hub = tmp_path / "hub" / "models--openai-community--gpt2"
+    hub.mkdir(parents=True)
+    (hub / "w.bin").write_bytes(b"x" * 1000)
+    monkeypatch.setenv("HF_HOME", str(tmp_path))
+    r = client().get("/api/models/local")
+    assert r.status_code == 200
+    ids = [m["id"] for m in r.json()]
+    assert "openai-community/gpt2" in ids
+
+
+def test_ollama_endpoint_down(monkeypatch):
+    from modelmri import ollama
+
+    monkeypatch.setattr(
+        ollama, "status", lambda host=None, timeout=None: {"up": False, "models": []}
+    )
+    r = client().get("/api/ollama")
+    assert r.status_code == 200
+    assert r.json()["up"] is False
+
+
+def test_load_rejects_bad_source():
+    r = client().post("/api/model/load", json={"hf_id": "x", "source": "wat"})
+    assert r.status_code == 422
+
+
+def test_load_ollama_down_is_409(monkeypatch):
+    from modelmri import ollama
+
+    monkeypatch.setattr(
+        ollama, "status", lambda host=None, timeout=None: {"up": False, "models": []}
+    )
+    r = client().post("/api/model/load", json={"hf_id": "llama3", "source": "ollama"})
+    assert r.status_code == 409
+
+
 def _trace_doc():
     return {
         "name": "t1",

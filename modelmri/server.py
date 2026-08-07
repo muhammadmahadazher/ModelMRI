@@ -23,6 +23,7 @@ from .traces import TraceStore
 
 class LoadRequest(BaseModel):
     hf_id: str = DEFAULT_MODEL
+    source: str = "hf"  # "hf" | "ollama"
 
 
 class SAELoadRequest(BaseModel):
@@ -76,9 +77,26 @@ def create_app(trace_db: str | None = None) -> FastAPI:
         }
 
     @app.post("/api/model/load")
-    async def load_model(req: LoadRequest) -> dict:
-        status = await asyncio.to_thread(runtime.load, req.hf_id)
-        return status.to_dict()
+    async def load_model(req: LoadRequest):
+        try:
+            status = await asyncio.to_thread(runtime.load, req.hf_id, req.source)
+            return status.to_dict()
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/models/local")
+    def models_local() -> list[dict]:
+        from .runtime import local_hf_models
+
+        return local_hf_models()
+
+    @app.get("/api/ollama")
+    def ollama_status() -> dict:
+        from . import ollama as _ollama
+
+        return _ollama.status()
 
     @app.post("/api/model/prompt")
     async def prompt(req: PromptRequest):

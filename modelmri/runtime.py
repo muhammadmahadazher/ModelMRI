@@ -19,9 +19,28 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
+from . import ollama
 from .saes import SAEHandle, SAEStatus
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def local_hf_models() -> list[dict]:
+    """Models already in the HuggingFace cache (offline-usable)."""
+    import os
+    from pathlib import Path
+
+    hub = (
+        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    )
+    out: list[dict] = []
+    if not hub.is_dir():
+        return out
+    for d in sorted(hub.glob("models--*")):
+        parts = d.name.removeprefix("models--").split("--")
+        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        out.append({"id": "/".join(parts), "size_gb": round(size / 1e9, 2)})
+    return out
 
 
 @dataclass
@@ -44,6 +63,7 @@ class ModelRuntime:
         self.model: AutoModelForCausalLM | None = None
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
+        self.backend: str = "hf"  # "hf" (full introspection) | "ollama" (text only)
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         # Last completed generation (prompt + output), for attention capture.
         self.last_ids: torch.Tensor | None = None
@@ -56,10 +76,12 @@ class ModelRuntime:
 
     @property
     def loaded(self) -> bool:
-        return self.model is not None
+        return self.model is not None or bool(self.backend == "ollama" and self.hf_id)
 
     def status(self) -> ModelStatus:
-        if not self.loaded:
+        if self.backend == "ollama" and self.hf_id:
+            return ModelStatus(loaded=True, hf_id=self.hf_id, device="ollama")
+        if self.model is None:
             return ModelStatus(loaded=False, device=self.device)
         return ModelStatus(
             loaded=True,
@@ -69,8 +91,39 @@ class ModelRuntime:
             n_params=sum(p.numel() for p in self.model.parameters()),
         )
 
-    def load(self, hf_id: str = DEFAULT_MODEL) -> ModelStatus:
-        """Load a HuggingFace causal LM. Blocking — call from a worker thread."""
+    def load(self, hf_id: str = DEFAULT_MODEL, source: str = "hf") -> ModelStatus:
+        """Load a model. source="hf" (full introspection) or "ollama" (text only).
+
+        Blocking — call from a worker thread.
+        """
+        if source not in ("hf", "ollama"):
+            raise ValueError(f"unknown source {source!r} (use 'hf' or 'ollama')")
+
+        if source == "ollama":
+            st = ollama.status()
+            if not st["up"]:
+                raise RuntimeError(
+                    "Ollama is not running at 127.0.0.1:11434 — start it, or "
+                    "install from ollama.com"
+                )
+            if hf_id not in st["models"]:
+                raise ValueError(
+                    f"'{hf_id}' is not installed in Ollama. Installed: "
+                    f"{', '.join(st['models']) or 'none'} — run `ollama pull {hf_id}`"
+                )
+            with self._lock:
+                self.model = None
+                self.tokenizer = None
+                self.backend = "ollama"
+                self.hf_id = hf_id
+                self.last_ids = None
+                self._attn = None
+                self._attn_tokens = None
+                self.sae = None
+                self._feats = None
+                self._steer = None
+            return self.status()
+
         with self._lock:
             dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
             tokenizer = AutoTokenizer.from_pretrained(hf_id)
@@ -81,6 +134,7 @@ class ModelRuntime:
             )
             model.to(self.device)
             model.eval()
+            self.backend = "hf"
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.last_ids = None
             self._attn = None
@@ -108,6 +162,15 @@ class ModelRuntime:
         """Yield generated text pieces. Blocking iterator — consume off the event loop."""
         if not self.loaded:
             raise RuntimeError("No model loaded. POST /api/model/load first.")
+
+        if self.backend == "ollama":
+            yield from ollama.stream_generate(
+                self.hf_id,
+                prompt,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+            )
+            return
 
         if getattr(self.tokenizer, "chat_template", None):
             messages = [{"role": "user", "content": prompt}]
@@ -172,6 +235,8 @@ class ModelRuntime:
 
     def attention_meta(self) -> dict:
         """Shape info for the last generation's attention, without computing it."""
+        if self.backend == "ollama":
+            return {"available": False, "reason": "internals unavailable via Ollama"}
         if not self.loaded or self.last_ids is None:
             return {"available": False}
         cfg = self.model.config
@@ -226,6 +291,11 @@ class ModelRuntime:
 
     def load_sae(self, repo: str, hook: str) -> SAEStatus:
         """Load an SAE and validate it against the current model. Blocking."""
+        if self.backend == "ollama":
+            raise RuntimeError(
+                "SAE features need model internals — unavailable via Ollama. "
+                "Load a HuggingFace model instead."
+            )
         if not self.loaded:
             raise RuntimeError("Load a model first.")
         sae = SAEHandle.load(repo, hook)

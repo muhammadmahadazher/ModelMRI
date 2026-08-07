@@ -34,11 +34,11 @@ async function json<T>(r: Response): Promise<T> {
 export const getSession = () =>
   fetch("/api/session").then((r) => json<SessionInfo>(r));
 
-export const loadModel = (hf_id?: string) =>
+export const loadModel = (hf_id?: string, source: "hf" | "ollama" = "hf") =>
   fetch("/api/model/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(hf_id ? { hf_id } : {}),
+    body: JSON.stringify(hf_id ? { hf_id, source } : { source }),
   }).then((r) => json<ModelStatus>(r));
 
 export const getAttentionMeta = () =>
@@ -104,6 +104,17 @@ export const promptOnce = (
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt, max_new_tokens, temperature }),
   }).then((r) => json<{ generation: string }>(r));
+
+export interface LocalModel {
+  id: string;
+  size_gb: number;
+}
+
+export const getLocalModels = () =>
+  fetch("/api/models/local").then((r) => json<LocalModel[]>(r));
+
+export const getOllama = () =>
+  fetch("/api/ollama").then((r) => json<{ up: boolean; models: string[] }>(r));
 
 export interface TraceSummary {
   id: string;

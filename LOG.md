@@ -1,5 +1,12 @@
 # Working log
 
+## 2026-08-07 (evening) — v4 "VANTAGE PAPER" + one-click Generate + any-model support
+- **Root-caused the "Generate isn't working" report:** after any server restart the model unloads, leaving a silently disabled CTA. Fixed properly: Generate now auto-loads the selected model first (status shown), then streams. Verified from a cold server: one click → auto-load → 1,073 chars streamed.
+- **Design v4 "Vantage Paper"** — LIGHT theme, straight from the owner's saved poistudio VANTAGE recipe: warm paper #f6f4ee, cobalt #2743e0, white hairline plates, centered editorial headline, the ASCII field recolored cobalt-on-paper, and the actual **Switzer** variable font the recipe names (self-hosted from Fontshare, license bundled).
+- **Any model, two sources:** HF combo input with datalist fed by curated + a new local-cache scanner (GET /api/models/local — found all 10 cached models incl. VGGT/SAM3/SmolVLA) — plus **Ollama mode** (GET /api/ollama, load source="ollama", NDJSON streaming via stdlib): run any open model as text; UI states clearly that internals need HF. Graceful when Ollama is off.
+- **release.yml workflow:** tag → build frontend into wheel → verify assets inside → attach to GH release.
+- 19 tests. Django/Postgres formally dropped per owner (concept fit).
+
 ## 2026-08-07 (later) — CATCH-UP SPRINT: design v3 + Agent Mode v0.3
 - **Design v3 "editorial scanner"**, grounded in the owner's actual X bookmarks (viewed via his Chrome): poistudio ASCII-dither art, brrranding condensed wordmarks, magenta-on-black pixel craft, Swiss spec labels. Tailwind CSS v4 (CSS-first), bundled Archivo Black, flat hairline plates, one electric magenta, and the signature `AsciiField` — a live ASCII-dither canvas (10fps, frame-1 sync paint, reduced-motion static). Stack note: kept FastAPI+SQLite over requested Django/Postgres — local-first pip install is the product; documented rationale.
 - **Agent Mode (v0.3)**: `modelmri/traces.py` (SQLite WAL store, trace/step schema, ~/.modelmri/traces.sqlite), `modelmri.record` subpackage (trace ctx, nesting steps via contextvars, instrument_anthropic monkeypatch, POST-or-file delivery, never crashes host), endpoints (import/list/get), AgentsPanel UI (trace list, lane timeline colored by kind, error glow, step inspector w/ IN/OUT). `examples/record_demo.py` ships a realistic 17.1s failing run.
