@@ -93,6 +93,38 @@ def test_hub_signin_rejects_a_bad_token(monkeypatch):
     assert "rejected" in r.json()["error"]
 
 
+def test_a_token_is_not_access_to_a_gated_repo(monkeypatch):
+    """Signing in does not grant a licence. We shipped `(not gated) or token`
+    and it labelled every Gemma build usable for an account that had never
+    accepted Google's terms — the picker promised what the loader refused."""
+    from modelmri import hub
+
+    monkeypatch.setattr(hub, "token", lambda: "hf_valid")
+    monkeypatch.setattr(
+        hub,
+        "_api",
+        lambda path, tok=None, timeout=10: [
+            {"id": "google/gemma-3-270m-it", "gated": True},
+            {"id": "meta-llama/Llama-3.2-1B", "gated": True},
+            {"id": "Qwen/Qwen3-0.6B", "gated": False},
+        ],
+    )
+    # access granted for Llama only
+    monkeypatch.setattr(
+        hub, "_has_access", lambda repo, tok: repo.startswith("meta-llama/")
+    )
+    by_id = {m["id"]: m for m in hub.search("x")}
+    assert by_id["google/gemma-3-270m-it"]["usable"] is False
+    assert by_id["meta-llama/Llama-3.2-1B"]["usable"] is True
+    assert by_id["Qwen/Qwen3-0.6B"]["usable"] is True
+
+
+def test_gated_access_check_is_not_fooled_by_a_missing_token(monkeypatch):
+    from modelmri import hub
+
+    assert hub._has_access("google/gemma-3-270m-it", None) is False
+
+
 def test_hub_signin_requires_a_token():
     assert client().post("/api/hub/signin", json={"token": ""}).status_code == 422
 

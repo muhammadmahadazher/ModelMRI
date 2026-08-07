@@ -242,22 +242,44 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                 </div>
               )}
               {models?.map((m) => {
-                const locked = m.gated && !auth?.signed_in;
+                // Trust the server's verified answer. `gated && !signed_in`
+                // was the same wrong assumption the API used to make: being
+                // signed in is not the same as having accepted the licence.
+                const locked = !m.usable;
                 return (
                   <button
                     key={m.id}
                     className={`model-row ${m.id === current ? "sel" : ""} ${locked ? "locked" : ""}`}
                     role="option"
                     aria-selected={m.id === current}
-                    aria-disabled={locked}
-                    onClick={() => !locked && onPick(m.id, "hf")}
-                    title={locked ? "Gated - sign in and accept the license" : m.id}
+                    onClick={() =>
+                      locked
+                        ? // A dead row tells you nothing. Send people to the
+                          // page where the licence is actually accepted.
+                          window.open(
+                            `https://huggingface.co/${m.id}`,
+                            "_blank",
+                            "noopener,noreferrer",
+                          )
+                        : onPick(m.id, "hf")
+                    }
+                    title={
+                      locked
+                        ? auth?.signed_in
+                          ? `Accept the licence on huggingface.co/${m.id}, then search again`
+                          : "Sign in, then accept this model's licence"
+                        : m.id
+                    }
                   >
                     <span className="mid">{m.id}</span>
                     {m.params && <span className="chip">{m.params}</span>}
                     {m.gated && (
                       <span className={`chip ${locked ? "warn" : "ok"}`}>
-                        {locked ? "gated" : "gated ✓"}
+                        {locked
+                          ? auth?.signed_in
+                            ? "accept licence ↗"
+                            : "sign in"
+                          : "gated ✓"}
                       </span>
                     )}
                     <span className="spacer" />

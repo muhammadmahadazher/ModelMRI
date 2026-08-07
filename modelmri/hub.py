@@ -154,20 +154,52 @@ def search(query: str = "", limit: int = 24) -> list[dict]:
 
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
-        gated = m.get("gated", False)
+        gated = bool(m.get("gated", False))
         out.append(
             {
                 "id": m.get("id"),
                 "downloads": m.get("downloads", 0),
                 "likes": m.get("likes", 0),
-                "gated": bool(gated),
-                # you can use a gated repo only once signed in AND accepted
-                "usable": (not gated) or bool(tok),
+                "gated": gated,
+                # Filled in below. Never assume: a token is not access.
+                "usable": not gated,
                 "updated": (m.get("lastModified") or "")[:10],
                 "params": _param_hint(m),
             }
         )
-    return out
+    return _resolve_access(out, tok)
+
+
+def _has_access(repo: str, tok: str | None) -> bool:
+    """Can this token actually download this gated repo?
+
+    Being signed in is NOT access. Gating is per-repo license acceptance, so
+    an account can hold a valid token and still be refused. We shipped
+    `(not gated) or bool(tok)` and it labelled every Gemma build "gated ✓"
+    for an account that had never accepted Google's terms — the picker
+    promised a model the loader then refused.
+    """
+    if not tok:
+        return False
+    try:
+        _api(f"/models/{repo}/auth-check", tok)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_access(entries: list[dict], tok: str | None) -> list[dict]:
+    """Check the gated entries for real, concurrently. Usually only a few."""
+    gated = [e for e in entries if e["gated"]]
+    if not gated or not tok:
+        return entries
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        verdicts = pool.map(lambda e: _has_access(e["id"], tok), gated)
+    for entry, ok in zip(gated, verdicts):
+        entry["usable"] = ok
+    return entries
 
 
 def _param_hint(model: dict) -> str | None:
@@ -203,10 +235,10 @@ def suggested() -> list[dict]:
             entry["downloads"] = info.get("downloads", 0)
             entry["likes"] = info.get("likes", 0)
             entry["gated"] = bool(info.get("gated", False))
-            entry["usable"] = (not entry["gated"]) or bool(tok)
             entry["updated"] = (info.get("lastModified") or "")[:10]
             entry["params"] = _param_hint(info)
         except Exception:
             pass  # offline: still offer the name
+        entry["usable"] = not entry["gated"]
         out.append(entry)
-    return out
+    return _resolve_access(out, tok)
