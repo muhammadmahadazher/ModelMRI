@@ -1,5 +1,55 @@
 # Working log
 
+## 2026-08-07 (night, last) — Gemma runs; the gate check was wrong twice
+
+Chasing the one model explicitly asked for turned up two bugs in a row, both
+mine, both the same failure mode: *the observable result matched what I
+expected, so I stopped looking.*
+
+**Gemma-3-270m-it, verified on GPU:** 268M params, bf16, cuda:0, cold load
+151.5s (575 MB download), generation `"The Eiffel Tower is located in Paris,
+France."`, attention **18L x 4H**, 31 tokens, rows sum to 1.000, causal mask
+holds. SAE correctly declined (GPT-2 only). That is 5 of the 6 current open
+models now proven end-to-end.
+
+**Bug 1 — a token is not a licence.** `hub.search` computed
+`usable = (not gated) or bool(token)`. Gating is *per-repo* acceptance, so
+every Gemma and Llama build was shown as available to an account that had
+accepted neither. The loader refused them with a good error, but the picker
+had already promised them. I had reported this as a working feature earlier
+in the night — "search llama returns gated models showing gated OK with 0
+locked rows" — which was the bug rendering, read as a success.
+
+**Bug 2 — the fix for bug 1.** `_has_access` routed through `_api()`, which
+does `json.load()`. The auth-check endpoint answers **200 with an empty
+body**, so it raised, the `except` swallowed it, and the function returned
+False for *every* repo. It passed a live test only because every gated repo
+on hand was one this account genuinely could not reach — right answer, wrong
+reason. Anyone who *had* accepted a licence would have seen their model
+marked locked. Caught by probing the endpoint directly and noticing `gpt2`
+answers HTTP 200 while the function said False.
+
+The final proof is the discrimination, not the pass: on one fresh server,
+`google/gemma-3-270m-it` reports gated **and usable** (and does run), while
+`meta-llama/Llama-3.2-1B` reports gated **and not usable** (and 403s). Two
+gated repos, opposite answers, both correct.
+
+Locked rows now open the model's Hub page instead of doing nothing, and say
+which step is missing: "sign in" when signed out, "accept licence" when
+signed in.
+
+**Test lesson worth keeping:** the first test could never have caught bug 2 —
+it monkeypatched `_has_access`, the very function under test. The replacement
+drives the real function against a fake empty 200. Both new tests were run
+against reverted code first to confirm they fail without the fix. A test that
+passes either way is not evidence.
+
+**Still blocked, honestly:** OLMo-2-1B stalls at exactly 134 MB of 2.98 GB
+across four attempts, on both HF transports and to a local disk. Not our bug;
+the stall detector is what proved that rather than guessed it.
+
+47 tests, 42 e2e checks.
+
 ## 2026-08-07 (night, later) — an audit against the field, and the bar that painted nothing
 
 Ran 4 research agents over Apple's Liquid Glass spec, the interaction craft of
