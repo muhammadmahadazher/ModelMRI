@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getSession, ModelStatus } from "./api";
+import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
 import Playground from "./Playground";
 
@@ -42,6 +43,7 @@ export default function App() {
         </div>
       </div>
       <Playground model={model} onModelChange={refresh} />
+      <AgentsPanel />
       <footer>
         <span>MRI-0.2</span>
         <span>MIT ©2026</span>

@@ -13,9 +13,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from pathlib import Path
+
 from . import __version__
 from .runtime import DEFAULT_MODEL, ModelRuntime
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
+from .traces import TraceStore
 
 
 class LoadRequest(BaseModel):
@@ -38,10 +41,14 @@ class PromptRequest(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
 
 
-def create_app() -> FastAPI:
+def create_app(trace_db: str | None = None) -> FastAPI:
     app = FastAPI(title="ModelMRI", version=__version__)
     runtime = ModelRuntime()
     app.state.runtime = runtime
+    db_path = trace_db or str(Path.home() / ".modelmri" / "traces.sqlite")
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    traces = TraceStore(db_path)
+    app.state.traces = traces
 
     # Serve the built React app when present (frontend/ builds into static/app);
     # fall back to the legacy single-file playground otherwise.
@@ -131,6 +138,25 @@ def create_app() -> FastAPI:
     @app.get("/api/steer")
     def steer_status() -> dict:
         return runtime.steering_status()
+
+    @app.post("/api/traces/import")
+    async def traces_import(doc: dict):
+        try:
+            trace_id = await asyncio.to_thread(traces.import_trace, doc)
+            return {"id": trace_id}
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/traces")
+    def traces_list() -> list[dict]:
+        return traces.list_traces()
+
+    @app.get("/api/traces/{trace_id}")
+    def trace_get(trace_id: str):
+        doc = traces.get_trace(trace_id)
+        if doc is None:
+            return JSONResponse({"error": "trace not found"}, status_code=404)
+        return doc
 
     @app.get("/api/attention")
     async def attention(layer: int = 0, head: int = 0):

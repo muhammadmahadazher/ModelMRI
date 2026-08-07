@@ -105,6 +105,41 @@ export const promptOnce = (
     body: JSON.stringify({ prompt, max_new_tokens, temperature }),
   }).then((r) => json<{ generation: string }>(r));
 
+export interface TraceSummary {
+  id: string;
+  name: string;
+  started_at: string;
+  n_steps: number;
+  total_ms: number;
+  n_errors: number;
+}
+
+export interface TraceStep {
+  id: string;
+  parent_id: string | null;
+  kind: "llm_call" | "tool_call" | "subagent" | "mcp_call" | "user_turn" | "error";
+  name: string;
+  started_ms: number;
+  duration_ms: number;
+  input: string;
+  output: string;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  error: boolean;
+  seq: number;
+}
+
+export interface TraceDoc {
+  id: string;
+  name: string;
+  started_at: string;
+  steps: TraceStep[];
+}
+
+export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
+export const getTrace = (id: string) =>
+  fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
 export type StreamHandlers = {
   onToken: (text: string) => void;
   onDone: () => void;

@@ -41,10 +41,11 @@ Click **Load Qwen2.5-0.5B-Instruct** (~1 GB one-time download), type a prompt, w
 
 | Piece | State |
 |---|---|
-| FastAPI backend: model loading, REST, WebSocket token streaming | ✅ working |
-| Built-in playground page (temporary, pre-React) | ✅ working |
-| **Attention inspector: hover any token, see what it attended to** | ✅ working |
-| SAE feature browser | 🏗️ next |
+| Streaming playground (React + Tailwind v4, "editorial scanner" design) | ✅ |
+| Attention inspector — hover any token, see what it attended to | ✅ |
+| SAE feature browser + **activation steering** (find a concept, turn it) | ✅ |
+| **Agent Mode — record any agent run, timeline + step inspector** (`modelmri.record`) | ✅ |
+| VLA (robot policy) introspection | 🏗️ next |
 | Frontend (React + WebGL) | 🏗️ next |
 | `pip install modelmri` | placeholder published (real release at v0.1) |
 

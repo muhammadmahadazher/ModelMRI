@@ -1,5 +1,11 @@
 # Working log
 
+## 2026-08-07 (later) — CATCH-UP SPRINT: design v3 + Agent Mode v0.3
+- **Design v3 "editorial scanner"**, grounded in the owner's actual X bookmarks (viewed via his Chrome): poistudio ASCII-dither art, brrranding condensed wordmarks, magenta-on-black pixel craft, Swiss spec labels. Tailwind CSS v4 (CSS-first), bundled Archivo Black, flat hairline plates, one electric magenta, and the signature `AsciiField` — a live ASCII-dither canvas (10fps, frame-1 sync paint, reduced-motion static). Stack note: kept FastAPI+SQLite over requested Django/Postgres — local-first pip install is the product; documented rationale.
+- **Agent Mode (v0.3)**: `modelmri/traces.py` (SQLite WAL store, trace/step schema, ~/.modelmri/traces.sqlite), `modelmri.record` subpackage (trace ctx, nesting steps via contextvars, instrument_anthropic monkeypatch, POST-or-file delivery, never crashes host), endpoints (import/list/get), AgentsPanel UI (trace list, lane timeline colored by kind, error glow, step inspector w/ IN/OUT). `examples/record_demo.py` ships a realistic 17.1s failing run.
+- Tests 15/15. Browser-verified: 10 blocks / 2 lanes render; clicking the error block shows "git push · step 8 · FAILED · Permission denied (publickey)" — kill-demo 3 is real.
+- To extract at release: `modelmri-record` as its own PyPI dist (reserve name!).
+
 ## 2026-08-07 — Back after a month. Full feature audit, two hangs made impossible, lockfile added.
 - Owner reported "no generated answer visible, only attention stats." Root causes found and fixed:
   1. `index.html` served with no cache headers while each deploy PURGES old hashed bundles → a stale cached page half-breaks. Fixed: `Cache-Control: no-cache, must-revalidate` on `/` (verified in response headers).
