@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useThemeVersion } from "./theme";
 
 interface Props {
   tokens: string[];
@@ -13,6 +14,10 @@ export default function ArcCanvas({ tokens, matrix }: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pinned, setPinned] = useState(-1);
+  // Arcs are painted pixels, not styled elements: a theme change re-cascades
+  // the CSS but leaves this canvas holding the old palette until something
+  // else happens to redraw it. Depending on the version forces the repaint.
+  const themeV = useThemeVersion();
 
   const draw = useCallback(
     (i: number) => {
@@ -92,7 +97,7 @@ export default function ArcCanvas({ tokens, matrix }: Props) {
 
   useEffect(() => {
     draw(pinned);
-  }, [pinned, draw]);
+  }, [pinned, draw, themeV]);
 
   return (
     <div className="attn-scroll">

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { cssColor, toRgb, useThemeVersion } from "./theme";
 
 interface Props {
   src: string;
@@ -13,6 +14,7 @@ interface Props {
 export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Props) {
   const baseRef = useRef<HTMLCanvasElement>(null);
   const heatRef = useRef<HTMLCanvasElement>(null);
+  const themeV = useThemeVersion();
 
   useEffect(() => {
     const canvas = baseRef.current;
@@ -59,11 +61,8 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
     off.height = rows;
     const octx = off.getContext("2d")!;
     const data = octx.createImageData(cols, rows);
-    const css = getComputedStyle(document.documentElement);
-    const cool = css.getPropertyValue("--color-vla").trim() || "#1e7a46";
-    const hot = css.getPropertyValue("--color-pop").trim() || "#d92b5b";
-    const c1 = hexToRgb(cool);
-    const c2 = hexToRgb(hot);
+    const c1 = toRgb(cssColor("--color-vla", "#1e7a46"), [30, 122, 70]);
+    const c2 = toRgb(cssColor("--color-pop", "#d92b5b"), [217, 43, 91]);
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
@@ -79,7 +78,7 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
     octx.putImageData(data, 0, 0);
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(off, 0, 0, overlay.width, overlay.height);
-  }, [heat, alpha, src]);
+  }, [heat, alpha, src, themeV]);
 
   return (
     <div className="vla-frame">
@@ -87,10 +86,4 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
       <canvas ref={heatRef} className="vla-heat" />
     </div>
   );
-}
-
-function hexToRgb(hex: string): [number, number, number] {
-  const m = hex.replace("#", "");
-  const n = parseInt(m.length === 3 ? m.replace(/(.)/g, "$1$1") : m, 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
