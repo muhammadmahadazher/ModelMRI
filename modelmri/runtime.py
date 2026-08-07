@@ -117,8 +117,11 @@ class ModelRuntime:
         else:
             text = prompt  # base models (e.g. GPT-2) have no chat template
         inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
+        # timeout: if the generate worker ever stalls or dies, the streamer
+        # raises instead of blocking its consumer forever (a hang observed
+        # once in the wild is a hang that must be made impossible)
         streamer = TextIteratorStreamer(
-            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=180.0
         )
 
         gen_kwargs: dict = {

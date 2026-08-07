@@ -1,5 +1,13 @@
 # Working log
 
+## 2026-08-07 — Back after a month. Full feature audit, two hangs made impossible, lockfile added.
+- Owner reported "no generated answer visible, only attention stats." Root causes found and fixed:
+  1. `index.html` served with no cache headers while each deploy PURGES old hashed bundles → a stale cached page half-breaks. Fixed: `Cache-Control: no-cache, must-revalidate` on `/` (verified in response headers).
+  2. A WS generation observed hanging forever with zero tokens (streamer blocks if the generate worker dies). Two-sided hardening: `TextIteratorStreamer(timeout=180)` server-side; 90s no-token watchdog + onclose handling client-side — the UI can no longer spin forever.
+- **Lockfile lesson:** a month of dependency drift happened silently because `uv.lock` was gitignored (bad week-0 call). Reversed: `uv.lock` committed (78 packages pinned).
+- Environment survived the break: registry env vars now inherited by new sessions (UV_PROJECT_ENVIRONMENT, HF_HOME), HF symlink intact, venv rebuilt in one `uv sync`.
+- FULL browser audit, all green: generation output visible (257 pieces · 9.1s · 1,055 chars), attention arcs paint (4,305 px on pin), SAE loads (24,576 feats), token→features works (·Paris → **#974 @ 60.9 — the same feature as July**), heat view (267 chips), steering A/B reproduces the kill demo (" Paris, France." → " San Diego…" at #974 @ -40, reversible).
+
 ## 2026-07-08 — Week 1, day 6: STORAGE MIGRATION + design system v2 "scanner glass"
 - Everything moved off C: per owner request: repo now at `J:\My Drive\Claude_Experiments\special\ModelMRI`, HF model cache (21.8 GB incl. other projects' models) at `special\models\huggingface`. **C: freed 20.7 GB** (72.6 → 93.3).
 - DriveFS lessons (now standing knowledge): junctions/symlinks CANNOT be created on DriveFS; npm .bin shims break on it → venv lives at `C:\venvs\modelmri` (UV_PROJECT_ENVIRONMENT, registry-persisted), frontend builds in `C:\venvs\mri-build` temp and deploys back to J:. Old default HF path symlinked → J: so every process resolves models without env vars.

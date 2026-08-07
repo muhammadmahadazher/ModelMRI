@@ -114,15 +114,44 @@ export type StreamHandlers = {
 export function streamGenerate(prompt: string, h: StreamHandlers): () => void {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws/generate`);
+  let finished = false;
+  let sawToken = false;
+
+  // Watchdog: if the socket produces nothing at all, fail loudly instead of
+  // leaving the UI spinning forever (first token can be slow on cold CPU).
+  const watchdog = window.setTimeout(() => {
+    if (!finished && !sawToken) {
+      finished = true;
+      ws.close();
+      h.onError("no tokens after 90s — the server may be stuck; retry or restart it");
+    }
+  }, 90_000);
+
+  const finish = (fn: () => void) => {
+    if (finished) return;
+    finished = true;
+    window.clearTimeout(watchdog);
+    fn();
+  };
+
   ws.onopen = () => ws.send(JSON.stringify({ prompt }));
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data as string);
-    if (msg.type === "token") h.onToken(msg.text);
-    else if (msg.type === "done") {
-      h.onDone();
+    if (msg.type === "token") {
+      sawToken = true;
+      h.onToken(msg.text);
+    } else if (msg.type === "done") {
+      finish(h.onDone);
       ws.close();
-    } else if (msg.type === "error") h.onError(msg.message);
+    } else if (msg.type === "error") {
+      finish(() => h.onError(msg.message));
+    }
   };
-  ws.onerror = () => h.onError("websocket error");
-  return () => ws.close();
+  ws.onerror = () => finish(() => h.onError("websocket error"));
+  ws.onclose = () => finish(() => h.onError("connection closed before completion"));
+  return () => {
+    finished = true;
+    window.clearTimeout(watchdog);
+    ws.close();
+  };
 }

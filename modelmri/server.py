@@ -50,10 +50,15 @@ def create_app() -> FastAPI:
     if app_index.is_file():
         app.mount("/app", StaticFiles(directory=str(static / "app")), name="app")
 
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
+    @app.get("/")
+    def index() -> HTMLResponse:
         page = app_index if app_index.is_file() else static / "index.html"
-        return page.read_text("utf-8")
+        # no-cache: each deploy replaces the hashed asset files, so a cached
+        # index.html would reference deleted bundles and half-break the page
+        return HTMLResponse(
+            page.read_text("utf-8"),
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
     @app.get("/api/session")
     def session() -> dict:

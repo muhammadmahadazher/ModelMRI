@@ -9,7 +9,6 @@ build/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-uv.lock
 
 # Node
 node_modules/
