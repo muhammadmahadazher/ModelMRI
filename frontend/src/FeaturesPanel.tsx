@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
+  errorText,
   FeaturesSummary,
   getFeatureDetail,
   getFeaturesSummary,
@@ -56,7 +57,7 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
       setSummary(await getFeaturesSummary(8));
       setErr("");
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     }
   }
 
@@ -66,7 +67,7 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
     try {
       setSae(await loadSAE());
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -87,12 +88,23 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
         peakRef.current?.scrollIntoView({ block: "nearest", inline: "center" }),
       );
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorText(e));
     }
   }
 
   async function onSteerTest() {
     if (featSel < 0) return;
+    // The A/B re-runs the prompt that produced this analysis. After a reload
+    // the panels are restored from the server, which keeps the activations
+    // but not the prompt text — running the A/B on "" would compare two
+    // completions of nothing and present them as a steering result.
+    if (!prompt.trim()) {
+      setErr(
+        "Generate once in this tab first — the A/B re-runs your prompt, and " +
+          "this analysis was restored from the server without it.",
+      );
+      return;
+    }
     setBusy("steer");
     setErr("");
     onSteering?.(true);
@@ -104,7 +116,7 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
       await setSteer(null); // always leave the model clean
       setAb({ base, steered });
     } catch (e) {
-      setErr(String(e));
+      setErr(errorText(e));
       await setSteer(null);
     } finally {
       // Must pair with the raise above on EVERY path, including the throw:
@@ -240,7 +252,16 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
           <span className="meta" style={{ minWidth: 34 }}>
             {scale > 0 ? `+${scale}` : scale}
           </span>
-          <button className="violet" onClick={onSteerTest} disabled={busy !== ""}>
+          <button
+            className="violet"
+            onClick={onSteerTest}
+            disabled={busy !== "" || !prompt.trim()}
+            title={
+              prompt.trim()
+                ? "Same prompt, greedy decoding, once clean and once steered"
+                : "Generate in this tab first — the A/B needs the prompt"
+            }
+          >
             {busy === "steer" ? "Running A/B…" : "Run steering A/B"}
           </button>
         </div>

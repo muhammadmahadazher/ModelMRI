@@ -57,7 +57,6 @@ jobs:
       - name: Serve and check
         run: |
           uv sync --dev
-          uv run pip install playwright
           uv run playwright install --with-deps chromium
           uv run uvicorn --factory modelmri.server:create_app \
             --host 127.0.0.1 --port 5900 &

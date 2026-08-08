@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
-import { AttentionData, getAttention, getAttentionMeta } from "./api";
+import {
+  AttentionData,
+  errorText,
+  getAttention,
+  getAttentionMeta,
+} from "./api";
 import ArcCanvas from "./ArcCanvas";
 
 export default function AttentionPanel({ epoch }: { epoch: number }) {
@@ -53,7 +58,7 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
       })
       .catch((e) => {
         if (!live) return;
-        setErr(e instanceof Error ? e.message : String(e));
+        setErr(errorText(e));
         setInfo("");
       });
     return () => {

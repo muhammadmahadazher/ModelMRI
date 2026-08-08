@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
   analyseVLA,
+  errorText,
   getVLA,
   getVLAAttention,
   getVLAEpisodes,
@@ -51,7 +52,7 @@ export default function VLAPanel() {
     debounce.current = window.setTimeout(() => {
       void getVLAFrame(episode, t)
         .then((f) => live && setFrame(f))
-        .catch((e) => live && setErr(String(e)));
+        .catch((e) => live && setErr(errorText(e)));
     }, 90);
     return () => {
       live = false;
@@ -63,7 +64,7 @@ export default function VLAPanel() {
     let live = true;
     void getVLAAttention(layer, -1)
       .then((h) => live && setHeat(h.heat))
-      .catch((e) => live && setErr(String(e)));
+      .catch((e) => live && setErr(errorText(e)));
     return () => {
       live = false;
     };
@@ -79,7 +80,7 @@ export default function VLAPanel() {
       setDs(await getVLAEpisodes());
       setLayer(0);
     } catch (e) {
-      setErr(String(e instanceof Error ? e.message : e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -91,7 +92,7 @@ export default function VLAPanel() {
     try {
       setVla(await loadVLA());
     } catch (e) {
-      setErr(String(e instanceof Error ? e.message : e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -107,7 +108,7 @@ export default function VLAPanel() {
       const h = await getVLAAttention(layer, -1);
       setHeat(h.heat);
     } catch (e) {
-      setErr(String(e instanceof Error ? e.message : e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }

@@ -28,8 +28,57 @@ export interface AttentionData {
   matrix: number[][];
 }
 
+/** A failure the server took the trouble to explain.
+ *
+ *  This API answers failures as `{"error": "..."}`, and those sentences are
+ *  the good part — "SAE d_in=768 does not match model hidden_size=896
+ *  (Qwen/Qwen2.5-0.5B-Instruct). This SAE was trained on a different model."
+ *  tells you exactly what to do. The old helper threw the whole envelope, so
+ *  what actually reached the screen was:
+ *
+ *      Error: 422: {"error":"SAE d_in=768 does not match model …"}
+ *
+ *  Status code and JSON braces around a sentence written for a human. Every
+ *  panel showed errors that way, because every panel goes through here.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+
+  constructor(status: number, body: string) {
+    super(explain(body) || `the server returned ${status}`);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+function explain(body: string): string {
+  try {
+    const parsed = JSON.parse(body);
+    if (typeof parsed?.error === "string") return parsed.error;
+    if (typeof parsed?.detail === "string") return parsed.detail;
+    // FastAPI request-validation failures: [{loc, msg, type}, …]
+    if (Array.isArray(parsed?.detail)) {
+      const msgs = parsed.detail
+        .map((d: { msg?: string }) => d?.msg)
+        .filter(Boolean);
+      if (msgs.length) return msgs.join("; ");
+    }
+  } catch {
+    // not JSON — fall through to the raw text
+  }
+  return body.trim().slice(0, 300);
+}
+
+/** The sentence to put in front of a person, whatever was thrown. */
+export function errorText(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
 async function json<T>(r: Response): Promise<T> {
-  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  if (!r.ok) throw new ApiError(r.status, await r.text());
   return r.json() as Promise<T>;
 }
 

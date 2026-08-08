@@ -111,7 +111,19 @@ async def main() -> int:
         # a plain localhost port during verification, and a URL sniff called
         # that a real server and asserted a resting state the demo never has.
         demo = await page.query_selector(".demo-banner") is not None
-        if not demo:
+        loaded = await page.evaluate(
+            "async () => { try { const r = await fetch('/api/session');"
+            " return (await r.json()).model.loaded; } catch { return false; } }"
+        )
+        if demo:
+            pass
+        elif loaded:
+            # A model this server already had. Not a finding — the invariant
+            # that matters ("the app never loads one by itself") is asserted
+            # above by the network check, which would have caught an
+            # /api/model/load fired on mount.
+            print("    (a model is already loaded on this server — pill check n/a)")
+        else:
             check("model pill says nothing is loaded", "no model loaded" in text)
         for heading, expected in RESTING.items():
             button = await page.query_selector(f".panel:has({heading}) .resting button")
@@ -185,6 +197,57 @@ async def main() -> int:
             not result["found"],
             f"unstyled: {result['found']}",
         )
+
+        print("\nthe UI offers whatever the server can actually answer")
+        # `epoch` was a client-side counter, so a reload dropped it to 0 and
+        # unmounted the attention and feature panels while the server still
+        # held attention for the last generation. You generated 141 tokens,
+        # refreshed, and your analysis was gone with nothing saying why.
+        meta = await page.evaluate(
+            "async () => { try { const r = await fetch('/api/attention/meta');"
+            " return await r.json(); } catch { return null; } }"
+        )
+        if meta and meta.get("available"):
+            panel = await page.query_selector(".panel:has(.h-attn)")
+            check(
+                "attention is available, so the panel is on the page",
+                panel is not None,
+                f"{meta.get('n_tokens')} tokens, {meta.get('n_layers')} layers",
+            )
+            toks = await page.query_selector_all(".tok")
+            check("the token strip is populated", len(toks) > 1, f"{len(toks)} tokens")
+        else:
+            print("    (no generation on this server yet — nothing to restore)")
+
+        print("\nerrors are sentences, not envelopes")
+        # The API answers failures as {"error": "..."} and those sentences are
+        # the good part. The fetch helper used to throw the whole envelope, so
+        # what reached the screen was:
+        #     Error: 422: {"error":"SAE d_in=768 does not match model …"}
+        # Every panel showed errors that way, because every panel goes through
+        # that helper. Provoke one and read what a person would see.
+        sae_btn = await page.query_selector(
+            ".panel:has(.h-feat) button, button:has-text('Load SAE')"
+        )
+        if sae_btn:
+            await sae_btn.click()
+            await page.wait_for_timeout(4000)
+            shown = await page.evaluate(
+                """() => [...document.querySelectorAll('.hint, .hint.err, .err')]
+                     .map(e => e.innerText.trim()).filter(Boolean).join(' | ')"""
+            )
+            leaked = [
+                m
+                for m in ('{"error"', '{"detail"', "Error: 4", "Error: 5")
+                if m in shown
+            ]
+            check(
+                "no raw JSON or status code reaches the user",
+                not leaked,
+                f"leaked {leaked} in: {shown[:90]}" if leaked else "checked live text",
+            )
+        else:
+            print("    (no SAE control to provoke — skipped)")
 
         print("\nthe model picker does not resize under you")
         # Its list arrives async. A content-sized sheet opened ~200px tall

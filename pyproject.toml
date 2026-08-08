@@ -39,7 +39,10 @@ vla-lite = [
 ]
 
 [dependency-groups]
-dev = ["ruff>=0.8", "pytest>=8", "httpx>=0.27"]
+# playwright belongs here, not in an ad-hoc `uv run pip install`: uv run
+# re-syncs the environment to the lockfile before every command, so a
+# package installed outside it is gone by the next line. CI caught that.
+dev = ["ruff>=0.8", "pytest>=8", "httpx>=0.27", "playwright>=1.48"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["modelmri"]

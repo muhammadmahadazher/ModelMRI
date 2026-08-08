@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Discovery,
+  errorText,
   getDiscovered,
   getHubAuth,
   getHubModels,
@@ -90,7 +91,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
         .then((m) => live && setModels(m))
         .catch((e) => {
           if (!live) return;
-          setErr(e instanceof Error ? e.message : String(e));
+          setErr(errorText(e));
           // models===null is the "searching" sentinel, so a failure that only
           // sets the error leaves the list spinning forever. An empty list is
           // the honest terminal state.
@@ -158,7 +159,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       setTokenInput("");
       setShowSignIn(false);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -171,7 +172,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       await pullOllama(name);
       setOllama(await getOllama());
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }

@@ -4,6 +4,7 @@ import {
   CustomLayer,
   CustomRun,
   CustomStatus,
+  errorText,
   getCustom,
   getCustomCandidates,
   loadCustom,
@@ -65,20 +66,13 @@ export default function CustomPanel() {
     };
   }, []);
 
-  const message = (e: unknown) => {
-    const raw = String(e instanceof Error ? e.message : e);
-    // The API answers `{"error": "..."}`; show the sentence, not the envelope.
-    const m = raw.match(/\{"error":"(.*)"\}/s);
-    return (m ? m[1] : raw).replace(/\\"/g, '"').replace(/\\n/g, " ");
-  };
-
   async function onFind() {
     setBusy("find");
     setErr("");
     try {
       setCands(await getCustomCandidates());
     } catch (e) {
-      setErr(message(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -93,7 +87,7 @@ export default function CustomPanel() {
       setStatus(s);
       setShape((s.input_shape ?? []).join(", "));
     } catch (e) {
-      setErr(message(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -118,7 +112,7 @@ export default function CustomPanel() {
       setRunId((n) => n + 1);
       setShape(r.input_shape.join(", "));
     } catch (e) {
-      setErr(message(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }
@@ -131,7 +125,7 @@ export default function CustomPanel() {
       setRun(null);
       setShape("");
     } catch (e) {
-      setErr(message(e));
+      setErr(errorText(e));
     } finally {
       setBusy("");
     }

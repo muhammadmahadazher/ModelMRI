@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getAttentionMeta,
   getLoadProgress,
   loadModel,
   LoadProgress,
@@ -49,6 +50,28 @@ export default function Playground({ model, onModelChange }: Props) {
     setPick(model.hf_id);
     setSource(model.device === "ollama" ? "ollama" : "hf");
   }, [model?.loaded, model?.hf_id, model?.device]);
+
+  // Same bug as the picker above, one layer up: `epoch` is a client-side
+  // counter, so a reload dropped it to 0 and unmounted the attention and
+  // feature panels — while the server still held attention for the last
+  // generation and would have served it. You generated 141 tokens, hit
+  // refresh, and your analysis was simply gone with nothing saying why.
+  // Ask what the server can actually answer, and mount accordingly.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || epoch > 0) return;
+    let live = true;
+    void getAttentionMeta()
+      .then((m) => {
+        if (!live || !m.available) return;
+        restored.current = true;
+        setEpoch(1);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [epoch, model?.loaded]);
 
   // A cold load is minutes long. Poll the server so the wait is legible
   // instead of a frozen button.
