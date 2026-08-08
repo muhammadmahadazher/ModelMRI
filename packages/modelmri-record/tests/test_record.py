@@ -1,0 +1,193 @@
+"""Tests for modelmri-record. No network, no server, no model."""
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import modelmri_record as rec  # noqa: E402
+from modelmri_record.redact import default_redactor, make_redactor  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def offline(monkeypatch, tmp_path):
+    """Never touch the network; land traces in a temp dir."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        rec.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError())
+    )
+    return tmp_path
+
+
+def written(tmp_path) -> dict:
+    files = list((tmp_path / "modelmri-traces").glob("*.json"))
+    assert len(files) == 1, f"expected one trace file, got {files}"
+    return json.loads(files[0].read_text())
+
+
+# ---------------------------------------------------------------- structure
+
+
+def test_nesting_records_parentage(offline):
+    with rec.trace("run"):
+        rec.step("llm_call", name="plan", duration_ms=10)
+        with rec.step("subagent", name="child"):
+            rec.step("tool_call", name="pytest", duration_ms=5)
+    doc = written(offline)
+    kinds = [s["kind"] for s in doc["steps"]]
+    assert kinds == ["llm_call", "subagent", "tool_call"]
+    assert doc["steps"][2]["parent_id"] == doc["steps"][1]["id"]
+    assert doc["steps"][0]["parent_id"] is None
+
+
+def test_an_exception_is_recorded_and_still_raised(offline):
+    with pytest.raises(ValueError):
+        with rec.trace("boom"):
+            rec.step("tool_call", name="thing")
+            raise ValueError("kaboom")
+    doc = written(offline)
+    assert doc["steps"][-1]["kind"] == "error"
+    assert "kaboom" in doc["steps"][-1]["output"]
+
+
+def test_step_outside_a_trace_is_a_noop():
+    """Instrumentation left in library code must not explode for callers who
+    never opted into tracing."""
+    assert rec.step("llm_call", name="orphan") is None
+
+
+# ---------------------------------------------------------------- redaction
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA",
+        "sk-proj-BBBBBBBBBBBBBBBBBBBBBBBB",
+        "hf_CCCCCCCCCCCCCCCCCCCCCCCC",
+        "pypi-AgEIcHlwaS5vcmcCJDdkY2JkMmU5",
+        "ghp_DDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "github_pat_EEEEEEEEEEEEEEEEEEEEEE",
+        "xoxb-123456789012-abcdefghijkl",
+        "AIzaSyDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+        "AKIAIOSFODNN7EXAMPLE",
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+    ],
+)
+def test_known_credential_shapes_never_reach_the_document(offline, secret):
+    with rec.trace("leaky"):
+        rec.step("llm_call", name="m", input=f"here is the key {secret} use it")
+    raw = json.dumps(written(offline))
+    assert secret not in raw, f"{secret[:12]}... survived redaction"
+    assert "[redacted:" in raw
+
+
+def test_a_private_key_block_is_removed_whole(offline):
+    pem = (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEAxyz\nmore\n"
+        "-----END RSA PRIVATE KEY-----"
+    )
+    with rec.trace("pem"):
+        rec.step("tool_call", name="cat", output=pem)
+    raw = json.dumps(written(offline))
+    assert "MIIEowIBAAKCAQEAxyz" not in raw
+    assert "[redacted:private-key]" in raw
+
+
+def test_redaction_keeps_the_trace_useful(offline):
+    """A redactor that eats everything gets switched off, which protects
+    nobody. Ordinary text, hashes and uuids must survive."""
+    keep = (
+        "commit 9f2a1c4de8b7 fixed the retry loop; "
+        "run id 3f8a2b91-4c7d-4e11-9a3b-2f6c8d1e0a55 took 1200ms"
+    )
+    assert default_redactor(keep) == keep
+
+
+def test_structural_fields_are_never_redacted(offline):
+    with rec.trace("keep-structure"):
+        rec.step(
+            "llm_call",
+            name="sk-model-name-lookalike",
+            duration_ms=42,
+            tokens_in=100,
+            tokens_out=7,
+        )
+    s = written(offline)["steps"][0]
+    assert s["duration_ms"] == 42 and s["tokens_in"] == 100 and s["tokens_out"] == 7
+    assert s["name"] == "sk-model-name-lookalike"  # names are not payloads
+
+
+def test_redaction_can_be_switched_off_deliberately(offline):
+    with rec.trace("verbatim", redact=False):
+        rec.step("llm_call", input="sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA")
+    assert "sk-ant-api03" in json.dumps(written(offline))
+
+
+def test_custom_patterns_compose_with_the_defaults(offline):
+    red = make_redactor([r"ACME-[0-9]{6}"])
+    with rec.trace("custom", redact=red):
+        rec.step("tool_call", input="ACME-123456 and hf_ZZZZZZZZZZZZZZZZZZZZZZZZ")
+    raw = json.dumps(written(offline))
+    assert "ACME-123456" not in raw
+    assert "hf_ZZZZ" not in raw
+
+
+# ---------------------------------------------------------------- delivery
+
+
+def test_delivery_is_idempotent(offline):
+    """The atexit flush and the normal exit path can both fire. Writing the
+    trace twice would double every run in the viewer."""
+    with rec.trace("once"):
+        rec.step("llm_call", name="a")
+    rec._flush_live()  # simulate the shutdown hook running afterwards
+    assert len(list((offline / "modelmri-traces").glob("*.json"))) == 1
+
+
+def test_a_trace_left_open_at_shutdown_is_still_flushed(offline):
+    t = rec._Trace("orphaned", rec.DEFAULT_ENDPOINT, None)
+    rec._live.append(t)
+    token = rec._current.set(t)
+    rec.step("llm_call", name="mid-flight")
+    rec._current.reset(token)
+    rec._flush_live()
+    assert written(offline)["name"] == "orphaned"
+
+
+def test_recording_never_raises_even_when_the_disk_refuses(offline, monkeypatch):
+    """Recording must never take down the host app. That is the whole
+    contract; if it can throw, nobody will leave it switched on."""
+    monkeypatch.setattr(
+        rec.Path, "mkdir", lambda *a, **k: (_ for _ in ()).throw(OSError("read-only"))
+    )
+    with rec.trace("doomed"):
+        rec.step("llm_call", name="x")
+    # reaching here without an exception IS the assertion
+
+
+def test_import_costs_nothing_heavy():
+    """The selling point is that instrumenting an agent does not cost a
+    deep-learning install, so this has to be measured in a FRESH interpreter.
+    Checking sys.modules in-process only tells you what the rest of the test
+    session imported -- which is how this test passed alone and failed in the
+    full run, proving nothing either way."""
+    import subprocess
+
+    code = (
+        "import sys, modelmri_record;"
+        "heavy={'torch','transformers','numpy','fastapi','pydantic','anthropic'};"
+        "print(sorted(heavy & set(sys.modules)))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).resolve().parent.parent),
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "[]", f"pulled heavy deps: {out.stdout.strip()}"

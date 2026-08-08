@@ -638,3 +638,33 @@ def test_record_module_offline(tmp_path, monkeypatch):
     kinds = [s["kind"] for s in doc["steps"]]
     assert kinds == ["llm_call", "subagent", "tool_call"]
     assert doc["steps"][2]["parent_id"] == doc["steps"][1]["id"]
+
+
+def test_record_implementations_have_not_drifted():
+    """modelmri/record and packages/modelmri-record are the same code until
+    the standalone package is published and the in-tree copy becomes a
+    re-export. Two copies of a security-relevant module silently diverging is
+    exactly how a redaction fix lands in one and not the other."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    intree = (root / "modelmri" / "record" / "__init__.py").read_text(encoding="utf-8")
+    standalone = (
+        root / "packages" / "modelmri-record" / "modelmri_record" / "__init__.py"
+    ).read_text(encoding="utf-8")
+
+    # The standalone is the source of truth and is strictly ahead: it adds
+    # redaction and the shutdown flush. What must not happen is the shared
+    # core diverging.
+    for anchor in (
+        "def step(",
+        "def instrument_anthropic(",
+        "parent_id",
+        "recording must never crash the host app",
+    ):
+        assert anchor in intree, f"in-tree copy lost {anchor!r}"
+        assert anchor in standalone, f"standalone copy lost {anchor!r}"
+
+    # And the standalone must keep the protections the in-tree one lacks.
+    assert "redact_document" in standalone
+    assert "atexit.register" in standalone

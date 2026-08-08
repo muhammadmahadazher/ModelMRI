@@ -16,7 +16,7 @@ jobs:
           uv sync --dev
           uv run ruff check .
           uv run ruff format --check .
-          uv run pytest -q || [ $? -eq 5 ]   # exit 5 = no tests collected; OK pre-v0.1
+          uv run pytest tests packages/modelmri-record/tests -q
 
   frontend:
     runs-on: ubuntu-latest
