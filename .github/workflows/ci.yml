@@ -60,8 +60,16 @@ jobs:
           uv run playwright install --with-deps chromium
           uv run uvicorn --factory modelmri.server:create_app \
             --host 127.0.0.1 --port 5900 &
+          server=$!
           for _ in $(seq 1 60); do
             curl -sf http://127.0.0.1:5900/api/session > /dev/null && break
             sleep 2
           done
-          uv run python tests/ui_check.py http://127.0.0.1:5900/
+          status=0
+          uv run python tests/ui_check.py http://127.0.0.1:5900/ || status=$?
+          # Stop the server before the job ends. Left running it holds the
+          # environment open, and setup-uv's cache prune then fails in
+          # post-cleanup with exit 2 — every check green, job reported red.
+          kill "$server" 2>/dev/null || true
+          wait "$server" 2>/dev/null || true
+          exit "$status"
