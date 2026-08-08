@@ -561,3 +561,73 @@ export const unloadCustom = () =>
   fetch("/api/custom/unload", { method: "POST" }).then((r) =>
     json<CustomStatus>(r),
   );
+
+// ------------------------------------------------- SAE registry + the lens
+
+export interface SAEOption {
+  repo: string;
+  models: string[];
+  d_in: number;
+  layers: number[];
+  point: string;
+  label: string;
+  supported: boolean;
+  note: string;
+  default_hook: string;
+}
+
+export const getSAEOptions = () =>
+  fetch("/api/sae/available").then((r) =>
+    json<{
+      model: string | null;
+      matching: SAEOption[];
+      usable: SAEOption[];
+      catalogue: SAEOption[];
+    }>(r),
+  );
+
+export const loadSAEFrom = (repo: string, hook: string) =>
+  fetch("/api/sae/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo, hook }),
+  }).then((r) => json<SAEStatus>(r));
+
+export interface LensRow {
+  layer: number;
+  tokens: string[];
+  probs: number[];
+  entropy: number;
+}
+
+export const getLens = (topK = 5) =>
+  fetch(`/api/lens?top_k=${topK}`).then((r) =>
+    json<{
+      layers: LensRow[];
+      n_layers: number;
+      final: string;
+      settled_at: number | null;
+    }>(r),
+  );
+
+// ------------------------------------------------------------ VLA datasets
+
+export interface VLADatasetInfo {
+  repo_id: string;
+  ref: string | null;
+  size_gb: number;
+  usable: boolean;
+  note: string;
+}
+
+export const getVLADatasets = () =>
+  fetch("/api/vla/datasets").then((r) =>
+    json<{ datasets: VLADatasetInfo[]; current: string }>(r),
+  );
+
+export const setVLADataset = (repo_id: string) =>
+  fetch("/api/vla/dataset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo_id }),
+  }).then((r) => json<VLADataset>(r));

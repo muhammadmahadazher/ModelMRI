@@ -5,10 +5,13 @@ import {
   errorText,
   getVLA,
   getVLAAttention,
+  getVLADatasets,
   getVLAEpisodes,
   getVLAFrame,
   loadVLA,
+  setVLADataset,
   VLADataset,
+  VLADatasetInfo,
   VLAFrame,
   VLAStatus,
 } from "./api";
@@ -29,6 +32,9 @@ export default function VLAPanel() {
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
+  // Every cached LeRobot dataset, not the one that happened to be configured.
+  const [datasets, setDatasets] = useState<VLADatasetInfo[]>([]);
+  const [chosen, setChosen] = useState("");
   const debounce = useRef<number | undefined>(undefined);
 
   // Status only. Opening the dataset imports pyarrow and pyav and decodes
@@ -38,6 +44,15 @@ export default function VLAPanel() {
     let live = true;
     void getVLA()
       .then((s) => live && setVla(s))
+      .catch(() => undefined);
+    // Names only — directory entries and one refs file each. It never opens a
+    // parquet or decodes a frame, so this stays cheap enough to run on mount.
+    void getVLADatasets()
+      .then((d) => {
+        if (!live) return;
+        setDatasets(d.datasets);
+        setChosen(d.current);
+      })
       .catch(() => undefined);
     return () => {
       live = false;
@@ -77,6 +92,9 @@ export default function VLAPanel() {
     setBusy("open");
     setErr("");
     try {
+      // Switch first when the pick differs, so "Open" always opens what the
+      // dropdown says rather than whatever the server last had.
+      if (chosen && chosen !== vla?.dataset_repo) await setVLADataset(chosen);
       setDs(await getVLAEpisodes());
       setLayer(0);
     } catch (e) {
@@ -127,12 +145,31 @@ export default function VLAPanel() {
             Watch what a real robot policy looks at, frame by frame, on recorded
             episodes. Nothing is loaded yet.
           </p>
-          <button className="green" onClick={() => void onOpen()} disabled={busy !== ""}>
-            {busy === "open" ? "Opening dataset…" : "Open dataset"}
-          </button>
+          <div className="row">
+            {datasets.length > 1 ? (
+              <select
+                className="combo"
+                aria-label="dataset"
+                value={chosen}
+                onChange={(e) => setChosen(e.target.value)}
+              >
+                {datasets.map((d) => (
+                  <option key={d.repo_id} value={d.repo_id} disabled={!d.usable}>
+                    {d.repo_id} · {d.size_gb} GB{d.usable ? "" : " — incomplete"}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <button className="green" onClick={() => void onOpen()} disabled={busy !== ""}>
+              {busy === "open" ? "Opening dataset…" : "Open dataset"}
+            </button>
+          </div>
           <span className="meta">
-            reads {vla?.dataset_repo ?? "a cached LeRobot dataset"} from your
-            HuggingFace cache · nothing is downloaded
+            {datasets.length > 1
+              ? `${datasets.length} LeRobot datasets cached · nothing is downloaded`
+              : datasets.length === 1
+                ? `${datasets[0].repo_id} is the only one cached — any LeRobot v3.0 dataset works, and this list grows as you pull them`
+                : "no LeRobot dataset cached — pull any LeRobot v3.0 dataset and it appears here"}
           </span>
         </div>
         {err && (

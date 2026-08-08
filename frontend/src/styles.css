@@ -1731,6 +1731,64 @@ code {
   background: var(--color-attn);
 }
 
+/* ---------- logit lens ----------
+   The fallback for every model with no SAE. Reads as a stack of layers with
+   the entropy falling as the model commits, so the shape is legible before
+   any single row is read. */
+.lens { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hair); }
+.lens-table {
+  display: grid;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.lens-row {
+  display: grid;
+  grid-template-columns: minmax(52px, 0.5fr) minmax(96px, 0.8fr) minmax(200px, 3fr);
+  gap: 12px;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 7px;
+  min-width: 0;
+}
+.lens-row > * { min-width: 0; }
+.lens-row.head {
+  color: var(--color-mute);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--hair);
+  border-radius: 0;
+  padding-bottom: 7px;
+  margin-bottom: 3px;
+}
+/* Where the eventual answer first takes the lead and keeps it. */
+.lens-row.settle { box-shadow: inset 2px 0 0 0 var(--color-feat); }
+.lens-row.agrees .lens-tok.top { color: var(--color-feat); }
+
+.lens-h { position: relative; color: var(--color-mute); display: flex;
+          align-items: center; gap: 7px; }
+.lens-h i {
+  display: block; height: 4px; border-radius: 2px; flex: none;
+  max-width: 52px;
+  background: color-mix(in oklab, var(--sem-feat) 45%, transparent);
+}
+.lens-toks { display: flex; gap: 6px; overflow: hidden; }
+.lens-tok {
+  display: inline-flex; align-items: baseline; gap: 4px;
+  padding: 2px 6px; border-radius: 5px; white-space: nowrap;
+  background: color-mix(in oklab, var(--color-ink) 5%, transparent);
+  color: var(--color-mute);
+}
+.lens-tok.top { color: var(--color-ink); }
+.lens-tok em { font-style: normal; font-size: 9.5px; opacity: 0.65; }
+
+@media (max-width: 900px) {
+  .lens-row { grid-template-columns: minmax(46px, 0.6fr) minmax(150px, 3fr); }
+  .lens-row > .lens-h, .lens-row.head > :nth-child(2) { display: none; }
+}
+
 /* ---------- touch ergonomics ----------
    Everything here already clears WCAG 2.2 AA (2.5.8 wants 24x24). This is the
    44x44 comfortable-thumb target from Apple's HIG / WCAG 2.5.5 AAA, applied

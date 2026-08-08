@@ -56,6 +56,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/features/summary` | Features Summary |
 | `GET` | `/api/features/{feature_id}` | Feature Detail |
 | `GET` | `/api/sae` | Sae Status |
+| `GET` | `/api/sae/available` | Sae Available |
 | `GET` | `/api/steer` | Steer Status |
 | `POST` | `/api/sae/load` | Sae Load |
 | `POST` | `/api/steer` | Steer |
@@ -77,9 +78,11 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/vla` | Vla Status |
+| `GET` | `/api/vla/datasets` | Vla Datasets |
 | `GET` | `/api/vla/episodes` | Vla Episodes |
 | `GET` | `/api/vla/frame` | Vla Frame |
 | `POST` | `/api/vla/analyse` | Vla Analyse |
+| `POST` | `/api/vla/dataset` | Vla Set Dataset |
 | `POST` | `/api/vla/load` | Vla Load |
 
 
@@ -90,6 +93,13 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/traces` | Traces List |
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
 | `POST` | `/api/traces/import` | Traces Import |
+
+
+## Other
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/api/lens` | Lens |
 
 ## Streaming
 

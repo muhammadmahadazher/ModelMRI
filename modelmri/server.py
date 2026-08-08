@@ -56,6 +56,10 @@ class VLAAnalyseRequest(BaseModel):
     t: int = Field(default=0, ge=0)
 
 
+class VLADatasetRequest(BaseModel):
+    repo_id: str = Field(min_length=1, max_length=200)
+
+
 class CustomLoadRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
@@ -281,8 +285,61 @@ def create_app(
         from .vla_data import LeRobotV3Reader
 
         if getattr(app.state, "vla_reader", None) is None:
-            app.state.vla_reader = LeRobotV3Reader.discover(repo_id=dataset_repo)
+            chosen = getattr(app.state, "vla_dataset", dataset_repo)
+            app.state.vla_reader = LeRobotV3Reader.discover(repo_id=chosen)
         return app.state.vla_reader
+
+    # ------------------------------------------------------ SAEs and the lens
+
+    @app.get("/api/sae/available")
+    def sae_available() -> dict:
+        """Which SAEs fit the model that is loaded, and what else exists.
+
+        An empty `matching` is the common, honest answer: sparse autoencoders
+        are trained per model, and public ones exist for about a dozen models
+        in total. The panel says so rather than looking broken.
+        """
+        from . import sae_registry
+
+        current = runtime.hf_id if runtime.backend == "hf" else None
+        matching = sae_registry.for_model(current)
+        return {
+            "model": current,
+            "matching": matching,
+            "usable": [m for m in matching if m["supported"]],
+            "catalogue": sae_registry.catalogue(),
+        }
+
+    @app.get("/api/lens")
+    async def lens(top_k: int = 5):
+        """Logit lens — what the model would have said at each layer.
+
+        The fallback for every model with no SAE, which is most of them.
+        """
+        if runtime.backend == "ollama":
+            return JSONResponse(
+                {
+                    "error": "Ollama serves text only — the layers never leave its process"
+                },
+                status_code=409,
+            )
+        if runtime.model is None:
+            return JSONResponse({"error": "no model loaded"}, status_code=409)
+        if runtime.last_ids is None:
+            return JSONResponse(
+                {"error": "generate something first — the lens reads that run"},
+                status_code=409,
+            )
+
+        from .lens import logit_lens
+
+        def run() -> dict:
+            return logit_lens(runtime.model, runtime.tokenizer, runtime.last_ids, top_k)
+
+        try:
+            return await asyncio.to_thread(run)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
 
     # ---------------------------------------------------------- custom models
     #
@@ -345,7 +402,7 @@ def create_app(
         # can say what a click will read instead of guessing the default.
         return {
             **app.state.vla.status().to_dict(),
-            "dataset_repo": dataset_repo,
+            "dataset_repo": getattr(app.state, "vla_dataset", dataset_repo),
             "policy_repo": VLA_DEFAULT_REPO,
         }
 
@@ -360,6 +417,35 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=409)
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/vla/datasets")
+    async def vla_datasets() -> dict:
+        """Every cached LeRobot dataset, not just the configured one."""
+        from .vla_data import cached_datasets
+
+        return {
+            "datasets": await asyncio.to_thread(cached_datasets),
+            "current": getattr(app.state, "vla_dataset", dataset_repo),
+        }
+
+    @app.post("/api/vla/dataset")
+    async def vla_set_dataset(req: VLADatasetRequest):
+        """Switch datasets. Opens the new one before discarding the old."""
+        from .vla_data import LeRobotV3Reader
+
+        try:
+            reader = await asyncio.to_thread(
+                LeRobotV3Reader.discover, None, req.repo_id
+            )
+        except FileNotFoundError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return JSONResponse(
+                {"error": f"{type(err).__name__}: {err}"}, status_code=409
+            )
+        app.state.vla_reader = reader
+        app.state.vla_dataset = req.repo_id
+        return await asyncio.to_thread(reader.summary)
 
     @app.get("/api/vla/episodes")
     async def vla_episodes():

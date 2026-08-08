@@ -254,3 +254,55 @@ def encode_png(rgb) -> str:
     buf = io.BytesIO()
     Image.fromarray(rgb).save(buf, format="PNG", optimize=True)
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def cached_datasets(hf_home: str | Path | None = None) -> list[dict]:
+    """LeRobot datasets already on this machine.
+
+    The panel was pinned to one repository, so "the robot section only has one
+    dataset" was literally true. Anything cached is openable — the reader has
+    always taken a repo_id, nothing ever offered a choice.
+
+    Cheap by construction: directory names and one refs file per dataset. It
+    never opens a parquet or decodes a frame, so listing costs nothing even
+    when a dataset is tens of gigabytes.
+    """
+    root = Path(hf_home) if hf_home else default_hf_home()
+    out: list[dict] = []
+    # LeRobot keeps its own hub root; a plain HF cache is worth checking too,
+    # since datasets pulled with huggingface-cli land there instead.
+    for hub in (root / "lerobot" / "hub", root / "hub", root / "datasets"):
+        if not hub.is_dir():
+            continue
+        for entry in sorted(hub.glob("datasets--*")):
+            try:
+                owner, name = entry.name.removeprefix("datasets--").split("--", 1)
+            except ValueError:
+                continue
+            repo = f"{owner}/{name.replace('--', '/')}"
+            if any(d["repo_id"] == repo for d in out):
+                continue
+            refs = (
+                sorted((entry / "refs").glob("*")) if (entry / "refs").is_dir() else []
+            )
+            size = 0
+            try:
+                size = sum(
+                    f.stat().st_size
+                    for f in (entry / "blobs").rglob("*")
+                    if f.is_file()
+                )
+            except OSError:
+                pass
+            out.append(
+                {
+                    "repo_id": repo,
+                    "ref": refs[-1].name if refs else None,
+                    "size_gb": round(size / 1e9, 2),
+                    "usable": bool(refs),
+                    "note": ""
+                    if refs
+                    else "no snapshot ref — the download is incomplete",
+                }
+            )
+    return out

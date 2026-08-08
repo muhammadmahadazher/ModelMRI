@@ -1,3 +1,4 @@
+import LensPanel from "./LensPanel";
 import { useEffect, useRef, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
@@ -6,8 +7,10 @@ import {
   getFeatureDetail,
   getFeaturesSummary,
   getSAE,
-  loadSAE,
+  getSAEOptions,
+  loadSAEFrom,
   promptOnce,
+  SAEOption,
   SAEStatus,
   setSteer,
 } from "./api";
@@ -23,6 +26,9 @@ interface Props {
 }
 
 /** SAE feature browser: token -> top features -> heat view -> steering A/B. */
+/** Where the default SAE reads. Overridden per registry entry. */
+const DEFAULT_HOOK = "blocks.8.hook_resid_pre";
+
 export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
   const scanRef = useScanOnData(epoch);
   const [sae, setSae] = useState<SAEStatus | null>(null);
@@ -36,6 +42,16 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
   const [scale, setScale] = useState(-40);
   const [ab, setAb] = useState<{ base: string; steered: string } | null>(null);
   const [err, setErr] = useState("");
+  // Which SAEs exist for the model that is loaded. Empty is the common,
+  // honest answer — an SAE is trained per model and public ones exist for
+  // about a dozen models in total.
+  const [opts, setOpts] = useState<{
+    model: string | null;
+    matching: SAEOption[];
+    usable: SAEOption[];
+    catalogue: SAEOption[];
+  } | null>(null);
+  const [custom, setCustom] = useState("");
 
   useEffect(() => {
     void getSAE().then(setSae);
@@ -61,17 +77,28 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
     }
   }
 
-  async function onLoadSAE() {
+  useEffect(() => {
+    let live = true;
+    void getSAEOptions()
+      .then((o) => live && setOpts(o))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [epoch]);
+
+  async function onLoadFrom(repo: string, hook: string) {
     setBusy("sae");
     setErr("");
     try {
-      setSae(await loadSAE());
+      setSae(await loadSAEFrom(repo, hook));
     } catch (e) {
       setErr(errorText(e));
     } finally {
       setBusy("");
     }
   }
+
 
   async function onPickFeature(fid: number) {
     setFeatSel(fid);
@@ -137,15 +164,62 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
           <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>
           <span className="rule" />
         </div>
-        <div className="row" style={{ marginTop: 12 }}>
-          <button className="violet" onClick={onLoadSAE} disabled={busy !== ""}>
-            {busy === "sae"
-              ? "Loading SAE… (first run downloads ~150 MB)"
-              : "Load SAE (GPT-2 · layer 8 · 24,576 features)"}
+        {opts?.usable.length ? (
+          <>
+            {opts.usable.map((o) => (
+              <div className="row" style={{ marginTop: 12 }} key={o.repo}>
+                <button
+                  className="violet"
+                  onClick={() => void onLoadFrom(o.repo, o.default_hook)}
+                  disabled={busy !== ""}
+                >
+                  {busy === "sae" ? "Loading SAE…" : `Load ${o.label}`}
+                </button>
+                <span className="meta">
+                  matches {opts.model} · d_in {o.d_in} · first run downloads it
+                </span>
+              </div>
+            ))}
+          </>
+        ) : (
+          <div className="resting-empty">
+            <b>No sparse autoencoder exists for {opts?.model ?? "this model"}.</b>{" "}
+            An SAE is trained against one model at one layer — it is GPU-months
+            of someone else's work, not a setting. Public ones cover about a
+            dozen models in total.
+            {opts?.catalogue.length ? (
+              <> Known SAEs: {opts.catalogue.map((c) => c.repo.split("/")[1]).join(", ")}.</>
+            ) : null}{" "}
+            The logit lens below asks a different question of the same
+            residual stream, and works on every model.
+          </div>
+        )}
+
+        <div className="row cand-manual">
+          <input
+            className="combo grow"
+            placeholder="…or a SAELens repo: owner/name"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+          />
+          <button
+            className="ghost sm"
+            disabled={busy !== "" || !custom.trim()}
+            onClick={() =>
+              void onLoadFrom(custom.trim(), DEFAULT_HOOK)
+            }
+          >
+            Load
           </button>
-          <span className="meta">works with the gpt2 model</span>
         </div>
-        {err && <div className="hint">{err}</div>}
+        <div className="hint">
+          Any SAE is accepted, and refused if its d_in does not match the
+          model — a mismatched one would produce confident features describing
+          a different network.
+        </div>
+        {err && <div className="hint err">{err}</div>}
+
+        <LensPanel epoch={epoch} />
       </div>
     );
   }
