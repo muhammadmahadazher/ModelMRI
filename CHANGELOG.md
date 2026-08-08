@@ -128,6 +128,26 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 # modelmri-record
 
+## [0.1.3] — 2026-08-08
+
+### Added
+
+- `trace(..., meta={...})` — anything you want stored alongside a run: a git
+  sha, an environment, a ticket id. Recorder identity is merged last, so a
+  caller cannot shadow it.
+
+  `{"demo": True}` is the case that prompted this. ModelMRI ships a sample
+  trace that deliberately fails a `git push` so its timeline has an error to
+  render, and in the viewer that was indistinguishable from the user's own
+  agent failing. Scripted sample data should never pass for a real recording.
+
+### Note for `modelmri` users
+
+`modelmri.record` is now a re-export of this package rather than a second copy
+of it. The copy had fallen behind and was missing credential redaction — on
+the import path `modelmri`'s README documents. If you import from
+`modelmri.record`, upgrade `modelmri`.
+
 ## [0.1.2] — 2026-08-08
 
 ### Fixed

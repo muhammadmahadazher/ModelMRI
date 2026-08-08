@@ -28,7 +28,9 @@ dependencies = [
   # One recorder, not two. modelmri.record re-exports this; the in-tree copy
   # had drifted and was missing credential redaction, on the import path the
   # README documents. Stdlib-only and ~7 KiB.
-  "modelmri-record>=0.1.2",
+  # 0.1.3 adds trace(meta=...), which the shipped demo trace uses to mark
+  # itself as sample data rather than a run you recorded.
+  "modelmri-record>=0.1.3",
 ]
 
 [project.urls]

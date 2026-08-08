@@ -40,7 +40,7 @@ from typing import Iterator
 
 from .redact import Redactor, default_redactor, redact_document
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
 
