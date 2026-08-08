@@ -19,6 +19,8 @@ from . import __version__
 from .runtime import DEFAULT_MODEL, ModelRuntime
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore
+from .custom import AdapterError, CustomHandle
+from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
 from .vla import VLAHandle
 
 
@@ -54,6 +56,17 @@ class VLAAnalyseRequest(BaseModel):
     t: int = Field(default=0, ge=0)
 
 
+class CustomLoadRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class CustomRunRequest(BaseModel):
+    # None means "use the adapter's example_input()"; the panel sends the
+    # shape it showed you, so nothing ever runs on a shape you didn't see.
+    shape: list[int] | None = Field(default=None, max_length=8)
+    seed: int = Field(default=0, ge=0, le=2**31 - 1)
+
+
 class PromptRequest(BaseModel):
     prompt: str
     max_new_tokens: int = Field(default=256, ge=1, le=4096)
@@ -69,6 +82,7 @@ def create_app(
     app.state.runtime = runtime
     app.state.vla = VLAHandle()
     app.state.vla_reader = None
+    app.state.custom = CustomHandle()
     db_path = trace_db or str(Path.home() / ".modelmri" / "traces.sqlite")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
@@ -270,9 +284,70 @@ def create_app(
             app.state.vla_reader = LeRobotV3Reader.discover(repo_id=dataset_repo)
         return app.state.vla_reader
 
+    # ---------------------------------------------------------- custom models
+    #
+    # A model you trained yourself. Every route here is inert until called:
+    # candidates are found by reading text, never by importing, and loading
+    # happens only for a path you named. See modelmri/custom.py.
+
+    @app.get("/api/custom")
+    def custom_status() -> dict:
+        from . import custom as custom_mod
+
+        return {
+            **app.state.custom.status().to_dict(),
+            "roots": [str(r) for r in custom_mod.allowed_roots()],
+        }
+
+    @app.get("/api/custom/candidates")
+    async def custom_candidates() -> dict:
+        from . import custom as custom_mod
+
+        adapters, scripts = await asyncio.to_thread(
+            lambda: (custom_mod.find_adapters(), custom_mod.find_torchscript())
+        )
+        return {
+            "adapters": adapters,
+            "torchscript": scripts,
+            "roots": [str(r) for r in custom_mod.allowed_roots()],
+        }
+
+    @app.post("/api/custom/load")
+    async def custom_load(req: CustomLoadRequest):
+        try:
+            status = await asyncio.to_thread(app.state.custom.load, req.path)
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:  # a user's own code ran; never 500 on it
+            return JSONResponse(
+                {"error": f"{type(err).__name__}: {err}"}, status_code=422
+            )
+        return status.to_dict()
+
+    @app.post("/api/custom/run")
+    async def custom_run(req: CustomRunRequest):
+        try:
+            return await asyncio.to_thread(app.state.custom.run, req.shape, req.seed)
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return JSONResponse(
+                {"error": f"{type(err).__name__}: {err}"}, status_code=422
+            )
+
+    @app.post("/api/custom/unload")
+    def custom_unload() -> dict:
+        return app.state.custom.unload().to_dict()
+
     @app.get("/api/vla")
     def vla_status() -> dict:
-        return app.state.vla.status().to_dict()
+        # Names the configured dataset without opening it, so the resting panel
+        # can say what a click will read instead of guessing the default.
+        return {
+            **app.state.vla.status().to_dict(),
+            "dataset_repo": dataset_repo,
+            "policy_repo": VLA_DEFAULT_REPO,
+        }
 
     @app.post("/api/vla/load")
     async def vla_load(req: VLALoadRequest):

@@ -75,6 +75,30 @@ Measured on PushT frames — share of attention mass in the top 5% of patches:
 
 Early layers look everywhere; deep layers lock on. No robot hardware required — it reads public LeRobot datasets straight from disk.
 
+### 5. Debug a model you trained yourself
+
+Everything above is transformer-shaped. This isn't. Point ModelMRI at your own `nn.Module` — an MLP, a small CNN, whatever you're training — and get a layer-by-layer map of one real forward pass.
+
+```python
+# my_net_adapter.py — the whole contract
+def load():
+    model = MyNet()
+    model.load_state_dict(torch.load("checkpoints/best.pt", map_location="cpu"))
+    return model
+```
+
+| layer | type | output | activation | |
+|---|---|---|---|---|
+| `fc1` | Linear | 8×64 | −31.20 ± 24.21 | |
+| `act1` | ReLU | 8×64 | 0.10 ± 0.26 | **80% dead** |
+| `fc2` | Linear | 8×32 | −1.02 ± 4.74 | |
+| `act2` | Tanh | 8×32 | −0.12 ± 0.90 | **55% saturated** |
+| `head` | Linear | 8×3 | −0.13 ± 0.44 | |
+
+Dead units, saturated activations, and **the first layer where a `nan` appears** — statistics exclude non-finite values on purpose, so one bad number can't turn every row below it into `nan` and hide where it started.
+
+A `state_dict` alone is refused, with the reason: it's weights without an architecture, and guessing one would produce a map that looks authoritative and describes a network you never trained.
+
 ---
 
 ## Install
@@ -111,6 +135,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 | `POST /api/steer` | `{feature_id, scale}` — clamp a concept during generation |
 | `POST /api/traces/import` · `GET /api/traces/{id}` | agent traces |
 | `POST /api/vla/analyse` · `GET /api/vla/attention` | robot-policy attention |
+| `POST /api/custom/load` · `POST /api/custom/run` | inspect a model you trained yourself |
 
 ## Status
 
@@ -121,14 +146,30 @@ The UI is a client of a plain HTTP API — script against it directly.
 | SAE feature browser + activation steering | ✅ |
 | Agent trace timeline + step inspector | ✅ |
 | Robot policy (VLA) attention over real episodes | ✅ perception |
+| Custom models — adapters, TorchScript, layer map | ✅ |
 | VLA action expert (needs `lerobot`, separate env) | 🏗️ |
-| Hosted zero-install demo | 🏗️ |
+| Hosted zero-install demo | ✅ |
 
 ## Honest limits
 
 - **Attention needs eager attention.** SDPA and FlashAttention never materialize the weights, so ModelMRI loads models with `attn_implementation="eager"`. Slower, but it's the only way to see anything.
 - **SAE features need a matching SAE.** Ships pointed at the public GPT-2 SAEs; other models need their own.
+- **Custom models get a layer map, not attention.** Attention and SAE features need a transformer; for an arbitrary `nn.Module` ModelMRI shows shapes, activation statistics and pathologies. Loading an adapter runs your Python — see [SECURITY.md](SECURITY.md).
 - **VLA mode is the perception half.** SmolVLA's vision tower is real and loaded from the real checkpoint; the action expert needs `lerobot`, whose torch/numpy pins conflict with the core runtime, so it lives behind an opt-in extra rather than degrading everyone's install.
+
+## Contributing
+
+Issues and pull requests are welcome. One rule runs the whole repository:
+**don't ship a measurement you haven't verified.** A visualization that looks
+plausible and is wrong is worse than none, because interpretability is exactly
+the domain where nobody has an independent way to notice.
+
+- [Contributing guide](CONTRIBUTING.md) — setup, quality gates, and the three
+  bugs that made that rule
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md) — trust model, credential handling, and what
+  loading a model actually executes
+- [Support](SUPPORT.md) · [Changelog](CHANGELOG.md)
 
 ## Built in public
 

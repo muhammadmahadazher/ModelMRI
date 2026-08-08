@@ -22,7 +22,8 @@ import urllib.request
 from pathlib import Path
 
 BASE = "http://127.0.0.1:5900"
-OUT = Path(__file__).resolve().parents[1] / "frontend" / "public" / "demo"
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "frontend" / "public" / "demo"
 PROMPT = "The Eiffel Tower is located in the city of"
 VLA_EPISODE, VLA_FRAME = 3, 60
 # keep the payload small: these are the layers the UI offers in demo mode
@@ -112,6 +113,37 @@ def main() -> int:
     traces = get("/api/traces")
     trace = get(f"/api/traces/{traces[0]['id']}") if traces else None
     write("traces.json", {"list": traces[:3], "trace": trace})
+
+    print("\nCustom: the adapter template, inspected")
+    try:
+        template = str(ROOT / "examples" / "adapter_template.py")
+        status = post("/api/custom/load", {"path": template})
+        run = post("/api/custom/run", {"shape": None})
+        write(
+            "custom.json",
+            {
+                # The path is rewritten so the demo does not publish the
+                # baker's directory layout to the internet.
+                "status": {**status, "path": "examples/adapter_template.py"},
+                "run": run,
+                "candidates": {
+                    "adapters": [
+                        {
+                            "path": "examples/adapter_template.py",
+                            "name": "adapter_template.py",
+                            "dir": "examples",
+                            "has_example": True,
+                            "hint": True,
+                        }
+                    ],
+                    "torchscript": [],
+                    "roots": ["your project directory"],
+                },
+            },
+        )
+        post("/api/custom/unload", {})
+    except urllib.error.HTTPError as err:
+        print(f"  skipped custom ({err.code})")
 
     print("\nVLA: frames + heatmaps")
     try:

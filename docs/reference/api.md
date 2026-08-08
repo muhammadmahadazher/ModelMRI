@@ -1,9 +1,11 @@
 # HTTP API
 
 Everything the UI does goes through this API, so anything you can see you
-can script. Generated from the running app's OpenAPI schema.
+can script. Generated from the app's own OpenAPI schema by
+`scripts/gen_api_docs.py` — run it after adding a route.
 
 Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
+
 
 ## Session
 
@@ -12,27 +14,30 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/` | Index |
 | `GET` | `/api/session` | Session |
 
+
 ## Model
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/accelerator` | Accelerator |
 | `GET` | `/api/hub/models` | Hub Models |
-| `POST` | `/api/model/load` | Load Model |
 | `GET` | `/api/model/progress` | Load Progress |
-| `POST` | `/api/model/prompt` | Prompt |
 | `GET` | `/api/models/discovered` | Models Discovered |
 | `GET` | `/api/models/local` | Models Local |
+| `POST` | `/api/model/load` | Load Model |
+| `POST` | `/api/model/prompt` | Prompt |
+
 
 ## Discovery
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/hub/auth` | Hub Auth |
+| `GET` | `/api/ollama` | Ollama Status |
 | `POST` | `/api/hub/signin` | Hub Signin |
 | `POST` | `/api/hub/signout` | Hub Signout |
-| `GET` | `/api/ollama` | Ollama Status |
 | `POST` | `/api/ollama/pull` | Ollama Pull |
+
 
 ## Attention
 
@@ -43,6 +48,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/vla/attention` | Vla Attention |
 | `GET` | `/api/vla/attention/meta` | Vla Attention Meta |
 
+
 ## Features
 
 | method | path | notes |
@@ -50,27 +56,40 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/features/summary` | Features Summary |
 | `GET` | `/api/features/{feature_id}` | Feature Detail |
 | `GET` | `/api/sae` | Sae Status |
-| `POST` | `/api/sae/load` | Sae Load |
 | `GET` | `/api/steer` | Steer Status |
+| `POST` | `/api/sae/load` | Sae Load |
 | `POST` | `/api/steer` | Steer |
+
+
+## Custom models
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/api/custom` | Custom Status |
+| `GET` | `/api/custom/candidates` | Custom Candidates |
+| `POST` | `/api/custom/load` | Custom Load |
+| `POST` | `/api/custom/run` | Custom Run |
+| `POST` | `/api/custom/unload` | Custom Unload |
+
 
 ## Robot policy
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/vla` | Vla Status |
-| `POST` | `/api/vla/analyse` | Vla Analyse |
 | `GET` | `/api/vla/episodes` | Vla Episodes |
 | `GET` | `/api/vla/frame` | Vla Frame |
+| `POST` | `/api/vla/analyse` | Vla Analyse |
 | `POST` | `/api/vla/load` | Vla Load |
+
 
 ## Agents
 
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/traces` | Traces List |
-| `POST` | `/api/traces/import` | Traces Import |
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
+| `POST` | `/api/traces/import` | Traces Import |
 
 ## Streaming
 
@@ -85,8 +104,8 @@ it does not silently close as a success.
 |---|---|
 | 200 | fine |
 | 409 | you asked for something in the wrong order, or a dependency is down. The body has an actionable message. |
-| 422 | the request was malformed, or the model is gated and you have not accepted its licence. |
+| 422 | the request was malformed, the model is gated and you have not accepted its licence, or a custom adapter could not be loaded. |
 
 There is deliberately no 500 path for ordinary failures: an unreachable
-Ollama, a stalled download and an out-of-memory load all return a 409 that
-says what happened.
+Ollama, a stalled download, an out-of-memory load and a user's adapter
+raising on import all return a status that says what happened.

@@ -58,6 +58,16 @@ Then open <http://127.0.0.1:5900>.
 
     [Read more →](guides/agents.md)
 
+-   **Your own models**
+
+    ---
+
+    Point it at a network you trained yourself and get a layer map of one real
+    forward pass — shapes, activation ranges, dead units, and the first layer
+    where a `nan` appears.
+
+    [Read more →](guides/custom-models.md)
+
 </div>
 
 ---

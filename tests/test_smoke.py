@@ -808,3 +808,75 @@ def test_sae_hook_point_selects_the_side_of_the_block(monkeypatch):
         assert captured and captured[0] == expected, (
             f"{point}: hooked the wrong side (got {captured})"
         )
+
+
+# ---------------------------------------------------------- custom models
+
+
+def test_custom_status_is_empty_and_names_its_roots():
+    r = client().get("/api/custom")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["loaded"] is False
+    assert body["path"] is None
+    assert body["roots"], "the panel needs to tell people where it may load from"
+
+
+def test_custom_run_without_a_model_is_422():
+    r = client().post("/api/custom/run", json={})
+    assert r.status_code == 422
+    assert "no custom model is loaded" in r.json()["error"]
+
+
+def test_custom_load_outside_the_roots_is_refused(tmp_path, monkeypatch):
+    monkeypatch.delenv("MODELMRI_MODELS_DIR", raising=False)
+    outside = tmp_path / "sneaky.py"
+    outside.write_text("def load(): pass", encoding="utf-8")
+    r = client().post("/api/custom/load", json={"path": str(outside)})
+    assert r.status_code == 422
+    assert "outside" in r.json()["error"]
+
+
+def test_custom_load_never_500s_on_a_users_broken_adapter(tmp_path, monkeypatch):
+    """Their code raising is a 422 with the reason, not a stack trace."""
+    monkeypatch.chdir(tmp_path)
+    bad = tmp_path / "bad.py"
+    bad.write_text("import nonexistent_module_xyz\n", encoding="utf-8")
+    r = client().post("/api/custom/load", json={"path": str(bad)})
+    assert r.status_code == 422
+    assert "ModuleNotFoundError" in r.json()["error"]
+
+
+def test_custom_round_trip_through_the_api(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+    monkeypatch.chdir(tmp_path)
+    adapter = tmp_path / "net.py"
+    adapter.write_text(
+        "import torch\nfrom torch import nn\n"
+        "def load():\n    return nn.Sequential(nn.Linear(6, 4), nn.ReLU())\n"
+        "def example_input():\n    return torch.randn(2, 6)\n",
+        encoding="utf-8",
+    )
+    c = client()
+    r = c.post("/api/custom/load", json={"path": str(adapter)})
+    assert r.status_code == 200, r.text
+    assert r.json()["n_params"] == 28  # 6*4 + 4
+
+    r = c.post("/api/custom/run", json={})
+    assert r.status_code == 200, r.text
+    layers = r.json()["layers"]
+    assert [row["kind"] for row in layers] == ["Linear", "ReLU"]
+    assert layers[0]["out_shape"] == [2, 4]
+
+    assert c.post("/api/custom/unload").json()["loaded"] is False
+
+
+def test_custom_candidates_does_not_import_what_it_finds(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MODELMRI_MODELS_DIR", raising=False)
+    (tmp_path / "landmine.py").write_text(
+        "def load(): ...\nraise SystemExit('discovery imported me')\n", encoding="utf-8"
+    )
+    r = client().get("/api/custom/candidates")
+    assert r.status_code == 200
+    assert "landmine.py" in [a["name"] for a in r.json()["adapters"]]

@@ -15,6 +15,10 @@ const cache = new Map<string, unknown>();
  *  the baseline twice. */
 let steerActive = false;
 
+/** Same idea for the custom panel: without it, /api/custom would answer
+ *  "loaded" on first paint and the resting state would never be seen. */
+let customLoaded = false;
+
 async function bundle<T>(name: string): Promise<T> {
   if (!cache.has(name)) {
     const res = await fetch(`${import.meta.env.BASE_URL}demo/${name}.json`);
@@ -75,8 +79,35 @@ export async function demoFetch(path: string, body?: unknown): Promise<unknown> 
   if (p === "/api/traces") return (await bundle<any>("traces")).list;
   if (p.startsWith("/api/traces/")) return (await bundle<any>("traces")).trace;
 
-  if (p === "/api/vla") return (await bundle<any>("vla")).status;
-  if (p === "/api/vla/load") return (await bundle<any>("vla")).status;
+  // Custom models. The demo can't read your filesystem, so it serves the
+  // adapter template's real inspection and keeps the panel's own flow —
+  // resting, find, load, run — exactly as it behaves locally.
+  if (p === "/api/custom") {
+    const c = await bundle<any>("custom");
+    return customLoaded ? c.status : { ...c.status, loaded: false, path: null };
+  }
+  if (p === "/api/custom/candidates") return (await bundle<any>("custom")).candidates;
+  if (p === "/api/custom/load") {
+    customLoaded = true;
+    return (await bundle<any>("custom")).status;
+  }
+  if (p === "/api/custom/run") return (await bundle<any>("custom")).run;
+  if (p === "/api/custom/unload") {
+    customLoaded = false;
+    const c = await bundle<any>("custom");
+    return { ...c.status, loaded: false, path: null };
+  }
+
+  if (p === "/api/vla" || p === "/api/vla/load") {
+    const v = await bundle<any>("vla");
+    // The resting panel names what a click will read; bundles baked before
+    // /api/vla carried these fields fall back to the dataset it recorded.
+    return {
+      ...v.status,
+      dataset_repo: v.status.dataset_repo ?? v.dataset?.repo_id ?? "lerobot/pusht",
+      policy_repo: v.status.policy_repo ?? v.status.repo ?? "lerobot/smolvla_base",
+    };
+  }
   if (p === "/api/vla/episodes") {
     const v = await bundle<any>("vla");
     const frames = Object.keys(v.frames).map(Number).sort((a, b) => a - b);

@@ -47,6 +47,7 @@ nav:
   - Guides:
       - Attention: guides/attention.md
       - Features and steering: guides/features.md
+      - Your own models: guides/custom-models.md
       - Recording agents: guides/agents.md
       - Robot policies: guides/vla.md
   - Reference:

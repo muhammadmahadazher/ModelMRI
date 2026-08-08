@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Accelerator, getAccelerator, getSession, ModelStatus } from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
+import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
 import ThemeToggle from "./ThemeToggle";
@@ -83,11 +84,13 @@ export default function App() {
           <span>sae features</span>
           <span>steering</span>
           <span>agent traces</span>
+          <span>your own models</span>
           <span>mit ©2026</span>
         </div>
       </div>
 
       <Playground model={model} onModelChange={refresh} />
+      <CustomPanel />
       <VLAPanel />
       <AgentsPanel />
       <footer>

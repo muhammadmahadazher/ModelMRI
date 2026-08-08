@@ -134,6 +134,9 @@ export interface VLAStatus {
   n_heads: number;
   grid: number[];
   warmup_ms: number | null;
+  /** Configured server-side; named before anything is opened. */
+  dataset_repo: string;
+  policy_repo: string;
 }
 
 export interface VLAEpisode {
@@ -402,3 +405,98 @@ export function streamGenerate(prompt: string, h: StreamHandlers): () => void {
     ws.close();
   };
 }
+
+// ---------------------------------------------------------- custom models
+
+export interface CustomLayer {
+  order: number;
+  name: string;
+  kind: string;
+  out_shape: number[];
+  n_params: number;
+  trainable: boolean;
+  ms: number;
+  mean: number | null;
+  std: number | null;
+  min: number | null;
+  max: number | null;
+  pct_zero: number | null;
+  pct_saturated: number | null;
+  n_nonfinite: number;
+  is_activation: boolean;
+  note: string;
+}
+
+export interface CustomStatus {
+  loaded: boolean;
+  path: string | null;
+  source: string | null;
+  name: string | null;
+  device: string;
+  n_params: number;
+  n_trainable: number;
+  n_modules: number;
+  input_shape: number[] | null;
+  input_origin: string;
+  input_reason: string;
+  labels: string[] | null;
+  reason: string;
+  roots: string[];
+}
+
+export interface CustomCandidate {
+  path: string;
+  name: string;
+  dir: string;
+  has_example?: boolean;
+  hint?: boolean;
+  mb?: number;
+}
+
+export interface CustomRun {
+  layers: CustomLayer[];
+  input_shape: number[];
+  labels: string[] | null;
+  total_ms: number;
+  n_layers: number;
+  truncated: boolean;
+  output_shape: number[];
+  output: {
+    top_index?: number[];
+    top_value?: number[];
+    argmax?: number;
+    n_out?: number;
+    nonfinite?: boolean;
+  };
+}
+
+export const getCustom = () =>
+  fetch("/api/custom").then((r) => json<CustomStatus>(r));
+
+export const getCustomCandidates = () =>
+  fetch("/api/custom/candidates").then((r) =>
+    json<{
+      adapters: CustomCandidate[];
+      torchscript: CustomCandidate[];
+      roots: string[];
+    }>(r),
+  );
+
+export const loadCustom = (path: string) =>
+  fetch("/api/custom/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  }).then((r) => json<CustomStatus>(r));
+
+export const runCustom = (shape: number[] | null) =>
+  fetch("/api/custom/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shape }),
+  }).then((r) => json<CustomRun>(r));
+
+export const unloadCustom = () =>
+  fetch("/api/custom/unload", { method: "POST" }).then((r) =>
+    json<CustomStatus>(r),
+  );

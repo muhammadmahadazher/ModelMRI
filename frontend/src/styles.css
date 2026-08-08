@@ -248,6 +248,7 @@
   --color-feat: var(--sem-feat);
   --color-agent: var(--sem-agent);
   --color-vla: var(--sem-vla);
+  --color-custom: var(--sem-base);
   --color-pop: var(--sem-error);
   --hair: var(--line);
   --hair-soft: var(--line-soft);
@@ -1143,6 +1144,27 @@ input[type="range"]:focus-visible { outline: none; }
   font-family: var(--font-mono);
 }
 
+/* ---------- resting state ----------
+   A panel that has not been asked to do anything yet. It says what one click
+   will cost before spending it, because the alternative — quietly opening a
+   dataset and decoding video on page load — is 396 MB the visitor never asked
+   for. Deliberately calm: no scan, no shimmer, nothing that reads as loading. */
+.resting {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  padding: 22px 0 6px;
+  max-width: 46ch;
+}
+.resting p {
+  margin: 0;
+  color: var(--color-mute);
+  font-size: 13px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.resting .meta { font-size: 11px; }
+
 /* ---------- agents / timeline ---------- */
 .trace-list { display: grid; gap: 3px; margin-bottom: 12px; }
 .trace-row {
@@ -1252,7 +1274,14 @@ footer {
   border-top: 1px solid var(--hair);
   padding-top: 16px;
 }
-footer a { color: var(--color-ink); text-decoration: none; border-bottom: 1px solid var(--color-cobalt); }
+footer { flex-wrap: wrap; }
+footer a {
+  color: var(--color-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-cobalt);
+  min-width: 0;
+  overflow-wrap: anywhere;   /* a 30-character URL was widening the page */
+}
 footer a:hover { color: var(--color-cobalt); }
 footer .spacer { flex: 1; }
 
@@ -1327,4 +1356,173 @@ footer .spacer { flex: 1; }
 }
 @media (prefers-reduced-motion: reduce) {
   .stagger > * { animation: none; }
+}
+
+/* ---------- custom models ----------
+   Teal was the one semantic hue the design system defined and never spent.
+   A panel about the model you wrote yourself is worth a colour of its own. */
+.h-custom { color: var(--color-custom); }
+.d-custom { background: var(--color-custom); }
+
+.pill.tiny { font-size: 10px; padding: 3px 8px; letter-spacing: 0.03em; }
+.pill.bad {
+  color: var(--color-pop);
+  border-color: color-mix(in oklab, var(--sem-error) 45%, transparent);
+  background: color-mix(in oklab, var(--sem-error) 8%, var(--color-card));
+}
+.pill.warn {
+  color: var(--color-agent);
+  border-color: color-mix(in oklab, var(--sem-agent) 45%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, var(--color-card));
+}
+
+.resting-empty {
+  color: var(--color-mute);
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 62ch;
+  margin: 18px 0 12px;
+  text-wrap: pretty;
+}
+.resting-empty code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--color-ink) 6%, transparent);
+}
+
+.cand-wrap { display: grid; gap: 6px; }
+.cand-head { margin-top: 8px; letter-spacing: 0.1em; text-transform: uppercase; }
+.cand-list { display: grid; gap: 3px; }
+.cand {
+  all: unset;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  cursor: pointer;
+  padding: 8px 11px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-width: 0;
+  transition: background-color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover);
+}
+.cand:hover { background: color-mix(in oklab, var(--sem-base) 8%, transparent); }
+.cand:focus-visible { outline: 2px solid var(--color-custom); outline-offset: 2px; }
+.cand[disabled] { cursor: default; opacity: 0.5; }
+.cand .spacer { flex: 1; }
+.cand-name { color: var(--color-ink); }
+.cand-dir {
+  color: var(--color-mute);
+  font-size: 11px;
+  direction: rtl;          /* a long path should lose its head, not its tail */
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 46ch;
+  min-width: 0;
+}
+.cand-manual { margin-top: 12px; }
+
+.custom-input { margin-bottom: 12px; }
+.custom-input .combo { min-width: 150px; max-width: 220px; }
+.meta.guessy { color: var(--color-agent); }
+.custom-out { margin-top: 12px; }
+
+/* The layer map. A table, because it is one — six columns of the same six
+   facts per layer, and the reader's job is to scan down a column. */
+.layer-table {
+  display: grid;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-x: auto;
+}
+.layer-row {
+  display: grid;
+  grid-template-columns:
+    minmax(80px, 1.1fr) minmax(64px, 0.8fr) minmax(78px, 0.8fr)
+    minmax(58px, 0.5fr) minmax(220px, 2fr) minmax(62px, 0.5fr);
+  gap: 12px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 7px;
+  min-width: 0;
+}
+.layer-row > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-row.head {
+  color: var(--color-mute);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--hair);
+  border-radius: 0;
+  padding-bottom: 8px;
+  margin-bottom: 3px;
+}
+.layer-row .num { text-align: right; }
+.layer-row.warn { background: color-mix(in oklab, var(--sem-agent) 7%, transparent); }
+.layer-row.bad { background: color-mix(in oklab, var(--sem-error) 8%, transparent); }
+.l-name { color: var(--color-ink); }
+.l-kind { color: var(--color-custom); }
+.l-shape, .l-params, .l-ms { color: var(--color-mute); }
+
+/* Must be allowed to shrink AND wrap. Without both, the mean bar, the
+   numbers and the verdict pill add up to a fixed ~250px that a grid cell of
+   150px cannot contain — and since this cell overrides overflow to visible
+   (so the mean marker isn't clipped), the excess left the page entirely
+   rather than being hidden. */
+.l-act {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  overflow: visible;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+/* The range each layer's activations occupy, with the mean marked. Absolute
+   values differ by orders of magnitude between layers, so the bar is
+   deliberately per-row and comparable only in shape. */
+.l-bar {
+  position: relative;
+  flex: 0 0 84px;
+  height: 5px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--color-ink) 10%, transparent);
+}
+.l-mean {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--color-custom);
+  transform: translateX(-1px);
+}
+.l-nums { color: var(--color-mute); flex: 0 0 auto; }
+
+.l-ms { position: relative; }
+.l-time {
+  position: absolute;
+  right: 0;
+  bottom: -3px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in oklab, var(--sem-base) 55%, transparent);
+}
+
+@media (max-width: 900px) {
+  /* Six columns do not survive a phone. Drop to the three that carry the
+     finding — which layer, what shape, and whether anything is wrong. */
+  .layer-row {
+    grid-template-columns: minmax(70px, 1fr) minmax(70px, 1fr) minmax(150px, 2fr);
+  }
+  .layer-row > .l-kind, .layer-row > .l-params, .layer-row > .l-ms,
+  .layer-row.head > :nth-child(2), .layer-row.head > :nth-child(4),
+  .layer-row.head > :nth-child(6) { display: none; }
+  .cand-dir { max-width: 18ch; }
+  .l-bar { display: none; }
 }

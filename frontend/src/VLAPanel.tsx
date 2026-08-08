@@ -30,16 +30,14 @@ export default function VLAPanel() {
   const [note, setNote] = useState("");
   const debounce = useRef<number | undefined>(undefined);
 
+  // Status only. Opening the dataset imports pyarrow and pyav and decodes
+  // video — 396 MB and ~4.4s measured — so it waits until asked. Nothing on
+  // this page reads a model or a dataset before you click.
   useEffect(() => {
     let live = true;
-    void getVLA().then((s) => live && setVla(s));
-    void getVLAEpisodes()
-      .then((d) => {
-        if (!live) return;
-        setDs(d);
-        setLayer(0);
-      })
-      .catch((e) => live && setErr(String(e)));
+    void getVLA()
+      .then((s) => live && setVla(s))
+      .catch(() => undefined);
     return () => {
       live = false;
     };
@@ -74,6 +72,19 @@ export default function VLAPanel() {
   const currentKey = `${episode}:${t}`;
   const stale = heatKey !== "" && heatKey !== currentKey;
 
+  async function onOpen() {
+    setBusy("open");
+    setErr("");
+    try {
+      setDs(await getVLAEpisodes());
+      setLayer(0);
+    } catch (e) {
+      setErr(String(e instanceof Error ? e.message : e));
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function onLoad() {
     setBusy("load");
     setErr("");
@@ -102,7 +113,7 @@ export default function VLAPanel() {
     }
   }
 
-  if (!ds && err) {
+  if (!ds) {
     return (
       <div className="panel">
         <div className="sect">
@@ -110,14 +121,30 @@ export default function VLAPanel() {
           <h2 className="h-vla">ROBOT POLICY — VLA</h2>
           <span className="rule" />
         </div>
-        <div className="hint">
-          no robot dataset cached · install the extra and pull one:{" "}
-          <b>pip install modelmri[vla-lite]</b>
+        <div className="resting">
+          <p>
+            Watch what a real robot policy looks at, frame by frame, on recorded
+            episodes. Nothing is loaded yet.
+          </p>
+          <button className="green" onClick={() => void onOpen()} disabled={busy !== ""}>
+            {busy === "open" ? "Opening dataset…" : "Open dataset"}
+          </button>
+          <span className="meta">
+            reads {vla?.dataset_repo ?? "a cached LeRobot dataset"} from your
+            HuggingFace cache · nothing is downloaded
+          </span>
         </div>
+        {err && (
+          <div className="hint">
+            {/robot dataset|not cached|No such|FileNotFound/i.test(err)
+              ? "no robot dataset cached · install the extra and pull one: "
+              : `${err} · `}
+            <b>pip install modelmri[vla-lite]</b>
+          </div>
+        )}
       </div>
     );
   }
-  if (!ds) return null;
 
   const ep = ds.episodes.find((e) => e.index === episode) ?? ds.episodes[0];
 
