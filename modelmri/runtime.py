@@ -205,7 +205,24 @@ class ModelRuntime:
                 self.accel.reason = f"fell back to CPU: {type(err).__name__}: {err}"
                 self.device = self.accel.torch_device
                 progress.TRACKER.stage("device", "GPU rejected the model, using CPU")
-                model = model.to(torch.float32).to(self.device)
+                try:
+                    model = model.to(torch.float32).to(self.device)
+                except Exception as cpu_err:
+                    # float32 on CPU needs roughly twice the VRAM figure that
+                    # just failed, so this is the *likely* path for a big
+                    # model, not the exotic one. Uncaught, it escaped before
+                    # TRACKER.finish() ran: the progress meter stayed "active"
+                    # for the rest of the session and its watcher thread
+                    # polled the disk forever.
+                    progress.TRACKER.finish(
+                        error=f"{type(err).__name__} on {self.accel.name}, then "
+                        f"{type(cpu_err).__name__} on CPU: not enough memory "
+                        f"for this model"
+                    )
+                    raise RuntimeError(
+                        f"'{hf_id}' does not fit: {type(err).__name__} on GPU, "
+                        f"then {type(cpu_err).__name__} on CPU. Try a smaller model."
+                    ) from cpu_err
             model.eval()
             progress.TRACKER.finish()
             self.epoch += 1
@@ -294,11 +311,22 @@ class ModelRuntime:
             direction = self.sae.steering_vector(fid).to(self.device)
             block = self._block(self.sae.layer)
 
-            def _steer_hook(module, args):  # noqa: ANN001 - torch hook signature
-                hidden = args[0]
-                return (hidden + scale * direction.to(hidden.dtype),) + args[1:]
+            if self.sae.point == "resid_post":
 
-            steer_handle = block.register_forward_pre_hook(_steer_hook)
+                def _steer_post(module, args, output):  # noqa: ANN001
+                    tup = isinstance(output, tuple)
+                    hidden = output[0] if tup else output
+                    moved = hidden + scale * direction.to(hidden.dtype)
+                    return ((moved,) + tuple(output[1:])) if tup else moved
+
+                steer_handle = block.register_forward_hook(_steer_post)
+            else:
+
+                def _steer_hook(module, args):  # noqa: ANN001
+                    hidden = args[0]
+                    return (hidden + scale * direction.to(hidden.dtype),) + args[1:]
+
+                steer_handle = block.register_forward_pre_hook(_steer_hook)
 
         try:
             worker = threading.Thread(target=_generate, daemon=True)
@@ -425,15 +453,37 @@ class ModelRuntime:
         if self._feats is None:
             captured: list[torch.Tensor] = []
 
-            def _capture(module, args):  # noqa: ANN001 - torch hook signature
-                captured.append(args[0].detach())
+            block = self._block(self.sae.layer)
+            if self.sae.point == "resid_post":
+                # resid_post is the block's OUTPUT. Hooking the input here fed
+                # the SAE the stream from the wrong side of the block, which
+                # does not error -- it just yields features for activations the
+                # SAE never saw in training.
+                def _capture(module, args, output):  # noqa: ANN001
+                    hidden = output[0] if isinstance(output, tuple) else output
+                    captured.append(hidden.detach())
 
-            handle = self._block(self.sae.layer).register_forward_pre_hook(_capture)
+                handle = block.register_forward_hook(_capture)
+            else:
+
+                def _capture(module, args):  # noqa: ANN001
+                    captured.append(args[0].detach())
+
+                handle = block.register_forward_pre_hook(_capture)
+            epoch = self.epoch
+            ids = self.last_ids
             try:
                 with torch.no_grad():
-                    self.model(self.last_ids.unsqueeze(0).to(self.device))
+                    self.model(ids.unsqueeze(0).to(self.device))
             finally:
                 handle.remove()
+            if self.epoch != epoch:
+                # A load completed during the forward pass -- seconds, on CPU
+                # for a 0.5B model. Caching this would file one model's
+                # features under another model's generation.
+                raise RuntimeError(
+                    "The model changed while features were computing. Generate again."
+                )
             resid = captured[0][0].to("cpu")  # [S, d_in]
             self._feats = self.sae.encode(resid).to(torch.float16)
         return self._feats

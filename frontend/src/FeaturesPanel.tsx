@@ -14,10 +14,15 @@ import {
 interface Props {
   epoch: number; // bumps after each generation
   prompt: string; // the prompt of the last generation, for steering A/B
+  /** Raised while the steering hook is installed on the model. Generate must
+   *  be locked out for that window: the hook is global to the runtime, so a
+   *  generation started mid-A/B comes back steered with nothing on screen
+   *  saying so. */
+  onSteering?: (active: boolean) => void;
 }
 
 /** SAE feature browser: token -> top features -> heat view -> steering A/B. */
-export default function FeaturesPanel({ epoch, prompt }: Props) {
+export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
   const scanRef = useScanOnData(epoch);
   const [sae, setSae] = useState<SAEStatus | null>(null);
   const [busy, setBusy] = useState("");
@@ -90,6 +95,7 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
     if (featSel < 0) return;
     setBusy("steer");
     setErr("");
+    onSteering?.(true);
     try {
       await setSteer(null);
       const base = (await promptOnce(prompt, 24, 0, false)).generation;
@@ -101,6 +107,10 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
       setErr(String(e));
       await setSteer(null);
     } finally {
+      // Must pair with the raise above on EVERY path, including the throw:
+      // the hook is global to the runtime, so leaving this latched locks
+      // Generate out for the rest of the session.
+      onSteering?.(false);
       setBusy("");
     }
   }

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cssColor, toRgb, useThemeVersion } from "./theme";
 
 interface Props {
@@ -15,6 +15,11 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
   const baseRef = useRef<HTMLCanvasElement>(null);
   const heatRef = useRef<HTMLCanvasElement>(null);
   const themeV = useThemeVersion();
+  // Setting canvas.width CLEARS it. The base image loads async, so when it
+  // landed after the heat had already been painted it silently wiped the
+  // overlay -- scrub away and back and the heatmap was gone with no hint
+  // that anything had happened. Bumping this re-runs the heat draw.
+  const [sized, setSized] = useState(0);
 
   useEffect(() => {
     const canvas = baseRef.current;
@@ -40,6 +45,7 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
         overlay.style.width = `${w}px`;
         overlay.style.height = `${h}px`;
       }
+      setSized((n) => n + 1);
     };
     img.src = src;
     return () => {
@@ -78,7 +84,7 @@ export default function FrameCanvas({ src, heat, alpha = 0.55, scale = 4 }: Prop
     octx.putImageData(data, 0, 0);
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(off, 0, 0, overlay.width, overlay.height);
-  }, [heat, alpha, src, themeV]);
+  }, [heat, alpha, src, themeV, sized]);
 
   return (
     <div className="vla-frame">

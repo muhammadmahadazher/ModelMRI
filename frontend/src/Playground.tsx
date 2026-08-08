@@ -30,6 +30,9 @@ export default function Playground({ model, onModelChange }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [lastPrompt, setLastPrompt] = useState("");
   const [prog, setProg] = useState<LoadProgress | null>(null);
+  // The steering hook lives on the runtime, not on the panel, so any
+  // generation fired while it is installed is silently steered.
+  const [steering, setSteering] = useState(false);
   const pieces = useRef(0);
   const t0 = useRef(0);
 
@@ -87,7 +90,7 @@ export default function Playground({ model, onModelChange }: Props) {
   }
 
   async function onGenerate() {
-    if (busy || !prompt.trim()) return;
+    if (busy || steering || !prompt.trim()) return;
     if (!(await ensureLoaded())) return;
     setBusy("generating");
     setOutput("");
@@ -158,8 +161,15 @@ export default function Playground({ model, onModelChange }: Props) {
         placeholder="Type a prompt… (Ctrl+Enter to generate)"
       />
       <div className="row">
-        <button className="cta" onClick={() => void onGenerate()} disabled={busy !== "" || !prompt.trim()}>
-          {busy === "loading"
+        <button
+          className="cta"
+          onClick={() => void onGenerate()}
+          disabled={busy !== "" || steering || !prompt.trim()}
+          title={steering ? "steering is active — finish the A/B first" : undefined}
+        >
+          {steering
+            ? "Steering…"
+            : busy === "loading"
             ? "Loading model…"
             : busy === "generating"
               ? "Generating…"
@@ -184,7 +194,7 @@ export default function Playground({ model, onModelChange }: Props) {
 
       {epoch > 0 && introspectable && <AttentionPanel epoch={epoch} />}
       {epoch > 0 && introspectable && (
-        <FeaturesPanel epoch={epoch} prompt={lastPrompt} />
+        <FeaturesPanel epoch={epoch} prompt={lastPrompt} onSteering={setSteering} />
       )}
     </>
   );

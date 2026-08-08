@@ -1,6 +1,6 @@
 [project]
 name = "modelmri-record"
-version = "0.1.1"
+version = "0.1.2"
 description = "Record agent runs — LLM calls, tool calls, subagents — and view them on a ModelMRI timeline. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.10"

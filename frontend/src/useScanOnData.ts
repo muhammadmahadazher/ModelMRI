@@ -14,13 +14,16 @@ export function useScanOnData<T>(payloadId: T) {
   const seen = useRef<T | null>(null);
 
   useEffect(() => {
-    const el = ref.current;
-    // Skip the first sight of a payload: that is the panel appearing, which
-    // its own entrance already covers. The scan is for the second onward.
-    if (!el || payloadId == null || seen.current === payloadId) return;
+    if (payloadId == null || seen.current === payloadId) return;
     const first = seen.current === null;
+    // Record the payload BEFORE checking the element. These panels render
+    // null until their metadata arrives, so on the first pass ref.current is
+    // null; bailing here without bookkeeping left seen===null, and the next
+    // payload was then mistaken for the first sight and skipped too. The
+    // result was that the first genuinely-new data never scanned.
     seen.current = payloadId;
-    if (first) return;
+    const el = ref.current;
+    if (first || !el) return;
 
     el.dataset.scan = "";
     const done = () => {

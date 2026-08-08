@@ -720,3 +720,91 @@ def test_derived_state_is_served_when_the_epoch_still_matches(monkeypatch):
     rt.backend = "hf"
     meta = rt.attention_meta()
     assert meta["available"] is True and meta["n_layers"] == 12
+
+
+def test_a_failed_cpu_fallback_does_not_leave_the_progress_meter_running(monkeypatch):
+    """float32 on CPU needs roughly double the VRAM figure that just failed, so
+    a big model hits this path routinely. Uncaught, the exception escaped
+    before TRACKER.finish() ran and the meter stayed 'active' for the rest of
+    the session, with its watcher thread polling the disk forever."""
+    import torch
+
+    from modelmri import progress
+    from modelmri.runtime import ModelRuntime
+
+    rt = ModelRuntime()
+
+    class Boom:
+        def to(self, *a, **k):
+            raise torch.cuda.OutOfMemoryError("no room")
+
+        def eval(self):  # pragma: no cover - never reached
+            return self
+
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        "transformers.AutoModelForCausalLM.from_pretrained", lambda *a, **k: Boom()
+    )
+    rt.accel.kind = "cuda"  # so the CPU fallback branch is taken
+
+    with pytest.raises(RuntimeError, match="does not fit"):
+        rt.load("acme/enormous")
+
+    snap = progress.TRACKER.snapshot()
+    assert snap.active is False, "progress meter left running after a failed load"
+    assert snap.stage == "error" and snap.error
+
+
+def test_sae_rejects_a_hook_point_it_cannot_place():
+    """The hook POINT used to be discarded, so a resid_post SAE was silently
+    fed the stream entering the block instead of leaving it — plausible
+    features describing activations it was never trained on."""
+    from modelmri.saes import SAEHandle
+
+    with pytest.raises(ValueError, match="Unsupported hook point"):
+        SAEHandle.load("acme/sae", "blocks.4.hook_mlp_out")
+    with pytest.raises(ValueError, match="Cannot parse layer"):
+        SAEHandle.load("acme/sae", "nonsense")
+
+
+def test_sae_hook_point_selects_the_side_of_the_block(monkeypatch):
+    """resid_pre must hook the block's input, resid_post its output."""
+    import torch
+
+    from modelmri.runtime import ModelRuntime
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        def forward(self, x):
+            return (x + 100,)
+
+    for point, expected in (("resid_pre", 1.0), ("resid_post", 101.0)):
+        rt = ModelRuntime()
+        block = Block()
+        rt._block = lambda _layer, b=block: b
+        rt.last_ids = torch.zeros(2, dtype=torch.long)
+        rt.last_ids_epoch = rt.epoch
+
+        class FakeSAE:
+            layer, point_ = 0, point
+            d_sae = 4
+
+            def __init__(self):
+                self.point = point
+
+            def encode(self, resid):
+                captured.append(float(resid.flatten()[0]))
+                return torch.zeros(resid.shape[0], 4)
+
+        captured: list[float] = []
+        rt.sae = FakeSAE()
+        rt.model = lambda ids: block(torch.ones(1, 2, 3))
+        rt._compute_features()
+        assert captured and captured[0] == expected, (
+            f"{point}: hooked the wrong side (got {captured})"
+        )

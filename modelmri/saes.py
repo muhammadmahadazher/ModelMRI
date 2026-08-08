@@ -42,6 +42,7 @@ class SAEHandle:
         self,
         repo: str,
         hook: str,
+        point: str,
         layer: int,
         W_enc: torch.Tensor,
         b_enc: torch.Tensor,
@@ -50,6 +51,7 @@ class SAEHandle:
         apply_b_dec_to_input: bool,
     ) -> None:
         self.repo, self.hook, self.layer = repo, hook, layer
+        self.point = point  # resid_pre | resid_post
         self.W_enc, self.b_enc = W_enc, b_enc
         self.W_dec, self.b_dec = W_dec, b_dec
         self.apply_b_dec_to_input = apply_b_dec_to_input
@@ -59,10 +61,21 @@ class SAEHandle:
     def load(
         cls, repo: str = DEFAULT_SAE_REPO, hook: str = DEFAULT_SAE_HOOK
     ) -> "SAEHandle":
-        m = re.search(r"blocks\.(\d+)\.", hook)
+        m = re.search(r"blocks\.(\d+)\.hook_(\w+)", hook)
         if not m:
             raise ValueError(f"Cannot parse layer index from hook name: {hook!r}")
         layer = int(m.group(1))
+        point = m.group(2)
+        # The hook POINT was previously discarded, so every SAE was fed the
+        # residual stream ENTERING the block. For a resid_post SAE that is the
+        # wrong side of the block: it produces plausible-looking features that
+        # describe activations the SAE was never trained on. Reject what we
+        # cannot place rather than quietly using the wrong tensor.
+        if point not in ("resid_pre", "resid_post"):
+            raise ValueError(
+                f"Unsupported hook point {point!r} in {hook!r}. ModelMRI reads the "
+                f"residual stream: use a hook_resid_pre or hook_resid_post SAE."
+            )
 
         cfg_path = hf_hub_download(repo, f"{hook}/cfg.json")
         weights_path = hf_hub_download(repo, f"{hook}/sae_weights.safetensors")
@@ -72,6 +85,7 @@ class SAEHandle:
         return cls(
             repo=repo,
             hook=hook,
+            point=point,
             layer=layer,
             W_enc=tensors["W_enc"].float(),
             b_enc=tensors["b_enc"].float(),
