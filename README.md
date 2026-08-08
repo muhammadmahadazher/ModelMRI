@@ -106,7 +106,7 @@ A `state_dict` alone is refused, with the reason: it's weights without an archit
 ```bash
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
-pip install modelmri-record       # just the agent recorder — stdlib only, 7 KiB
+pip install modelmri-record       # just the agent recorder — stdlib only, a 9 KiB wheel
 modelmri serve
 ```
 
@@ -120,7 +120,7 @@ uv sync && uv run modelmri serve
 
 **Models.** Type any HuggingFace id, pick from what's already cached on your machine, or switch to **Ollama** to run any open model you've pulled. (Ollama gives you text only — internals need a HuggingFace model, and ModelMRI says so rather than pretending.)
 
-Everything runs on CPU. A 0.5B model streams in a couple of seconds on a laptop.
+**GPU when you have one.** NVIDIA, AMD, Intel and Apple silicon are detected automatically and the badge explains its choice — including the common case where torch was installed as a CPU-only build, where it prints the exact command to fix it. CPU works fine too; a 0.5B model streams in a couple of seconds.
 
 ## API
 
@@ -153,7 +153,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 ## Honest limits
 
 - **Attention needs eager attention.** SDPA and FlashAttention never materialize the weights, so ModelMRI loads models with `attn_implementation="eager"`. Slower, but it's the only way to see anything.
-- **SAE features need a matching SAE.** Ships pointed at the public GPT-2 SAEs; other models need their own.
+- **SAE features need an SAE that exists.** They are trained per model, and public ones cover about a dozen models in total — there is none for most of what you will load, and no amount of code makes one appear. ModelMRI offers the one that matches your model, says plainly when there is none, and falls back to a logit lens, which needs nothing but the model.
 - **Custom models get a layer map, not attention.** Attention and SAE features need a transformer; for an arbitrary `nn.Module` ModelMRI shows shapes, activation statistics and pathologies. Loading an adapter runs your Python — see [SECURITY.md](SECURITY.md).
 - **VLA mode is the perception half.** SmolVLA's vision tower is real and loaded from the real checkpoint; the action expert needs `lerobot`, whose torch/numpy pins conflict with the core runtime, so it lives behind an opt-in extra rather than degrading everyone's install.
 
