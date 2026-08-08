@@ -58,6 +58,7 @@ class PromptRequest(BaseModel):
     prompt: str
     max_new_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    commit: bool = True
 
 
 def create_app(
@@ -196,10 +197,21 @@ def create_app(
 
         def run() -> str:
             return "".join(
-                runtime.generate_stream(req.prompt, req.max_new_tokens, req.temperature)
+                runtime.generate_stream(
+                    req.prompt, req.max_new_tokens, req.temperature, req.commit
+                )
             )
 
-        return {"generation": await asyncio.to_thread(run)}
+        try:
+            return {"generation": await asyncio.to_thread(run)}
+        except RuntimeError as err:
+            # Ollama quitting mid-session, a streamer timeout, CUDA OOM: all
+            # arrived here as a bare 500 with a traceback. Say what happened.
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:  # noqa: BLE001 - last line before a 500
+            return JSONResponse(
+                {"error": f"{type(err).__name__}: {err}"}, status_code=409
+            )
 
     @app.get("/api/attention/meta")
     def attention_meta() -> dict:

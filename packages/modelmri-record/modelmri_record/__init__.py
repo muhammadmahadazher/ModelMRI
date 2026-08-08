@@ -59,7 +59,15 @@ class _Trace:
         self.t0 = time.monotonic()
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.steps: list[dict] = []
-        self.parent_stack: list[str] = []
+        # NOT a plain list. Concurrent asyncio tasks share the trace, and a
+        # shared stack means task B's step becomes a child of task A's open
+        # step purely because A happened to be inside a `with` at that moment.
+        # A contextvar gives each task its own view of the ancestry while the
+        # trace itself stays shared. Verified with asyncio.gather over two
+        # agents: before, the second agent's tool call hung off the first.
+        self.parents: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+            f"mri_parents_{self.id}", default=()
+        )
 
     def now_ms(self) -> int:
         return int((time.monotonic() - self.t0) * 1000)
@@ -160,12 +168,14 @@ class _StepCtx:
         self._entered_ms = 0
 
     def __enter__(self) -> "_StepCtx":
-        self._trace.parent_stack.append(self._record["id"])
+        self._token = self._trace.parents.set(
+            self._trace.parents.get() + (self._record["id"],)
+        )
         self._entered_ms = self._trace.now_ms()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._trace.parent_stack.pop()
+        self._trace.parents.reset(self._token)
         if not self._record["duration_ms"]:
             self._record["duration_ms"] = self._trace.now_ms() - self._entered_ms
         if exc is not None:
@@ -190,7 +200,7 @@ def step(
         return _NO_STEP
     record = {
         "id": uuid.uuid4().hex[:10],
-        "parent_id": t.parent_stack[-1] if t.parent_stack else None,
+        "parent_id": (t.parents.get() or (None,))[-1],
         "kind": kind,
         "name": name,
         "started_ms": t.now_ms() if started_ms is None else started_ms,
@@ -308,8 +318,12 @@ def _deliver(t: _Trace) -> None:
     try:
         out = Path("modelmri-traces")
         out.mkdir(exist_ok=True)
+        # Second-resolution stamps collide: three quick runs of the same
+        # agent overwrote each other and only the last survived. The trace id
+        # is already unique, so use it.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        (out / f"{t.name}-{stamp}.json").write_text(json.dumps(doc, indent=1))
+        safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in t.name)[:60]
+        (out / f"{safe}-{stamp}-{t.id}.json").write_text(json.dumps(doc, indent=1))
     except Exception:
         pass  # recording must never crash the host app
 

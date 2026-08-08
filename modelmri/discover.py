@@ -90,13 +90,19 @@ def _looks_like_model_dir(entries: list[os.DirEntry]) -> bool:
 def _hf_cache_entry(root: Path, name: str) -> Found:
     """models--org--name -> the repo id transformers expects."""
     repo = "/".join(name.removeprefix("models--").split("--"))
-    files = [p for p in (root / name).rglob("*") if p.is_file()]
+    d = root / name
+    # max, not sum: snapshots/ is a full copy of blobs/ wherever symlinks are
+    # unavailable, so summing double-counts and the size sort goes wrong.
+    size = max(
+        _size_of([p for p in (d / "blobs").rglob("*") if p.is_file()]),
+        _size_of([p for p in (d / "snapshots").rglob("*") if p.is_file()]),
+    )
     return Found(
         id=repo,
         name=repo,
-        path=str(root / name),
+        path=str(d),
         kind="hf-cache",
-        size_gb=_size_of(files),
+        size_gb=size,
         loadable=True,
         note="cached, loads offline",
     )

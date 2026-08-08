@@ -48,6 +48,13 @@ def _hub_error_message(hf_id: str, err: Exception) -> str:
     return f"Could not load '{hf_id}': {text.splitlines()[0]}"
 
 
+def _tree_bytes(root) -> int:
+    try:
+        return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
 def local_hf_models() -> list[dict]:
     """Models already in the HuggingFace cache (offline-usable)."""
     import os
@@ -61,7 +68,11 @@ def local_hf_models() -> list[dict]:
         return out
     for d in sorted(hub.glob("models--*")):
         parts = d.name.removeprefix("models--").split("--")
-        size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+        # max, not sum -- exactly the trap progress.py documents. On Windows
+        # (and anywhere symlinks are unavailable) snapshots/ holds full copies
+        # of the blobs, so adding the two trees reports every model at roughly
+        # double its real size, and the picker then sorts by that.
+        size = max(_tree_bytes(d / "blobs"), _tree_bytes(d / "snapshots"))
         out.append({"id": "/".join(parts), "size_gb": round(size / 1e9, 2)})
     return out
 
@@ -90,8 +101,15 @@ class ModelRuntime:
         # GPU when one is usable (NVIDIA / AMD ROCm / Intel / Apple), else CPU
         self.accel = devices.detect()
         self.device = self.accel.torch_device
+        # Bumped on every load. Everything derived from a generation carries
+        # the epoch it was produced under, because a model swap that lands
+        # mid-generation would otherwise leave one model's token ids to be
+        # interpreted by another model's weights -- which does not crash, it
+        # just quietly reports numbers about nothing.
+        self.epoch = 0
         # Last completed generation (prompt + output), for attention capture.
         self.last_ids: torch.Tensor | None = None
+        self.last_ids_epoch = -1
         self._attn: list[torch.Tensor] | None = None  # per layer: [H, S, S] fp16
         self._attn_tokens: list[str] | None = None
         # SAE state
@@ -141,6 +159,7 @@ class ModelRuntime:
                     f"{', '.join(st['models']) or 'none'} — run `ollama pull {hf_id}`"
                 )
             with self._lock:
+                self.epoch += 1
                 self.model = None
                 self.tokenizer = None
                 self.backend = "ollama"
@@ -189,6 +208,7 @@ class ModelRuntime:
                 model = model.to(torch.float32).to(self.device)
             model.eval()
             progress.TRACKER.finish()
+            self.epoch += 1
             self.backend = "hf"
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.last_ids = None
@@ -213,10 +233,20 @@ class ModelRuntime:
         prompt: str,
         max_new_tokens: int = 256,
         temperature: float = 0.7,
+        commit: bool = True,
     ) -> Iterator[str]:
-        """Yield generated text pieces. Blocking iterator — consume off the event loop."""
+        """Yield generated text pieces. Blocking iterator — consume off the event loop.
+
+        commit=False runs the model without touching the analysis target. The
+        steering A/B needs this: it fires two short completions to compare, and
+        committing those would silently rebase last_ids onto a 24-token
+        sequence while the panels are still showing a 260-token one. Nothing
+        errors; the heat map just starts describing a different generation
+        than the token strip above it.
+        """
         if not self.loaded:
             raise RuntimeError("No model loaded. POST /api/model/load first.")
+        epoch = self.epoch
 
         if self.backend == "ollama":
             yield from ollama.stream_generate(
@@ -280,11 +310,18 @@ class ModelRuntime:
                 steer_handle.remove()
 
         ids = result.get("ids")
-        if ids is not None:
-            self.last_ids = ids[0].detach().to("cpu")
-            self._attn = None  # invalidate caches; recomputed on demand
-            self._attn_tokens = None
-            self._feats = None
+        if ids is None or not commit:
+            return
+        if self.epoch != epoch:
+            # A load completed while this generation was streaming. These ids
+            # belong to a model that is no longer here; committing them would
+            # point the attention view at the wrong weights.
+            return
+        self.last_ids = ids[0].detach().to("cpu")
+        self.last_ids_epoch = epoch
+        self._attn = None  # invalidate caches; recomputed on demand
+        self._attn_tokens = None
+        self._feats = None
 
     # ---------------- attention ----------------
 
@@ -294,6 +331,8 @@ class ModelRuntime:
             return {"available": False, "reason": "internals unavailable via Ollama"}
         if not self.loaded or self.last_ids is None:
             return {"available": False}
+        if self.last_ids_epoch != self.epoch:
+            return {"available": False, "reason": "model changed since that generation"}
         cfg = self.model.config
         return {
             "available": True,
@@ -310,6 +349,10 @@ class ModelRuntime:
         """
         if not self.loaded or self.last_ids is None:
             raise RuntimeError("Generate something first, then inspect attention.")
+        if self.last_ids_epoch != self.epoch:
+            raise RuntimeError(
+                "That generation was produced by a different model. Generate again."
+            )
 
         with self._lock:
             if self._attn is None:
@@ -375,6 +418,10 @@ class ModelRuntime:
             raise RuntimeError("No SAE loaded. POST /api/sae/load first.")
         if self.last_ids is None:
             raise RuntimeError("Generate something first.")
+        if self.last_ids_epoch != self.epoch:
+            raise RuntimeError(
+                "That generation was produced by a different model. Generate again."
+            )
         if self._feats is None:
             captured: list[torch.Tensor] = []
 

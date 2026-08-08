@@ -84,6 +84,41 @@ def test_with_step_survives_a_worker_thread(offline):
             ]
 
 
+def test_concurrent_tasks_do_not_steal_each_others_parentage(offline):
+    """A shared parent stack made task B's tool call a child of task A's open
+    subagent, purely because A was inside a `with` at that moment. Parallel
+    agents are the normal case, so the tree was wrong whenever it mattered."""
+    import asyncio
+
+    async def agent(tag: str) -> None:
+        with rec.step("subagent", name=tag):
+            await asyncio.sleep(0.01)
+            rec.step("tool_call", name=f"{tag}-tool")
+
+    async def both() -> None:
+        await asyncio.gather(agent("A"), agent("B"))
+
+    with rec.trace("parallel"):
+        asyncio.run(both())
+
+    steps = {s["id"]: s for s in written(offline)["steps"]}
+    by_name = {s["name"]: s for s in steps.values()}
+    for tag in ("A", "B"):
+        sub, tool = by_name[tag], by_name[f"{tag}-tool"]
+        assert sub["parent_id"] is None, f"{tag} subagent should be top level"
+        assert tool["parent_id"] == sub["id"], f"{tag}-tool hung off the wrong parent"
+
+
+def test_quick_successive_runs_do_not_overwrite_each_other(offline):
+    """The offline filename was second-resolution, so three runs of the same
+    agent inside one second left one file on disk."""
+    for i in range(3):
+        with rec.trace("agent-run"):
+            rec.step("llm_call", name=f"call-{i}")
+    files = list((offline / "modelmri-traces").glob("*.json"))
+    assert len(files) == 3, f"expected 3 traces, found {len(files)}"
+
+
 # ---------------------------------------------------------------- redaction
 
 

@@ -28,8 +28,13 @@ VIEWPORT = {"width": 1280, "height": 820}
 
 
 def encode_gif(
-    webm: Path, gif: Path, *, start: float = 0.0, dur: float | None = None,
-    fps: int = 10, width: int = 800,
+    webm: Path,
+    gif: Path,
+    *,
+    start: float = 0.0,
+    dur: float | None = None,
+    fps: int = 10,
+    width: int = 800,
 ) -> bool:
     """webm -> gif via a generated palette. One pass looks like 1998.
 
@@ -44,12 +49,35 @@ def encode_gif(
     vf = f"fps={fps},scale={width}:-1:flags=lanczos"
     trim = ["-ss", f"{start:.2f}"] + (["-t", f"{dur:.2f}"] if dur else [])
     subprocess.run(
-        [ff, "-y", *trim, "-i", str(webm), "-vf", f"{vf},palettegen=stats_mode=diff",
-         str(palette)], check=True, capture_output=True)
+        [
+            ff,
+            "-y",
+            *trim,
+            "-i",
+            str(webm),
+            "-vf",
+            f"{vf},palettegen=stats_mode=diff",
+            str(palette),
+        ],
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
-        [ff, "-y", *trim, "-i", str(webm), "-i", str(palette), "-lavfi",
-         f"{vf} [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3",
-         str(gif)], check=True, capture_output=True)
+        [
+            ff,
+            "-y",
+            *trim,
+            "-i",
+            str(webm),
+            "-i",
+            str(palette),
+            "-lavfi",
+            f"{vf} [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3",
+            str(gif),
+        ],
+        check=True,
+        capture_output=True,
+    )
     palette.unlink(missing_ok=True)
     return True
 
@@ -69,8 +97,10 @@ def main() -> int:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("playwright missing: pip install playwright && playwright install chromium",
-              file=sys.stderr)
+        print(
+            "playwright missing: pip install playwright && playwright install chromium",
+            file=sys.stderr,
+        )
         return 2
 
     made: list[str] = []
@@ -90,7 +120,9 @@ def main() -> int:
             pg.goto(args.url, wait_until="networkidle")
             pg.evaluate(
                 "t => { document.documentElement.dataset.theme = t;"
-                " document.documentElement.style.colorScheme = t; }", args.theme)
+                " document.documentElement.style.colorScheme = t; }",
+                args.theme,
+            )
             return ctx, pg
 
         def generate(pg) -> None:
@@ -108,7 +140,7 @@ def main() -> int:
         pg.wait_for_timeout(600)
         chips = pg.locator(".attn-scroll .tok")
         n = min(chips.count(), 26)
-        for i in range(6, n, 2):          # sweep the strip, arcs following
+        for i in range(6, n, 2):  # sweep the strip, arcs following
             chips.nth(i).hover()
             pg.wait_for_timeout(160)
         chips.nth(min(14, n - 1)).click()  # pin one
@@ -116,16 +148,19 @@ def main() -> int:
         pg.locator(".panel.attn").screenshot(path=str(out / "attention.png"))
         video = pg.video.path() if pg.video else None
         ctx.close()
-        if video and encode_gif(Path(video), out / "attention.gif",
-                                start=max(0.0, sweep_at - 0.4), dur=6.0):
+        if video and encode_gif(
+            Path(video), out / "attention.gif", start=max(0.0, sweep_at - 0.4), dur=6.0
+        ):
             made.append("attention.gif")
         made.append("attention.png")
 
         # ---------------------------------------------------- 2. hero
         ctx, pg = page(record=False)
         pg.wait_for_timeout(1500)
-        pg.screenshot(path=str(out / "hero.png"), clip={
-            "x": 0, "y": 0, "width": VIEWPORT["width"], "height": 600})
+        pg.screenshot(
+            path=str(out / "hero.png"),
+            clip={"x": 0, "y": 0, "width": VIEWPORT["width"], "height": 600},
+        )
         ctx.close()
         made.append("hero.png")
 
@@ -140,8 +175,12 @@ def main() -> int:
         pg.wait_for_timeout(700)
         video = pg.video.path() if pg.video else None
         ctx.close()
-        if video and encode_gif(Path(video), out / "picker.gif",
-                                start=max(0.0, (time.monotonic() - t0) - 4.5), dur=4.0):
+        if video and encode_gif(
+            Path(video),
+            out / "picker.gif",
+            start=max(0.0, (time.monotonic() - t0) - 4.5),
+            dur=4.0,
+        ):
             made.append("picker.gif")
         made.append("picker.png")
 
@@ -152,8 +191,10 @@ def main() -> int:
         f = out / name
         print(f"  {name:18} {f.stat().st_size / 1024:7.1f} KiB")
     if not any(m.endswith(".gif") for m in made):
-        print("\nno GIFs: ffmpeg not found on PATH (stills were still written)",
-              file=sys.stderr)
+        print(
+            "\nno GIFs: ffmpeg not found on PATH (stills were still written)",
+            file=sys.stderr,
+        )
     return 0
 
 

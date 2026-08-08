@@ -114,11 +114,15 @@ export const promptOnce = (
   prompt: string,
   max_new_tokens = 24,
   temperature = 0,
+  /** false = run the model without rebasing the server's analysis target.
+   *  The steering A/B must not commit: its two short completions would
+   *  silently replace the long generation the panels are describing. */
+  commit = true,
 ) =>
   fetch("/api/model/prompt", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, max_new_tokens, temperature }),
+    body: JSON.stringify({ prompt, max_new_tokens, temperature, commit }),
   }).then((r) => json<{ generation: string }>(r));
 
 export interface VLAStatus {

@@ -40,6 +40,7 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
     setTokenSel(-1);
     setFeatSel(-1);
     setHeat(null);
+    setPeak(-1);
     setAb(null);
     if (sae?.loaded) void refreshSummary();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,9 +92,9 @@ export default function FeaturesPanel({ epoch, prompt }: Props) {
     setErr("");
     try {
       await setSteer(null);
-      const base = (await promptOnce(prompt)).generation;
+      const base = (await promptOnce(prompt, 24, 0, false)).generation;
       await setSteer(featSel, scale);
-      const steered = (await promptOnce(prompt)).generation;
+      const steered = (await promptOnce(prompt, 24, 0, false)).generation;
       await setSteer(null); // always leave the model clean
       setAb({ base, steered });
     } catch (e) {

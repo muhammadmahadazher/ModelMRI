@@ -668,3 +668,55 @@ def test_record_implementations_have_not_drifted():
     # And the standalone must keep the protections the in-tree one lacks.
     assert "redact_document" in standalone
     assert "atexit.register" in standalone
+
+
+def test_a_model_swap_mid_generation_does_not_poison_the_attention_view():
+    """A load that lands while tokens are still streaming used to leave the
+    OLD model's token ids in last_ids. The next attention request then ran the
+    NEW model's weights over them: no crash, just numbers about nothing."""
+    from modelmri.runtime import ModelRuntime
+
+    import torch
+
+    rt = ModelRuntime()
+    # Stand the runtime up far enough that the epoch check is the ONLY thing
+    # that can reject the request; otherwise the test passes on an unrelated
+    # guard and proves nothing.
+    rt.backend = "hf"
+    rt.model = object()
+    rt.sae = object()
+    rt.last_ids = torch.zeros(5, dtype=torch.long)
+
+    rt.epoch = 7
+    rt.last_ids_epoch = 7
+    rt.epoch = 8  # a load landed after that generation
+
+    assert rt.attention_meta()["available"] is False
+    assert "model changed" in rt.attention_meta()["reason"]
+    for call in (lambda: rt.attention(0, 0), rt._compute_features):
+        with pytest.raises(RuntimeError, match="different model"):
+            call()
+
+
+def test_derived_state_is_served_when_the_epoch_still_matches(monkeypatch):
+    """The guard must not block the normal case."""
+    from modelmri.runtime import ModelRuntime
+
+    import torch
+
+    rt = ModelRuntime()
+    rt.epoch = 3
+    rt.last_ids_epoch = 3
+    rt.last_ids = torch.zeros(5, dtype=torch.long)
+
+    class Cfg:
+        num_hidden_layers = 12
+        num_attention_heads = 12
+
+    class M:
+        config = Cfg()
+
+    rt.model = M()
+    rt.backend = "hf"
+    meta = rt.attention_meta()
+    assert meta["available"] is True and meta["n_layers"] == 12
