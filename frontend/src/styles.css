@@ -282,22 +282,9 @@ main > * {
   min-width: 0;
 }
 
-/* Keyboard focus.
-   `all: unset` on .model-row resets outline-style to none in the AUTHOR
-   origin, which outranks the UA's :focus-visible ring -- so tabbing through
-   the model picker moved focus invisibly. Nothing in this stylesheet defined
-   a replacement. One rule, applied to everything focusable, so no future
-   `all: unset` can silently take the ring away again.
-   3px at 2px offset against --color-cobalt clears the WCAG 2.2 focus
-   appearance minimum on both the paper and the glass. */
-:focus-visible {
-  outline: 3px solid var(--acc);
-  outline-offset: 2px;
-}
-/* Pointer users should not see it; keyboard users must. */
-:focus:not(:focus-visible) {
-  outline: none;
-}
+/* Keyboard focus lives at the END of this file. See "keyboard focus" there.
+   It cannot live here: `:focus-visible` and `.model-row` have identical
+   specificity (0,1,0), so a later `all: unset` beats it on source order. */
 
 /* Announced to screen readers, invisible on screen. Not display:none, which
    would remove it from the accessibility tree along with the pixels. */
@@ -399,7 +386,13 @@ main > * {
    stay vibrant instead of going muddy grey; a 1px top specular rim simulates
    light hitting the polished bevel; the shadow is volumetric, not a flat drop. */
 :root {
-  --glass-fill: var(--glass-fill);
+  /* --glass-fill is NOT redeclared here. It used to say
+     `--glass-fill: var(--glass-fill)`, which is a cycle — CSS makes a
+     self-referential custom property invalid at computed-value time, so it
+     resolved to "", which made `background: var(--glass-fill)` invalid too,
+     which made every glass surface fully transparent. The sheet had blur and
+     no frost, so the hero headline read straight through the model list.
+     The real value lives in the theme blocks above, per mode. */
   --glass-blur: blur(40px) saturate(190%);
   --glass-border: 1px solid var(--glass-rim);
   --glass-specular: inset 0 1px 1px 0 var(--glass-spec);
@@ -538,8 +531,14 @@ main > * {
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: color-mix(in oklab, var(--ink) 28%, transparent);
-  backdrop-filter: blur(3px);
+  background: var(--glass-scrim);
+  /* This carries the whole effect, and it used to be blur(3px).
+     An element with backdrop-filter becomes a backdrop root for its
+     descendants, so .sheet's own blur(40px) only ever sampled this scrim's
+     flat tint — it did nothing. All the blurring the user sees happens here,
+     which is why 3px left a busy animated hero legible straight through the
+     model list. saturate() keeps the page behind from going muddy grey. */
+  backdrop-filter: blur(28px) saturate(135%);
   display: flex;
   align-items: flex-start;
   justify-content: center;
@@ -549,7 +548,12 @@ main > * {
 @keyframes scrimIn { from { opacity: 0; } }
 .sheet {
   width: min(760px, 100%);
-  max-height: 78vh;
+  /* Fixed, not min/max. The model list arrives async, so a content-sized
+     sheet opened ~200px tall around "scanning…" and snapped to 78vh a moment
+     later — a 266px jump, big enough that the row under the cursor changed
+     identity mid-click. A floor alone doesn't fix it: content still grows
+     past the floor. One height, list scrolls inside, jump is impossible. */
+  height: min(680px, 76vh);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1410,7 +1414,9 @@ footer .spacer { flex: 1; }
     border-color var(--dur-micro) var(--ease-hover);
 }
 .cand:hover { background: color-mix(in oklab, var(--sem-base) 8%, transparent); }
-.cand:focus-visible { outline: 2px solid var(--color-custom); outline-offset: 2px; }
+/* No bespoke focus ring here — see the keyboard-focus block at the end of
+   this file. Focus should look identical everywhere; a per-component colour
+   is one more thing that can silently go missing. */
 .cand[disabled] { cursor: default; opacity: 0.5; }
 .cand .spacer { flex: 1; }
 .cand-name { color: var(--color-ink); }
@@ -1526,3 +1532,110 @@ footer .spacer { flex: 1; }
   .cand-dir { max-width: 18ch; }
   .l-bar { display: none; }
 }
+
+/* ---------- loading skeletons ----------
+   Shown while the picker's async lists resolve. Deliberately low-contrast:
+   a skeleton that shimmers as brightly as real content trains you to read it,
+   and then you read nothing. The sweep is a single transform on a
+   pseudo-element, so it costs no layout however many rows are up. */
+.skel-label { color: var(--color-mute); }
+.skel-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  /* matches .model-row's metrics so nothing shifts when the real rows land */
+  min-height: 39px;
+  box-sizing: border-box;
+  opacity: 0;
+  animation: skelIn var(--dur-medium) var(--ease-out) forwards;
+  animation-delay: calc(min(var(--i, 0) * 40, 320) * 1ms);
+}
+@keyframes skelIn { to { opacity: 1; } }
+.skel-bar {
+  position: relative;
+  overflow: hidden;
+  height: 9px;
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--color-ink) 8%, transparent);
+}
+.skel-size { width: 42px; margin-left: auto; flex: none; }
+.skel-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--color-ink) 7%, transparent),
+    transparent
+  );
+  animation: skelSweep 1.4s var(--ease-standard) infinite;
+}
+@keyframes skelSweep { to { transform: translateX(100%); } }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The sweep is decoration; the rows are the information. Keep the rows. */
+  .skel-bar::after { animation: none; }
+}
+
+/* ---------- touch ergonomics ----------
+   Everything here already clears WCAG 2.2 AA (2.5.8 wants 24x24). This is the
+   44x44 comfortable-thumb target from Apple's HIG / WCAG 2.5.5 AAA, applied
+   ONLY to coarse pointers — shrinking desktop density to phone ergonomics
+   helps nobody, and these controls sit at 36-40px on a mouse for a reason. */
+@media (pointer: coarse) {
+  button,
+  .model-row,
+  .trace-row,
+  .cand,
+  .tl-block { min-height: 44px; }
+
+  .icon-btn { width: 44px; height: 44px; }
+
+  /* The segmented toggle keeps its 26x24 look; only the hit area grows, or
+     three 44px squares would push the topbar into a second row. */
+  .theme-seg button::after { inset: -10px -6px; }
+
+  footer a { display: inline-block; padding: 12px 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   KEYBOARD FOCUS — deliberately the last thing in this file.
+
+   Eight rules here use `all: unset`, which sets outline-style: none in the
+   AUTHOR origin. `:focus-visible` and `.model-row` both have specificity
+   (0,1,0), so the cascade falls through to source order — and every one of
+   those resets sits below the middle of this file. The ring was declared
+   near the top with a comment saying it fixed exactly this, and it did not:
+   tabbing the model picker showed :focus-visible matching on all 19
+   controls while their computed outline-style stayed `none`.
+
+   Being last is what makes it win. Anything added below this block that
+   resets `outline` will silently take the ring away again — so don't.
+   3px at 2px offset clears the WCAG 2.2 focus-appearance minimum against
+   both the paper ground and the glass.
+   ═══════════════════════════════════════════════════════════════════════ */
+/* The pseudo-class is repeated on purpose. It matches exactly the same
+   elements, but doubles specificity to (0,2,0) — enough to beat the
+   `.theme-seg button` and `.seg button` resets at (0,1,1), which won on
+   specificity no matter how late this rule appears. Being last handles
+   equal-specificity resets; being (0,2,0) handles the rest. */
+:focus-visible:focus-visible {
+  outline: 3px solid var(--acc);
+  outline-offset: 2px;
+  /* `all: unset` also drops the radius, which left square rings on round
+     controls. Inheriting it keeps the ring concentric with the shape. */
+  border-radius: inherit;
+}
+
+/* Pointer users should not see it; keyboard users must. */
+:focus:not(:focus-visible) { outline: none; }
+
+/* Two deliberate exceptions, both re-stated here so they survive the move. */
+.combo:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible) { outline: none; }
+/* The range thumb draws its own ring; a box ring around the whole track
+   points at the wrong thing. */
+input[type="range"]:focus-visible { outline: none; }

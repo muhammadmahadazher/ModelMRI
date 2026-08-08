@@ -83,6 +83,16 @@ async def main() -> int:
             lambda m: errors.append(m.text) if m.type == "error" else None,
         )
 
+        # These assertions are about what a FRESH server does. In CI it always
+        # is one; locally it is whatever the last session left behind, and a
+        # custom model loaded by some other probe made "the panel starts
+        # inert" fail for a reason that had nothing to do with the panel.
+        # Establish the precondition instead of assuming it.
+        try:
+            await page.request.post(BASE.rstrip("/") + "/api/custom/unload")
+        except Exception:
+            pass  # demo builds have no server to reset
+
         await page.goto(BASE, wait_until="networkidle")
         await page.wait_for_timeout(2500)
 
@@ -174,6 +184,81 @@ async def main() -> int:
             "no button renders as bare text",
             not result["found"],
             f"unstyled: {result['found']}",
+        )
+
+        print("\nthe model picker does not resize under you")
+        # Its list arrives async. A content-sized sheet opened ~200px tall
+        # around "scanning…" and snapped to 78vh when results landed — a 266px
+        # jump, which moves whatever row is under the cursor. Sample the height
+        # across the load and allow only the entrance animation's scale.
+        picker = await page.query_selector(".model-btn")
+        if picker:
+            await picker.click()
+            await page.wait_for_selector(".sheet", timeout=30_000)
+            heights = []
+            for _ in range(18):
+                h = await page.evaluate(
+                    "() => { const s = document.querySelector('.sheet');"
+                    " return s ? Math.round(s.getBoundingClientRect().height) : 0; }"
+                )
+                if h:
+                    heights.append(h)
+                await page.wait_for_timeout(180)
+            spread = max(heights) - min(heights) if heights else 0
+            check(
+                "the picker keeps one height while its list loads",
+                spread <= 20,
+                f"{spread}px spread over {len(heights)} samples "
+                f"({min(heights)}-{max(heights)})",
+            )
+            skeleton = await page.query_selector_all(".skel-row")
+            check(
+                "an empty picker is never just blank glass",
+                bool(skeleton) or bool(await page.query_selector(".model-row")),
+                f"{len(skeleton)} skeleton rows",
+            )
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(400)
+
+        print("\nkeyboard focus is visible")
+        # Real Tab presses, not element.focus(). Chromium only sets
+        # :focus-visible from actual keyboard interaction, so a sweep built on
+        # .focus() reports every button as ringless — a fact about the probe,
+        # not the page. That false alarm nearly got "fixed" here.
+        #
+        # What it did catch, once measured properly: `:focus-visible` and
+        # `.model-row` share specificity (0,1,0), so every `all: unset` below
+        # it in the file won on source order and left outline-style: none
+        # while :focus-visible matched. 19 of 20 controls in the picker moved
+        # focus invisibly.
+        await page.evaluate("() => document.body.focus()")
+        seen, ringless = set(), []
+        for _ in range(45):
+            await page.keyboard.press("Tab")
+            spot = await page.evaluate(
+                """() => {
+                  const e = document.activeElement;
+                  if (!e || e === document.body) return null;
+                  const s = getComputedStyle(e);
+                  return {
+                    id: (typeof e.className === 'string' ? e.className : '')
+                        + '|' + (e.innerText || e.value || '').trim().slice(0, 20),
+                    ring: (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0)
+                          || s.boxShadow !== 'none',
+                  };
+                }"""
+            )
+            if not spot or spot["id"] in seen:
+                continue
+            seen.add(spot["id"])
+            if not spot["ring"]:
+                ringless.append(spot["id"][:40])
+        check(
+            "every control shows a focus ring when tabbed to",
+            not ringless,
+            f"{len(seen)} controls swept"
+            if not ringless
+            else f"no ring on: {ringless[:6]}",
         )
 
         print("\nthe page does not scroll sideways")

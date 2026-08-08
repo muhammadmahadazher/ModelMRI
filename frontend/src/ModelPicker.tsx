@@ -20,6 +20,30 @@ interface Props {
   current: string;
 }
 
+/** Placeholder rows while an async list loads.
+ *
+ *  The sheet is a fixed height, so "scanning…" alone left ~600px of empty
+ *  glass for as long as the disk walk takes — up to its 6s budget on a synced
+ *  drive. Showing the shape of the answer makes the wait legible, and the
+ *  widths are staggered so it reads as a list rather than a loading bar.
+ */
+function ModelSkeleton({ label }: { label: string }) {
+  const widths = [62, 44, 71, 38, 55, 67, 41, 58];
+  return (
+    <>
+      <div className="meta pad skel-label">{label}…</div>
+      <div aria-hidden="true">
+        {widths.map((w, i) => (
+          <div className="skel-row" key={i} style={{ ["--i" as string]: i }}>
+            <span className="skel-bar" style={{ width: `${w}%` }} />
+            <span className="skel-bar skel-size" />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
 /** Model browser: search HuggingFace, sign in for gated repos, or pick /
  *  pull an Ollama model. Presented as a liquid-glass sheet. */
 export default function ModelPicker({ open, onClose, onPick, current }: Props) {
@@ -232,7 +256,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
 
         {tab === "local" ? (
           <div className="model-list stagger" role="listbox" aria-label="Models on this machine">
-            {disco === null && <div className="meta pad">scanning…</div>}
+            {disco === null && <ModelSkeleton label="scanning your working directory" />}
             {disco?.models.length === 0 && (
               <div className="meta pad">
                 Nothing found under {disco.roots.join(", ") || "the working directory"}.
@@ -287,7 +311,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                   ? "Searching models"
                   : `${models.length} model${models.length === 1 ? "" : "s"} found`}
               </div>
-              {models === null && <div className="meta pad">searching…</div>}
+              {models === null && <ModelSkeleton label="searching the Hub" />}
               {models?.length === 0 && (
                 <div className="meta pad">
                   {err ? "search failed — see the message below" : "no matches"}
