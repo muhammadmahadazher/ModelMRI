@@ -1,225 +1,45 @@
-"""modelmri.record — capture agent runs for the ModelMRI timeline.
+"""The agent recorder — re-exported from the standalone `modelmri-record`.
 
-Zero-config, never crashes the host app. Two ways in:
+This module used to be a second copy of the recorder, kept in step by hand.
+It fell behind, and the way it fell behind mattered: the standalone package
+grew credential redaction and this copy did not, while the README told people
+to import from *here*. So the documented path had no scrubbing at all, and
+SECURITY.md promised that credentials are removed before anything leaves your
+process. For anyone following the README, that promise was not being kept.
 
-    from modelmri.record import trace, step
+There is now one implementation. `modelmri.record` and `modelmri_record` are
+the same objects, so a redaction fix cannot land in one and miss the other.
 
-    with trace("fix-tests-run"):
-        step("llm_call", name="plan", input=prompt, output=answer,
-             duration_ms=1200, tokens_in=900, tokens_out=200)
-        with step("subagent", name="test-runner"):
-            step("tool_call", name="pytest", input="-q", output="3 failed")
+    from modelmri.record import trace, step     # this module
+    from modelmri_record import trace, step     # identical, no modelmri needed
 
-    from modelmri.record import instrument_anthropic
-    instrument_anthropic()   # auto-records every Anthropic SDK message call
-
-Delivery: POSTs the finished trace to a running ModelMRI server
-(http://127.0.0.1:5900 by default); if unreachable, writes
-./modelmri-traces/<name>-<stamp>.json for later import.
-
-Will ship on PyPI as `modelmri-record`; lives as a subpackage until the
-v0.3 release extraction.
+The standalone package is the one to depend on inside an agent: it is stdlib
+only, so it drags in no torch, no fastapi, nothing.
 """
 
 from __future__ import annotations
 
-import contextvars
-import json
-import time
-import urllib.request
-import uuid
-from contextlib import contextmanager
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterator
+try:
+    from modelmri_record import (  # noqa: F401
+        DEFAULT_ENDPOINT,
+        __version__,
+        instrument_anthropic,
+        step,
+        trace,
+    )
+    from modelmri_record import redact as redact  # noqa: F401
+except ModuleNotFoundError as err:  # pragma: no cover - packaging accident
+    raise ModuleNotFoundError(
+        "modelmri.record needs the `modelmri-record` package, which modelmri "
+        "depends on. Reinstall with `pip install --upgrade modelmri`, or "
+        "install it directly: `pip install modelmri-record`."
+    ) from err
 
-DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
-
-_current: contextvars.ContextVar["_Trace | None"] = contextvars.ContextVar(
-    "modelmri_trace", default=None
-)
-
-
-class _Trace:
-    def __init__(self, name: str, endpoint: str) -> None:
-        self.name = name
-        self.endpoint = endpoint
-        self.id = uuid.uuid4().hex[:12]
-        self.t0 = time.monotonic()
-        self.started_at = datetime.now(timezone.utc).isoformat()
-        self.steps: list[dict] = []
-        self.parent_stack: list[str] = []
-
-    def now_ms(self) -> int:
-        return int((time.monotonic() - self.t0) * 1000)
-
-    def document(self) -> dict:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "started_at": self.started_at,
-            "meta": {"recorder": "modelmri-record/0.3"},
-            "steps": self.steps,
-        }
-
-
-@contextmanager
-def trace(name: str, endpoint: str = DEFAULT_ENDPOINT) -> Iterator[None]:
-    """Record everything inside this block as one trace, then deliver it."""
-    t = _Trace(name, endpoint)
-    token = _current.set(t)
-    try:
-        yield
-    except Exception as err:
-        t.steps.append(
-            {
-                "kind": "error",
-                "name": type(err).__name__,
-                "started_ms": t.now_ms(),
-                "duration_ms": 0,
-                "output": str(err)[:2000],
-                "error": True,
-            }
-        )
-        raise
-    finally:
-        _current.reset(token)
-        _deliver(t)
-
-
-class _StepCtx:
-    """Returned by step(); usable bare or as a context manager for nesting."""
-
-    def __init__(self, record: dict, tr: _Trace) -> None:
-        self._record = record
-        self._trace = tr
-        self._entered_ms = 0
-
-    def __enter__(self) -> "_StepCtx":
-        self._trace.parent_stack.append(self._record["id"])
-        self._entered_ms = self._trace.now_ms()
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self._trace.parent_stack.pop()
-        if not self._record["duration_ms"]:
-            self._record["duration_ms"] = self._trace.now_ms() - self._entered_ms
-        if exc is not None:
-            self._record["error"] = True
-            self._record["output"] = f"{type(exc).__name__}: {exc}"[:2000]
-
-
-def step(
-    kind: str,
-    name: str = "",
-    input: object = "",  # noqa: A002 - mirrors the wire field name
-    output: object = "",
-    duration_ms: int = 0,
-    tokens_in: int | None = None,
-    tokens_out: int | None = None,
-    error: bool = False,
-    started_ms: int | None = None,  # override for backfilled/synthetic traces
-) -> _StepCtx | None:
-    """Record one step in the active trace (no-op outside a trace block)."""
-    t = _current.get()
-    if t is None:
-        return None
-    record = {
-        "id": uuid.uuid4().hex[:10],
-        "parent_id": t.parent_stack[-1] if t.parent_stack else None,
-        "kind": kind,
-        "name": name,
-        "started_ms": t.now_ms() if started_ms is None else started_ms,
-        "duration_ms": duration_ms,
-        "input": input if isinstance(input, str) else json.dumps(input, default=str),
-        "output": output
-        if isinstance(output, str)
-        else json.dumps(output, default=str),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "error": error,
-    }
-    t.steps.append(record)
-    return _StepCtx(record, t)
-
-
-def instrument_anthropic() -> bool:
-    """Monkey-patch anthropic.Messages.create to auto-record llm_call steps.
-
-    Returns False (no crash) when the anthropic package is not installed.
-    """
-    try:
-        from anthropic.resources.messages import Messages
-    except Exception:
-        return False
-    if getattr(Messages.create, "_modelmri_wrapped", False):
-        return True
-    original = Messages.create
-
-    def wrapped(self, *args, **kwargs):  # noqa: ANN001, ANN202
-        t = _current.get()
-        started = t.now_ms() if t else 0
-        try:
-            result = original(self, *args, **kwargs)
-        except Exception as err:
-            if t is not None:
-                step(
-                    "llm_call",
-                    name=str(kwargs.get("model", "anthropic")),
-                    input=_msgs_preview(kwargs),
-                    output=f"{type(err).__name__}: {err}",
-                    duration_ms=(t.now_ms() - started),
-                    error=True,
-                )
-            raise
-        if t is not None:
-            usage = getattr(result, "usage", None)
-            step(
-                "llm_call",
-                name=str(kwargs.get("model", "anthropic")),
-                input=_msgs_preview(kwargs),
-                output=_content_preview(result),
-                duration_ms=(t.now_ms() - started),
-                tokens_in=getattr(usage, "input_tokens", None),
-                tokens_out=getattr(usage, "output_tokens", None),
-            )
-        return result
-
-    wrapped._modelmri_wrapped = True  # type: ignore[attr-defined]
-    Messages.create = wrapped  # type: ignore[assignment]
-    return True
-
-
-def _msgs_preview(kwargs: dict) -> str:
-    try:
-        return json.dumps(kwargs.get("messages", []), default=str)[:4000]
-    except Exception:
-        return ""
-
-
-def _content_preview(result: object) -> str:
-    try:
-        blocks = getattr(result, "content", [])
-        return " ".join(getattr(b, "text", "") for b in blocks)[:4000]
-    except Exception:
-        return ""
-
-
-def _deliver(t: _Trace) -> None:
-    doc = t.document()
-    body = json.dumps(doc).encode()
-    try:
-        req = urllib.request.Request(
-            t.endpoint, data=body, headers={"Content-Type": "application/json"}
-        )
-        urllib.request.urlopen(req, timeout=3)
-        return
-    except Exception:
-        pass
-    try:
-        out = Path("modelmri-traces")
-        out.mkdir(exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        (out / f"{t.name}-{stamp}.json").write_text(json.dumps(doc, indent=1))
-    except Exception:
-        pass  # recording must never crash the host app
+__all__ = [
+    "DEFAULT_ENDPOINT",
+    "__version__",
+    "instrument_anthropic",
+    "redact",
+    "step",
+    "trace",
+]

@@ -25,6 +25,10 @@ dependencies = [
   "accelerate>=1.2",
   "safetensors>=0.4",
   "huggingface_hub>=0.26",
+  # One recorder, not two. modelmri.record re-exports this; the in-tree copy
+  # had drifted and was missing credential redaction, on the import path the
+  # README documents. Stdlib-only and ~7 KiB.
+  "modelmri-record>=0.1.2",
 ]
 
 [project.urls]
@@ -81,3 +85,6 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
+# Develop against the copy in this repo, not the published one, so a recorder
+# change is testable here before it is released.
+modelmri-record = { path = "packages/modelmri-record", editable = true }

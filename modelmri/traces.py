@@ -113,7 +113,8 @@ class TraceStore:
             " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id),"
             " (SELECT COALESCE(MAX(s.started_ms + s.duration_ms),0) FROM step s"
             "   WHERE s.trace_id=t.id),"
-            " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1)"
+            " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
+            " t.meta"
             " FROM trace t ORDER BY t.started_at DESC"
         ).fetchall()
         return [
@@ -124,9 +125,38 @@ class TraceStore:
                 "n_steps": r[3],
                 "total_ms": r[4],
                 "n_errors": r[5],
+                # Scripted sample data must never be indistinguishable from a
+                # run you actually recorded. examples/record_demo.py writes a
+                # deliberately failing `git push` so the timeline has an error
+                # to render, and in the list that looked exactly like your own
+                # agent failing.
+                "demo": bool((json.loads(r[6] or "{}") or {}).get("demo")),
             }
             for r in rows
         ]
+
+    def delete(self, trace_id: str) -> bool:
+        """Remove one trace and its steps. False when it was not there."""
+        with self._lock:
+            cur = self._db.execute("DELETE FROM trace WHERE id=?", (trace_id,))
+            self._db.commit()
+        return cur.rowcount > 0
+
+    def clear(self, keep_demo: bool = False) -> int:
+        """Remove every trace. Returns how many went.
+
+        `keep_demo` exists so "clear my runs" does not also throw away the
+        sample the docs tell people to look at.
+        """
+        with self._lock:
+            if keep_demo:
+                cur = self._db.execute(
+                    "DELETE FROM trace WHERE COALESCE(json_extract(meta,'$.demo'), 0) = 0"
+                )
+            else:
+                cur = self._db.execute("DELETE FROM trace")
+            self._db.commit()
+        return cur.rowcount
 
     def get_trace(self, trace_id: str) -> dict | None:
         t = self._db.execute(

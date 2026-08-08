@@ -502,6 +502,20 @@ def create_app(
     def traces_list() -> list[dict]:
         return traces.list_traces()
 
+    @app.delete("/api/traces/{trace_id}")
+    def trace_delete(trace_id: str):
+        """Remove one recording. A flight recorder you cannot clear fills up
+        with other people's test runs, which is what happened here."""
+        if not traces.delete(trace_id):
+            return JSONResponse({"error": "no such trace"}, status_code=404)
+        return {"deleted": trace_id}
+
+    @app.delete("/api/traces")
+    def traces_clear(keep_demo: bool = True):
+        """Clear recordings. Keeps the shipped sample by default, since the
+        docs point at it."""
+        return {"deleted": traces.clear(keep_demo=keep_demo)}
+
     @app.get("/api/traces/{trace_id}")
     def trace_get(trace_id: str):
         doc = traces.get_trace(trace_id)

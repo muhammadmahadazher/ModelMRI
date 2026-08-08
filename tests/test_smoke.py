@@ -640,34 +640,31 @@ def test_record_module_offline(tmp_path, monkeypatch):
     assert doc["steps"][2]["parent_id"] == doc["steps"][1]["id"]
 
 
-def test_record_implementations_have_not_drifted():
-    """modelmri/record and packages/modelmri-record are the same code until
-    the standalone package is published and the in-tree copy becomes a
-    re-export. Two copies of a security-relevant module silently diverging is
-    exactly how a redaction fix lands in one and not the other."""
+def test_the_standalone_recorder_keeps_its_protections():
+    """The one implementation must keep redaction and the shutdown flush.
+
+    This replaced an anchor-based "have not drifted" check between two copies.
+    That check passed while the copies had drifted badly — the in-tree one was
+    missing redaction entirely — because it only asserted that a handful of
+    shared strings appeared in both. A guard that cannot see the difference it
+    exists to catch is worse than none, since it reads as coverage.
+    """
     import pathlib
 
     root = pathlib.Path(__file__).resolve().parent.parent
-    intree = (root / "modelmri" / "record" / "__init__.py").read_text(encoding="utf-8")
     standalone = (
         root / "packages" / "modelmri-record" / "modelmri_record" / "__init__.py"
     ).read_text(encoding="utf-8")
 
-    # The standalone is the source of truth and is strictly ahead: it adds
-    # redaction and the shutdown flush. What must not happen is the shared
-    # core diverging.
-    for anchor in (
-        "def step(",
-        "def instrument_anthropic(",
-        "parent_id",
-        "recording must never crash the host app",
-    ):
-        assert anchor in intree, f"in-tree copy lost {anchor!r}"
-        assert anchor in standalone, f"standalone copy lost {anchor!r}"
-
-    # And the standalone must keep the protections the in-tree one lacks.
     assert "redact_document" in standalone
     assert "atexit.register" in standalone
+    assert "recording must never crash the host app" in standalone
+
+    intree = (root / "modelmri" / "record" / "__init__.py").read_text(encoding="utf-8")
+    assert "from modelmri_record import" in intree, (
+        "modelmri.record is a second implementation again — that is how the "
+        "redaction gap happened"
+    )
 
 
 def test_a_model_swap_mid_generation_does_not_poison_the_attention_view():
@@ -936,3 +933,38 @@ def test_the_ui_never_hardcodes_a_version():
         f"hardcoded version strings in the UI: {offenders}. "
         "Read it from /api/session instead."
     )
+
+
+def test_the_documented_import_path_redacts(tmp_path, monkeypatch):
+    """`from modelmri.record import trace` must scrub credentials.
+
+    It did not. modelmri/record was a hand-maintained second copy that never
+    got redaction, while the standalone package did — and the README documents
+    *this* path, so the promise in SECURITY.md ("credentials are removed
+    before anything leaves your process") was not kept for the people most
+    likely to follow the docs. It is one re-export now.
+    """
+    monkeypatch.chdir(tmp_path)
+    from modelmri.record import step, trace
+
+    secret = "sk-ant-api03-" + "A" * 40
+    # Unreachable endpoint on purpose: delivery falls back to a local file,
+    # which is exactly where a leak would be visible.
+    with trace("leak-check", endpoint="http://127.0.0.1:1/nope"):
+        step("llm_call", name="call", input=f"Authorization: Bearer {secret}")
+
+    written = list((tmp_path / "modelmri-traces").glob("*.json"))
+    assert written, "the recorder wrote nothing to fall back to"
+    body = written[0].read_text(encoding="utf-8")
+    assert secret not in body, "the documented import path leaked a credential"
+    assert "REDACTED" in body.upper() or "***" in body
+
+
+def test_record_is_one_implementation_now():
+    """Two copies of a security-relevant module cannot drift if there is one."""
+    import modelmri.record as intree
+    import modelmri_record as standalone
+
+    assert intree.trace is standalone.trace
+    assert intree.step is standalone.step
+    assert intree.__version__ == standalone.__version__

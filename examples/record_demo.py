@@ -7,7 +7,11 @@ No API keys needed; steps carry explicit timings shaped like a real run.
 
 from modelmri.record import step, trace
 
-with trace("fix-failing-tests-run"):
+# Tagged as a demo so the viewer labels it. Without this it sat in the list
+# looking exactly like a run you had recorded — including its deliberately
+# failed `git push`, which read as your agent failing rather than as sample
+# data doing its job.
+with trace("fix-failing-tests-run", meta={"demo": True}):
     step(
         "user_turn",
         name="task",

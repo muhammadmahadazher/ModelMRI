@@ -347,6 +347,8 @@ export const getDiscovered = () =>
 export const getOllama = () => fetch("/api/ollama").then((r) => json<OllamaState>(r));
 
 export interface TraceSummary {
+  /** Scripted sample data, not a run you recorded. */
+  demo?: boolean;
   id: string;
   name: string;
   started_at: string;
@@ -631,3 +633,16 @@ export const setVLADataset = (repo_id: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repo_id }),
   }).then((r) => json<VLADataset>(r));
+
+export const deleteTrace = (id: string) =>
+  fetch(`/api/traces/${id}`, { method: "DELETE" }).then((r) =>
+    json<{ deleted: string }>(r),
+  );
+
+/** Clears recordings. Keeps the shipped sample by default — the docs point
+ *  at it, and "clear my runs" should not throw away the thing that explains
+ *  what a run looks like. */
+export const clearTraces = (keepDemo = true) =>
+  fetch(`/api/traces?keep_demo=${keepDemo}`, { method: "DELETE" }).then((r) =>
+    json<{ deleted: number }>(r),
+  );

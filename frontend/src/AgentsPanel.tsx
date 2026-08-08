@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { getTrace, getTraces, TraceDoc, TraceStep, TraceSummary } from "./api";
+import {
+  clearTraces,
+  getTrace,
+  getTraces,
+  TraceDoc,
+  TraceStep,
+  TraceSummary,
+} from "./api";
 
 const KIND_COLOR: Record<TraceStep["kind"], string> = {
   llm_call: "var(--color-agent)",
@@ -16,6 +23,7 @@ export default function AgentsPanel() {
   const [doc, setDoc] = useState<TraceDoc | null>(null);
   const [sel, setSel] = useState<TraceStep | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [clearing, setClearing] = useState(false);
 
   useEffect(() => {
     void getTraces().then((l) => {
@@ -80,6 +88,30 @@ export default function AgentsPanel() {
         <span className="rule" />
       </div>
 
+      <div className="row" style={{ marginBottom: 10 }}>
+        <span className="meta">
+          {list.length} recording{list.length === 1 ? "" : "s"}
+        </span>
+        <span className="spacer" />
+        <button
+          className="ghost sm"
+          disabled={clearing}
+          onClick={() => {
+            setClearing(true);
+            void clearTraces(true)
+              .then(() => getTraces())
+              .then((l) => {
+                setList(l);
+                setDoc(null);
+              })
+              .catch(() => undefined)
+              .finally(() => setClearing(false));
+          }}
+        >
+          {clearing ? "Clearing…" : "Clear my runs"}
+        </button>
+      </div>
+
       <div className="trace-list">
         {groups.map(({ name, runs }) => {
           const open = expanded.has(name);
@@ -103,6 +135,14 @@ export default function AgentsPanel() {
                 >
                   <span className="tname">
                     {i > 0 ? <span className="tdim">run {runs.length - i}</span> : name}
+                    {i === 0 && t.demo && (
+                      // Sample data shipped with the tool. Without this label
+                      // its deliberately failed `git push` read as your agent
+                      // failing.
+                      <span className="pill tiny" title="shipped sample, not a run you recorded">
+                        demo
+                      </span>
+                    )}
                   </span>
                   <span className="tmeta">
                     {t.n_steps} steps · {(t.total_ms / 1000).toFixed(1)}s

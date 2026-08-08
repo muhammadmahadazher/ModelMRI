@@ -1605,6 +1605,10 @@ footer .spacer { flex: 1; }
   .skel-bar::after { animation: none; }
 }
 
+/* The name and its demo badge are one unit, so they need their own gap —
+   the row's grid gap does not reach inside a span. */
+.tname { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; }
+
 /* ---------- grouped trace list ----------
    A recorder is something you leave switched on, so the list fills with
    repeats. Collapsed to one row per agent, with the rest one click away. */

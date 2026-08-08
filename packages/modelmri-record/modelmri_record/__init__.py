@@ -50,10 +50,17 @@ _current: contextvars.ContextVar["_Trace | None"] = contextvars.ContextVar(
 
 
 class _Trace:
-    def __init__(self, name: str, endpoint: str, redactor: Redactor | None) -> None:
+    def __init__(
+        self,
+        name: str,
+        endpoint: str,
+        redactor: Redactor | None,
+        meta: dict | None = None,
+    ) -> None:
         self.name = name
         self.endpoint = endpoint
         self.redactor = redactor
+        self.meta = dict(meta or {})
         self.delivered = False
         self.id = uuid.uuid4().hex[:12]
         self.t0 = time.monotonic()
@@ -77,7 +84,9 @@ class _Trace:
             "id": self.id,
             "name": self.name,
             "started_at": self.started_at,
-            "meta": {"recorder": f"modelmri-record/{__version__}"},
+            # Caller keys first-class, recorder identity last so it cannot be
+            # shadowed by a caller who happens to use the same key.
+            "meta": {**self.meta, "recorder": f"modelmri-record/{__version__}"},
             "steps": self.steps,
         }
 
@@ -88,6 +97,7 @@ def trace(
     endpoint: str = DEFAULT_ENDPOINT,
     *,
     redact: Redactor | None | bool = True,
+    meta: dict | None = None,
 ) -> Iterator[None]:
     """Record everything inside this block as one trace, then deliver it.
 
@@ -95,6 +105,11 @@ def trace(
     redact=fn     your own str -> str
     redact=False  send payloads verbatim. Only for traces that never leave
                   your machine, and only deliberately.
+
+    meta          anything you want stored alongside the run — a git sha, the
+                  environment, a ticket id. `{"demo": True}` marks a scripted
+                  sample so the viewer can label it instead of letting it pass
+                  for something you actually recorded.
     """
     redactor: Redactor | None
     if redact is True:
@@ -104,7 +119,7 @@ def trace(
     else:
         redactor = redact
 
-    t = _Trace(name, endpoint, redactor)
+    t = _Trace(name, endpoint, redactor, meta)
     # If the interpreter dies mid-run -- a crash, a SIGTERM, a notebook kernel
     # restart -- the finally below never runs and the whole trace is lost,
     # which is exactly the run you most wanted to look at.

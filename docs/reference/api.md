@@ -90,6 +90,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 
 | method | path | notes |
 |---|---|---|
+| `DELETE` | `/api/traces` | Traces Clear |
+| `DELETE` | `/api/traces/{trace_id}` | Trace Delete |
 | `GET` | `/api/traces` | Traces List |
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
 | `POST` | `/api/traces/import` | Traces Import |
