@@ -22,6 +22,37 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from . import devices, ollama, progress
 from .saes import SAEHandle, SAEStatus
 
+
+def _require_causal_lm(hf_id: str) -> None:
+    """Refuse a repo the playground cannot run, and say what it is.
+
+    The picker filters these out, but an id can also be typed, and the failure
+    mode without this is a multi-screen HuggingFace traceback about
+    sentencepiece for a model that has no tokenizer because it is a diffusion
+    model. Reading the config first costs a few kilobytes.
+    """
+    from transformers import AutoConfig
+
+    try:
+        cfg = AutoConfig.from_pretrained(hf_id)
+    except Exception:
+        return  # let the real loader produce the real error
+
+    archs = list(getattr(cfg, "architectures", None) or [])
+    if any(a.endswith(("ForCausalLM", "LMHeadModel")) for a in archs):
+        return
+    if not archs:
+        return  # unknown shape: don't block on a guess
+
+    kind = archs[0]
+    raise ValueError(
+        f"{hf_id} is a {kind}, which is not a causal language model. The "
+        "playground generates text; this repo cannot do that. Robot policies "
+        "belong in the robot panel, and sparse autoencoders in the features "
+        "panel."
+    )
+
+
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
 
@@ -176,6 +207,12 @@ class ModelRuntime:
             dtype = devices.torch_dtype(self.accel)
             progress.TRACKER.start(hf_id)
             try:
+                # Check what this repo *is* before spending minutes on it.
+                # AutoModelForCausalLM on a diffusion or segmentation repo
+                # fails deep inside the tokenizer with "You need to have
+                # sentencepiece or tiktoken installed", which sends people
+                # installing packages that were never the problem.
+                _require_causal_lm(hf_id)
                 tokenizer = AutoTokenizer.from_pretrained(hf_id)
                 progress.TRACKER.stage("weights")
                 model = AutoModelForCausalLM.from_pretrained(

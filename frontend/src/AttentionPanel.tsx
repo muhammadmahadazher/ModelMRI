@@ -17,6 +17,13 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
   const [data, setData] = useState<AttentionData | null>(null);
   const [info, setInfo] = useState("");
 
+  /** An instrument says where it is *within a range*, and pads so the row
+   *  does not reflow as the number crosses ten. "L 09/18" beats "layer 9". */
+  const dial = (label: string, i: number, n: number) => {
+    const w = String(Math.max(n - 1, 0)).length;
+    return `${label} ${String(i).padStart(w, "0")}/${String(Math.max(n - 1, 0))}`;
+  };
+
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -30,7 +37,7 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
       setLayer(Math.floor(meta.n_layers! / 2));
       setHead(0);
       setInfo(
-        `${meta.n_layers} layers · ${meta.n_heads} heads · ${meta.n_tokens} tokens`,
+        `${meta.n_layers}L × ${meta.n_heads}H · ${meta.n_tokens} tok`,
       );
     })();
     return () => {
@@ -45,15 +52,15 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
     // The first fetch for a generation runs a full output_attentions forward
     // pass server-side and can take seconds, so say so rather than showing
     // controls above an empty space.
-    setInfo(`layer ${layer} · head ${head} · computing…`);
+    setInfo(`${dial("L", layer, layers)} · ${dial("H", head, heads)} · computing…`);
     void getAttention(layer, head)
       .then((d) => {
         if (!live) return;
         setErr("");
         setData(d);
         setInfo(
-          `layer ${d.layer} · head ${d.head} · ${d.tokens.length} tokens · ` +
-            `${((performance.now() - t) / 1000).toFixed(2)}s`,
+          `${dial("L", d.layer, layers)} · ${dial("H", d.head, heads)} · ` +
+            `${d.tokens.length} tok · ${((performance.now() - t) / 1000).toFixed(2)}s`,
         );
       })
       .catch((e) => {
@@ -92,6 +99,14 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
           {options(heads)}
         </select>
         <span className="meta">{info}</span>
+        <span className="spacer" />
+        {/* Arc thickness encodes weight, which cannot be read without a
+            key. Three stops is enough to calibrate the eye. */}
+        <span className="weight-key" aria-hidden="true">
+          <span><i style={{ height: 1 }} />0.05</span>
+          <span><i style={{ height: 3 }} />0.20</span>
+          <span><i style={{ height: 6 }} />0.50</span>
+        </span>
       </div>
       {err ? (
         <div className="hint err">

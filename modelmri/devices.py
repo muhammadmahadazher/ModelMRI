@@ -145,14 +145,51 @@ def detect(prefer: str = "auto") -> Device:
     return _cpu(_cpu_reason())
 
 
+def _nvidia_present() -> bool:
+    """Is there an NVIDIA GPU here that torch simply cannot talk to?"""
+    import shutil
+    import subprocess
+
+    if not shutil.which("nvidia-smi"):
+        return False
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        return out.returncode == 0 and bool(out.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _cpu_reason() -> str:
+    """Why we are on the CPU — and, when it is fixable, the exact command.
+
+    "reinstall it with GPU support (see the README)" is not an instruction.
+    The owner of an RTX 4060 sat on CPU-only torch reading that message. If a
+    GPU is physically present we now name it and print the line to paste.
+    """
+    import sys
+
     import torch
 
     if getattr(torch.version, "cuda", None) or getattr(torch.version, "hip", None):
         return "no usable GPU found (driver or device unavailable)"
+
+    tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if _nvidia_present():
+        return (
+            "an NVIDIA GPU is present but torch is a CPU-only build "
+            f"({torch.__version__}). Install a CUDA build for this Python "
+            f"({tag}):  pip install --index-url "
+            "https://download.pytorch.org/whl/cu128 --force-reinstall torch"
+        )
     return (
-        "torch is installed as a CPU-only build - reinstall it with GPU "
-        "support to use your GPU (see the README)"
+        f"torch is a CPU-only build ({torch.__version__}) and no NVIDIA GPU "
+        "was detected. If you have one, check its driver with nvidia-smi; "
+        "otherwise this is expected and everything still works, slower."
     )
 
 

@@ -387,7 +387,19 @@ export type StreamHandlers = {
   onError: (message: string) => void;
 };
 
-export function streamGenerate(prompt: string, h: StreamHandlers): () => void {
+export interface Decode {
+  max_new_tokens: number;
+  temperature: number;
+}
+
+/** The settings are sent explicitly rather than left to the server's defaults.
+ *  The readout reports what a run used, and a readout that reports a guess is
+ *  worse than no readout. */
+export function streamGenerate(
+  prompt: string,
+  h: StreamHandlers,
+  decode: Decode = { max_new_tokens: 256, temperature: 0.7 },
+): () => void {
   if (DEMO) {
     // No WebSocket on a static host: replay the baked generation word by
     // word so the streaming UI behaves exactly as it does locally.
@@ -433,7 +445,7 @@ export function streamGenerate(prompt: string, h: StreamHandlers): () => void {
     fn();
   };
 
-  ws.onopen = () => ws.send(JSON.stringify({ prompt }));
+  ws.onopen = () => ws.send(JSON.stringify({ prompt, ...decode }));
   ws.onmessage = (e) => {
     const msg = JSON.parse(e.data as string);
     if (msg.type === "token") {

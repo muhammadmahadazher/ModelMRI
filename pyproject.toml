@@ -64,3 +64,20 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 path = "modelmri/__init__.py"
+
+# ---------------------------------------------------------------- GPU on dev
+# PyPI's torch wheels for Windows are CPU-only. The owner of this repo sat on
+# an RTX 4060 running everything on the CPU because `uv sync` had quietly
+# installed `torch+cpu` and the accelerator badge only said "reinstall with
+# GPU support (see the README)".
+#
+# This affects THIS repository's development environment only — it is not
+# inherited by anyone who `pip install modelmri`. The Linux marker keeps CI on
+# PyPI, where the default wheels already carry CUDA.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]

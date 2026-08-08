@@ -18,6 +18,11 @@ interface Props {
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
 
+// Sent with every generation and echoed in the readout, so what you read is
+// what the run used. These were previously implicit server defaults, which
+// meant the UI could not honestly name them.
+const DECODE = { max_new_tokens: 256, temperature: 0.7 };
+
 export default function Playground({ model, onModelChange }: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
@@ -120,23 +125,34 @@ export default function Playground({ model, onModelChange }: Props) {
     pieces.current = 0;
     t0.current = performance.now();
     const p = prompt;
-    streamGenerate(p, {
+    streamGenerate(
+      p,
+      {
       onToken: (text) => {
         pieces.current += 1;
         setOutput((o) => o + text);
       },
       onDone: () => {
         const dt = (performance.now() - t0.current) / 1000;
-        setMeta(`${pieces.current} pieces · ${dt.toFixed(1)}s`);
+        // What an instrument reports: count, elapsed, rate, and the decode
+        // settings that make the run reproducible. "12 pieces" was neither
+        // a token count nor a rate.
+        const rate = dt > 0 ? pieces.current / dt : 0;
+        setMeta(
+          `${pieces.current} tok · ${dt.toFixed(2)}s · ${rate.toFixed(1)} tok/s` +
+            ` · ${DECODE.temperature > 0 ? `T ${DECODE.temperature}` : "greedy"}`,
+        );
         setBusy("");
         setLastPrompt(p);
         setEpoch((e) => e + 1);
       },
-      onError: (message) => {
-        setOutput(`Error: ${message}`);
-        setBusy("");
+        onError: (message) => {
+          setOutput(`Error: ${message}`);
+          setBusy("");
+        },
       },
-    });
+      DECODE,
+    );
   }
 
   const introspectable = model?.device !== "ollama";

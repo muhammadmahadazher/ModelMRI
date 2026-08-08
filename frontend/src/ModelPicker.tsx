@@ -276,9 +276,17 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                 title={m.loadable ? m.path : `${m.path} — ${m.note}`}
               >
                 <span className="mid">{m.name}</span>
-                <span className={`chip ${m.kind === "gguf" ? "warn" : ""}`}>
-                  {m.kind === "hf-cache" ? "cached" : m.kind === "folder" ? "folder" : "gguf"}
-                </span>
+                {m.loadable ? (
+                  <span className="chip">
+                    {m.kind === "hf-cache" ? "cached" : m.kind === "folder" ? "folder" : "gguf"}
+                  </span>
+                ) : (
+                  // The reason used to live only in a title attribute, so a
+                  // segmentation model and a language model looked identical
+                  // and one of them failed minutes later with a tokenizer
+                  // traceback. Say it on the row.
+                  <span className="why">{m.note}</span>
+                )}
                 <span className="spacer" />
                 <span className="meta">{m.size_gb.toFixed(2)} GB</span>
               </button>

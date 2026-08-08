@@ -624,8 +624,32 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   .model-row:hover { background: var(--acc-quiet); transform: translateX(2px); }
 }
 .model-row.sel { border-color: color-mix(in oklab, var(--acc) 40%, transparent); background: color-mix(in oklab, var(--acc) 8%, transparent); }
-.model-row.locked { opacity: 0.5; cursor: not-allowed; }
-.model-row.locked:hover { transform: none; }
+.model-row.locked {
+  /* Dimmed, but not so far that the reason becomes unreadable — the reason
+     is the whole point of still listing it. 0.5 put the note under AA. */
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+.model-row.locked .mid { color: var(--color-mute); }
+.model-row.locked:hover { transform: none; background: transparent; }
+
+/* Why a listed model cannot be loaded here. Said on the row, because it
+   previously lived in a title attribute and nobody hovers a row they are
+   about to click. */
+.why {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--color-agent);
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 35%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
+  border-radius: var(--r-chip);
+  padding: 2px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42ch;
+  min-width: 0;
+}
 .model-row.static { cursor: default; }
 .model-row.static:hover { transform: none; }
 .model-row .mid { font-weight: 600; }
@@ -945,6 +969,7 @@ textarea:focus {
 textarea:focus:not(:focus-visible) { outline: none; }
 
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.row .spacer { flex: 1; min-width: 0; }
 
 button.cta, button.ghost, button.violet {
   border: 0;
@@ -1602,6 +1627,109 @@ footer .spacer { flex: 1; }
     border-color var(--dur-micro) var(--ease-hover);
 }
 .trace-more:hover { color: var(--color-agent); border-color: var(--color-agent); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   INSTRUMENT PRECISION
+   Borrowed from the "Oscilloscope" direction and folded into this design
+   rather than replacing it: the data gets the discipline, the surfaces keep
+   the paper-and-glass character they already had.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* 1. Tabular figures wherever numbers stack or update in place.
+      Proportional digits make a column of sizes ragged and a live counter
+      jitter sideways as it ticks — 1.90s is narrower than 1.88s in most
+      proportional faces, so a running readout visibly breathes. */
+.meta,
+.pill,
+.chip,
+.mid,
+.feat-val,
+.tl-dur,
+.l-params,
+.l-shape,
+.l-ms,
+.l-nums,
+.layer-row,
+.model-row,
+.trace-row,
+.loadbar-row,
+.why,
+code {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 2. Colour is a channel, not decoration.
+      Each hue means exactly one thing across the whole app, and this is the
+      one place that mapping is written down. Anything that is not carrying
+      one of these meanings stays neutral. */
+.channels {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--color-mute);
+}
+.channels b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+}
+.channels i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: block;
+}
+
+/* 3. Readouts: a label column and a value column, hairline-separated.
+      An instrument states a quantity next to its name at a fixed x, so the
+      eye runs down the values instead of hunting for where each one starts. */
+.readout {
+  display: grid;
+  grid-template-columns: minmax(72px, max-content) 1fr;
+  gap: 4px 16px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.readout dt {
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+}
+.readout dd {
+  margin: 0;
+  color: var(--color-ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 4. A measured scale for the attention arcs.
+      The arcs encode weight as thickness, which is unreadable without a key.
+      Three stops is enough to calibrate the eye. */
+.weight-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-mute);
+  letter-spacing: 0.05em;
+}
+.weight-key span { display: flex; align-items: center; gap: 5px; }
+.weight-key i {
+  display: block;
+  width: 16px;
+  border-radius: 2px;
+  background: var(--color-attn);
+}
 
 /* ---------- touch ergonomics ----------
    Everything here already clears WCAG 2.2 AA (2.5.8 wants 24x24). This is the
