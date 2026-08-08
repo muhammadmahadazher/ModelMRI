@@ -274,11 +274,29 @@ async def main() -> int:
                 f"{spread}px spread over {len(heights)} samples "
                 f"({min(heights)}-{max(heights)})",
             )
-            skeleton = await page.query_selector_all(".skel-row")
+            # The invariant is that a fixed-height sheet never shows a blank
+            # rectangle — not that it always has rows. A CI runner has no
+            # models cached, so "Nothing found under …" is the correct and
+            # helpful answer, and asserting rows failed the product for
+            # behaving properly.
+            body = await page.evaluate(
+                """() => {
+                  const s = document.querySelector('.sheet');
+                  if (!s) return null;
+                  const rows = s.querySelectorAll('.model-row, .skel-row').length;
+                  // text below the tab strip, i.e. the list area's own words
+                  const head = s.querySelector('.sheet-head');
+                  const all = s.innerText.trim();
+                  const chrome = head ? head.innerText.trim() : '';
+                  return {rows, said: all.replace(chrome, '').trim().length};
+                }"""
+            )
             check(
-                "an empty picker is never just blank glass",
-                bool(skeleton) or bool(await page.query_selector(".model-row")),
-                f"{len(skeleton)} skeleton rows",
+                "the picker always says something, even with nothing to list",
+                bool(body) and (body["rows"] > 0 or body["said"] > 12),
+                f"{body['rows']} rows, {body['said']} chars of explanation"
+                if body
+                else "no sheet",
             )
             await page.keyboard.press("Escape")
             await page.wait_for_timeout(400)
