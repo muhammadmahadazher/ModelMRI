@@ -40,7 +40,7 @@ from typing import Iterator
 
 from .redact import Redactor, default_redactor, redact_document
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
 
@@ -125,6 +125,32 @@ def trace(
         _deliver(t)
 
 
+class _NoStep:
+    """What step() returns when there is no trace to record into.
+
+    It has to support `with`, because that is the documented form and a
+    library must not explode for callers who never opted into tracing. It
+    also has to be falsy, so `if step(...)` keeps working. Returning a bare
+    None -- which 0.1.0 did -- made `with step(...)` a TypeError outside a
+    trace, and, worse, inside any worker thread: contextvars do not cross
+    thread boundaries, so a fan-out agent hit this on every tool call.
+    """
+
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __enter__(self) -> "_NoStep":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+_NO_STEP = _NoStep()
+
+
 class _StepCtx:
     """Returned by step(); usable bare or as a context manager for nesting."""
 
@@ -157,11 +183,11 @@ def step(
     tokens_out: int | None = None,
     error: bool = False,
     started_ms: int | None = None,  # override for backfilled/synthetic traces
-) -> _StepCtx | None:
+) -> "_StepCtx | _NoStep":
     """Record one step in the active trace (no-op outside a trace block)."""
     t = _current.get()
     if t is None:
-        return None
+        return _NO_STEP
     record = {
         "id": uuid.uuid4().hex[:10],
         "parent_id": t.parent_stack[-1] if t.parent_stack else None,
@@ -169,16 +195,33 @@ def step(
         "name": name,
         "started_ms": t.now_ms() if started_ms is None else started_ms,
         "duration_ms": duration_ms,
-        "input": input if isinstance(input, str) else json.dumps(input, default=str),
-        "output": output
-        if isinstance(output, str)
-        else json.dumps(output, default=str),
+        "input": _encode(input),
+        "output": _encode(output),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "error": error,
     }
     t.steps.append(record)
     return _StepCtx(record, t)
+
+
+def _encode(value: object) -> str:
+    """Payload -> string, without ever raising.
+
+    json.dumps(default=str) still dies on reference cycles and on non-primitive
+    dict keys, and agent state graphs are cyclic by construction (a child
+    holding a reference to its parent). 0.1.0 let that escape into the caller,
+    which breaks the one promise this library makes.
+    """
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except Exception:
+        try:
+            return repr(value)[:4000]
+        except Exception:
+            return "<unserialisable>"
 
 
 def instrument_anthropic() -> bool:
@@ -250,7 +293,10 @@ def _deliver(t: _Trace) -> None:
     doc = t.document()
     if t.redactor is not None:
         doc = redact_document(doc, t.redactor)
-    body = json.dumps(doc).encode()
+    try:
+        body = json.dumps(doc, default=str).encode()
+    except Exception:
+        return  # nothing deliverable; still must not raise
     try:
         req = urllib.request.Request(
             t.endpoint, data=body, headers={"Content-Type": "application/json"}

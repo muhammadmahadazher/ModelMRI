@@ -56,7 +56,32 @@ def test_an_exception_is_recorded_and_still_raised(offline):
 def test_step_outside_a_trace_is_a_noop():
     """Instrumentation left in library code must not explode for callers who
     never opted into tracing."""
-    assert rec.step("llm_call", name="orphan") is None
+    assert not rec.step("llm_call", name="orphan")
+
+
+def test_with_step_outside_a_trace_does_not_raise():
+    """0.1.0 returned a bare None here, so the documented `with` form was a
+    TypeError for anyone not inside a trace."""
+    with rec.step("subagent", name="orphan"):
+        pass
+
+
+def test_with_step_survives_a_worker_thread(offline):
+    """contextvars do not cross thread boundaries, so a fan-out agent lands
+    outside the trace on every worker -- which 0.1.0 turned into a crash."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def work():
+        with rec.step("subagent", name="in-thread"):
+            rec.step("tool_call", name="grep")
+        return "ok"
+
+    with rec.trace("threaded"):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            assert [f.result() for f in [pool.submit(work), pool.submit(work)]] == [
+                "ok",
+                "ok",
+            ]
 
 
 # ---------------------------------------------------------------- redaction
@@ -157,6 +182,40 @@ def test_a_trace_left_open_at_shutdown_is_still_flushed(offline):
     rec._current.reset(token)
     rec._flush_live()
     assert written(offline)["name"] == "orphaned"
+
+
+def test_a_truncated_private_key_is_still_redacted(offline):
+    """The recorder truncates payloads to 2-4k BEFORE redaction runs, so a
+    real key arrives at the redactor with its -----END sentinel cut off. 0.1.0
+    wrote the base64 body to disk in the clear."""
+    body = "MIIJKQIBAAKCAgEA000SECRETKEYBYTES" + "A" * 3400
+    pem = "-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY-----"
+    with rec.trace("deploy"):
+        try:
+            with rec.step("tool_call", name="ssh-add"):
+                raise ValueError("could not parse key:\n" + pem)
+        except ValueError:
+            pass
+    raw = json.dumps(written(offline))
+    assert "-----END RSA PRIVATE KEY-----" not in raw, "premise: tail was truncated"
+    assert "MIIJKQIBAAKCAgEA000SECRETKEYBYTES" not in raw
+    assert "[redacted:private-key]" in raw
+
+
+def test_a_cyclic_payload_does_not_crash_the_host(offline):
+    """Agent state graphs are cyclic by construction. json.dumps raises
+    ValueError on those, and 0.1.0 let it escape into the caller."""
+    node = {"name": "root"}
+    node["parent"] = node
+    with rec.trace("cycle"):
+        rec.step("tool_call", name="dump", input=node)
+    assert written(offline)["steps"][0]["input"]
+
+
+def test_non_string_dict_keys_do_not_crash_the_host(offline):
+    with rec.trace("keys"):
+        rec.step("tool_call", name="grid", input={("r", 1): "v"})
+    assert written(offline)["steps"][0]["input"]
 
 
 def test_recording_never_raises_even_when_the_disk_refuses(offline, monkeypatch):

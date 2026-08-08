@@ -50,6 +50,20 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.S,
         ),
     ),
+    # ...and a block whose tail was cut off. The recorder truncates payloads
+    # to 2-4k BEFORE redaction runs, so a real key arrives here headless: the
+    # -----END sentinel is gone and the rule above cannot match, leaving the
+    # base64 body in the clear. Found in the wild against 0.1.0. Anchored on
+    # the BEGIN line so it cannot run away on ordinary prose.
+    (
+        "private-key",
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*", re.S),
+    ),
+    # The mirror case: truncated from the front, leaving a dangling END.
+    (
+        "private-key",
+        re.compile(r"[A-Za-z0-9+/=\s]{64,}-----END [A-Z ]*PRIVATE KEY-----", re.S),
+    ),
 ]
 
 

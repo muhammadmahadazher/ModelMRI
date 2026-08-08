@@ -1,0 +1,75 @@
+site_name: ModelMRI
+site_description: Chrome DevTools for AI models and agents — attention, features, steering, and a flight recorder for your agents. Local-first, MIT.
+site_url: https://muhammadmahadazher.github.io/ModelMRI/
+repo_url: https://github.com/muhammadmahadazher/ModelMRI
+repo_name: muhammadmahadazher/ModelMRI
+edit_uri: edit/main/docs/
+
+# The live demo already owns /ModelMRI/ on Pages, so docs are published to a
+# subpath rather than displacing the thing people are told to click.
+site_dir: site
+docs_dir: docs
+
+theme:
+  name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+  palette:
+    # Matches the app: warm paper in light, cool graphite in dark, cobalt accent.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Guides:
+      - Attention: guides/attention.md
+      - Features and steering: guides/features.md
+      - Recording agents: guides/agents.md
+      - Robot policies: guides/vla.md
+  - Reference:
+      - HTTP API: reference/api.md
+      - modelmri-record: reference/record.md
+  - Troubleshooting: troubleshooting.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/muhammadmahadazher/ModelMRI
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/modelmri/
