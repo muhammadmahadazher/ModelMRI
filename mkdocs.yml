@@ -1,6 +1,6 @@
 site_name: ModelMRI
 site_description: Chrome DevTools for AI models and agents — attention, features, steering, and a flight recorder for your agents. Local-first, MIT.
-site_url: https://muhammadmahadazher.github.io/ModelMRI/
+site_url: https://muhammadmahadazher.github.io/ModelMRI/docs/
 repo_url: https://github.com/muhammadmahadazher/ModelMRI
 repo_name: muhammadmahadazher/ModelMRI
 edit_uri: edit/main/docs/

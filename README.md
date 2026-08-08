@@ -5,11 +5,24 @@
 Local-first. No cloud, no account, no telemetry. MIT.
 
 **[▶ Try the live demo](https://muhammadmahadazher.github.io/ModelMRI/)** — no install, no GPU, real recorded output.
+**[📖 Docs](https://muhammadmahadazher.github.io/ModelMRI/docs/)**
+
+<p align="center">
+  <img src="docs/media/attention.gif" alt="Hovering tokens; attention arcs follow the cursor across the strip" width="800">
+</p>
+
+<p align="center"><em>Hover any token — arcs show what it attended to. Every layer, every head.</em></p>
 
 ```bash
 pip install modelmri
 modelmri serve          # open http://localhost:5900
 ```
+
+<p align="center">
+  <img src="docs/media/picker.gif" alt="The model picker listing models already on disk" width="800">
+</p>
+
+<p align="center"><em>It finds the models you already have — HF cache, plain folders, GGUF — before asking you to type anything.</em></p>
 
 ---
 

@@ -44,3 +44,6 @@ Thumbs.db
 .env
 .env.*
 *.token
+
+# built docs (published by the Pages workflow, not committed)
+/site/
