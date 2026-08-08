@@ -62,10 +62,33 @@ def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
         out = model(ids, output_hidden_states=True)
         states = out.hidden_states  # (n_layers + 1) x [B, S, d]
 
+        # Is the LAST hidden state already normalised? In HuggingFace decoders
+        # it is — the forward pass applies the final norm and then records it,
+        # so `lm_head(hidden_states[-1])` reproduces `logits` exactly. Applying
+        # the norm again computes head(norm(norm(h))), and a norm with learned
+        # gamma/beta is not idempotent: it removes the very per-dimension
+        # scaling the unembedding was trained to read.
+        #
+        # That was not theoretical. On gpt2 completing "…located in the city
+        # of", the double-normed top row read ' the' while the model actually
+        # said ' Paris' — a confident, plausible, wrong answer on the one row a
+        # reader can check. And `final` is taken from that row, which anchors
+        # settled_at and the whole agreement column.
+        #
+        # Detected rather than assumed, so this holds across transformers
+        # versions and model families instead of encoding today's internals.
+        last_is_normed = torch.allclose(
+            head(states[-1][:, -1, :]).float(),
+            out.logits[:, -1, :].float(),
+            atol=1e-3,
+            rtol=1e-3,
+        )
+
         rows = []
         for layer, hidden in enumerate(states):
             x = hidden[:, -1, :]
-            logits = head(norm(x)).float()[0]
+            final_row = layer == len(states) - 1
+            logits = head(x if (final_row and last_is_normed) else norm(x)).float()[0]
             probs = torch.softmax(logits, dim=-1)
             top = torch.topk(probs, k=min(top_k, probs.numel()))
             rows.append(

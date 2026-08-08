@@ -6,6 +6,33 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-08
+
+### Fixed
+
+Two wrong measurements, found by an adversarial audit hours after 0.5.0
+shipped. Both are the exact failure this project exists to prevent: a
+confident, plausible number that is wrong.
+
+- **The logit lens read the model through the wrong transform.** HuggingFace
+  decoders apply the final norm and *then* record the hidden state, so
+  `lm_head(hidden_states[-1])` reproduces `logits` exactly. The lens applied
+  the norm again — `head(norm(norm(h)))` — and a norm with learned gamma/beta
+  is not idempotent. On gpt2 completing "…located in the city of", the top row
+  read `' the'` while the model actually said `' Paris'`. That row supplies
+  `final`, which anchors `settled_at` and the whole agreement column, so one
+  wrong row mislabelled the table. Now detected at runtime rather than
+  assumed, so it holds across transformers versions and model families.
+
+- **Saturation was inverted.** The threshold measured distance from the
+  tensor's own maximum instead of the activation's real bounds, and tested
+  magnitude only. 9,000 sigmoid units pinned at 0 — gradient ~0, textbook
+  saturation — reported **10%**, because the 1,000 healthy units at 0.5 were
+  the ones counted. A maximum-entropy uniform softmax reported **100%**.
+  Bounds are now written down per activation, both rails count, and Softmax
+  and LogSigmoid get no figure at all: per-element saturation over a
+  distribution is not a meaningful quantity.
+
 ## [0.5.0] — 2026-08-08
 
 ### Added

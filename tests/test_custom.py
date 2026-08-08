@@ -502,3 +502,44 @@ def test_a_test_suite_is_not_scanned_for_adapters(tmp_path, monkeypatch):
     (tmp_path / "mine.py").write_text("def load():\n    ...\n", encoding="utf-8")
 
     assert [f["name"] for f in custom.find_adapters()] == ["mine.py"]
+
+
+# ------------------------------------------------------- saturation, correctly
+
+
+def test_saturation_is_measured_against_the_real_bound_not_the_data():
+    """The threshold used the tensor's own max, which inverted the answer.
+
+    9,000 sigmoid units pinned at 0 have gradient s(1-s) ~ 0 — textbook
+    saturation — but `abs(0) >= 0.99 * span` is false, so they were counted as
+    healthy while the 1,000 units sitting harmlessly at 0.5 were counted as
+    saturated. Reported 10% when the truth was 90%.
+    """
+    pinned_low = torch.cat([torch.full((9000,), 1e-9), torch.full((1000,), 0.5)])
+    got = custom.tensor_stats(pinned_low, "Sigmoid")["pct_saturated"]
+    assert got == pytest.approx(90.0, abs=0.5), (
+        f"a sigmoid pinned at its LOW rail read as {got}% saturated"
+    )
+
+
+def test_a_healthy_bounded_activation_is_not_reported_saturated():
+    mid = torch.randn(5000) * 0.005 + 0.5
+    assert custom.tensor_stats(mid, "Sigmoid")["pct_saturated"] == pytest.approx(0.0)
+    spread = torch.tanh(torch.randn(5000) * 0.5)
+    assert custom.tensor_stats(spread, "Tanh")["pct_saturated"] < 2.0
+
+
+def test_both_rails_count_as_saturated():
+    rails = torch.cat([torch.full((500,), -0.999), torch.full((500,), 0.999)])
+    assert custom.tensor_stats(rails, "Tanh")["pct_saturated"] == pytest.approx(100.0)
+
+
+def test_softmax_gets_no_saturation_figure_at_all():
+    """A softmax is saturated when it is PEAKED, not when elements near a bound.
+
+    Per-element saturation over a distribution is not a meaningful quantity,
+    and reporting one made a maximum-entropy uniform softmax — the least
+    saturated distribution there is — read as 100% saturated.
+    """
+    uniform = torch.full((1000,), 1 / 1000)
+    assert custom.tensor_stats(uniform, "Softmax").get("pct_saturated") is None

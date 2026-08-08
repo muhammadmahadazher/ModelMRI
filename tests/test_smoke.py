@@ -968,3 +968,39 @@ def test_record_is_one_implementation_now():
     assert intree.trace is standalone.trace
     assert intree.step is standalone.step
     assert intree.__version__ == standalone.__version__
+
+
+def test_the_logit_lens_agrees_with_the_model_it_is_reading():
+    """The last hidden state is ALREADY normed; the lens normed it again.
+
+    HuggingFace decoders apply the final norm and then record the hidden
+    state, so `lm_head(hidden_states[-1])` reproduces `logits` exactly.
+    Applying the norm a second time computes head(norm(norm(h))), and a norm
+    with learned gamma/beta is not idempotent.
+
+    On gpt2 completing "…located in the city of", the top row read ' the'
+    while the model actually said ' Paris'. That row supplies `final`, which
+    anchors settled_at and the whole agreement column — so one wrong row
+    mislabels the table.
+    """
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    from modelmri.lens import logit_lens
+
+    tok = transformers.AutoTokenizer.from_pretrained("gpt2")
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        "gpt2", attn_implementation="eager"
+    )
+    ids = tok(
+        "The Eiffel Tower is located in the city of", return_tensors="pt"
+    ).input_ids
+
+    with torch.no_grad():
+        truth = tok.decode([int(model(ids).logits[0, -1].argmax())])
+
+    rows = logit_lens(model, tok, ids, top_k=3)["layers"]
+    assert rows[-1]["tokens"][0] == truth, (
+        f"the lens's final row says {rows[-1]['tokens'][0]!r} but the model "
+        f"says {truth!r} — the lens is not reading the model it claims to"
+    )

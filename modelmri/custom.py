@@ -38,9 +38,23 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-# Bounded activations are the only ones where "saturated" means anything. For
-# a ReLU, a large output is not saturation, it is just a large output.
-_BOUNDED = {"Sigmoid", "Tanh", "Softmax", "LogSigmoid", "Hardsigmoid", "Hardtanh"}
+# Saturation is distance from an activation's REAL bounds, so the bounds have
+# to be written down. Measuring against the tensor's own max instead rescales
+# the threshold to whatever the data happens to be, and inverts the answer:
+# 9,000 sigmoid units pinned at 0 (gradient ~0, textbook saturated) reported
+# 10% while the 1,000 healthy units at 0.5 were the ones counted.
+#
+# Softmax and LogSigmoid are deliberately absent. A softmax is saturated when
+# it is peaked, not when its elements are near a bound — per-element
+# saturation over a distribution is not a meaningful quantity, and reporting
+# one made a maximum-entropy uniform softmax read as 100% saturated.
+_BOUNDS: dict[str, tuple[float, float]] = {
+    "Sigmoid": (0.0, 1.0),
+    "Hardsigmoid": (0.0, 1.0),
+    "Tanh": (-1.0, 1.0),
+    "Hardtanh": (-1.0, 1.0),
+}
+_BOUNDED = frozenset(_BOUNDS)
 
 # Modules whose output is the interesting thing. Everything else with no
 # children is still hooked; this set only drives the "activation" flag used to
@@ -385,12 +399,14 @@ def tensor_stats(t, kind: str) -> dict:
     out["min"] = round(float(good.min()), 6)
     out["max"] = round(float(good.max()), 6)
     out["pct_zero"] = round(float((good == 0).float().mean()) * 100, 2)
-    if kind in _BOUNDED:
-        # Within 1% of the bound in either direction: the gradient there is
-        # effectively zero, which is the thing worth knowing.
-        lo, hi = float(good.min()), float(good.max())
-        span = max(abs(lo), abs(hi), 1e-9)
-        near = (good.abs() >= 0.99 * span).float().mean()
+    bounds = _BOUNDS.get(kind)
+    if bounds is not None:
+        # Within 1% of the activation's own range of EITHER bound. Both ends
+        # matter: a sigmoid pinned at 0 has gradient s(1-s) ~ 0 just as surely
+        # as one pinned at 1, and the magnitude-only test could not see it.
+        lo, hi = bounds
+        margin = 0.01 * (hi - lo)
+        near = ((good <= lo + margin) | (good >= hi - margin)).float().mean()
         out["pct_saturated"] = round(float(near) * 100, 2)
     return out
 
