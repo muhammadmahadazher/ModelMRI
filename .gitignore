@@ -47,3 +47,12 @@ Thumbs.db
 
 # built docs (published by the Pages workflow, not committed)
 /site/
+
+# Scratch files from verification runs and audit agents. One of these
+# (nanhead.py, a two-layer net used to reproduce a nan) reached a release
+# commit because nothing here excluded it.
+/scratch/
+/scratchpad/
+/nanhead.py
+/rep[0-9]*.py
+/refute*.py
