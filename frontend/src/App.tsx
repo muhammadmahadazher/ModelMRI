@@ -10,6 +10,7 @@ import VLAPanel from "./VLAPanel";
 
 export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
   const [accel, setAccel] = useState<Accelerator | null>(null);
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export default function App() {
     try {
       const s = await getSession();
       setModel(s.model);
+      setVersion(s.version);
     } catch {
       setModel(null);
     }
@@ -94,7 +96,10 @@ export default function App() {
       <VLAPanel />
       <AgentsPanel />
       <footer>
-        <span>MRI-0.3</span>
+        {/* Read from /api/session. It was the literal "MRI-0.3" and had been
+            wrong since 0.4.0 — a version string nobody remembers to bump is a
+            version string that lies. */}
+        <span>{version ? `MRI-${version}` : "MRI"}</span>
         <span>MIT ©2026</span>
         <span className="spacer" />
         <a href="https://github.com/muhammadmahadazher/ModelMRI">

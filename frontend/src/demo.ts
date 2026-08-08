@@ -51,6 +51,11 @@ export async function demoFetch(path: string, body?: unknown): Promise<unknown> 
     };
   }
   if (p === "/api/models/local") return [{ id: "gpt2", size_gb: 1.1 }];
+  // Real discovery output from a real machine, with the paths generalised —
+  // without this the demo's "On this machine" tab said "Nothing found …set
+  // MODELMRI_MODELS_DIR", which is a confusing first impression of a feature
+  // whose whole point is that it finds things for you.
+  if (p === "/api/models/discovered") return await bundle<any>("discovered");
   if (p === "/api/ollama") return { up: false, models: [] };
   if (p === "/api/model/load") {
     return { loaded: true, hf_id: "gpt2", device: "cpu (recorded)", dtype: "float32", n_params: 124439808 };

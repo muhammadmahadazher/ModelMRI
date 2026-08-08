@@ -114,6 +114,17 @@ def main() -> int:
     trace = get(f"/api/traces/{traces[0]['id']}") if traces else None
     write("traces.json", {"list": traces[:3], "trace": trace})
 
+    print("\nDiscovery: what is actually on this machine")
+    disco = get("/api/models/discovered")
+    # The model ids and sizes are real; the paths are this machine's directory
+    # layout and have no business on the public internet. Replaced with a
+    # plausible generic root so the demo's picker still reads as a real one.
+    for m in disco.get("models", []):
+        leaf = m["path"].replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+        m["path"] = f"~/.cache/huggingface/hub/{leaf}"
+    disco["roots"] = ["~/models"]
+    write("discovered.json", disco)
+
     print("\nCustom: the adapter template, inspected")
     try:
         template = str(ROOT / "examples" / "adapter_template.py")

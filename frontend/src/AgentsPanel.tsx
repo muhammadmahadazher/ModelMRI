@@ -15,6 +15,7 @@ export default function AgentsPanel() {
   const [list, setList] = useState<TraceSummary[] | null>(null);
   const [doc, setDoc] = useState<TraceDoc | null>(null);
   const [sel, setSel] = useState<TraceStep | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void getTraces().then((l) => {
@@ -22,6 +23,24 @@ export default function AgentsPanel() {
       if (l.length) void getTrace(l[0].id).then(setDoc);
     });
   }, []);
+
+  /** One row per agent, not per run.
+   *
+   *  A recorder is something you leave switched on, so the list fills with
+   *  repeats of whatever you run most: 16 of 21 traces here were the same
+   *  `e2e-check-run`, which buried every other agent below the fold. Group by
+   *  name, show the newest, and let the count expand.
+   */
+  const groups = useMemo(() => {
+    if (!list) return [];
+    const by = new Map<string, TraceSummary[]>();
+    for (const t of list) {
+      const runs = by.get(t.name);
+      if (runs) runs.push(t);
+      else by.set(t.name, [t]);
+    }
+    return [...by.entries()].map(([name, runs]) => ({ name, runs }));
+  }, [list]);
 
   const lanes = useMemo(() => {
     if (!doc) return [];
@@ -62,22 +81,57 @@ export default function AgentsPanel() {
       </div>
 
       <div className="trace-list">
-        {list.map((t) => (
-          <button
-            key={t.id}
-            className={`trace-row ${doc?.id === t.id ? "sel" : ""}`}
-            onClick={() => {
-              setSel(null);
-              void getTrace(t.id).then(setDoc);
-            }}
-          >
-            <span className="tname">{t.name}</span>
-            <span className="tmeta">
-              {t.n_steps} steps · {(t.total_ms / 1000).toFixed(1)}s
-              {t.n_errors > 0 && <em> · {t.n_errors} error</em>}
-            </span>
-          </button>
-        ))}
+        {groups.map(({ name, runs }) => {
+          const open = expanded.has(name);
+          const shown = open ? runs : runs.slice(0, 1);
+          // Count errors among the runs this button is hiding, not across
+          // the whole group: "15 more runs · 16 with errors" describes two
+          // different sets in one sentence.
+          const hiddenErrors = runs.slice(1).filter((r) => r.n_errors > 0).length;
+          return (
+            <div className="trace-group" key={name}>
+              {shown.map((t, i) => (
+                <button
+                  key={t.id}
+                  className={`trace-row ${doc?.id === t.id ? "sel" : ""} ${
+                    i > 0 ? "repeat" : ""
+                  }`}
+                  onClick={() => {
+                    setSel(null);
+                    void getTrace(t.id).then(setDoc);
+                  }}
+                >
+                  <span className="tname">
+                    {i > 0 ? <span className="tdim">run {runs.length - i}</span> : name}
+                  </span>
+                  <span className="tmeta">
+                    {t.n_steps} steps · {(t.total_ms / 1000).toFixed(1)}s
+                    {t.n_errors > 0 && <em> · {t.n_errors} error</em>}
+                  </span>
+                </button>
+              ))}
+              {runs.length > 1 && (
+                <button
+                  className="trace-more"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setExpanded((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(name)) next.delete(name);
+                      else next.add(name);
+                      return next;
+                    })
+                  }
+                >
+                  {open
+                    ? "fewer"
+                    : `${runs.length - 1} more run${runs.length === 2 ? "" : "s"}` +
+                      (hiddenErrors ? ` · ${hiddenErrors} with errors` : "")}
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {doc && (

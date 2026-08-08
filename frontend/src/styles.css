@@ -1580,6 +1580,29 @@ footer .spacer { flex: 1; }
   .skel-bar::after { animation: none; }
 }
 
+/* ---------- grouped trace list ----------
+   A recorder is something you leave switched on, so the list fills with
+   repeats. Collapsed to one row per agent, with the rest one click away. */
+.trace-group { display: grid; gap: 3px; }
+.trace-row.repeat { padding-left: 26px; }
+.tdim { color: var(--color-mute); }
+.trace-more {
+  all: unset;
+  cursor: pointer;
+  align-self: start;
+  margin: 1px 0 4px 10px;
+  padding: 3px 8px;
+  border-radius: var(--r-chip);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--color-mute);
+  border: 1px dashed color-mix(in oklab, var(--color-ink) 18%, transparent);
+  transition: color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover);
+}
+.trace-more:hover { color: var(--color-agent); border-color: var(--color-agent); }
+
 /* ---------- touch ergonomics ----------
    Everything here already clears WCAG 2.2 AA (2.5.8 wants 24x24). This is the
    44x44 comfortable-thumb target from Apple's HIG / WCAG 2.5.5 AAA, applied
