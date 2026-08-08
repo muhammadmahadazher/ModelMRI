@@ -1,5 +1,74 @@
 # Working log
 
+## 2026-08-08 (later) — bring your own model, and four bugs that were invisible
+
+**Custom models.** Every other panel is transformer-shaped, so the honest
+answer to "does this work on the model I trained?" was no, unless you'd saved
+it as a HuggingFace causal LM. Now: an adapter (`def load(): return model`) or
+TorchScript, and you get a layer map of one real forward pass — shapes,
+activation ranges, dead units, saturation, timing, and the first layer where a
+nan appears. A `state_dict` alone is refused with the reason: it's weights
+without an architecture, and guessing one would produce a map that looks
+authoritative and describes a network nobody trained.
+
+Statistics exclude non-finite values on purpose. One nan propagates through
+mean/std/min/max, so the naive version prints nan for every layer downstream
+and hides where it started.
+
+`tests/mutation_check.py` breaks `custom.py` twelve ways and asserts the named
+test notices. 12/12. Two were survivors when first written, and both were the
+test's fault: one asserted a downstream proxy that a leaked hook doesn't
+disturb (the leaked hook closes over the *previous* rows list, so it appends
+out of sight and the count stays right), and one mutation didn't break what it
+claimed to.
+
+**Four bugs, all invisible, all shipped for weeks.**
+
+1. `--glass-fill: var(--glass-fill)` — a self-referential custom property is a
+   cycle, so it computes to nothing and takes the whole `background`
+   declaration with it. Every liquid-glass surface was fully transparent. The
+   model picker was blur with no frost and the hero headline read straight
+   through the model list. The owner reported it as "the background isn't
+   blurred enough"; it was worse than that. Third time a var() has silently
+   voided a declaration here, so there's a test for the class now.
+
+2. The scrim behind that sheet was `blur(3px)` and was doing *all* the work —
+   an element with `backdrop-filter` becomes a backdrop root for its children,
+   so `.sheet`'s own `blur(40px)` only ever sampled the scrim's flat tint.
+
+3. Keyboard focus was invisible on half the app. `:focus-visible` and
+   `.model-row` are both specificity (0,1,0), so the eight `all: unset` rules
+   below it won on source order; `.theme-seg button` at (0,1,1) won outright.
+   19 of 20 controls in the picker moved focus with no ring — while
+   `:focus-visible` matched and `outline-style` computed to `none`.
+
+   The first probe for this reported *every* button as ringless, because
+   `element.focus()` doesn't set `:focus-visible` in Chromium. That's a fact
+   about the probe. I nearly "fixed" it.
+
+4. A page reload discarded your analysis. The attention and feature panels
+   were gated on a client-side counter, so refreshing unmounted them while the
+   server still held attention for 141 tokens and would have served it.
+
+Also: errors reached the screen as `Error: 422: {"error":"…"}` on all 19 paths;
+the picker resized 266px under the cursor when its list landed; the footer read
+`MRI-0.3` through the whole 0.4 line; the hosted demo's "On this machine" tab —
+the feature whose entire point is finding your models — said "Nothing found".
+
+**Repo hygiene.** Contributing guide, code of conduct, security policy,
+support, issue/PR templates, CITATION.cff, CODEOWNERS, Dependabot, CodeQL,
+changelog. SECURITY.md states the trust model plainly: local single-user, no
+auth, and loading any model executes code.
+
+**Verification.** `tests/ui_check.py` (17 browser assertions, in CI) plus
+`gen_api_docs.py --check` so the API reference can't drift. The unstyled-button
+check injects the bug into the live page each run and fails if it isn't
+detected — a check that can't rot into a no-op.
+
+0.5.0 built and verified from a clean install into an empty venv. Not
+published yet.
+
+
 ## 2026-08-08 — design v5, and dark mode
 
 Researched how Google and Apple actually build colour, motion and type
