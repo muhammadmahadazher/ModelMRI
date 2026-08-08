@@ -880,3 +880,59 @@ def test_custom_candidates_does_not_import_what_it_finds(tmp_path, monkeypatch):
     r = client().get("/api/custom/candidates")
     assert r.status_code == 200
     assert "landmine.py" in [a["name"] for a in r.json()["adapters"]]
+
+
+# ------------------------------------------------------------ version drift
+
+
+def test_the_version_is_single_sourced():
+    """pyproject must not carry its own copy of the version.
+
+    Four hand-maintained copies is four chances to ship a wrong one, and the
+    UI footer already shipped "MRI-0.3" for the whole 0.4 line. hatchling
+    reads modelmri/__init__.py; nothing else should restate it.
+    """
+    import tomllib
+    from pathlib import Path
+
+    pj = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text("utf-8")
+    )
+    assert "version" in pj["project"].get("dynamic", []), (
+        "pyproject declares a literal version again — it will drift"
+    )
+    assert pj["tool"]["hatch"]["version"]["path"] == "modelmri/__init__.py"
+
+
+def test_metadata_agrees_with_the_package_version():
+    """CITATION.cff is what people cite; a stale one misattributes the work."""
+    import re
+    from pathlib import Path
+
+    cff = (Path(__file__).resolve().parents[1] / "CITATION.cff").read_text("utf-8")
+    cited = re.search(r"^version:\s*(\S+)", cff, re.M)
+    assert cited, "CITATION.cff has no version"
+    assert cited.group(1) == __version__, (
+        f"CITATION.cff says {cited.group(1)}, package is {__version__}"
+    )
+
+
+def test_the_ui_never_hardcodes_a_version():
+    """The footer read the literal "MRI-0.3" while the package was 0.4.0."""
+    import re
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[1] / "frontend" / "src"
+    offenders = []
+    for f in src.glob("*.tsx"):
+        # Strip comments first: the fix for this bug is documented in a
+        # comment that quotes the offending literal, and a check that reads
+        # prose about a bug as the bug is a check nobody keeps.
+        code = re.sub(r"/\*.*?\*/", " ", f.read_text("utf-8"), flags=re.S)
+        code = re.sub(r"^\s*//.*$", " ", code, flags=re.M)
+        for m in re.finditer(r"MRI-\d+\.\d+", code):
+            offenders.append(f"{f.name}: {m.group(0)}")
+    assert offenders == [], (
+        f"hardcoded version strings in the UI: {offenders}. "
+        "Read it from /api/session instead."
+    )

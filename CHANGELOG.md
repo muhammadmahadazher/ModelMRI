@@ -6,6 +6,8 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-08
+
 ### Added
 
 - **Custom models.** Point ModelMRI at a network you trained yourself — a
@@ -13,8 +15,10 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   `nn.Module` — and get a live map of every layer: shapes, activation
   statistics, dead and saturated units, and the flow of a real forward pass.
   See the [custom models guide](docs/guides/custom-models.md).
-- **Model adapters** (`modelmri/adapters/`) as an extension point, so support
-  for a new architecture is a small file with a test rather than a fork.
+- **Adapters as a user extension point** — a `.py` file with
+  `def load(): return your_model`, discovered by reading text rather than by
+  importing, so a candidate that would crash on import is listed safely. See
+  `examples/adapter_template.py`.
 - Open-source project files: contribution guide, code of conduct, security
   policy, support guide, issue and pull-request templates, citation metadata,
   CODEOWNERS, and Dependabot.
@@ -49,6 +53,26 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 - The model picker offered ModelMRI's own `saes.py` and `vla.py` as models you
   had trained: a substring search for `def load(` matches every `load` method
   in existence.
+- **Every liquid-glass surface was fully transparent.** `--glass-fill:
+  var(--glass-fill)` is a cycle, so it computed to nothing and took the
+  `background` declaration with it. The model picker was blur with no frost,
+  and the hero headline read straight through the model list. The scrim behind
+  it — which carries the whole effect, because a parent with `backdrop-filter`
+  becomes a backdrop root for its children — was `blur(3px)`; it is now
+  `blur(28px) saturate(135%)`.
+- **Keyboard focus was invisible on half the app.** `:focus-visible` and
+  `.model-row` share specificity (0,1,0), so the eight `all: unset` rules below
+  it won on source order, and `.theme-seg button` at (0,1,1) won outright. 19
+  of 20 controls in the picker moved focus with no ring.
+- **A page reload discarded your analysis.** The attention and feature panels
+  were gated on a client-side counter, so refreshing unmounted them while the
+  server still held the activations.
+- **Errors reached the screen as JSON.** All 19 error paths showed
+  `Error: 422: {"error":"…"}` around sentences written for humans.
+- The model picker resized 266px under the cursor when its list arrived.
+- The footer read `MRI-0.3` for the whole 0.4 line, and the hosted demo's
+  "On this machine" tab said "Nothing found".
+- Touch targets below 44×44 on a phone: 13 → 3.
 
 ## [0.4.0] — 2026-08-07
 
@@ -134,6 +158,7 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 - Standalone, dependency-free recorder split out of `modelmri`: `trace()`,
   `step()`, `instrument_anthropic()`, and a credential scrubber.
 
-[Unreleased]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.1.0...v0.4.0
 [0.1.0]: https://github.com/muhammadmahadazher/ModelMRI/releases/tag/v0.1.0
