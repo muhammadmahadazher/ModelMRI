@@ -69,6 +69,7 @@ Early layers look everywhere; deep layers lock on. No robot hardware required â€
 ```bash
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
+pip install modelmri-record       # just the agent recorder â€” stdlib only, 7 KiB
 modelmri serve
 ```
 
