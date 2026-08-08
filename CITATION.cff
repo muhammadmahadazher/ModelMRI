@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If ModelMRI supports your research or engineering work, please cite it using this metadata."
+title: "ModelMRI"
+type: software
+version: 0.4.0
+date-released: 2026-08-07
+authors:
+  - family-names: "Azher"
+    given-names: "Muhammad Mahad"
+repository-code: "https://github.com/muhammadmahadazher/ModelMRI"
+url: "https://muhammadmahadazher.github.io/ModelMRI/"
+license: MIT
+keywords:
+  - interpretability
+  - mechanistic interpretability
+  - sparse autoencoder
+  - activation steering
+  - attention visualization
+  - agent observability
+  - local-first
+abstract: >-
+  ModelMRI is an open-source, local-first inspector for AI models and agents.
+  It renders per-layer, per-head attention from a live forward pass, decomposes
+  the residual stream with sparse autoencoders, applies causal steering along a
+  chosen feature direction, visualises the attention of vision-language-action
+  robot policies, and records agent runs as inspectable traces through a
+  zero-dependency recorder.

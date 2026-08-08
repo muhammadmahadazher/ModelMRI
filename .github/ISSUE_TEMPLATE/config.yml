@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://muhammadmahadazher.github.io/ModelMRI/docs/
+    about: Guides for each panel, the HTTP API reference, and troubleshooting.
+  - name: Troubleshooting
+    url: https://muhammadmahadazher.github.io/ModelMRI/docs/troubleshooting/
+    about: Stalled downloads, CPU fallback, gated repositories, SAE mismatches.
+  - name: Live demo
+    url: https://muhammadmahadazher.github.io/ModelMRI/
+    about: Runs in your browser against baked fixtures — no install, no server.
+  - name: Report a security vulnerability
+    url: https://github.com/muhammadmahadazher/ModelMRI/security/advisories/new
+    about: Please report privately rather than in a public issue.

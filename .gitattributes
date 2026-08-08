@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.webm binary
+*.mp4 binary
+*.safetensors binary
+*.npy binary
+
+# Generated, and noisy in review.
+uv.lock linguist-generated=true
+frontend/package-lock.json linguist-generated=true
+modelmri/static/** linguist-generated=true

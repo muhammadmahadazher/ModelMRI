@@ -1,0 +1,87 @@
+name: Bug report
+description: Something ModelMRI shows or does is wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The most valuable bugs here are the quiet ones —
+        a number that looks fine and is wrong — so please say what you
+        *expected* the measurement to be, not only that it looked off.
+
+        A model producing bad text is not a ModelMRI bug. ModelMRI showing you
+        the wrong tokens, the wrong layer, or another model's generation is.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, and what you saw.
+      placeholder: |
+        Loaded gpt2, generated 24 tokens, opened the features panel…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - Model loading / picker
+        - Attention
+        - Features / SAE / steering
+        - Agent traces (modelmri-record)
+        - Robot policy (VLA)
+        - Custom / own-trained models
+        - The UI generally
+        - Something else
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`modelmri --version`, or the commit you're on."
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The HuggingFace id, Ollama tag, or adapter involved.
+
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        OS:            Windows 11 / Ubuntu 24.04 / macOS 15
+        Python:        3.12
+        GPU:           RTX 4060 8 GB, or "CPU only"
+        Installed via: pip / uv / from source
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console or server output
+      description: Anything from the terminal or the browser console.
+      render: text
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This report contains no API keys, tokens, or private data.
+          required: true

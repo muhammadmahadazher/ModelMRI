@@ -1,0 +1,17 @@
+ModelMRI
+Copyright 2026 Muhammad Mahad Azher
+
+This product includes software developed by ModelMRI contributors and
+third-party open-source packages identified by the lockfiles in this
+repository.
+
+Model weights, sparse autoencoders, and datasets loaded at runtime are not part
+of this distribution and remain under their own licenses. In particular:
+
+  - GPT-2 SAEs from jbloom/GPT2-Small-SAEs-Reformatted (SAELens format)
+  - lerobot/smolvla_base and lerobot/pusht (HuggingFace LeRobot)
+  - any model you load from the HuggingFace Hub or Ollama
+
+Some of those are gated and require you to accept the publisher's terms with
+your own account. ModelMRI links you to the acceptance page; it does not
+redistribute the weights.

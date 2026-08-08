@@ -1,0 +1,12 @@
+# Default owner for everything.
+* @muhammadmahadazher
+
+# The recorder ships into other people's agents and must stay dependency-free.
+/packages/modelmri-record/ @muhammadmahadazher
+
+# Anything that decides what a number means.
+/modelmri/saes.py @muhammadmahadazher
+/modelmri/runtime.py @muhammadmahadazher
+
+# The one place ModelMRI runs code it did not write. Read twice.
+/modelmri/custom.py @muhammadmahadazher

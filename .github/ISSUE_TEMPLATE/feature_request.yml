@@ -1,0 +1,55 @@
+name: Feature request
+description: Something ModelMRI should be able to show you and can't.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What can't you see right now
+      description: >-
+        Describe the question you're trying to answer about a model, not the
+        control you want added. "I can't tell which attention head moves the
+        subject token" is more useful than "add a dropdown".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - New architecture / model adapter
+        - Attention
+        - Features / SAE / steering
+        - Agent traces
+        - Robot policy (VLA)
+        - Custom / own-trained models
+        - Export, API, or scripting
+        - UI and interaction
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: correctness
+    attributes:
+      label: How would you know it's right
+      description: >-
+        This matters more here than in most projects. If the panel showed you a
+        plausible-looking number, what independent check would tell you the
+        number is real?
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
