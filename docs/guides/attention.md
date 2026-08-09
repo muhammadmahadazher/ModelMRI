@@ -67,8 +67,14 @@ what you think you found.
 Share this view → "L8 H3 copies the subject token" → gpt2.mri (54 KB)
 ```
 
-Open one by clicking **Open a shared analysis** or dropping the file anywhere
-on the page. It works with **no model loaded** — the panels read the recording
+The person you send it to needs one command, and no model:
+
+```bash
+pip install modelmri && modelmri open gpt2.mri
+```
+
+Or, if they already have ModelMRI running: click **Open a shared analysis**,
+or drop the file anywhere on the page. It works with **no model loaded** — the panels read the recording
 through exactly the same calls they use for a live model, so the arcs, the
 token strip and the layer/head dials all behave normally. The status pill says
 `replay` and the panel footer says *recorded, not live*, so there is never a

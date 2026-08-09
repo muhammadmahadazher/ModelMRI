@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from dataclasses import asdict
 from importlib.resources import files
@@ -27,6 +28,8 @@ from .vla import VLAHandle
 class LoadRequest(BaseModel):
     hf_id: str = DEFAULT_MODEL
     source: str = "hf"  # "hf" | "ollama"
+    # The user saw the size warning and chose to proceed anyway.
+    confirm: bool = False
 
 
 class SAELoadRequest(BaseModel):
@@ -45,6 +48,9 @@ class HubSignInRequest(BaseModel):
 
 class OllamaPullRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
+    # The user saw the size warning and chose to proceed. Never a default,
+    # and never enough to override a disk that has no room.
+    confirm: bool = False
 
 
 class VLALoadRequest(BaseModel):
@@ -99,6 +105,16 @@ def create_app(
     traces = TraceStore(db_path)
     app.state.traces = traces
 
+    # `modelmri open somebody.mri` hands the file over here, so the page is
+    # already showing the analysis when the browser tab opens. Failing to
+    # read it is not fatal: the CLI already parsed and reported on it, so the
+    # server starting with nothing open beats the server not starting.
+    if pending := os.environ.get("MODELMRI_OPEN"):
+        try:
+            runtime.open_session(Path(pending).read_bytes())
+        except Exception:
+            pass
+
     # Serve the built React app when present (frontend/ builds into static/app);
     # fall back to the legacy single-file playground otherwise.
     static = files("modelmri") / "static"
@@ -126,13 +142,28 @@ def create_app(
 
     @app.post("/api/model/load")
     async def load_model(req: LoadRequest):
+        from .runtime import LoadCancelled
+
         try:
-            status = await asyncio.to_thread(runtime.load, req.hf_id, req.source)
+            status = await asyncio.to_thread(
+                runtime.load, req.hf_id, req.source, req.confirm
+            )
             return status.to_dict()
+        except LoadCancelled as err:
+            # Not a failure: the user asked. 200 with a plain answer, so the
+            # UI does not paint a red error over something it did on purpose.
+            return JSONResponse({"cancelled": True, "message": str(err)})
         except RuntimeError as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/model/cancel")
+    def cancel_load() -> dict:
+        """Stop an in-flight load. The reason this exists is in runtime.py."""
+        from .progress import TRACKER
+
+        return {"stopping": TRACKER.request_cancel()}
 
     @app.get("/api/model/progress")
     def load_progress() -> dict:
@@ -191,9 +222,66 @@ def create_app(
         except RuntimeError as err:
             return JSONResponse({"error": str(err)}, status_code=409)
 
+    @app.get("/api/ollama/size")
+    async def ollama_size(name: str) -> dict:
+        """What a pull would cost, and whether this machine can take it.
+
+        The picker asks before offering the button, so the number is on
+        screen before the click rather than discovered halfway through.
+        """
+        from . import capacity as _capacity
+        from . import ollama as _ollama
+
+        need = await asyncio.to_thread(_ollama.manifest_size, name)
+        target = _capacity.ollama_models_dir()
+        _, free = _capacity.free_space(target)
+        try:
+            _capacity.guard(
+                need,
+                target,
+                label=name,
+                vram_gb=runtime.accel.vram_gb,
+                accel_name=runtime.accel.name,
+            )
+        except _capacity.TooBig as err:
+            return {
+                "name": name,
+                "bytes": need,
+                "free_bytes": free,
+                "ok": False,
+                "overridable": err.overridable,
+                "warning": str(err),
+            }
+        return {
+            "name": name,
+            "bytes": need,
+            "free_bytes": free,
+            "ok": True,
+            "overridable": False,
+            "warning": "",
+        }
+
     @app.post("/api/ollama/pull")
     async def ollama_pull(req: OllamaPullRequest):
+        from . import capacity as _capacity
         from . import ollama as _ollama
+
+        # Enforced here, not in the browser. A check the client performs is a
+        # check the client can skip, and this one guards someone's disk.
+        need = await asyncio.to_thread(_ollama.manifest_size, req.name)
+        try:
+            _capacity.guard(
+                need,
+                _capacity.ollama_models_dir(),
+                label=req.name,
+                vram_gb=runtime.accel.vram_gb,
+                accel_name=runtime.accel.name,
+                confirm=req.confirm,
+            )
+        except _capacity.TooBig as err:
+            return JSONResponse(
+                {"error": str(err), "overridable": err.overridable}, status_code=422
+            )
 
         def run() -> dict:
             last = {}

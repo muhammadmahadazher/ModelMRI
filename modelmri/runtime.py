@@ -12,14 +12,18 @@ attn_implementation="eager".
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Iterator
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import devices, paths, ollama, progress, session
+from . import capacity, devices, paths, ollama, progress, session
 from .saes import SAEHandle, SAEStatus
 
 
@@ -104,6 +108,85 @@ def local_hf_models() -> list[dict]:
     return out
 
 
+class LoadCancelled(RuntimeError):
+    """The user stopped a load. Not an error in the code, and not silent."""
+
+
+def download_size(hf_id: str) -> int:
+    """Bytes this repo will actually pull, from its own published metadata.
+
+    0 means unknown, never "small" -- GGUF and pickle repos publish nothing
+    to go on, and treating unknown as zero is how a guard lets through the
+    one download it existed to stop.
+    """
+    try:
+        from . import hub
+
+        info = hub._api(f"/models/{hf_id}", hub.token(), timeout=8)
+        return hub.weight_bytes(info)
+    except Exception:
+        return 0
+
+
+def _free_space() -> tuple[Path, int]:
+    """Free bytes on the volume the HuggingFace cache lives on. Kept as a
+    seam so tests can state the disk situation instead of depending on the
+    developer's own drive."""
+    return capacity.free_space(paths.hf_hub_cache())
+
+
+def _preflight(hf_id: str, accel, confirm: bool) -> None:
+    """Refuse a download that cannot work, before a byte moves.
+
+    The rule lives in `capacity`, shared with the Ollama pull path so the
+    two cannot drift into disagreeing about what is too big.
+    """
+    _, free = _free_space()
+    capacity.guard(
+        download_size(hf_id),
+        paths.hf_hub_cache(),
+        label=hf_id,
+        vram_gb=getattr(accel, "vram_gb", None),
+        accel_name=getattr(accel, "name", ""),
+        confirm=confirm,
+        free_override=free,
+    )
+
+
+def _clean_partials(hf_id: str) -> int:
+    """Delete the half-written blobs a cancelled download left. Bytes freed."""
+    repo = paths.hf_hub_cache() / f"models--{hf_id.replace('/', '--')}"
+    freed = 0
+    try:
+        for stub in repo.rglob("*.incomplete"):
+            try:
+                freed += stub.stat().st_size
+                stub.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return freed
+
+
+# The child that does the downloading. Run as `python -c`, so terminating it
+# terminates the transfer -- which is the whole point. huggingface_hub offers
+# no way to interrupt a download in-process, so the download does not happen
+# in our process.
+_PREFETCH = """
+import sys
+from huggingface_hub import snapshot_download
+repo = sys.argv[1]
+snapshot_download(
+    repo,
+    ignore_patterns=[
+        "*.h5", "*.msgpack", "*.tflite", "*.onnx", "*.onnx_data", "*.gguf",
+        "onnx/*", "coreml/*", "openvino/*", "tflite/*",
+    ],
+)
+"""
+
+
 @dataclass
 class ModelStatus:
     loaded: bool
@@ -172,8 +255,16 @@ class ModelRuntime:
             n_params=sum(p.numel() for p in self.model.parameters()),
         )
 
-    def load(self, hf_id: str = DEFAULT_MODEL, source: str = "hf") -> ModelStatus:
+    def load(
+        self,
+        hf_id: str = DEFAULT_MODEL,
+        source: str = "hf",
+        confirm: bool = False,
+    ) -> ModelStatus:
         """Load a model. source="hf" (full introspection) or "ollama" (text only).
+
+        `confirm=True` overrides the size guard — the user has been told the
+        numbers and chosen anyway.
 
         Blocking — call from a worker thread.
         """
@@ -219,13 +310,28 @@ class ModelRuntime:
                 # sentencepiece or tiktoken installed", which sends people
                 # installing packages that were never the problem.
                 _require_causal_lm(hf_id)
+                # Refuse the impossible before a byte moves.
+                _preflight(hf_id, self.accel, confirm)
                 tokenizer = AutoTokenizer.from_pretrained(hf_id)
                 progress.TRACKER.stage("weights")
+                # Fetch in a child process first, so Stop works. Best effort:
+                # any failure falls through to from_pretrained downloading it.
+                try:
+                    self._prefetch_weights(hf_id)
+                except LoadCancelled:
+                    raise
+                except Exception:
+                    pass
+                if progress.TRACKER.cancelled.is_set():
+                    raise LoadCancelled("Load stopped before the weights loaded.")
                 model = AutoModelForCausalLM.from_pretrained(
                     hf_id,
                     torch_dtype=dtype,
                     attn_implementation="eager",  # materialises attention
                 )
+            except LoadCancelled as err:
+                progress.TRACKER.finish(error=str(err))
+                raise
             except OSError as err:
                 # Gated repos, typos and private models all land here with a
                 # multi-screen traceback. Say what to actually do instead.
@@ -279,6 +385,60 @@ class ModelRuntime:
             self._feats = None
             self._steer = None
             return self.status()
+
+    def _prefetch_weights(self, hf_id: str) -> None:
+        """Download the repo in a child process, so Stop can actually stop it.
+
+        `from_pretrained` downloads inside our own process, and there is no
+        supported way to interrupt it: the thread is blocked in a socket
+        read, and Python cannot kill a thread. That is why a 1.5 TB download
+        could only be stopped by killing the server.
+
+        A child process can be terminated. Once it has finished, the
+        subsequent `from_pretrained` finds every file in the cache and does
+        no network I/O at all, so this costs nothing in the normal case.
+
+        Failures here are deliberately not fatal: if the child cannot run for
+        any reason, we fall through and let `from_pretrained` download the
+        old way. A broken optimisation must not break loading.
+        """
+        # DEVNULL on BOTH streams, and it has to stay that way.
+        #
+        # `stderr=PIPE` here deadlocked a load that had already finished
+        # downloading: huggingface_hub writes tqdm progress bars to stderr,
+        # nothing in this process was draining the pipe, and the child
+        # blocked forever once the ~64 KB buffer filled. The UI sat at
+        # "551 MB / 551 MB · 234s · reading from local cache" indefinitely.
+        # If you ever want the child's output, drain it on a thread -- do not
+        # simply open the pipe.
+        env = {**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"}
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _PREFETCH, hf_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            # Windows: put it in its own group so terminate() does not also
+            # signal the server it was spawned from.
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32"
+            else 0,
+        )
+        try:
+            while proc.poll() is None:
+                if progress.TRACKER.cancelled.wait(0.4):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    freed = _clean_partials(hf_id)
+                    raise LoadCancelled(
+                        f"Download stopped. Removed {freed / 1e6:,.0f} MB of "
+                        f"partial files; anything already complete was kept."
+                    )
+        finally:
+            if proc.poll() is None:  # an exception on our side, not the child's
+                proc.terminate()
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""

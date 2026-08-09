@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  cancelLoad,
+  errorText,
   getAttentionMeta,
   getLoadProgress,
   loadModel,
@@ -38,6 +40,9 @@ export default function Playground({ model, onModelChange, replay }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [lastPrompt, setLastPrompt] = useState("");
   const [prog, setProg] = useState<LoadProgress | null>(null);
+  // The size guard's message, when it refused. Held separately from `meta`
+  // so it can carry its own "load it anyway" affordance.
+  const [oversize, setOversize] = useState("");
   // The steering hook lives on the runtime, not on the panel, so any
   // generation fired while it is installed is silently steered.
   const [steering, setSteering] = useState(false);
@@ -122,22 +127,46 @@ export default function Playground({ model, onModelChange, replay }: Props) {
     };
   }, [busy]);
 
-  async function ensureLoaded(): Promise<boolean> {
+  async function ensureLoaded(confirm = false): Promise<boolean> {
     if (isLoadedPick) return true;
     setBusy("loading");
     setMeta("");
+    setOversize("");
     try {
       const t = performance.now();
-      await loadModel(pick, source);
+      const result = await loadModel(pick, source, confirm);
+      // A stopped load is not a failure. Say what happened and stay put.
+      if ("cancelled" in result) {
+        setMeta(result.message);
+        return false;
+      }
       setMeta(`loaded in ${((performance.now() - t) / 1000).toFixed(1)}s`);
       await onModelChange();
       setEpoch(0);
       return true;
     } catch (err) {
-      setMeta(String(err instanceof Error ? err.message : err));
+      const message = errorText(err);
+      // The size guard refuses with 422 and a sentence naming both numbers.
+      // Offering the override here is the difference between a guard and a
+      // wall — but it must be a deliberate second click, never a default.
+      if (message.includes("Load it anyway")) {
+        setOversize(message);
+        setMeta("");
+      } else {
+        setMeta(message);
+      }
       return false;
     } finally {
       setBusy((b) => (b === "loading" ? "" : b));
+    }
+  }
+
+  async function onStopLoading() {
+    setMeta("stopping…");
+    try {
+      await cancelLoad();
+    } catch {
+      /* the load will report its own outcome either way */
     }
   }
 
@@ -217,7 +246,30 @@ export default function Playground({ model, onModelChange, replay }: Props) {
         </div>
       )}
 
-      {busy === "loading" && <LoadBar p={prog} id={pick} />}
+      {busy === "loading" && (
+        <LoadBar p={prog} id={pick} onStop={() => void onStopLoading()} />
+      )}
+
+      {/* The guard refused. It names both numbers; the override is one more
+          deliberate click, and it is never the default. */}
+      {oversize && (
+        <div className="oversize" role="alert">
+          <span className="oversize-mark" aria-hidden="true">
+            !
+          </span>
+          <div>
+            <p>{oversize}</p>
+            <div className="row">
+              <button className="ghost sm" onClick={() => void ensureLoaded(true)}>
+                Download it anyway
+              </button>
+              <button className="ghost sm" onClick={() => setOversize("")}>
+                Pick something else
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <textarea
         value={prompt}
@@ -324,10 +376,19 @@ const STAGES: Record<string, string> = {
 
 /** Progress for an in-flight load: named stage, bytes when we know them,
  *  and an indeterminate sweep when we don't. */
-function LoadBar({ p, id }: { p: LoadProgress | null; id: string }) {
+function LoadBar({
+  p,
+  id,
+  onStop,
+}: {
+  p: LoadProgress | null;
+  id: string;
+  onStop: () => void;
+}) {
   const total = p?.bytes_total ?? 0;
   const done = p?.bytes_done ?? 0;
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : null;
+  const stopping = (p?.detail ?? "").startsWith("stopping");
   return (
     <div className="loadbar glass-inset" role="status" aria-live="polite">
       <div className="loadbar-row">
@@ -338,6 +399,12 @@ function LoadBar({ p, id }: { p: LoadProgress | null; id: string }) {
           {pct !== null && `${gb(done)} / ${gb(total)} · `}
           {(p?.elapsed_s ?? 0).toFixed(0)}s
         </span>
+        {/* The whole reason this component was revisited. A minutes-long
+            download with no way out is a trap, and this one could run for
+            days before failing. */}
+        <button className="ghost sm stop" onClick={onStop} disabled={stopping}>
+          {stopping ? "stopping…" : "Stop"}
+        </button>
       </div>
       <div className={`loadbar-track ${pct === null ? "indeterminate" : ""}`}>
         <div

@@ -147,7 +147,16 @@ def legacy_root() -> Path | None:
     import, which meant `import modelmri` died with a RuntimeError on any
     machine with no resolvable home — before MODELMRI_HOME, the documented
     fix for exactly that situation, could be read.
+
+    MODELMRI_HOME switches it off entirely. That variable is documented as
+    "all of it under one directory", and it was not: on a machine that had
+    ever run 0.5.1 or earlier, a surviving `~/.modelmri/traces.sqlite` still
+    won, so the same command produced different storage on two machines
+    depending on their upgrade history. An explicit instruction beats a
+    compatibility fallback.
     """
+    if override() is not None:
+        return None
     home = _home()
     return (home / ".modelmri") if home else None
 

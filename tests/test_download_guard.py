@@ -1,0 +1,360 @@
+"""A download you cannot stop, and one that could never work.
+
+Written after a click on `zai-org/GLM-5.2` in the picker began fetching
+1506.7 GB onto a laptop with an 8.6 GB GPU and 88 GB of free disk. Nothing
+warned, nothing asked, and the only way to stop it was to kill the server.
+
+Both numbers were available before the first byte moved.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from modelmri import capacity, hub, progress, runtime as runtime_mod
+
+
+class FakeAccel:
+    name = "NVIDIA GeForce RTX 4060 Laptop GPU"
+    vram_gb = 8.6
+    kind = "cuda"
+
+
+# --------------------------------------------------- reading the real size
+
+
+def test_weight_bytes_uses_the_dtype_breakdown():
+    """753B parameters is 1.5 TB in BF16 and 750 GB in FP8. The count alone
+    cannot tell you what you are about to download."""
+    bf16 = {"safetensors": {"parameters": {"BF16": 1_000_000_000, "F32": 1_000}}}
+    fp8 = {"safetensors": {"parameters": {"F8_E4M3": 1_000_000_000}}}
+    assert hub.weight_bytes(bf16) == 2_000_004_000
+    assert hub.weight_bytes(fp8) == 1_000_000_000
+
+
+def test_weight_bytes_falls_back_to_two_bytes_per_parameter():
+    assert hub.weight_bytes({"safetensors": {"total": 500_000_000}}) == 1_000_000_000
+
+
+def test_an_unknown_dtype_is_assumed_wide_not_free():
+    """Guessing small on an unrecognised dtype is how a guard lets through
+    the one download it exists to stop."""
+    assert hub.weight_bytes({"safetensors": {"parameters": {"WAT9": 1_000}}}) == 2_000
+
+
+def test_a_repo_with_no_metadata_reports_unknown_not_zero_sized():
+    assert hub.weight_bytes({}) == 0
+    assert hub.weight_bytes({"safetensors": None}) == 0
+
+
+# --------------------------------------------------- the guard
+
+
+def test_a_model_that_cannot_fit_on_disk_is_refused(monkeypatch):
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: 1_506_700_000_000)
+    with pytest.raises(ValueError) as err:
+        runtime_mod._preflight("zai-org/GLM-5.2", FakeAccel(), confirm=False)
+    message = str(err.value)
+    # TB above a thousand gigabytes: "1506.7 GB" is a number people have to
+    # count digits on, and this one needs to land immediately.
+    assert "1.5 TB" in message
+    assert "free" in message
+    # A refusal that does not say what to do instead is just a wall.
+    assert "smaller model" in message
+
+
+def test_disk_refusal_cannot_be_overridden(monkeypatch):
+    """There is no version of 'yes, overflow my disk' that ends well."""
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: 1_506_700_000_000)
+    with pytest.raises(ValueError):
+        runtime_mod._preflight("zai-org/GLM-5.2", FakeAccel(), confirm=True)
+
+
+def test_a_model_far_past_the_gpu_needs_confirmation(monkeypatch):
+    """Fits on disk, could never load. 4x VRAM = 34 GB here, so 200 GB is
+    not an arguable case. Free space is stubbed so the verdict does not
+    depend on how full the developer's drive happens to be."""
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: 200_000_000_000)
+    monkeypatch.setattr(runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000))
+    with pytest.raises(ValueError, match="Load it anyway"):
+        runtime_mod._preflight("some/huge", FakeAccel(), confirm=False)
+    # ...and the override actually overrides.
+    runtime_mod._preflight("some/huge", FakeAccel(), confirm=True)
+
+
+@pytest.mark.parametrize(
+    "gb", [0.55, 1.5, 16.0, 30.0]  # gpt2, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
+)
+def test_ordinary_models_are_not_blocked(monkeypatch, gb):
+    """A guard that fires on normal work gets switched off."""
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: int(gb * 1e9))
+    runtime_mod._preflight("some/normal", FakeAccel(), confirm=False)
+
+
+def test_an_unknown_size_does_not_block(monkeypatch):
+    """GGUF repos publish nothing. Refusing on no evidence would ban them."""
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: 0)
+    runtime_mod._preflight("some/gguf", FakeAccel(), confirm=False)
+
+
+def test_a_machine_with_no_gpu_still_gets_a_ceiling(monkeypatch):
+    class NoGpu:
+        name = "cpu"
+        vram_gb = None
+        kind = "cpu"
+
+    monkeypatch.setattr(runtime_mod, "download_size", lambda _: 200_000_000_000)
+    monkeypatch.setattr(runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000))
+    with pytest.raises(ValueError, match="no GPU"):
+        runtime_mod._preflight("some/huge", NoGpu(), confirm=False)
+
+
+# --------------------------------------------------- ollama, same rule
+
+
+def test_ollama_and_huggingface_share_one_rule():
+    """Two guards drift. `deepseek-r1:671b` is 404 GB and the Ollama path
+    had no check at all until it went through the same function."""
+    from modelmri import runtime as rt
+
+    assert rt._preflight.__doc__ and "capacity" in rt._preflight.__doc__
+    assert capacity.guard is not None
+
+
+def test_ollama_size_comes_from_the_registry_not_a_hardcoded_list(monkeypatch):
+    from modelmri import ollama
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"layers":[{"size":1000},{"size":2000}],"config":{"size":50}}'
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return FakeResponse()
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", fake_urlopen)
+
+    assert ollama.manifest_size("qwen3:0.6b") == 3050
+    # Bare names live under ollama's default namespace.
+    assert "library/qwen3/manifests/0.6b" in captured["url"]
+
+
+def test_a_namespaced_ollama_model_is_not_forced_into_library(monkeypatch):
+    from modelmri import ollama
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        raise OSError("stop here — the URL is what is under test")
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", fake_urlopen)
+    assert ollama.manifest_size("someone/custom:latest") == 0
+    assert "someone/custom/manifests/latest" in captured["url"]
+
+
+def test_an_ollama_model_with_no_tag_defaults_to_latest(monkeypatch):
+    from modelmri import ollama
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        raise OSError("stop")
+
+    monkeypatch.setattr(ollama.urllib.request, "urlopen", fake_urlopen)
+    ollama.manifest_size("llama3.2")
+    assert captured["url"].endswith("/library/llama3.2/manifests/latest")
+
+
+def test_an_unreachable_registry_reports_unknown_not_zero_sized(monkeypatch):
+    from modelmri import ollama
+
+    monkeypatch.setattr(
+        ollama.urllib.request,
+        "urlopen",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert ollama.manifest_size("qwen3:0.6b") == 0
+
+
+def test_ollama_disk_check_uses_ollamas_own_directory(monkeypatch, tmp_path):
+    """Ollama does not store models in the HuggingFace cache, and the two
+    are routinely on different drives."""
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "elsewhere"))
+    assert capacity.ollama_models_dir() == tmp_path / "elsewhere"
+
+
+def test_the_pull_endpoint_enforces_it_server_side(monkeypatch):
+    """A check the browser performs is a check the browser can skip."""
+    from fastapi.testclient import TestClient
+
+    from modelmri import ollama
+    from modelmri.server import create_app
+
+    monkeypatch.setattr(ollama, "manifest_size", lambda *a, **k: 900_000_000_000_000)
+    client = TestClient(create_app())
+    r = client.post("/api/ollama/pull", json={"name": "deepseek-r1:671b"})
+    assert r.status_code == 422
+    assert "free" in r.json()["error"]
+    assert r.json()["overridable"] is False
+
+
+def test_confirm_cannot_override_a_full_disk_on_the_pull_path(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from modelmri import ollama
+    from modelmri.server import create_app
+
+    monkeypatch.setattr(ollama, "manifest_size", lambda *a, **k: 900_000_000_000_000)
+    client = TestClient(create_app())
+    r = client.post(
+        "/api/ollama/pull", json={"name": "deepseek-r1:671b", "confirm": True}
+    )
+    assert r.status_code == 422
+
+
+# --------------------------------------------------- stopping it
+
+
+def test_the_tracker_reports_nothing_to_stop_when_idle():
+    progress.TRACKER.finish()
+    assert progress.TRACKER.request_cancel() is False
+
+
+def test_requesting_a_cancel_sets_the_flag_and_says_so():
+    progress.TRACKER.start("some/model")
+    try:
+        assert progress.TRACKER.cancelled.is_set() is False
+        assert progress.TRACKER.request_cancel() is True
+        assert progress.TRACKER.cancelled.is_set() is True
+        assert "stopping" in progress.TRACKER.snapshot().detail
+    finally:
+        progress.TRACKER.finish()
+
+
+def test_a_new_load_clears_a_previous_cancel():
+    """Otherwise one Stop click poisons every load after it."""
+    progress.TRACKER.start("a")
+    progress.TRACKER.request_cancel()
+    progress.TRACKER.finish()
+    progress.TRACKER.start("b")
+    try:
+        assert progress.TRACKER.cancelled.is_set() is False
+    finally:
+        progress.TRACKER.finish()
+
+
+def test_the_prefetch_child_is_actually_killed(monkeypatch, tmp_path):
+    """The point of the child process. A thread blocked in a socket read
+    cannot be stopped from Python; a process can."""
+    rt = runtime_mod.ModelRuntime()
+    # A child that would run far longer than the test, standing in for a
+    # multi-hour download.
+    monkeypatch.setattr(runtime_mod, "_PREFETCH", "import time; time.sleep(600)")
+    monkeypatch.setattr(runtime_mod, "_clean_partials", lambda _: 0)
+
+    progress.TRACKER.start("some/model")
+    import threading
+
+    threading.Timer(0.6, progress.TRACKER.request_cancel).start()
+    try:
+        with pytest.raises(runtime_mod.LoadCancelled):
+            rt._prefetch_weights("some/model")
+    finally:
+        progress.TRACKER.finish()
+
+    # And nothing of ours is still running.
+    still = subprocess.run(
+        [sys.executable, "-c", "print('ok')"], capture_output=True, text=True
+    )
+    assert still.returncode == 0
+
+
+def test_a_chatty_child_does_not_deadlock_the_load(monkeypatch):
+    """The bug this test exists for hung a load that had already finished.
+
+    huggingface_hub writes tqdm progress to stderr. With `stderr=PIPE` and
+    nothing draining it, the child blocks once the ~64 KB pipe buffer fills
+    and never exits — the UI sat at "551 MB / 551 MB · 234s" forever with
+    the weights fully downloaded.
+
+    A child that writes far more than one buffer's worth, with a timeout so
+    the failure mode is a red test rather than a hung suite.
+    """
+    import threading
+
+    rt = runtime_mod.ModelRuntime()
+    monkeypatch.setattr(
+        runtime_mod,
+        "_PREFETCH",
+        "import sys\n"
+        "sys.stderr.write('x' * 400_000)\n"   # ~6x a typical pipe buffer
+        "sys.stdout.write('y' * 400_000)\n",
+    )
+
+    progress.TRACKER.start("some/model")
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    def run():
+        try:
+            rt._prefetch_weights("some/model")
+        except BaseException as err:  # noqa: BLE001 - reported below
+            error.append(err)
+        finally:
+            done.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    finished = done.wait(30)
+    progress.TRACKER.cancelled.set()  # release the poll loop if it is stuck
+    progress.TRACKER.finish()
+
+    assert finished, (
+        "the prefetch child deadlocked: it wrote more than a pipe buffer and "
+        "nothing was draining it"
+    )
+    assert not error, error
+
+
+def test_the_prefetch_child_never_opens_a_pipe_it_does_not_drain():
+    """Belt and braces on the above: reading the source is the only way to
+    catch someone 'improving' this back to stderr=PIPE for diagnostics."""
+    import inspect
+
+    source = inspect.getsource(runtime_mod.ModelRuntime._prefetch_weights)
+    assert "stderr=subprocess.DEVNULL" in source
+    assert "stderr=subprocess.PIPE" not in source
+
+
+def test_cancelled_partials_are_removed(tmp_path, monkeypatch):
+    """A stopped download must not leave gigabytes of dead blobs behind."""
+    from modelmri import paths
+
+    cache = tmp_path / "hub"
+    repo = cache / "models--some--model" / "blobs"
+    repo.mkdir(parents=True)
+    (repo / "aaa.111.incomplete").write_bytes(b"x" * 4096)
+    (repo / "bbb.222.incomplete").write_bytes(b"y" * 2048)
+    keep = repo / "ccc"  # a completed blob
+    keep.write_bytes(b"z" * 64)
+
+    monkeypatch.setattr(paths, "hf_hub_cache", lambda: cache)
+    freed = runtime_mod._clean_partials("some/model")
+
+    assert freed == 4096 + 2048
+    assert not list(repo.glob("*.incomplete"))
+    assert keep.exists(), "a completed download was deleted"

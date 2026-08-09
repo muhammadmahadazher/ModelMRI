@@ -107,7 +107,13 @@ You found the head. Now show a colleague — who does not have your GPU, your pr
 Share this view → "L8 H3 copies the subject token" → gpt2.mri   (54 KB)
 ```
 
-A `.mri` holds the tokens, the attention, the generation and your note. Drop it on any ModelMRI and it opens **with no model loaded** — same arcs, same layer/head dials, same everything, because the panels read it through the same calls a live model uses. The status pill says `replay` so it can't be mistaken for your own run.
+They open it with one command — no model, no GPU, nothing to configure:
+
+```bash
+pip install modelmri && modelmri open gpt2.mri
+```
+
+A `.mri` holds the tokens, the attention, the generation and your note. It opens **with no model loaded** — same arcs, same layer/head dials, same everything, because the panels read it through the same calls a live model uses. The status pill says `replay` so it can't be mistaken for your own run. You can also drag one anywhere onto a running ModelMRI.
 
 It's an observation, not a checkpoint: no weights, and the file states its own precision rather than letting you assume it's exact.
 

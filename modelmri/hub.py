@@ -201,15 +201,23 @@ def sign_out() -> HubAuth:
 def search(query: str = "", limit: int = 24) -> list[dict]:
     """Text-generation models, newest-relevant first, annotated with access."""
     tok = token()
-    params = {
-        "limit": str(max(1, min(limit, 50))),
-        "sort": "downloads",
-        "direction": "-1",
-        "filter": "text-generation",
-        "full": "true",
-    }
+    # `expand[]`, not `full=true`. The two are mutually exclusive, and
+    # `full=true` does NOT include `safetensors` — so every row came back with
+    # no size at all. A picker that cannot say how big a model is invites the
+    # thing that actually happened here: a click on zai-org/GLM-5.2 started a
+    # 1.5 TB download on an 8 GB laptop.
+    params: list[tuple[str, str]] = [
+        ("limit", str(max(1, min(limit, 50)))),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+        ("filter", "text-generation"),
+        *[
+            ("expand[]", k)
+            for k in ("safetensors", "downloads", "gated", "lastModified", "likes")
+        ],
+    ]
     if query.strip():
-        params["search"] = query.strip()
+        params.append(("search", query.strip()))
     try:
         raw = _api("/models?" + urllib.parse.urlencode(params), tok)
     except urllib.error.URLError as err:
@@ -228,6 +236,7 @@ def search(query: str = "", limit: int = 24) -> list[dict]:
                 "usable": not gated,
                 "updated": (m.get("lastModified") or "")[:10],
                 "params": _param_hint(m),
+                "size_gb": weight_bytes(m) / 1e9 or None,
             }
         )
     return _resolve_access(out, tok)
@@ -273,6 +282,41 @@ def _resolve_access(entries: list[dict], tok: str | None) -> list[dict]:
     return entries
 
 
+# Bytes per parameter, by the dtype names the Hub reports. Weights are stored
+# at their own precision, so a 753B-parameter model is 1.5 TB in BF16 and
+# 750 GB in FP8 — the parameter count alone cannot tell you what you are
+# about to download.
+_DTYPE_BYTES: dict[str, float] = {
+    "F64": 8, "I64": 8,
+    "F32": 4, "I32": 4, "U32": 4,
+    "BF16": 2, "F16": 2, "I16": 2, "U16": 2,
+    "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
+    "F4": 0.5, "I4": 0.5, "U4": 0.5,
+}
+
+
+def weight_bytes(model: dict) -> int:
+    """How many bytes of weights this repo holds, from its own metadata.
+
+    Reads the per-dtype parameter counts the Hub publishes for safetensors
+    repos, so it is arithmetic on the repo's own numbers rather than a guess
+    from the model name. Falls back to assuming 2 bytes per parameter when
+    only a total is available, which is right for the overwhelming majority
+    of published checkpoints.
+
+    Returns 0 when the repo publishes nothing to go on -- GGUF and pickle
+    repos, mostly. Callers must treat 0 as "unknown", never as "small".
+    """
+    st = model.get("safetensors") or {}
+    by_dtype = st.get("parameters") or {}
+    if by_dtype:
+        return int(
+            sum(_DTYPE_BYTES.get(str(d).upper(), 2) * n for d, n in by_dtype.items())
+        )
+    total = st.get("total")
+    return int(total * 2) if total else 0
+
+
 def _param_hint(model: dict) -> str | None:
     """Best-effort size label from safetensors metadata, e.g. '0.6B'."""
     try:
@@ -299,6 +343,7 @@ def suggested() -> list[dict]:
             "usable": True,
             "updated": "",
             "params": None,
+            "size_gb": None,
             "suggested": True,
         }
         try:
@@ -308,6 +353,7 @@ def suggested() -> list[dict]:
             entry["gated"] = bool(info.get("gated", False))
             entry["updated"] = (info.get("lastModified") or "")[:10]
             entry["params"] = _param_hint(info)
+            entry["size_gb"] = weight_bytes(info) / 1e9 or None
         except Exception:
             pass  # offline: still offer the name
         entry["usable"] = not entry["gated"]

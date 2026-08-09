@@ -58,6 +58,12 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
   const [ollama, setOllama] = useState<OllamaState | null>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  // A pull the size guard refused, held with its model so "anyway" retries
+  // the right one.
+  const [pullWarning, setPullWarning] = useState<{
+    name: string;
+    message: string;
+  } | null>(null);
   const debounce = useRef<number | undefined>(undefined);
   const sheetRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -165,14 +171,22 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     }
   }
 
-  async function doPull(name: string) {
+  async function doPull(name: string, confirm = false) {
     setBusy(`pull:${name}`);
     setErr("");
+    setPullWarning(null);
     try {
-      await pullOllama(name);
+      await pullOllama(name, confirm);
       setOllama(await getOllama());
     } catch (e) {
-      setErr(errorText(e));
+      const message = errorText(e);
+      // The size guard refused. Offer the override only when the server said
+      // it is overridable — a disk with no room is not a matter of opinion.
+      if (message.includes("Load it anyway")) {
+        setPullWarning({ name, message });
+      } else {
+        setErr(message);
+      }
     } finally {
       setBusy("");
     }
@@ -358,6 +372,15 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                   >
                     <span className="mid">{m.id}</span>
                     {m.params && <span className="chip">{m.params}</span>}
+                    {/* The size, before you click. Its absence is how a
+                        click here started a 1.5 TB download on a laptop. */}
+                    {m.size_gb != null && (
+                      <span className={`chip ${m.size_gb > 40 ? "warn" : ""}`}>
+                        {m.size_gb >= 1000
+                          ? `${(m.size_gb / 1000).toFixed(1)} TB`
+                          : `${m.size_gb.toFixed(m.size_gb < 10 ? 1 : 0)} GB`}
+                      </span>
+                    )}
                     {m.gated && (
                       <span className={`chip ${locked ? "warn" : "ok"}`}>
                         {locked
@@ -404,6 +427,30 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
             {ollama?.up && (
               <>
                 <div className="meta pad">not installed — pull one:</div>
+                {pullWarning && (
+                  <div className="oversize" role="alert">
+                    <span className="oversize-mark" aria-hidden="true">
+                      !
+                    </span>
+                    <div>
+                      <p>{pullWarning.message}</p>
+                      <div className="row">
+                        <button
+                          className="ghost sm"
+                          onClick={() => void doPull(pullWarning.name, true)}
+                        >
+                          Pull it anyway
+                        </button>
+                        <button
+                          className="ghost sm"
+                          onClick={() => setPullWarning(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 {ollama.suggested
                   ?.filter((s) => !ollama.installed?.some((i) => i.name === s.name))
                   .map((s) => (

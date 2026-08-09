@@ -29,6 +29,16 @@ modelmri serve
 Open <http://127.0.0.1:5900>. Nothing is loaded yet — the first thing to do is
 pick a model.
 
+If someone sent you a `.mri` and you just want to look at it, there is nothing
+to configure and no model to download:
+
+```bash
+modelmri open their-analysis.mri
+```
+
+That validates the file, starts the server with the analysis already open, and
+opens a tab. See [sharing what you found](guides/attention.md#sharing-what-you-found).
+
 ## Your first look inside a model
 
 1. **Pick a model.** The picker opens on **On this machine**, which lists

@@ -110,12 +110,32 @@ async function json<T>(r: Response): Promise<T> {
 export const getSession = () =>
   fetch("/api/session").then((r) => json<SessionInfo>(r));
 
-export const loadModel = (hf_id?: string, source: "hf" | "ollama" = "hf") =>
+/** A load that the user stopped. Not an error — they asked. */
+export interface LoadCancelled {
+  cancelled: true;
+  message: string;
+}
+
+export const loadModel = (
+  hf_id?: string,
+  source: "hf" | "ollama" = "hf",
+  confirm = false,
+) =>
   fetch("/api/model/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(hf_id ? { hf_id, source } : { source }),
-  }).then((r) => json<ModelStatus>(r));
+    body: JSON.stringify(hf_id ? { hf_id, source, confirm } : { source, confirm }),
+  }).then((r) => json<ModelStatus | LoadCancelled>(r));
+
+/** Stop an in-flight download.
+ *
+ *  This exists because a click in the picker began fetching 1.5 TB and the
+ *  only way to stop it was to kill the server process.
+ */
+export const cancelLoad = () =>
+  fetch("/api/model/cancel", { method: "POST" }).then((r) =>
+    json<{ stopping: boolean }>(r),
+  );
 
 export interface LoadProgress {
   active: boolean;
@@ -324,6 +344,9 @@ export interface HubModel {
   usable: boolean;
   updated: string;
   params: string | null;
+  /** Download size from the repo's own metadata. null when it publishes
+   *  none — GGUF and pickle repos mostly. Never render null as 0. */
+  size_gb: number | null;
   suggested?: boolean;
 }
 
@@ -358,12 +381,31 @@ export const hubSignOut = () =>
 export const getHubModels = (q = "") =>
   fetch(`/api/hub/models?q=${encodeURIComponent(q)}`).then((r) => json<HubModel[]>(r));
 
-export const pullOllama = (name: string) =>
+export const pullOllama = (name: string, confirm = false) =>
   fetch("/api/ollama/pull", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, confirm }),
   }).then((r) => json<{ pulled: string }>(r));
+
+/** What a pull would cost, and whether this machine can take it.
+ *
+ *  Advisory only — the server enforces the same rule on the pull itself, so
+ *  skipping this check gains nothing.
+ */
+export interface OllamaSize {
+  name: string;
+  bytes: number;
+  free_bytes: number;
+  ok: boolean;
+  overridable: boolean;
+  warning: string;
+}
+
+export const getOllamaSize = (name: string) =>
+  fetch(`/api/ollama/size?name=${encodeURIComponent(name)}`).then((r) =>
+    json<OllamaSize>(r),
+  );
 
 export interface Accelerator {
   kind: string; // cuda | rocm | xpu | mps | cpu

@@ -34,6 +34,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/model/progress` | Load Progress |
 | `GET` | `/api/models/discovered` | Models Discovered |
 | `GET` | `/api/models/local` | Models Local |
+| `POST` | `/api/model/cancel` | Cancel Load |
 | `POST` | `/api/model/load` | Load Model |
 | `POST` | `/api/model/prompt` | Prompt |
 
@@ -44,6 +45,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/hub/auth` | Hub Auth |
 | `GET` | `/api/ollama` | Ollama Status |
+| `GET` | `/api/ollama/size` | Ollama Size |
 | `POST` | `/api/hub/signin` | Hub Signin |
 | `POST` | `/api/hub/signout` | Hub Signout |
 | `POST` | `/api/ollama/pull` | Ollama Pull |

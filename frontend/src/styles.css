@@ -1865,6 +1865,51 @@ code {
   footer a { display: inline-block; padding: 12px 0; }
 }
 
+/* ---------- the size guard and the stop button ----------
+   A download you cannot stop is a trap, and one that could never load is a
+   trap with a long fuse. Both surfaces are deliberately plain: this is a
+   moment to be read, not admired. */
+button.ghost.sm.stop {
+  border-color: color-mix(in oklab, var(--sem-error) 45%, transparent);
+  color: var(--color-pop);
+}
+button.ghost.sm.stop:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--sem-error) 12%, transparent);
+}
+
+.oversize {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 10px 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklab, var(--sem-error) 40%, transparent);
+  border-radius: var(--r-panel);
+  background: color-mix(in oklab, var(--sem-error) 7%, var(--color-card));
+  animation: rise var(--dur-medium) var(--ease-out) both;
+}
+.oversize p {
+  margin: 0 0 10px;
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.oversize-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--sem-error);
+  color: var(--sf-ground);
+  font-weight: 700;
+  font-size: 13px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oversize { animation: none; }
+}
+
 /* ---------- shared sessions (.mri) ----------
    A recording must never be mistakable for a live model. Amber is the one
    accent not already spoken for by a panel, and the banner carries a full

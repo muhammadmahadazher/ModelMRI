@@ -96,7 +96,7 @@ def _expected_bytes(hf_id: str) -> int:
 class Snapshot:
     active: bool = False
     hf_id: str | None = None
-    stage: str = ""  # resolving | weights | device | ready | error
+    stage: str = ""  # resolving | weights | device | ready | error | cancelled
     detail: str = ""
     bytes_done: int = 0
     bytes_total: int = 0  # 0 means "unknown", the UI shows an indeterminate bar
@@ -115,6 +115,19 @@ class _Tracker:
         self._snap = Snapshot()
         self._t0 = 0.0
         self._stop: threading.Event | None = None
+        # Set by the user asking to stop. The loader polls it; see
+        # runtime._prefetch_weights for why a flag is enough to actually
+        # halt a download that has already started.
+        self.cancelled = threading.Event()
+
+    def request_cancel(self) -> bool:
+        """Ask the running load to stop. False if there is nothing running."""
+        with self._lock:
+            if not self._snap.active:
+                return False
+            self._snap.detail = "stopping…"
+        self.cancelled.set()
+        return True
 
     def snapshot(self) -> Snapshot:
         with self._lock:
@@ -125,6 +138,7 @@ class _Tracker:
 
     def start(self, hf_id: str) -> None:
         self._t0 = time.monotonic()
+        self.cancelled.clear()
         with self._lock:
             self._snap = Snapshot(
                 active=True, hf_id=hf_id, stage="resolving", detail="contacting the Hub"

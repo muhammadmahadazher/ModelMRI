@@ -157,6 +157,39 @@ def _looks_like_model_dir(entries: list[os.DirEntry]) -> bool:
     )
 
 
+# The file extensions that mean "the weights are actually here".
+_WEIGHTS = (".safetensors", ".bin", ".pth", ".pt", ".gguf", ".ckpt", ".msgpack", ".h5")
+
+
+def has_weights(repo_dir: Path) -> bool:
+    """Does this cache directory hold weights, or only metadata?
+
+    Asking the Hub what a repo *is* downloads its `config.json`, and a
+    refused or abandoned load leaves that behind. The result is a directory
+    that looks exactly like a cached model and is not one: the picker listed
+    `zai-org/GLM-5.2` at "0.00 GB" on a machine that had refused to download
+    it, and clicking it would have started the whole 1.5 TB again.
+
+    Cheap: stops at the first weight file rather than walking the tree.
+    """
+    for sub in ("blobs", "snapshots"):
+        try:
+            for path in (repo_dir / sub).rglob("*"):
+                # Blobs are content-addressed, so the name carries no
+                # extension — size is the only signal, and metadata files are
+                # tiny. 1 MB is far below any real shard and far above any
+                # config or tokenizer.
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() in _WEIGHTS:
+                    return True
+                if sub == "blobs" and path.stat().st_size > 1_000_000:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def _hf_cache_entry(root: Path, name: str) -> Found:
     """models--org--name -> the repo id transformers expects."""
     repo = "/".join(name.removeprefix("models--").split("--"))
@@ -204,9 +237,14 @@ def scan(root: str | Path, budget_s: float = BUDGET_S) -> tuple[list[Found], boo
             e for e in entries if e.is_dir() and e.name.startswith("models--")
         ]
         for e in cache_repos:
-            if e.path not in seen:
-                seen.add(e.path)
-                out.append(_hf_cache_entry(d, e.name))
+            if e.path in seen:
+                continue
+            seen.add(e.path)
+            # "On this machine" has to mean it. A metadata-only directory is
+            # a download waiting to happen, not a model you already have.
+            if not has_weights(Path(e.path)):
+                continue
+            out.append(_hf_cache_entry(d, e.name))
 
         if _looks_like_model_dir(entries):
             files = [Path(e.path) for e in entries if e.is_file()]

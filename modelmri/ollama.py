@@ -47,6 +47,40 @@ SUGGESTED = [
 ]
 
 
+REGISTRY = "https://registry.ollama.ai/v2"
+
+
+def manifest_size(name: str, timeout: float = 10.0) -> int:
+    """Bytes `ollama pull <name>` will fetch, from the registry's manifest.
+
+    Asked before pulling, not discovered halfway through. `deepseek-r1:671b`
+    is 404 GB and nothing in the UI said so; the HuggingFace side had the
+    same hole and it cost someone a 1.5 TB download.
+
+    Returns 0 when the registry cannot answer — treated as unknown by the
+    guard, never as small.
+    """
+    repo, _, tag = name.partition(":")
+    if "/" not in repo:
+        repo = f"library/{repo}"  # ollama's default namespace
+    url = f"{REGISTRY}/{repo}/manifests/{tag or 'latest'}"
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            doc = json.load(resp)
+    except Exception:
+        return 0
+    layers = doc.get("layers") or []
+    config = doc.get("config") or {}
+    return int(
+        sum(int(layer.get("size") or 0) for layer in layers)
+        + int(config.get("size") or 0)
+    )
+
+
 def status(host: str | None = None, timeout: float = 1.5) -> dict:
     """{up, models:[{name,size_gb,family}], suggested} — fast, never raises."""
     host = host or default_host()

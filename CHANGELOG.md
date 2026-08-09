@@ -25,9 +25,59 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   your output above someone else's heat map is a discrepancy nothing on
   screen could explain.
 
+- **`modelmri open somebody.mri`.** One command: it validates the file,
+  starts the server with the analysis already loaded, and opens a tab. The
+  recipient does not have to know what a server is. A file that is not a
+  session is refused with one sentence and exit code 2, before anything
+  starts.
+
+- **A download you can stop, and one that is refused before it starts.**
+  Clicking `zai-org/GLM-5.2` in the picker began fetching **1506.7 GB** onto
+  a laptop with an 8.6 GB GPU and 88 GB free. Nothing warned, and the only
+  way to stop it was to kill the server. Now:
+
+  * The picker shows the download size on every HuggingFace row — it was
+    querying the Hub with `full=true`, which does not return `safetensors`,
+    so every row came back with no size at all. Sizes are computed from the
+    repo's own per-dtype parameter counts, so a 753B-parameter model reads
+    1.5 TB in BF16 and 756 GB in FP8 rather than one number for both.
+  * A shared guard (`modelmri/capacity.py`) refuses what cannot fit —
+    checked against the actual free space on the volume that download would
+    land on. Disk refusals cannot be overridden; "too big for your GPU" can,
+    with a second deliberate click. Enforced on the server, because a check
+    the browser performs is a check the browser can skip.
+  * **Ollama pulls go through the same guard**, sized from the registry
+    manifest and checked against Ollama's own models directory rather than
+    the HuggingFace cache — `deepseek-r1:671b` is 404 GB and had no check at
+    all. One rule, so the two cannot drift.
+  * A **Stop** button that works. `from_pretrained` downloads inside the
+    calling thread and Python cannot interrupt a thread blocked in a socket
+    read, so the fetch now happens in a child process that can be
+    terminated; partial blobs are removed and the freed bytes reported.
+
 ### Fixed
 
-Seventeen portability and path bugs, from a 24-agent audit of code that was
+- **A load could hang forever with the weights already downloaded.** The
+  prefetch child was spawned with `stderr=PIPE` and nothing draining it;
+  `huggingface_hub` writes progress to stderr, so once the ~64 KB pipe
+  buffer filled the child blocked and never exited. The UI sat at
+  "551 MB / 551 MB · 234s · reading from local cache" indefinitely. Both
+  streams go to `DEVNULL` now, and two tests hold it there.
+
+- **`MODELMRI_HOME` did not relocate everything it promised.** A surviving
+  `~/.modelmri/traces.sqlite` from 0.5.1 or earlier still won, so the same
+  command produced different storage on two machines depending on their
+  upgrade history. An explicit instruction now beats the compatibility
+  fallback. Found by a new test that runs the whole app inside a synthetic
+  home and fails if any absolute path in any API response points outside it.
+
+- **The local model list showed models that were not there.** Asking the Hub
+  what a repo *is* downloads its `config.json`, and a refused or abandoned
+  load leaves that behind — so a repo appeared under "On this machine" at
+  0.00 GB, and clicking it would have restarted the whole download. A cache
+  directory now has to contain weights to be listed as cached.
+
+Seventeen portability and path bugs, from an audit of code that was
 already tested and shipped. They share one shape — a location computed
 correctly in one module and approximately in another, so the tool downloads
 to a directory it does not search.

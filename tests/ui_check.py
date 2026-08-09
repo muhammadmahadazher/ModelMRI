@@ -226,9 +226,15 @@ async def main() -> int:
         #     Error: 422: {"error":"SAE d_in=768 does not match model …"}
         # Every panel showed errors that way, because every panel goes through
         # that helper. Provoke one and read what a person would see.
-        sae_btn = await page.query_selector(
-            ".panel:has(.h-feat) button, button:has-text('Load SAE')"
-        )
+        # An ENABLED button. The first control in the features panel is a
+        # "Load" that is correctly disabled when no SAE exists for the loaded
+        # model — clicking it hung this check for thirty seconds and reported
+        # a product failure for a panel that was behaving properly.
+        sae_btn = None
+        for candidate in await page.query_selector_all(".panel:has(.h-feat) button"):
+            if await candidate.is_enabled():
+                sae_btn = candidate
+                break
         if sae_btn:
             await sae_btn.click()
             await page.wait_for_timeout(4000)
@@ -247,7 +253,7 @@ async def main() -> int:
                 f"leaked {leaked} in: {shown[:90]}" if leaked else "checked live text",
             )
         else:
-            print("    (no SAE control to provoke — skipped)")
+            print("    (no enabled control in the features panel — skipped)")
 
         print("\nthe model picker does not resize under you")
         # Its list arrives async. A content-sized sheet opened ~200px tall
