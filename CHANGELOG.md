@@ -6,6 +6,8 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-09
+
 ### Added
 
 - **A zero-install browser viewer for `.mri` files.** `modelmri open` works,
