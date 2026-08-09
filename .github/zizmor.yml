@@ -1,0 +1,19 @@
+# zizmor configuration.
+#
+# `unpinned-uses` wants every action pinned to a commit SHA. That is real
+# hardening — a tag can be moved — but it also means every Dependabot bump
+# becomes an opaque hash diff, and this repository's actions are all
+# first-party (actions/*, astral-sh, github) where the tag-moving risk is
+# lowest. Recorded here as a considered trade-off rather than left as 25
+# findings people learn to scroll past.
+#
+# If this project ever takes a third-party action from a small publisher,
+# pin that one and delete this rule.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "actions/*": ref-pin
+        "astral-sh/*": ref-pin
+        "github/*": ref-pin
+        "*": hash-pin

@@ -1,0 +1,22 @@
+# Advisories we cannot act on, with the reason and what would let us.
+#
+# Every line here is a decision, not a dismissal. An audit that is
+# permanently red is an audit nobody reads, but a suppression without a
+# reason is worse — it is the same silence with extra steps.
+#
+# Re-check when torch moves: both of these are torch's constraints, not ours.
+
+# setuptools 81.0.0 — torch pins `setuptools<82`, so the 83.0.0 fix is
+# unreachable while torch holds that bound. `uv tree --invert` confirms
+# torch is the only thing requiring setuptools at all. Nothing in ModelMRI
+# imports setuptools at runtime; it is present because torch's build tooling
+# wants it. Drops off the moment torch relaxes the pin.
+PYSEC-2026-3447
+
+# torch 2.11.0 — fixed in 2.13.0, which PyPI has and the CUDA 12.8 wheel
+# index does not (it stops at 2.11.0). Linux/macOS resolve to 2.13.0 and are
+# unaffected; only the Windows+CUDA path is pinned back, and that pin exists
+# because PyPI's Windows torch wheels are CPU-only — see the comment in
+# pyproject.toml. Delete this line when download.pytorch.org publishes a
+# cu128 build of 2.13 or later.
+PYSEC-2025-194

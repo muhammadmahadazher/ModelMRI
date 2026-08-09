@@ -1,4 +1,12 @@
 version: 2
+
+# Minor and patch updates are grouped: they are routine, and one PR a week
+# beats fifteen. MAJOR updates are deliberately excluded from those groups so
+# each arrives on its own and can be judged on its own.
+#
+# Grouping everything produced exactly the PR you would not want to merge on
+# a Friday: React 18 -> 19, TypeScript 5 -> 7, Vite 6 -> 8 and four more, in
+# one commit, where a failure could be any of them.
 updates:
   - package-ecosystem: pip
     directory: /
@@ -7,6 +15,7 @@ updates:
     groups:
       python-dependencies:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   # modelmri-record has no runtime dependencies by design; this watches its
@@ -24,6 +33,7 @@ updates:
     groups:
       web-dependencies:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
@@ -33,4 +43,5 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     open-pull-requests-limit: 5

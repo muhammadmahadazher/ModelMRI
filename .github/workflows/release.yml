@@ -15,10 +15,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+        with:
+          persist-credentials: false
+      # No dependency caching in this job, on purpose: it builds the
+      # artifacts people install, and a poisoned cache would be a
+      # supply-chain path straight into the wheel. It runs once per tag, so
+      # the cache would save nothing worth that risk.
+      #
+      # setup-node only caches when `cache:` names a package manager, so
+      # omitting it is the off switch — there is no `cache: false`.
+      - uses: actions/setup-node@v4  # zizmor: ignore[cache-poisoning]
         with:
           node-version: 22
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
 
       - name: Build frontend into the package
         run: |

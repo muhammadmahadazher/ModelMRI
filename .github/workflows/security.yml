@@ -1,0 +1,91 @@
+name: Security
+
+# CodeQL (codeql.yml) reads the code for vulnerable patterns. This reads
+# everything around it: the dependencies we pull in, the workflows that run
+# with repository credentials, and the history for anything that should
+# never have been committed.
+#
+# Every tool here runs as a GitHub Action with no external account, so a
+# fork or a contributor gets the same checks without signing up for anything.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, because a dependency does not have to change for a CVE to be
+    # published against it. Wednesday morning, off the release path.
+    - cron: "17 6 * * 3"
+
+# Read-only by default. A job that needs more should say so and say why.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    name: Known vulnerabilities in what we depend on
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - name: Audit the Python dependency tree
+        run: |
+          # The RESOLVED tree, not the declared ranges — what a user actually
+          # installs is what matters. `--no-deps` audits exactly those pins
+          # rather than re-resolving them, which also avoids pip choking on
+          # local build tags like torch==2.11.0+cu128 that PyPI never saw.
+          uv export --format requirements-txt --no-hashes \
+            | sed -E 's/\+[A-Za-z0-9.]+//' > /tmp/audit.txt
+          uvx pip-audit --requirement /tmp/audit.txt --no-deps --strict \
+            $(cat .github/pip-audit-ignore.txt | grep -v '^#' | grep . \
+              | sed 's/^/--ignore-vuln /')
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Audit the frontend dependency tree
+        working-directory: frontend
+        run: |
+          npm ci
+          # The frontend ships as static files with no server, so a
+          # dev-only advisory is not the same risk as a runtime one. Fail on
+          # what reaches users; report the rest.
+          npm audit --omit=dev --audit-level=moderate
+          npm audit || echo "(dev-only advisories above — not shipped to users)"
+
+  workflows:
+    name: The workflows themselves
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      # A workflow is code that runs with repository credentials. zizmor
+      # finds the ways one can be turned against the repo: expression
+      # injection from PR titles, over-broad permissions, unpinned actions,
+      # and checkout of untrusted refs in privileged contexts.
+      - name: Lint the GitHub Actions workflows
+        run: uvx zizmor --config .github/zizmor.yml --format=plain .github/workflows/
+
+  secrets:
+    name: Nothing that should never have been committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # Whole history: a secret removed in a later commit is still a
+          # secret that was published.
+          fetch-depth: 0
+      - name: Scan the history for credentials
+        # Third-party action, so pinned to a commit rather than a movable tag.
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc  # v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
