@@ -140,6 +140,7 @@ def ensure(path: Path) -> Path:
 
 # ------------------------------------------------------------ legacy location
 
+
 def legacy_root() -> Path | None:
     """`~/.modelmri`, or None where there is no home to hang it off.
 

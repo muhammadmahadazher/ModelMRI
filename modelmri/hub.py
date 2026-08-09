@@ -287,11 +287,23 @@ def _resolve_access(entries: list[dict], tok: str | None) -> list[dict]:
 # 750 GB in FP8 — the parameter count alone cannot tell you what you are
 # about to download.
 _DTYPE_BYTES: dict[str, float] = {
-    "F64": 8, "I64": 8,
-    "F32": 4, "I32": 4, "U32": 4,
-    "BF16": 2, "F16": 2, "I16": 2, "U16": 2,
-    "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
-    "F4": 0.5, "I4": 0.5, "U4": 0.5,
+    "F64": 8,
+    "I64": 8,
+    "F32": 4,
+    "I32": 4,
+    "U32": 4,
+    "BF16": 2,
+    "F16": 2,
+    "I16": 2,
+    "U16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "I8": 1,
+    "U8": 1,
+    "BOOL": 1,
+    "F4": 0.5,
+    "I4": 0.5,
+    "U4": 0.5,
 }
 
 

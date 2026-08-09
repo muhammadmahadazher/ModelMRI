@@ -59,7 +59,11 @@ def test_opening_a_session_makes_attention_work_without_a_model():
 
     meta = c.get("/api/attention/meta").json()
     assert meta == {
-        "available": True, "n_layers": 2, "n_heads": 2, "n_tokens": 4, "replay": True
+        "available": True,
+        "n_layers": 2,
+        "n_heads": 2,
+        "n_tokens": 4,
+        "replay": True,
     }
 
     slice_ = c.get("/api/attention?layer=1&head=1").json()
@@ -105,7 +109,9 @@ def test_an_empty_upload_is_refused():
 def test_a_future_version_asks_you_to_upgrade():
     doc = json.loads(gzip.decompress(a_session()))
     doc["format_version"] = 99
-    r = client().post("/api/session/open", content=gzip.compress(json.dumps(doc).encode()))
+    r = client().post(
+        "/api/session/open", content=gzip.compress(json.dumps(doc).encode())
+    )
     assert r.status_code == 422
     assert "pip install -U modelmri" in r.json()["error"]
 
@@ -180,7 +186,10 @@ def test_a_committed_generation_closes_the_recording(monkeypatch):
         runtime_mod, "TextIteratorStreamer", lambda *a, **k: iter(["hi"])
     )
     rt.tokenizer, rt.model, rt.hf_id, rt.backend = (
-        FakeTokenizer(), FakeModel(), "fake", "hf",
+        FakeTokenizer(),
+        FakeModel(),
+        "fake",
+        "hf",
     )
     list(rt.generate_stream("hello", max_new_tokens=1))
 

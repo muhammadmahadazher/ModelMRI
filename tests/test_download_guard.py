@@ -79,7 +79,9 @@ def test_a_model_far_past_the_gpu_needs_confirmation(monkeypatch):
     not an arguable case. Free space is stubbed so the verdict does not
     depend on how full the developer's drive happens to be."""
     monkeypatch.setattr(runtime_mod, "download_size", lambda _: 200_000_000_000)
-    monkeypatch.setattr(runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000))
+    monkeypatch.setattr(
+        runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000)
+    )
     with pytest.raises(ValueError, match="Load it anyway"):
         runtime_mod._preflight("some/huge", FakeAccel(), confirm=False)
     # ...and the override actually overrides.
@@ -87,7 +89,8 @@ def test_a_model_far_past_the_gpu_needs_confirmation(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "gb", [0.55, 1.5, 16.0, 30.0]  # gpt2, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
+    "gb",
+    [0.55, 1.5, 16.0, 30.0],  # gpt2, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
 )
 def test_ordinary_models_are_not_blocked(monkeypatch, gb):
     """A guard that fires on normal work gets switched off."""
@@ -108,7 +111,9 @@ def test_a_machine_with_no_gpu_still_gets_a_ceiling(monkeypatch):
         kind = "cpu"
 
     monkeypatch.setattr(runtime_mod, "download_size", lambda _: 200_000_000_000)
-    monkeypatch.setattr(runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000))
+    monkeypatch.setattr(
+        runtime_mod, "_free_space", lambda: (Path("D:/"), 9_000_000_000_000)
+    )
     with pytest.raises(ValueError, match="no GPU"):
         runtime_mod._preflight("some/huge", NoGpu(), confirm=False)
 
@@ -301,7 +306,7 @@ def test_a_chatty_child_does_not_deadlock_the_load(monkeypatch):
         runtime_mod,
         "_PREFETCH",
         "import sys\n"
-        "sys.stderr.write('x' * 400_000)\n"   # ~6x a typical pipe buffer
+        "sys.stderr.write('x' * 400_000)\n"  # ~6x a typical pipe buffer
         "sys.stdout.write('y' * 400_000)\n",
     )
 

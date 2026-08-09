@@ -255,7 +255,13 @@ def create_app(
                 "overridable": err.overridable,
                 "warning": str(err),
             }
-        return {**found, "free_bytes": free, "ok": True, "overridable": False, "warning": ""}
+        return {
+            **found,
+            "free_bytes": free,
+            "ok": True,
+            "overridable": False,
+            "warning": "",
+        }
 
     @app.get("/api/ollama/size")
     async def ollama_size(name: str) -> dict:
@@ -715,8 +721,10 @@ def create_app(
         data = await request.body()
         if len(data) > _SESSION_LIMIT:
             return JSONResponse(
-                {"error": f"that file is larger than {_SESSION_LIMIT // 1_000_000} MB "
-                          "— sessions are not that big, so this is probably not one"},
+                {
+                    "error": f"that file is larger than {_SESSION_LIMIT // 1_000_000} MB "
+                    "— sessions are not that big, so this is probably not one"
+                },
                 status_code=413,
             )
         try:

@@ -46,7 +46,10 @@ def build_fixture() -> bytes:
         for head in range(heads):
             rows = []
             for r in range(n):
-                raw = [((layer * 7 + head * 13 + r * 3 + c * 11) % 23) + 0.5 for c in range(r + 1)]
+                raw = [
+                    ((layer * 7 + head * 13 + r * 3 + c * 11) % 23) + 0.5
+                    for c in range(r + 1)
+                ]
                 raw[0] += 40.0  # the sink every real head has
                 raw += [0.0] * (n - r - 1)
                 total = sum(raw)
@@ -148,8 +151,7 @@ async def browser_side(port: int) -> dict:
 def main() -> int:
     if not (VIEWER / "index.html").is_file():
         print(
-            f"no viewer build at {VIEWER}\n"
-            "  python scripts/build_frontend.py --viewer",
+            f"no viewer build at {VIEWER}\n  python scripts/build_frontend.py --viewer",
             file=sys.stderr,
         )
         return 1

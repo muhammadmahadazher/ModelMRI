@@ -66,12 +66,14 @@ def test_round_trip_keeps_what_the_panels_read():
 def test_matrix_survives_quantisation_within_the_stated_error():
     """uint8 against the matrix max: error must stay under one step."""
     original = _matrix(12)
-    got = session.parse(_build(
-        tokens=[f"t{i}" for i in range(12)],
-        attention={(3, 2): original},
-        n_layers=6,
-        n_heads=4,
-    ))
+    got = session.parse(
+        _build(
+            tokens=[f"t{i}" for i in range(12)],
+            attention={(3, 2): original},
+            n_layers=6,
+            n_heads=4,
+        )
+    )
     matrix = got.attention_slice(3, 2)["matrix"]
 
     assert len(matrix) == 12 and all(len(row) == 12 for row in matrix)
@@ -85,10 +87,12 @@ def test_matrix_survives_quantisation_within_the_stated_error():
 
 def test_orientation_is_not_transposed():
     """A causal matrix is lower-triangular. A transpose would still 'work'."""
-    got = session.parse(_build(
-        tokens=[f"t{i}" for i in range(8)],
-        attention={(0, 0): _matrix(8)},
-    ))
+    got = session.parse(
+        _build(
+            tokens=[f"t{i}" for i in range(8)],
+            attention={(0, 0): _matrix(8)},
+        )
+    )
     matrix = got.attention_slice(0, 0)["matrix"]
     for r in range(8):
         for c in range(r + 1, 8):
@@ -98,21 +102,23 @@ def test_orientation_is_not_transposed():
 
 def test_each_head_keeps_its_own_matrix():
     """The bug that reads plausibly: every head showing head 0's numbers."""
-    got = session.parse(_build(
-        tokens=[f"t{i}" for i in range(6)],
-        attention={(0, 0): _matrix(6, seed=0), (1, 2): _matrix(6, seed=5)},
-        n_layers=2,
-        n_heads=3,
-    ))
+    got = session.parse(
+        _build(
+            tokens=[f"t{i}" for i in range(6)],
+            attention={(0, 0): _matrix(6, seed=0), (1, 2): _matrix(6, seed=5)},
+            n_layers=2,
+            n_heads=3,
+        )
+    )
     assert got.attention_slice(0, 0)["matrix"] != got.attention_slice(1, 2)["matrix"]
     assert got.attention_slice(1, 2)["layer"] == 1
     assert got.attention_slice(1, 2)["head"] == 2
 
 
 def test_rows_still_sum_to_about_one():
-    got = session.parse(_build(
-        tokens=[f"t{i}" for i in range(10)], attention={(0, 0): _matrix(10)}
-    ))
+    got = session.parse(
+        _build(tokens=[f"t{i}" for i in range(10)], attention={(0, 0): _matrix(10)})
+    )
     for row in got.attention_slice(0, 0)["matrix"]:
         assert 0.97 <= sum(row) <= 1.03
 
@@ -156,9 +162,18 @@ def test_the_file_carries_no_weights():
     raw = gzip.decompress(_build())
     doc = json.loads(raw)
     assert set(doc) == {
-        "format", "format_version", "created_at", "modelmri", "meta",
-        "prompt", "generation", "tokens", "n_layers", "n_heads",
-        "attention", "lens",
+        "format",
+        "format_version",
+        "created_at",
+        "modelmri",
+        "meta",
+        "prompt",
+        "generation",
+        "tokens",
+        "n_layers",
+        "n_heads",
+        "attention",
+        "lens",
     }
 
 

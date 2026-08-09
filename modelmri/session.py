@@ -86,9 +86,7 @@ def _dequantise(blob: str, scale: float, n: int) -> list[list[float]]:
             f"attention block is {len(raw)} bytes but the token count says "
             f"{n}x{n}={n * n} — the file is truncated or not a session"
         )
-    return [
-        [round(raw[r * n + c] * scale, 5) for c in range(n)] for r in range(n)
-    ]
+    return [[round(raw[r * n + c] * scale, 5) for c in range(n)] for r in range(n)]
 
 
 @dataclass
@@ -226,9 +224,11 @@ def parse(data: bytes) -> Session:
         raise SessionError("the session's token list is missing or malformed")
 
     return Session(
-        meta={**(doc.get("meta") or {}),
-              "created_at": doc.get("created_at"),
-              "modelmri": doc.get("modelmri")},
+        meta={
+            **(doc.get("meta") or {}),
+            "created_at": doc.get("created_at"),
+            "modelmri": doc.get("modelmri"),
+        },
         tokens=tokens,
         prompt=doc.get("prompt") or "",
         generation=doc.get("generation") or "",

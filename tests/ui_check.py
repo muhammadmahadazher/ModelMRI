@@ -356,7 +356,9 @@ async def main() -> int:
         await page.set_viewport_size({"width": 1440, "height": 900})
         await page.wait_for_timeout(200)
         opener = page.locator("button", has_text="Open a shared analysis")
-        check("an .mri can be opened before anything is loaded", await opener.count() == 1)
+        check(
+            "an .mri can be opened before anything is loaded", await opener.count() == 1
+        )
 
         can_export = await page.evaluate(
             "async () => (await fetch('/api/session/export')).status === 200"

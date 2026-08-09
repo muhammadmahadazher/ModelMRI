@@ -23,8 +23,14 @@ from modelmri import custom, discover, ollama, paths, progress
 @pytest.fixture
 def clean_env(monkeypatch):
     for var in (
-        "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME",
-        "MODELMRI_HOME", "MODELMRI_MODELS_DIR", "HF_LEROBOT_HOME", "OLLAMA_HOST",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "HF_HOME",
+        "XDG_CACHE_HOME",
+        "MODELMRI_HOME",
+        "MODELMRI_MODELS_DIR",
+        "HF_LEROBOT_HOME",
+        "OLLAMA_HOST",
     ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
@@ -47,8 +53,15 @@ def test_import_survives_an_unresolvable_home():
     env["MODELMRI_HOME"] = str(Path(__file__).parent)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     done = subprocess.run(
-        [sys.executable, "-c", "import modelmri.paths as p; print(p.describe()['data'])"],
-        capture_output=True, text=True, env=env, timeout=120,
+        [
+            sys.executable,
+            "-c",
+            "import modelmri.paths as p; print(p.describe()['data'])",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
     )
     assert done.returncode == 0, done.stderr
 
@@ -120,7 +133,8 @@ def test_models_dir_expands_environment_variables(clean_env, tmp_path):
 
 def test_models_dir_splits_on_the_platform_separator(clean_env, tmp_path):
     clean_env.setenv(
-        "MODELMRI_MODELS_DIR", os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")])
+        "MODELMRI_MODELS_DIR",
+        os.pathsep.join([str(tmp_path / "a"), str(tmp_path / "b")]),
     )
     assert paths.models_dirs() == [tmp_path / "a", tmp_path / "b"]
 

@@ -86,8 +86,10 @@ def main() -> None:
         print(f"  model     {parsed.meta.get('model') or 'unknown'}")
         if note:
             print(f"  note      {note}")
-        print(f"  contains  {len(parsed.tokens)} tokens, "
-              f"{len(parsed.attention)} attention maps")
+        print(
+            f"  contains  {len(parsed.tokens)} tokens, "
+            f"{len(parsed.attention)} attention maps"
+        )
         print("  no model will be loaded — this is a recording\n")
 
         # The server picks this up in create_app. An environment variable
