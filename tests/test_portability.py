@@ -215,7 +215,11 @@ def test_the_token_is_never_world_readable_even_for_an_instant(tmp_path, monkeyp
 
     def watched(path, flags, mode=0o777, *a, **kw):
         fd = real_open(path, flags, mode, *a, **kw)
-        if str(path) == str(target):
+        # The write is atomic, so the descriptor that matters belongs to the
+        # temp file (`hub.json.<pid>.tmp`) that is then renamed into place —
+        # matching the target name exactly saw nothing at all, and the test
+        # failed for the code being correct.
+        if str(path).startswith(str(target)):
             seen.append(os.fstat(fd).st_mode & 0o777)
         return fd
 
