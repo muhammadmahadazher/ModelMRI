@@ -29,7 +29,6 @@ you configured, and nothing is ever fetched from the network. See SECURITY.md.
 from __future__ import annotations
 
 import importlib.util
-import os
 import re
 import sys
 import threading
@@ -136,12 +135,9 @@ def allowed_roots() -> list[Path]:
     else is refused — a local tool that will import any path on the filesystem
     on request is a nastier primitive than it looks.
     """
-    roots = [Path.cwd()]
-    extra = os.environ.get("MODELMRI_MODELS_DIR")
-    if extra:
-        for part in extra.split(os.pathsep):
-            if part.strip():
-                roots.append(Path(part.strip()))
+    from . import paths
+
+    roots = [Path.cwd(), *paths.models_dirs()]
     out: list[Path] = []
     for r in roots:
         try:

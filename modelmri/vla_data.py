@@ -56,15 +56,39 @@ def default_hf_home() -> Path:
     return paths.hf_home()
 
 
+def dataset_roots(hf_home: str | Path | None = None) -> list[Path]:
+    """Every directory a cached LeRobot dataset can be sitting in.
+
+    LeRobot keeps its own hub root; a dataset pulled with plain
+    `huggingface-cli download --repo-type dataset` lands in the ordinary hub
+    cache instead. Both are normal, so both are searched.
+
+    This exists because the lister and the opener disagreed: `cached_datasets`
+    looked in three places and `snapshot_path` in one, so the picker offered
+    datasets that then failed to open with "not cached" — pointing at a
+    directory the user could see was not where they had put it.
+    """
+    from . import paths
+
+    root = Path(hf_home) if hf_home else default_hf_home()
+    out = [root / "lerobot" / "hub", paths.hf_hub_cache()]
+    if hf_home:
+        out.insert(1, root / "hub")
+    return [p for i, p in enumerate(out) if p not in out[:i]]
+
+
 def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) -> Path:
     """Resolve the newest snapshot dir for a cached LeRobot dataset."""
-    root = Path(hf_home) if hf_home else default_hf_home()
     owner, name = repo_id.split("/", 1)
-    base = root / "lerobot" / "hub" / f"datasets--{owner}--{name}"
-    if not base.is_dir():
+    roots = dataset_roots(hf_home)
+    tried = [r / f"datasets--{owner}--{name}" for r in roots]
+    base = next((b for b in tried if b.is_dir()), None)
+    if base is None:
+        where = "\n  ".join(str(t) for t in tried)
         raise FileNotFoundError(
-            f"{repo_id} is not cached at {base}. Download it with lerobot, or "
-            f"point HF_HOME at the cache that has it."
+            f"{repo_id} is not cached. Looked in:\n  {where}\nDownload it with "
+            f"lerobot, or point HF_LEROBOT_HOME / HF_HUB_CACHE at the cache "
+            f"that has it."
         )
     refs = base / "refs"
     # PushT's ref is literally "v3.0" — never assume "main" exists.
@@ -268,11 +292,10 @@ def cached_datasets(hf_home: str | Path | None = None) -> list[dict]:
     never opens a parquet or decodes a frame, so listing costs nothing even
     when a dataset is tens of gigabytes.
     """
-    root = Path(hf_home) if hf_home else default_hf_home()
     out: list[dict] = []
-    # LeRobot keeps its own hub root; a plain HF cache is worth checking too,
-    # since datasets pulled with huggingface-cli land there instead.
-    for hub in (root / "lerobot" / "hub", root / "hub", root / "datasets"):
+    # Exactly the roots snapshot_path will open from. Listing a superset is
+    # how the picker came to advertise datasets that could not be opened.
+    for hub in dataset_roots(hf_home):
         if not hub.is_dir():
             continue
         for entry in sorted(hub.glob("datasets--*")):

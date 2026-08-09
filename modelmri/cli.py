@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 from . import __version__
 
 
 def main() -> None:
+    # Windows consoles hand Python a cp1252 stdout, which cannot encode a path
+    # containing (say) a Cyrillic or CJK username. Printing where things live
+    # would then die with a UnicodeEncodeError -- the command that exists to
+    # answer "where is my stuff?" failing precisely for the users whose stuff
+    # is hardest to find. backslashreplace degrades instead of raising.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(
         prog="modelmri",
         description="ModelMRI — Chrome DevTools for AI models and agents.",
@@ -43,8 +58,10 @@ def main() -> None:
         print(f"ModelMRI {__version__} on {platform}")
         print()
         for key, value in info.items():
-            if value is None:
+            if value is None or value == []:
                 continue
+            if isinstance(value, list):
+                value = os.pathsep.join(value)
             print(f"  {key:<{width}}  {value}")
         print()
         print("  Override any of it:")

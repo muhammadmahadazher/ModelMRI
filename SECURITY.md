@@ -11,7 +11,7 @@ no older release is guaranteed a backport.
 
 | package | current |
 |---|---|
-| `modelmri` | 0.4.x |
+| `modelmri` | 0.6.x |
 | `modelmri-record` | 0.1.x |
 
 ## Report a vulnerability
@@ -53,8 +53,23 @@ saying out loud:
 
 ## Credentials
 
-**Your HuggingFace token** is stored at `~/.modelmri/hub.json` with `0600`
-permissions, is never written into the repository or a trace, and is sent to
+**Your HuggingFace token** is stored in ModelMRI's config directory, which
+follows platform convention rather than a fixed path — `%APPDATA%\ModelMRI` on
+Windows, `~/Library/Application Support/ModelMRI` on macOS,
+`$XDG_CONFIG_HOME/modelmri` on Linux. Run `modelmri where` to print the
+resolved location on your machine; that command reads the same code the token
+writer does, so it cannot drift from this document.
+
+The file is created owner-only — opened at mode `0600` rather than narrowed to
+it after the fact, so there is no window in which it exists world-readable —
+and moved into place atomically, so an interrupted write cannot leave a
+half-written credential. **That mode is enforced on POSIX only.** On Windows,
+`chmod` sets the read-only attribute and grants nothing, so the file inherits
+your user profile's ACL; that is the same protection your other profile data
+has, and it is not equivalent to `0600` on a machine where other accounts have
+administrative access.
+
+The token is never written into the repository or a trace, and is sent to
 nowhere except `huggingface.co`. ModelMRI never asks for your password and has
 no account of its own. Revoke a token at
 <https://huggingface.co/settings/tokens>; deleting the file is enough to sign
@@ -97,5 +112,8 @@ Only what you ask for:
 - **The recorder never raises.** If delivery, redaction, or serialization
   fails, it degrades quietly — a tracing library that can take down the host
   application is one nobody leaves switched on. The trade-off is that a silent
-  failure is possible; traces are written to `./modelmri-traces/` when the
-  endpoint is unreachable so the data isn't simply lost.
+  failure is possible; when the endpoint is unreachable a trace is written to
+  ModelMRI's data directory (`modelmri where` prints it, `MODELMRI_TRACE_DIR`
+  overrides it) so the data isn't simply lost. Deliberately *not* the working
+  directory: the recorder is imported by your agent, so that would drop full
+  prompts and tool output into whatever repo you launched from.

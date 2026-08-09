@@ -54,10 +54,22 @@ class VLAStatus:
         return asdict(self)
 
 
+def hub_root(hf_home: str | Path | None = None) -> Path:
+    """The HuggingFace hub cache these checkpoints are downloaded into.
+
+    An explicit `hf_home` keeps its literal meaning (root, so `hub/` under
+    it); otherwise defer to the resolver. Computing this as `hf_home()/hub`
+    ignored HF_HUB_CACHE, which is the variable the HuggingFace docs tell
+    people to set — so the panel reported the checkpoint missing while it sat
+    in the real cache, and the suggested `huggingface-cli download` fix
+    re-downloaded it into the same directory we were not looking at.
+    """
+    return (Path(hf_home) / "hub") if hf_home else paths.hf_hub_cache()
+
+
 def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
-    root = Path(hf_home) if hf_home else paths.hf_home()
     owner, name = repo.split("/", 1)
-    base = root / "hub" / f"models--{owner}--{name}"
+    base = hub_root(hf_home) / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []
     if not snaps:
         raise FileNotFoundError(

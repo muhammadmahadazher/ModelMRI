@@ -68,7 +68,8 @@ budget — set the variable rather than letting it guess.
 ## Traces aren't showing up
 
 - The recorder POSTs to `127.0.0.1:5900`. If nothing is listening it writes
-  `./modelmri-traces/*.json` instead — check there.
+  the trace to ModelMRI's data directory instead — run `modelmri where` and
+  look at `undelivered_traces`. Set `MODELMRI_TRACE_DIR` to put them elsewhere.
 - Import a file by POSTing it to `/api/traces/import`.
 - Recording is best-effort by design: it will never raise to tell you it
   failed, because a tracing library that can take down your app is one nobody

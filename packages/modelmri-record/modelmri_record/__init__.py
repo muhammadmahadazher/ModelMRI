@@ -30,6 +30,7 @@ from __future__ import annotations
 import atexit
 import contextvars
 import json
+import os
 import time
 import urllib.request
 import uuid
@@ -311,6 +312,38 @@ def _content_preview(result: object) -> str:
         return ""
 
 
+def _undelivered_dir() -> Path:
+    """Where a trace goes when the server is not listening.
+
+    Not the working directory. This package is imported *by the user's agent*,
+    so the CWD is normally their git repo, and a trace holds full prompts and
+    tool output — untracked JSON of their conversations, one `git add -A` from
+    being pushed to a public remote.
+
+    MODELMRI_TRACE_DIR wins. Otherwise ask modelmri for the platform data
+    directory if it happens to be installed, so both halves agree on one
+    location and `modelmri where` can print it. This package stays usable
+    without modelmri, hence the fallback and the local import.
+    """
+    if override := os.environ.get("MODELMRI_TRACE_DIR", "").strip():
+        return Path(override).expanduser()
+    try:
+        from modelmri import paths  # type: ignore[import-not-found]
+
+        return paths.data_dir() / "undelivered"
+    except Exception:
+        pass
+    try:
+        return Path.home() / ".modelmri" / "undelivered"
+    except (RuntimeError, OSError):
+        # No home either (container with no passwd entry). A temp directory
+        # is a worse place to keep data than the data directory, but it is a
+        # far better one than somebody's source tree.
+        import tempfile
+
+        return Path(tempfile.gettempdir()) / "modelmri-traces"
+
+
 def _deliver(t: _Trace) -> None:
     if t.delivered:
         return
@@ -337,12 +370,9 @@ def _deliver(t: _Trace) -> None:
         # full prompts and tool output, so that is untracked JSON of your
         # conversations sitting one `git add -A` from being pushed.
         #
-        # MODELMRI_TRACE_DIR overrides it. Still stdlib only; os is imported
-        # for this one lookup.
-        import os
+        # MODELMRI_TRACE_DIR overrides it.
 
-        override = os.environ.get("MODELMRI_TRACE_DIR", "").strip()
-        out = Path(override).expanduser() if override else Path("modelmri-traces")
+        out = _undelivered_dir()
         out.mkdir(parents=True, exist_ok=True)
         # Second-resolution stamps collide: three quick runs of the same
         # agent overwrote each other and only the last survived. The trace id

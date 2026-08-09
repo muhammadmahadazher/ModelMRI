@@ -2,9 +2,16 @@
 
 ModelMRI never asks for your password. You paste a HuggingFace *access
 token* (huggingface.co/settings/tokens) — a scoped credential you can
-revoke at any time — and it is stored with 0600 permissions in
-~/.modelmri/hub.json, never in the repo and never sent anywhere except
+revoke at any time — never in the repo and never sent anywhere except
 huggingface.co.
+
+The token file is written owner-only: created at mode 0600 rather than
+narrowed to it afterwards, and moved into place atomically. That mode is
+enforced on POSIX. On Windows the file inherits your user profile's ACL,
+because chmod there sets the read-only attribute and grants nothing.
+
+Its location follows platform convention, so rather than trusting a path
+written down in a docstring, run `modelmri where` for the resolved one.
 
 Signing in unlocks gated models you have accepted the license for
 (Gemma, Llama, ...) and your own private repos.
@@ -36,9 +43,7 @@ def _config_path() -> Path:
     """
     from . import paths
 
-    if legacy := paths.legacy_file("hub.json"):
-        return legacy
-    return paths.config_dir() / "hub.json"
+    return paths.token_path()
 
 
 # Small, current, ungated models that actually fit an 8 GB GPU. Shown when
@@ -122,6 +127,53 @@ def whoami(tok: str | None = None) -> HubAuth:
         return HubAuth(signed_in=False)
 
 
+def _write_private(path: Path, text: str) -> None:
+    """Write a credential: owner-only from the instant it exists, atomically.
+
+    Two separate problems with `write_text` + `chmod`:
+
+    * Order. `write_text` creates the file at 0666 & ~umask — 0644 on a
+      typical POSIX box — and the chmod narrows it a moment later. On a
+      multi-user host, any local account can read the token in between. The
+      mode has to be passed to `open`, not applied after it.
+    * Atomicity. A crash or a full disk mid-write left truncated JSON, which
+      the reader swallowed silently, so the user was signed out with no
+      message and no way to tell why.
+
+    Written to a temp file in the same directory and moved into place, which
+    on both POSIX and Windows is atomic for a same-volume rename.
+
+    The 0600 is real on POSIX. On Windows `chmod` only toggles the read-only
+    attribute, so the file inherits the user profile's ACL instead; that is
+    the honest claim and it is the one the docs make.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(
+            tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, stat.S_IRUSR | stat.S_IWUSR
+        )
+        try:
+            handle = os.fdopen(fd, "w", encoding="utf-8")
+        except BaseException:  # fdopen did not take ownership; we still own fd
+            os.close(fd)
+            raise
+        with handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    try:  # no-op on Windows; the file already has the mode on POSIX
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 def sign_in(tok: str) -> HubAuth:
     """Validate a token, then store it privately. Raises ValueError if bad."""
     tok = (tok or "").strip()
@@ -133,12 +185,7 @@ def sign_in(tok: str) -> HubAuth:
             "HuggingFace rejected that token. Create a fresh one with 'read' "
             "access at huggingface.co/settings/tokens."
         )
-    _config_path().parent.mkdir(parents=True, exist_ok=True)
-    _config_path().write_text(json.dumps({"token": tok}), encoding="utf-8")
-    try:  # best effort on Windows, meaningful on posix
-        _config_path().chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except Exception:
-        pass
+    _write_private(_config_path(), json.dumps({"token": tok}))
     auth.source = "modelmri"
     return auth
 

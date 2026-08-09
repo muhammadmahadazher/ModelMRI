@@ -24,7 +24,6 @@ progress meter did.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -49,13 +48,16 @@ def _weight_files(names: list[tuple[str, int]]) -> list[tuple[str, int]]:
 
 
 def hub_cache() -> Path:
-    """Where huggingface_hub keeps blobs, honouring the usual overrides."""
-    if hub := os.environ.get("HF_HUB_CACHE"):
-        return Path(hub)
+    """Where huggingface_hub keeps blobs, honouring the usual overrides.
+
+    A one-line delegation, kept only because callers import this name. It
+    used to hand-roll the resolution and got it subtly wrong: no `~`
+    expansion, and no HUGGINGFACE_HUB_CACHE, so the download meter watched a
+    directory nothing was being written to and reported 0 bytes forever.
+    """
     from . import paths
 
-    base = paths.hf_home()
-    return base / "hub"
+    return paths.hf_hub_cache()
 
 
 def _model_dir(hf_id: str) -> Path:

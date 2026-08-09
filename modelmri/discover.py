@@ -255,15 +255,17 @@ def scan(root: str | Path, budget_s: float = BUDGET_S) -> tuple[list[Found], boo
 
 def roots() -> list[Path]:
     """Where to look. The working directory, plus anything explicitly set."""
-    found: list[Path] = []
-    if env := os.environ.get("MODELMRI_MODELS_DIR"):
-        found += [Path(p) for p in env.split(os.pathsep) if p.strip()]
+    from . import paths
+
+    found: list[Path] = list(paths.models_dirs())
     found.append(Path.cwd())
     # Ask huggingface_hub where it actually caches, rather than reading one of
     # the four environment variables it honours and hoping that is the one set.
-    from . import paths
-
-    for candidate in (paths.hf_home(), paths.hf_hub_cache().parent):
+    # The cache directory itself, not its parent: scan() already recognises
+    # `models--*` children of whatever it is handed, and `HF_HUB_CACHE=D:\hf`
+    # made the parent `D:\` — a whole-drive walk that burned the six-second
+    # budget before reaching the models it was sent to find.
+    for candidate in (paths.hf_home(), paths.hf_hub_cache()):
         if candidate not in found:
             found.append(candidate)
     out: list[Path] = []

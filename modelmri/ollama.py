@@ -8,11 +8,31 @@ introspection is unavailable in Ollama mode (ModelMRI says so in the UI).
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from typing import Iterator
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
+
+
+def default_host() -> str:
+    """Where Ollama is, honouring OLLAMA_HOST like every other Ollama client.
+
+    Read at call time. As an import-time constant this ignored the variable
+    entirely, so anyone running Ollama on another port — or on the GPU box
+    across the room, which is a normal way to use it — got "Ollama isn't
+    running" while it was running fine.
+
+    Ollama's own convention allows a bare `host:port`, so accept that too
+    rather than silently building an unusable URL out of it.
+    """
+    raw = (os.environ.get("OLLAMA_HOST") or "").strip()
+    if not raw:
+        return DEFAULT_HOST
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    return raw.rstrip("/")
 
 
 # Popular open models worth suggesting when Ollama is running but empty.
@@ -27,8 +47,9 @@ SUGGESTED = [
 ]
 
 
-def status(host: str = DEFAULT_HOST, timeout: float = 1.5) -> dict:
+def status(host: str | None = None, timeout: float = 1.5) -> dict:
     """{up, models:[{name,size_gb,family}], suggested} — fast, never raises."""
+    host = host or default_host()
     try:
         with urllib.request.urlopen(f"{host}/api/tags", timeout=timeout) as resp:
             data = json.load(resp)
@@ -65,8 +86,9 @@ def status(host: str = DEFAULT_HOST, timeout: float = 1.5) -> dict:
         }
 
 
-def pull(name: str, host: str = DEFAULT_HOST):
+def pull(name: str, host: str | None = None):
     """Stream `ollama pull` progress as dicts. Blocking generator."""
+    host = host or default_host()
     body = json.dumps({"model": name, "stream": True}).encode()
     req = urllib.request.Request(
         f"{host}/api/pull", data=body, headers={"Content-Type": "application/json"}
@@ -93,11 +115,12 @@ def pull(name: str, host: str = DEFAULT_HOST):
 def stream_generate(
     model: str,
     prompt: str,
-    host: str = DEFAULT_HOST,
+    host: str | None = None,
     max_new_tokens: int = 256,
     temperature: float = 0.7,
 ) -> Iterator[str]:
     """Yield response text chunks from Ollama's NDJSON stream."""
+    host = host or default_host()
     body = json.dumps(
         {
             "model": model,

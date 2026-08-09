@@ -46,14 +46,54 @@ def _env_path(name: str) -> Path | None:
         return None
 
 
+def _home() -> Path | None:
+    """`Path.home()`, or None where there is no answer.
+
+    `Path.home()` does not degrade — it raises RuntimeError. That happens on
+    a Linux container running as an arbitrary UID with no passwd entry (the
+    OpenShift default), on distroless images, and on a Windows service
+    account with no USERPROFILE. Every use of a home directory here is a
+    fallback for when nothing was configured, so the right behaviour when
+    there is no home is to keep going, not to bring down the import.
+    """
+    try:
+        return Path.home()
+    except (RuntimeError, OSError):
+        return None
+
+
 def override() -> Path | None:
     """One directory for everything, if the user asked for that."""
     return _env_path("MODELMRI_HOME")
 
 
+def models_dirs() -> list[Path]:
+    """Extra directories to look for models in, from MODELMRI_MODELS_DIR.
+
+    Split on the platform separator, with `~` and `%VARS%`/`$VARS` expanded.
+    Two modules used to parse this variable independently and neither
+    expanded `~`, so `MODELMRI_MODELS_DIR=~/models` became the literal
+    directory `<cwd>/~/models`: the scanner silently dropped it, and the
+    adapter loader refused every file under it as outside the allowed roots.
+    """
+    raw = os.environ.get("MODELMRI_MODELS_DIR") or ""
+    out: list[Path] = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            resolved = Path(os.path.expandvars(part)).expanduser()
+        except (OSError, ValueError):
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
 def _platform_dir(kind: str) -> Path:
     """kind: data | config | cache"""
-    home = Path.home()
+    home = _home() or Path(os.path.expanduser("~"))
     if sys.platform == "win32":
         # LOCALAPPDATA for data and cache (machine-local, not roamed);
         # APPDATA for config, which is small and worth roaming.
@@ -100,7 +140,16 @@ def ensure(path: Path) -> Path:
 
 # ------------------------------------------------------------ legacy location
 
-LEGACY = Path.home() / ".modelmri"
+def legacy_root() -> Path | None:
+    """`~/.modelmri`, or None where there is no home to hang it off.
+
+    Deliberately a function. As a module-level constant it was evaluated at
+    import, which meant `import modelmri` died with a RuntimeError on any
+    machine with no resolvable home — before MODELMRI_HOME, the documented
+    fix for exactly that situation, could be read.
+    """
+    home = _home()
+    return (home / ".modelmri") if home else None
 
 
 def legacy_file(name: str) -> Path | None:
@@ -110,14 +159,56 @@ def legacy_file(name: str) -> Path | None:
     reading the old place would silently lose someone's traces and sign them
     out, so every caller checks here before creating anything new.
     """
-    candidate = LEGACY / name
+    root = legacy_root()
+    if root is None:
+        return None
+    candidate = root / name
     try:
         return candidate if candidate.is_file() else None
     except OSError:
         return None
 
 
+def trace_db_path() -> Path:
+    """The trace database the server actually opens."""
+    return legacy_file("traces.sqlite") or (data_dir() / "traces.sqlite")
+
+
+def token_path() -> Path:
+    """The file the HuggingFace token actually lives in."""
+    return legacy_file("hub.json") or (config_dir() / "hub.json")
+
+
+def undelivered_traces() -> Path:
+    """Where the recorder parks traces when the server is unreachable."""
+    return _env_path("MODELMRI_TRACE_DIR") or (data_dir() / "undelivered")
+
+
 # -------------------------------------------------------- HuggingFace cache
+
+
+def _hub_constant(name: str) -> Path | None:
+    """A path constant from huggingface_hub, if it is usable.
+
+    The blankness check is not paranoia. `constants.HF_HUB_CACHE` is
+    `os.getenv("HF_HUB_CACHE", <default>)`, so an empty-but-set variable —
+    `ENV HF_HUB_CACHE=` in a Dockerfile, a shell that exported it before the
+    value was computed — makes the library itself hand back `""`, and
+    `Path("")` is the current working directory. ModelMRI would then scan
+    the CWD for models and watch it for downloads that are landing elsewhere.
+    """
+    try:
+        from huggingface_hub import constants
+
+        raw = getattr(constants, name, "")
+    except Exception:
+        return None
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        return Path(str(raw)).expanduser()
+    except (OSError, ValueError):
+        return None
 
 
 def hf_hub_cache() -> Path:
@@ -136,16 +227,21 @@ def hf_hub_cache() -> Path:
     # which made a test that sets HF_HOME look at the developer's real cache.
     if direct := _env_path("HF_HUB_CACHE"):
         return direct
+    # The pre-rename variable, still honoured by the library itself:
+    # `HF_HUB_CACHE = os.getenv("HF_HUB_CACHE", HUGGINGFACE_HUB_CACHE)`. Anyone
+    # who set it years ago and never revisited it downloads into this path,
+    # and we would have searched a different one.
+    if legacy := _env_path("HUGGINGFACE_HUB_CACHE"):
+        return legacy
     if home_env := _env_path("HF_HOME"):
         return home_env / "hub"
     if xdg := _env_path("XDG_CACHE_HOME"):
         return xdg / "huggingface" / "hub"
-    try:
-        from huggingface_hub import constants
-
-        return Path(constants.HF_HUB_CACHE)
-    except Exception:
-        return Path.home() / ".cache" / "huggingface" / "hub"
+    if constant := _hub_constant("HF_HUB_CACHE"):
+        return constant
+    home = _home()
+    base = home / ".cache" if home else Path(".cache")
+    return base / "huggingface" / "hub"
 
 
 def hf_home() -> Path:
@@ -154,12 +250,10 @@ def hf_home() -> Path:
         return home_env
     if xdg := _env_path("XDG_CACHE_HOME"):
         return xdg / "huggingface"
-    try:
-        from huggingface_hub import constants
-
-        return Path(constants.HF_HOME)
-    except Exception:
-        return Path.home() / ".cache" / "huggingface"
+    if constant := _hub_constant("HF_HOME"):
+        return constant
+    home = _home()
+    return (home / ".cache" if home else Path(".cache")) / "huggingface"
 
 
 def describe() -> dict:
@@ -168,6 +262,11 @@ def describe() -> dict:
     A tool that writes to your disk should be able to tell you where, without
     you having to read its source.
     """
+    legacy = legacy_root()
+    try:
+        legacy_shown = str(legacy) if legacy is not None and legacy.is_dir() else None
+    except OSError:
+        legacy_shown = None
     return {
         "override": str(override()) if override() else None,
         "data": str(data_dir()),
@@ -175,7 +274,14 @@ def describe() -> dict:
         "cache": str(cache_dir()),
         "hf_home": str(hf_home()),
         "hf_hub_cache": str(hf_hub_cache()),
+        # The files, not just the directories that contain them. Reporting
+        # `config_dir()` while the caller reads a surviving `~/.modelmri`
+        # file made `modelmri where` name a path nothing was using.
+        "trace_db": str(trace_db_path()),
+        "hub_token": str(token_path()),
+        "undelivered_traces": str(undelivered_traces()),
+        "models_dirs": [str(p) for p in models_dirs()],
         "cwd": str(Path.cwd()),
-        "legacy": str(LEGACY) if LEGACY.is_dir() else None,
+        "legacy": legacy_shown,
         "platform": sys.platform,
     }

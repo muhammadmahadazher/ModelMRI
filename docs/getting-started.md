@@ -100,5 +100,7 @@ HuggingFace **read** token in the picker, and rows you cannot use are marked —
 clicking one opens the page where the licence is accepted rather than failing
 later.
 
-The token is stored at `~/.modelmri/hub.json` with owner-only permissions and
-is sent to nowhere except huggingface.co. ModelMRI never asks for a password.
+The token is stored owner-only in ModelMRI's config directory — run
+`modelmri where` to see exactly which file — and is sent to nowhere except
+huggingface.co. ModelMRI never asks for a password. See [SECURITY.md](../SECURITY.md)
+for what "owner-only" means on each platform.
