@@ -49,15 +49,27 @@ jobs:
         with:
           node-version: 22
       - uses: astral-sh/setup-uv@v5
-      - name: Build the UI into the package
+      - name: Build the UI and the viewer
         run: |
           cd frontend
           npm ci
           npm run build
-      - name: Serve and check
+          npm run build:viewer
+      - name: Install the browser
         run: |
           uv sync --dev
           uv run playwright install --with-deps chromium
+
+      # The `.mri` format has two implementations — modelmri/session.py and
+      # frontend/src/viewer.ts. Two implementations of one format drift, and
+      # a viewer that renders a *slightly* different matrix than the tool is
+      # worse than no viewer, because nothing on screen would say so. This
+      # parses one file both ways and compares every cell.
+      - name: The viewer agrees with the tool, cell for cell
+        run: uv run python tests/viewer_check.py
+
+      - name: Serve and check
+        run: |
           uv run uvicorn --factory modelmri.server:create_app \
             --host 127.0.0.1 --port 5900 &
           server=$!

@@ -35,8 +35,13 @@ export default defineConfig(({ mode }) => {
     // responses. The viewer has no payloads: its data arrives by drag & drop.
     publicDir: demo ? "public" : false,
     build: {
+      // The viewer emits INTO the package, not to a sibling dist directory.
+      // It has two consumers — `modelmri open`, which serves it from the
+      // installed package, and the Pages deploy, which copies it to /viewer/
+      // — and two build outputs is two things that can disagree about what
+      // the viewer is. The deploy copies from here.
       outDir: viewer
-        ? "../viewer-dist"
+        ? "../modelmri/static/viewer"
         : demo
           ? "../demo-dist"
           : "../modelmri/static/app",

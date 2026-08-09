@@ -186,18 +186,54 @@ def test_the_viewer_only_auto_opens_a_same_origin_path():
     assert "arbitrary addresses" in source or "arbitrary" in source
 
 
-def test_the_bundled_viewer_and_the_published_one_are_one_build():
-    """Two copies of the same bundle; if they ever diverge, the thing you
-    read locally is not the thing you sent someone a link to."""
-    script = (ROOT / "scripts" / "build_frontend.py").read_text(encoding="utf-8")
-    assert 'ROOT / "modelmri" / "static" / "viewer"' in script
-    assert "One build, copied twice" in script
+def test_the_viewer_has_exactly_one_build_output():
+    """`modelmri open` serves it from the package and the Pages deploy copies
+    it to /viewer/. Two build outputs would be two things that can disagree
+    about what the viewer is — so vite emits one, into the package."""
+    config = (ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
+    assert '"../modelmri/static/viewer"' in config
+    assert "viewer-dist" not in config, "a second viewer output has come back"
+
+    pages = (ROOT / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+    assert "modelmri/static/viewer" in pages
+    assert "viewer-dist" not in pages
 
 
 def test_the_wheel_is_told_to_carry_the_viewer():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "modelmri/static/viewer/index.html" in pyproject
     assert "modelmri/static/viewer/assets/**" in pyproject
+
+
+def test_the_release_workflow_actually_builds_the_viewer():
+    """The bundle is not committed, so if the release stops building it the
+    wheel goes out with a `modelmri open` that can only apologise — and
+    nothing else would notice. It shipped that way once, saved only by the
+    bundle having been committed by accident."""
+    release = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "npm run build:viewer" in release, (
+        "the release builds the app but not the viewer"
+    )
+    assert "static/viewer/" in release, "the wheel check does not look for the viewer"
+
+
+def test_the_built_viewer_is_not_committed():
+    """Vite emits content-hashed filenames, so committing them adds a fresh
+    dead copy of the whole bundle on every build. Same rule as static/app."""
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "modelmri/static/viewer/*" in ignore
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "modelmri/static/viewer"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=60,
+    ).stdout.split()
+    stray = [f for f in tracked if not f.endswith(".gitkeep")]
+    assert not stray, f"built viewer files are committed: {stray[:4]}"
 
 
 def test_the_session_module_has_no_heavy_imports_at_module_level():

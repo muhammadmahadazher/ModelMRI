@@ -62,6 +62,9 @@ Thumbs.db
 # including this one, when the shipped demo runs with no viewer listening.
 modelmri-traces/
 
-# Built by `scripts/build_frontend.py --viewer`; deployed by the Pages workflow.
-viewer-dist/
+# Built frontend output. Same rule as static/app above: built at release
+# time, never committed. Vite emits content-hashed filenames, so committing
+# them adds a fresh dead copy of the bundle on every single build.
+modelmri/static/viewer/*
+!modelmri/static/viewer/.gitkeep
 tests/fixtures/parity.mri

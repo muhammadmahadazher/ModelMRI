@@ -90,7 +90,7 @@ def main() -> int:
     ap.add_argument(
         "--viewer-url",
         default="",
-        help="a served viewer-dist; captures the zero-install reader too",
+        help="a served viewer bundle; captures the zero-install reader too",
     )
     args = ap.parse_args()
 

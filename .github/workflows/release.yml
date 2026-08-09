@@ -25,18 +25,27 @@ jobs:
           cd frontend
           npm ci
           npm run build
+          # The .mri viewer ships inside the wheel too: `modelmri open` serves
+          # it from the standard library, and without it that command can only
+          # apologise. Neither bundle is committed, so if this line goes the
+          # wheel goes out broken and nothing else notices.
+          npm run build:viewer
 
       - name: Build wheel + sdist
         run: uv build
 
-      - name: Verify the frontend is inside the wheel
+      - name: Verify both bundles are inside the wheel
         run: |
           python - <<'EOF'
           import glob, zipfile
           whl = glob.glob("dist/*.whl")[0]
           names = zipfile.ZipFile(whl).namelist()
-          assert any("static/app/index.html" in n for n in names), "frontend missing from wheel"
-          assert any("static/app/assets/" in n and n.endswith(".js") for n in names), "js missing"
+          def has(prefix, ext):
+              return any(prefix in n and n.endswith(ext) for n in names)
+          assert has("static/app/", "index.html"), "app missing from wheel"
+          assert has("static/app/assets/", ".js"), "app js missing"
+          assert has("static/viewer/", "index.html"), "viewer missing from wheel"
+          assert has("static/viewer/assets/", ".js"), "viewer js missing"
           print("wheel OK:", whl)
           EOF
 

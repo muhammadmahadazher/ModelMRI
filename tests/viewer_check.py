@@ -8,8 +8,8 @@ gunzip, base64, uint8 dequantisation, rounding. Two implementations of one
 format drift — and a viewer that renders a *slightly* different matrix than
 the tool is worse than no viewer, because nothing on screen would say so.
 
-So this parses the same file both ways and compares every cell. It serves
-viewer-dist over http (module scripts do not load from file://) and drives
+So this parses the same file both ways and compares every cell. It serves the
+bundled viewer over http (module scripts do not load from file://) and drives
 it with Playwright, reading the numbers back out of the running page rather
 than trusting the source to be equivalent.
 
@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VIEWER = ROOT / "viewer-dist"
+VIEWER = ROOT / "modelmri" / "static" / "viewer"
 FIXTURE = ROOT / "tests" / "fixtures" / "parity.mri"
 
 if hasattr(sys.stdout, "reconfigure"):

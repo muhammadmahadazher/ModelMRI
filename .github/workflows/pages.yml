@@ -51,10 +51,10 @@ jobs:
           npm run build:viewer
       - name: Verify the viewer needs no backend
         run: |
-          test -f viewer-dist/index.html
+          test -f modelmri/static/viewer/index.html
           # It must not ship demo payloads, and must not reference an API host.
-          test ! -d viewer-dist/demo
-          echo "viewer build OK: $(du -sh viewer-dist | cut -f1)"
+          test ! -d modelmri/static/viewer/demo
+          echo "viewer build OK: $(du -sh modelmri/static/viewer | cut -f1)"
 
       - uses: actions/setup-python@v5
         with:
@@ -66,7 +66,7 @@ jobs:
       - name: Combine into one site
         run: |
           mv site demo-dist/docs
-          mv viewer-dist demo-dist/viewer
+          cp -r modelmri/static/viewer demo-dist/viewer
           test -f demo-dist/docs/index.html || (echo "docs missing" && exit 1)
           test -f demo-dist/viewer/index.html || (echo "viewer missing" && exit 1)
           test -f demo-dist/index.html || (echo "demo clobbered" && exit 1)
