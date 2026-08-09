@@ -1,5 +1,97 @@
 # Working log
 
+## 2026-08-09 — 0.6.0–0.6.2: sharing a finding, and a 1.5 TB near-miss
+
+**The `.mri` format.** `*.mri` had been sitting in `.gitignore` since week one
+and was never implemented. It's the obvious missing thing: you find the head
+that moves the subject token, and the only way to show anyone is a screenshot
+they cannot explore. So a file that holds the observation and not the model —
+tokens, attention, the generation, and a note.
+
+Size was the whole design. A 24-layer, 14-head, 141-token attention tensor is
+6.7 million numbers; as JSON at four decimals that's tens of megabytes for
+something meant to be attached to a message. uint8 against each matrix's own
+maximum, then gzip: a 29-token gpt2 run with **all 144 attention maps is
+54 KB**. Measured against the live model, worst absolute error 0.002 and the
+strongest attention in every row survives. The file states its own precision,
+because a number that has quietly lost some is exactly what this project
+exists to catch.
+
+The implementation trick that made it cheap: replay is served through
+`runtime.attention()`, the same method a live model uses. Nothing in any panel
+changed.
+
+**Then someone clicked GLM-5.2.** 753 billion parameters. It began downloading
+**1,506.7 GB** onto a laptop with an 8.6 GB GPU and 88 GB of free disk. No
+size shown, no warning, and no way to stop it except killing the server
+process.
+
+Three separate failures, all mine:
+
+- The picker queried the Hub with `full=true`, which does **not** return
+  `safetensors` — so every row came back with no size at all. Switching to
+  `expand[]=safetensors` gives per-dtype parameter counts, which is how the
+  same 753B model correctly reads 1.5 TB in BF16 and 756 GB in FP8. One
+  number would have been a lie for the other.
+- No capacity check. There is one now, shared by the HuggingFace and Ollama
+  paths so they cannot drift, checked against real free space on the volume
+  that download would land on. Disk refusals cannot be overridden; "too big
+  for your GPU" can, with a second deliberate click. Enforced server-side —
+  a check the browser performs is a check the browser can skip.
+- No cancel, and this one was interesting. `from_pretrained` downloads inside
+  the calling thread, and Python cannot interrupt a thread blocked in a socket
+  read. So the fetch happens in a **child process** now, precisely so it can
+  be terminated.
+
+Which promptly produced its own bug: I spawned that child with `stderr=PIPE`
+and nothing draining it. `huggingface_hub` writes progress to stderr, the
+~64 KB pipe buffer filled, and the child blocked forever. The UI sat at
+"551 MB / 551 MB · 234s · reading from local cache" with the weights fully
+downloaded. Both streams go to DEVNULL now, and two tests hold it there —
+verified red, one of which takes 30 seconds to fail because that is what a
+deadlock does.
+
+**Then: reading it shouldn't need the tool.** `modelmri open` worked, but it
+imported torch and transformers first — **26 seconds** — to display a 54 KB
+recording that needs neither. The first person to run it pressed ctrl-c
+partway through, which is the correct response.
+
+Two fixes. A browser viewer at `/viewer/`: the same React app with the API
+answered from a file you drop, so a recipient reads a shared analysis with
+nothing installed and nothing uploaded. And `modelmri open` now serves that
+same bundle from the standard library — **0.26s warm, 0.69s from a cold fresh
+install**. The split is finally clean: `modelmri serve` is the tool,
+`modelmri open` is a file reader.
+
+The format now has two implementations, so I stopped assuming they agree and
+started checking: `tests/viewer_check.py` parses one file both ways and
+compares every cell. 6,912 cells, identical checksums. A viewer that renders a
+*slightly* different matrix would be worse than no viewer, because nothing on
+screen would say so.
+
+**Seventeen path bugs**, from an audit of code I had already tested and
+shipped. They share one shape — a location computed correctly in one module
+and approximately in another. `import modelmri` died outright on a container
+with no resolvable home, *before* `MODELMRI_HOME` (the documented fix for
+exactly that) could be read. The HuggingFace token was created world-readable
+and narrowed a moment later, which on a shared host is a window. `HF_HUB_CACHE`
+was ignored in four places, so the robot panel called a cached checkpoint
+missing and suggested a download that landed in the directory it wasn't
+reading.
+
+The test that would have caught most of them now exists: run the whole app
+inside a synthetic home and fail if any absolute path in any API response
+points outside it. **It found a real bug on its first run** — `MODELMRI_HOME`
+promised to relocate everything, but a surviving `~/.modelmri/traces.sqlite`
+still won, so identical commands produced different storage depending on
+upgrade history.
+
+**Lesson of the week**, again: I am not a reliable auditor of code I just
+wrote. Four CI failures went out before I started running CI's exact command
+locally — including a POSIX-only test that skipped on my machine and failed in
+CI *for the code being correct*, because it watched `hub.json` when the atomic
+write opens `hub.json.<pid>.tmp`.
+
 ## 2026-08-08 (later) — bring your own model, and four bugs that were invisible
 
 **Custom models.** Every other panel is transformer-shaped, so the honest
