@@ -61,3 +61,7 @@ Thumbs.db
 # output, and they land in whatever directory the host app was started from —
 # including this one, when the shipped demo runs with no viewer listening.
 modelmri-traces/
+
+# Built by `scripts/build_frontend.py --viewer`; deployed by the Pages workflow.
+viewer-dist/
+tests/fixtures/parity.mri

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { closeSession, errorText, openSession, SessionState } from "./api";
+import { VIEWER } from "./viewer";
 
 /** Open someone else's analysis, or put yours down.
  *
@@ -157,17 +158,36 @@ export default function SessionBar({
           {err && <div className="hint err">{err}</div>}
         </div>
       ) : (
-        <div className="session-open-row">
+        VIEWER ? (
+          // The viewer's entire purpose. A ghost button in a corner would be
+          // burying the one action this page exists for.
           <button
-            className="ghost sm"
+            className="dropzone"
             onClick={() => input.current?.click()}
             disabled={busy}
-            title="Open a .mri someone shared with you — no model required"
           >
-            {busy ? "opening…" : "Open a shared analysis (.mri)"}
+            <span className="dropzone-mark" aria-hidden="true">
+              ⌁
+            </span>
+            <strong>{busy ? "opening…" : "Drop a .mri here, or click to choose one"}</strong>
+            <span className="meta">
+              read in your browser · never uploaded · no model needed
+            </span>
+            {err && <span className="hint err">{err}</span>}
           </button>
-          {err && <span className="hint err">{err}</span>}
-        </div>
+        ) : (
+          <div className="session-open-row">
+            <button
+              className="ghost sm"
+              onClick={() => input.current?.click()}
+              disabled={busy}
+              title="Open a .mri someone shared with you — no model required"
+            >
+              {busy ? "opening…" : "Open a shared analysis (.mri)"}
+            </button>
+            {err && <span className="hint err">{err}</span>}
+          </div>
+        )
       )}
     </>
   );

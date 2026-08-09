@@ -1,11 +1,25 @@
-# ModelMRI
+<h1 align="center">ModelMRI</h1>
 
-**Chrome DevTools for AI models and agents.** Load any local model — LLM, VLM, or robot policy — and see inside it while it runs: what it attended to, which concepts fired, what happens when you turn one off, and exactly where your agent went wrong.
+<p align="center"><strong>Chrome DevTools for AI models and agents.</strong></p>
+
+<p align="center">
+  <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/v/modelmri?color=2563eb&label=pypi" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/dm/modelmri?color=2563eb&label=downloads" alt="PyPI downloads"></a>
+  <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/pyversions/modelmri" alt="Python versions"></a>
+  <a href="https://github.com/muhammadmahadazher/ModelMRI/actions/workflows/ci.yml"><img src="https://github.com/muhammadmahadazher/ModelMRI/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT licence"></a>
+</p>
+
+<p align="center">
+  <a href="https://muhammadmahadazher.github.io/ModelMRI/"><b>▶ Live demo</b></a> ·
+  <a href="https://muhammadmahadazher.github.io/ModelMRI/viewer/"><b>Open a .mri</b></a> ·
+  <a href="https://muhammadmahadazher.github.io/ModelMRI/docs/"><b>Docs</b></a> ·
+  <a href="https://modelmri.substack.com"><b>Build log</b></a>
+</p>
+
+Load any local model — LLM, VLM, or robot policy — and see inside it while it runs: what it attended to, which concepts fired, what happens when you turn one off, and exactly where your agent went wrong.
 
 Local-first. No cloud, no account, no telemetry. MIT.
-
-**[▶ Try the live demo](https://muhammadmahadazher.github.io/ModelMRI/)** — no install, no GPU, real recorded output.
-**[📖 Docs](https://muhammadmahadazher.github.io/ModelMRI/docs/)**
 
 <p align="center">
   <img src="docs/media/attention.gif" alt="Hovering tokens; attention arcs follow the cursor across the strip" width="800">
@@ -103,19 +117,21 @@ A `state_dict` alone is refused, with the reason: it's weights without an archit
 
 You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
 
-```
-Share this view → "L8 H3 copies the subject token" → gpt2.mri   (54 KB)
-```
+<p align="center">
+  <img src="docs/media/share.png" alt="The attention panel's share control, with a note reading 'L8 H3 copies the subject token'" width="800">
+</p>
 
-They open it with one command — no model, no GPU, nothing to configure:
+That writes **one 54 KB file** holding the tokens, the attention, the generation and your note. No weights — it's an observation, not a checkpoint.
 
-```bash
-pip install modelmri && modelmri open gpt2.mri
-```
+<p align="center">
+  <img src="docs/media/viewer.png" alt="The same analysis open in the browser viewer: replay banner, attention arcs from 'Amsterdam' back through the prompt" width="800">
+</p>
 
-A `.mri` holds the tokens, the attention, the generation and your note. It opens **with no model loaded** — same arcs, same layer/head dials, same everything, because the panels read it through the same calls a live model uses. The status pill says `replay` so it can't be mistaken for your own run. You can also drag one anywhere onto a running ModelMRI.
+<p align="center"><em>The recipient opens it at <a href="https://muhammadmahadazher.github.io/ModelMRI/viewer/">the viewer</a> — nothing installed, nothing uploaded, the file is read in their browser. Or <code>modelmri open gpt2.mri</code> if they have it locally.</em></p>
 
-It's an observation, not a checkpoint: no weights, and the file states its own precision rather than letting you assume it's exact.
+Every panel reads a recording through the same calls it uses for a live model, so the arcs, the layer/head dials and the token strip all behave normally. The status pill says `replay` and the footer says *recorded, not live*, so it can never be mistaken for your own run.
+
+The browser viewer and the Python tool are checked cell-for-cell against the same file on every change ([tests/viewer_check.py](tests/viewer_check.py)) — a viewer that renders a *slightly* different matrix would be worse than no viewer, because nothing on screen would say so.
 
 ---
 
@@ -136,7 +152,9 @@ cd frontend && npm ci && npm run build && cd ..
 uv sync && uv run modelmri serve
 ```
 
-**Models.** Type any HuggingFace id, pick from what's already cached on your machine, or switch to **Ollama** to run any open model you've pulled. (Ollama gives you text only — internals need a HuggingFace model, and ModelMRI says so rather than pretending.)
+**Models.** Search HuggingFace, pick from what's already cached on your machine, or switch to **Ollama** and pull any model by name. (Ollama gives you text only — internals need a HuggingFace model, and ModelMRI says so rather than pretending.)
+
+**Nothing downloads by surprise.** Every row shows its size before you click, and a download that cannot fit your disk is refused with both numbers rather than started. One that dwarfs your GPU asks first. Whatever is running, **Stop** actually stops it — the fetch happens in a child process precisely so it can be killed, and the half-written blobs are cleaned up. This exists because a click once began fetching 1.5 TB onto an 8 GB laptop with no way out but killing the server.
 
 **GPU when you have one.** NVIDIA, AMD, Intel and Apple silicon are detected automatically and the badge explains its choice — including the common case where torch was installed as a CPU-only build, where it prints the exact command to fix it. CPU works fine too; a 0.5B model streams in a couple of seconds.
 
@@ -165,6 +183,8 @@ The UI is a client of a plain HTTP API — script against it directly.
 | Agent trace timeline + step inspector | ✅ |
 | Robot policy (VLA) attention over real episodes | ✅ perception |
 | Custom models — adapters, TorchScript, layer map | ✅ |
+| Shareable `.mri` sessions + zero-install browser viewer | ✅ |
+| Download size guard + a Stop button that works | ✅ |
 | VLA action expert (needs `lerobot`, separate env) | 🏗️ |
 | Hosted zero-install demo | ✅ |
 

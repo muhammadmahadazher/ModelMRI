@@ -2,7 +2,30 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { DEMO, demoFetch } from "./demo";
+import { VIEWER, viewerFetch } from "./viewer";
 import "./styles.css";
+
+// Viewer build: the API is a `.mri` the user dropped, parsed in this page.
+// Same patch-fetch trick as the demo below, for the same reason — every call
+// site stays identical to the real app, so the viewer cannot drift from the
+// product. Nothing is uploaded; there is nowhere to upload it to.
+if (VIEWER) {
+  const real = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (!url.startsWith("/api/")) return real(input as RequestInfo, init);
+    const isJson = typeof init?.body === "string";
+    const { status, payload } = await viewerFetch(
+      url,
+      isJson ? JSON.parse(init!.body as string) : undefined,
+      isJson ? null : ((init?.body as BodyInit | null) ?? null),
+    );
+    return new Response(JSON.stringify(payload), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+}
 
 // Demo build (GitHub Pages): serve pre-baked real responses instead of the
 // API. Patching fetch once keeps every call site identical to the real app,

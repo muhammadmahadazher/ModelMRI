@@ -222,6 +222,41 @@ def create_app(
         except RuntimeError as err:
             return JSONResponse({"error": str(err)}, status_code=409)
 
+    @app.get("/api/ollama/resolve")
+    async def ollama_resolve(name: str) -> dict:
+        """Look up any Ollama model by name, with its size and a verdict.
+
+        Ollama has no search API, so the picker offers a name box instead of
+        a result list — which covers strictly more: namespaced models, any
+        tag, and anything published since.
+        """
+        from . import capacity as _capacity
+        from . import ollama as _ollama
+
+        found = await asyncio.to_thread(_ollama.resolve, name)
+        if not found["found"]:
+            return {**found, "ok": False, "overridable": False, "warning": ""}
+
+        target = _capacity.ollama_models_dir()
+        _, free = _capacity.free_space(target)
+        try:
+            _capacity.guard(
+                found["bytes"],
+                target,
+                label=found["name"],
+                vram_gb=runtime.accel.vram_gb,
+                accel_name=runtime.accel.name,
+            )
+        except _capacity.TooBig as err:
+            return {
+                **found,
+                "free_bytes": free,
+                "ok": False,
+                "overridable": err.overridable,
+                "warning": str(err),
+            }
+        return {**found, "free_bytes": free, "ok": True, "overridable": False, "warning": ""}
+
     @app.get("/api/ollama/size")
     async def ollama_size(name: str) -> dict:
         """What a pull would cost, and whether this machine can take it.

@@ -50,6 +50,72 @@ SUGGESTED = [
 REGISTRY = "https://registry.ollama.ai/v2"
 
 
+def resolve(name: str, timeout: float = 10.0) -> dict:
+    """Does this Ollama model exist, and how big is it?
+
+    Ollama publishes no search API — ollama.com/search is a web page, not an
+    endpoint — so the picker cannot offer a result list the way the
+    HuggingFace tab does. What it can do is let you name any model and answer
+    honestly about it, which covers strictly more than a search box would:
+    namespaced models (`user/model`), any tag, and anything published after
+    whatever list we might have hardcoded.
+
+    Returns {found, bytes, name, error}. `found` false with an empty error
+    means the registry answered and does not have it; a non-empty error means
+    we could not ask.
+    """
+    tag = (name or "").strip()
+    if not tag:
+        return {"found": False, "bytes": 0, "name": "", "error": "type a model name"}
+    if any(c.isspace() for c in tag):
+        return {
+            "found": False,
+            "bytes": 0,
+            "name": tag,
+            "error": "an Ollama model name has no spaces — try `qwen3:8b`",
+        }
+
+    repo, _, version = tag.partition(":")
+    namespaced = f"{repo}" if "/" in repo else f"library/{repo}"
+    url = f"{REGISTRY}/{namespaced}/manifests/{version or 'latest'}"
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            doc = json.load(resp)
+    except urllib.error.HTTPError as err:
+        if err.code in (401, 404):
+            return {
+                "found": False,
+                "bytes": 0,
+                "name": tag,
+                "error": "",  # a real answer: the registry does not have it
+            }
+        return {
+            "found": False,
+            "bytes": 0,
+            "name": tag,
+            "error": f"the Ollama registry answered {err.code}",
+        }
+    except Exception as err:
+        return {
+            "found": False,
+            "bytes": 0,
+            "name": tag,
+            "error": f"could not reach the Ollama registry: {err}",
+        }
+
+    layers = doc.get("layers") or []
+    config = doc.get("config") or {}
+    total = int(
+        sum(int(layer.get("size") or 0) for layer in layers)
+        + int(config.get("size") or 0)
+    )
+    return {"found": True, "bytes": total, "name": tag, "error": ""}
+
+
 def manifest_size(name: str, timeout: float = 10.0) -> int:
     """Bytes `ollama pull <name>` will fetch, from the registry's manifest.
 

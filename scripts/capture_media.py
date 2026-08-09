@@ -87,6 +87,11 @@ def main() -> int:
     ap.add_argument("--out", default="docs/media", help="where to write media")
     ap.add_argument("--url", default=URL)
     ap.add_argument("--theme", default="dark", choices=["light", "dark"])
+    ap.add_argument(
+        "--viewer-url",
+        default="",
+        help="a served viewer-dist; captures the zero-install reader too",
+    )
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -183,6 +188,100 @@ def main() -> int:
         ):
             made.append("picker.gif")
         made.append("picker.png")
+
+        # ------------------------------------------- 4. sharing a session
+        # The whole point of `.mri`: an analysis leaves the machine, the
+        # model does not. Export from the live app, then open the exact
+        # bytes back — the same round trip a reader would make.
+        ctx, pg = page(record=False)
+        generate(pg)
+        pg.locator(".panel.attn").scroll_into_view_if_needed()
+        pg.get_by_role("button", name="Share this view").click()
+        pg.wait_for_timeout(300)
+        pg.fill(".share-note", "L8 H3 copies the subject token")
+        pg.wait_for_timeout(500)
+        pg.locator(".panel.attn .row").screenshot(path=str(out / "share.png"))
+        made.append("share.png")
+
+        blob = pg.evaluate(
+            """async () => {
+              const r = await fetch('/api/session/export?layer=8&head=3&note='
+                + encodeURIComponent('L8 H3 copies the subject token'));
+              const buf = new Uint8Array(await r.arrayBuffer());
+              let s = ''; for (const b of buf) s += String.fromCharCode(b);
+              return btoa(s);
+            }"""
+        )
+        import base64
+
+        (out / "_session.mri").write_bytes(base64.b64decode(blob))
+
+        pg.evaluate(
+            """async (b64) => {
+              const bin = atob(b64);
+              const buf = new Uint8Array(bin.length);
+              for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+              const file = new File([buf], 'shared.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1200));
+            }""",
+            blob,
+        )
+        pg.wait_for_selector(".panel.replay", timeout=15_000)
+        pg.locator(".panel.replay").scroll_into_view_if_needed()
+        pg.wait_for_timeout(600)
+        pg.locator(".panel.replay").screenshot(path=str(out / "session.png"))
+        made.append("session.png")
+        ctx.close()
+
+        # ---------------------------------------- 5. the zero-install viewer
+        # Only when a viewer is being served (see --viewer-url), because it
+        # is a separate build. Same .mri as above, so the two pictures are
+        # demonstrably the same analysis on two very different machines.
+        if args.viewer_url:
+            ctx = browser.new_context(
+                viewport=VIEWPORT, device_scale_factor=2, color_scheme=args.theme
+            )
+            pg = ctx.new_page()
+            pg.goto(args.viewer_url, wait_until="networkidle")
+            pg.evaluate(
+                "t => { document.documentElement.dataset.theme = t;"
+                " document.documentElement.style.colorScheme = t; }",
+                args.theme,
+            )
+            pg.wait_for_timeout(900)
+            pg.screenshot(
+                path=str(out / "viewer-empty.png"),
+                clip={"x": 0, "y": 0, "width": VIEWPORT["width"], "height": 700},
+            )
+            made.append("viewer-empty.png")
+
+            pg.evaluate(
+                """async (b64) => {
+                  const bin = atob(b64);
+                  const buf = new Uint8Array(bin.length);
+                  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+                  const file = new File([buf], 'shared.mri');
+                  const input = document.querySelector('input[type=file][accept=".mri"]');
+                  const dt = new DataTransfer(); dt.items.add(file);
+                  input.files = dt.files;
+                  input.dispatchEvent(new Event('change', {bubbles: true}));
+                  await new Promise(r => setTimeout(r, 1400));
+                }""",
+                blob,
+            )
+            pg.wait_for_selector(".panel.attn", timeout=20_000)
+            pg.wait_for_timeout(900)
+            chips = pg.locator(".attn-scroll .tok")
+            if chips.count() > 12:
+                chips.nth(11).click()
+                pg.wait_for_timeout(900)
+            pg.screenshot(path=str(out / "viewer.png"), full_page=False)
+            made.append("viewer.png")
+            ctx.close()
 
         browser.close()
 

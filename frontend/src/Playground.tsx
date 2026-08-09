@@ -12,6 +12,7 @@ import {
 import AttentionPanel from "./AttentionPanel";
 import FeaturesPanel from "./FeaturesPanel";
 import ModelPicker from "./ModelPicker";
+import { VIEWER } from "./viewer";
 
 interface Props {
   model: ModelStatus | null;
@@ -213,6 +214,13 @@ export default function Playground({ model, onModelChange, replay }: Props) {
   }
 
   const introspectable = model?.device !== "ollama";
+
+  // The viewer has no model to pick, nothing to load, and nowhere to
+  // generate. Showing those controls would be offering three buttons that
+  // can only answer "install ModelMRI".
+  if (VIEWER) {
+    return epoch > 0 ? <AttentionPanel epoch={epoch} replay /> : null;
+  }
 
   return (
     <>

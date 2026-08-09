@@ -1944,12 +1944,54 @@ button.ghost.sm.stop:hover:not(:disabled) {
 }
 .replay-text p:last-child { margin-bottom: 0; }
 
+/* The viewer's front door. Large on purpose: it is the only thing this
+   build does, and a page whose single action is a small grey button reads
+   as broken. */
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 44px 24px;
+  border: 2px dashed color-mix(in oklab, var(--acc) 42%, transparent);
+  border-radius: var(--r-panel);
+  background: color-mix(in oklab, var(--acc) 4%, var(--color-card));
+  color: var(--color-ink);
+  cursor: pointer;
+  transition: border-color var(--dur-fast, 140ms) var(--ease-out),
+    background var(--dur-fast, 140ms) var(--ease-out);
+}
+.dropzone:hover:not(:disabled) {
+  border-color: var(--acc);
+  background: color-mix(in oklab, var(--acc) 8%, var(--color-card));
+}
+.dropzone strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+.dropzone-mark {
+  font-size: 30px;
+  line-height: 1;
+  color: var(--acc);
+}
+
 .session-open-row {
   display: flex;
   align-items: center;
   gap: 10px;
   margin: 0 0 4px;
 }
+
+/* Ollama's name box. Wide, because a model reference is `user/model:tag`
+   and a field that truncates it invites typos in the part that matters. */
+.ollama-find {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px 4px;
+}
+.ollama-name { flex: 1; width: auto; min-width: 0; }
 
 .share-row { display: inline-flex; align-items: center; gap: 6px; }
 .share-note {

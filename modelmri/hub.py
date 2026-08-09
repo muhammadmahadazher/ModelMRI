@@ -331,31 +331,44 @@ def _param_hint(model: dict) -> str | None:
 
 
 def suggested() -> list[dict]:
-    """The curated starter list, annotated the same way as search results."""
+    """The curated starter list, annotated the same way as search results.
+
+    Fetched concurrently. One repo at a time took 3.4 seconds for eight
+    models, and this is the view the picker opens on — so the first thing
+    anyone saw was three and a half seconds of skeleton rows.
+    """
     tok = token()
-    out = []
-    for repo in SUGGESTED:
-        entry = {
-            "id": repo,
-            "downloads": 0,
-            "likes": 0,
-            "gated": False,
-            "usable": True,
-            "updated": "",
-            "params": None,
-            "size_gb": None,
-            "suggested": True,
-        }
-        try:
-            info = _api(f"/models/{repo}", tok, timeout=6)
-            entry["downloads"] = info.get("downloads", 0)
-            entry["likes"] = info.get("likes", 0)
-            entry["gated"] = bool(info.get("gated", False))
-            entry["updated"] = (info.get("lastModified") or "")[:10]
-            entry["params"] = _param_hint(info)
-            entry["size_gb"] = weight_bytes(info) / 1e9 or None
-        except Exception:
-            pass  # offline: still offer the name
-        entry["usable"] = not entry["gated"]
-        out.append(entry)
-    return _resolve_access(out, tok)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        entries = list(pool.map(lambda repo: _suggested_entry(repo, tok), SUGGESTED))
+    return _resolve_access(entries, tok)
+
+
+def _suggested_entry(repo: str, tok: str | None) -> dict:
+    """One curated model, annotated. Never raises: offline still offers the
+    name, because a picker with nothing in it is worse than one with names
+    and no metadata."""
+    entry = {
+        "id": repo,
+        "downloads": 0,
+        "likes": 0,
+        "gated": False,
+        "usable": True,
+        "updated": "",
+        "params": None,
+        "size_gb": None,
+        "suggested": True,
+    }
+    try:
+        info = _api(f"/models/{repo}", tok, timeout=6)
+        entry["downloads"] = info.get("downloads", 0)
+        entry["likes"] = info.get("likes", 0)
+        entry["gated"] = bool(info.get("gated", False))
+        entry["updated"] = (info.get("lastModified") or "")[:10]
+        entry["params"] = _param_hint(info)
+        entry["size_gb"] = weight_bytes(info) / 1e9 or None
+    except Exception:
+        pass
+    entry["usable"] = not entry["gated"]
+    return entry

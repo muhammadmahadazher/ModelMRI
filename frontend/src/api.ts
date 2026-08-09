@@ -407,6 +407,28 @@ export const getOllamaSize = (name: string) =>
     json<OllamaSize>(r),
   );
 
+/** Look up any Ollama model by name.
+ *
+ *  Ollama publishes no search API, so the tab offers a name box rather than
+ *  a result list — which reaches strictly more models: namespaced ones, any
+ *  tag, and anything published since whatever list we might have shipped.
+ */
+export interface OllamaResolved {
+  found: boolean;
+  name: string;
+  bytes: number;
+  free_bytes?: number;
+  ok: boolean;
+  overridable: boolean;
+  warning: string;
+  error: string;
+}
+
+export const resolveOllama = (name: string) =>
+  fetch(`/api/ollama/resolve?name=${encodeURIComponent(name)}`).then((r) =>
+    json<OllamaResolved>(r),
+  );
+
 export interface Accelerator {
   kind: string; // cuda | rocm | xpu | mps | cpu
   torch_device: string;

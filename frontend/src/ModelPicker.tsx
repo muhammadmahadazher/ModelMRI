@@ -10,8 +10,10 @@ import {
   HubModel,
   hubSignIn,
   hubSignOut,
+  OllamaResolved,
   OllamaState,
   pullOllama,
+  resolveOllama,
 } from "./api";
 
 interface Props {
@@ -64,6 +66,24 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     name: string;
     message: string;
   } | null>(null);
+  // Ollama's "search": a name, resolved against the registry.
+  const [ollamaName, setOllamaName] = useState("");
+  const [resolved, setResolved] = useState<OllamaResolved | null>(null);
+
+  async function doResolve() {
+    const name = ollamaName.trim();
+    if (!name) return;
+    setBusy("resolve");
+    setErr("");
+    setPullWarning(null);
+    try {
+      setResolved(await resolveOllama(name));
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
   const debounce = useRef<number | undefined>(undefined);
   const sheetRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -426,7 +446,74 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
             ))}
             {ollama?.up && (
               <>
-                <div className="meta pad">not installed — pull one:</div>
+                {/* Ollama has no search API, so this is a name box rather
+                    than a result list — and it reaches strictly more models
+                    than a list would: any tag, any namespace, anything
+                    published since. It resolves against the registry before
+                    offering the button, so the size is on screen first. */}
+                <div className="ollama-find">
+                  <input
+                    className="share-note ollama-name"
+                    placeholder="pull any model by name — qwen3:8b, user/model:tag"
+                    value={ollamaName}
+                    onChange={(e) => {
+                      setOllamaName(e.target.value);
+                      setResolved(null);
+                    }}
+                    onKeyDown={(e) => e.key === "Enter" && void doResolve()}
+                  />
+                  <button
+                    className="ghost sm"
+                    onClick={() => void doResolve()}
+                    disabled={busy !== "" || !ollamaName.trim()}
+                  >
+                    {busy === "resolve" ? "looking…" : "Find"}
+                  </button>
+                </div>
+                {resolved && !resolved.found && (
+                  <div className="hint err pad">
+                    {resolved.error ||
+                      `The Ollama registry has no "${resolved.name}". Check the ` +
+                        `name and tag at ollama.com/library.`}
+                  </div>
+                )}
+                {resolved?.found && (
+                  <>
+                    <div className="model-row static">
+                      <span className="mid">{resolved.name}</span>
+                      <span className={`chip ${resolved.ok ? "" : "warn"}`}>
+                        {resolved.bytes >= 1e12
+                          ? `${(resolved.bytes / 1e12).toFixed(1)} TB`
+                          : `${(resolved.bytes / 1e9).toFixed(1)} GB`}
+                      </span>
+                      <span className="spacer" />
+                      <button
+                        className="ghost sm"
+                        onClick={() => void doPull(resolved.name, !resolved.ok)}
+                        // A pull that cannot fit the disk will be refused by
+                        // the server no matter what. Offering the button
+                        // anyway is a promise the next click breaks.
+                        disabled={
+                          busy !== "" || (!resolved.ok && !resolved.overridable)
+                        }
+                        title={resolved.ok ? undefined : resolved.warning}
+                      >
+                        {busy === `pull:${resolved.name}`
+                          ? "Pulling…"
+                          : !resolved.ok && !resolved.overridable
+                            ? "Won't fit"
+                            : !resolved.ok
+                              ? "Pull anyway"
+                              : "Pull"}
+                      </button>
+                    </div>
+                    {resolved.warning && (
+                      <div className="hint err pad">{resolved.warning}</div>
+                    )}
+                  </>
+                )}
+
+                <div className="meta pad">or one of these:</div>
                 {pullWarning && (
                   <div className="oversize" role="alert">
                     <span className="oversize-mark" aria-hidden="true">

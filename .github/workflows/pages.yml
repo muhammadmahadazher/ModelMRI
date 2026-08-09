@@ -1,8 +1,10 @@
 name: Demo
 
-# Publishes two things to GitHub Pages as one artifact:
-#   /       the zero-install demo (pre-baked real responses, no backend)
-#   /docs/  the documentation site
+# Publishes three things to GitHub Pages as one artifact:
+#   /         the zero-install demo (pre-baked real responses, no backend)
+#   /docs/    the documentation site
+#   /viewer/  the .mri reader — opens an analysis someone sent you, with
+#             nothing installed. This is the link you paste next to the file.
 # The demo keeps the root because that is the link people are handed.
 on:
   push:
@@ -35,13 +37,24 @@ jobs:
         run: |
           cd frontend
           npm ci
-          VITE_DEMO=1 npm run build
+          npm run build:demo
       - name: Verify the bundle is self-contained
         run: |
           test -f demo-dist/index.html
           test -d demo-dist/demo || (echo "demo payloads missing" && exit 1)
           grep -q "demo/llm.json\|assets/" demo-dist/index.html || true
           echo "demo build OK: $(du -sh demo-dist | cut -f1)"
+
+      - name: Build the .mri viewer
+        run: |
+          cd frontend
+          npm run build:viewer
+      - name: Verify the viewer needs no backend
+        run: |
+          test -f viewer-dist/index.html
+          # It must not ship demo payloads, and must not reference an API host.
+          test ! -d viewer-dist/demo
+          echo "viewer build OK: $(du -sh viewer-dist | cut -f1)"
 
       - uses: actions/setup-python@v5
         with:
@@ -53,7 +66,9 @@ jobs:
       - name: Combine into one site
         run: |
           mv site demo-dist/docs
+          mv viewer-dist demo-dist/viewer
           test -f demo-dist/docs/index.html || (echo "docs missing" && exit 1)
+          test -f demo-dist/viewer/index.html || (echo "viewer missing" && exit 1)
           test -f demo-dist/index.html || (echo "demo clobbered" && exit 1)
           echo "combined: $(du -sh demo-dist | cut -f1)"
 

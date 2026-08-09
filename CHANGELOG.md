@@ -6,6 +6,43 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A zero-install browser viewer for `.mri` files.** `modelmri open` works,
+  but it imports torch and transformers first — **measured at 26 seconds** —
+  to display a 54 KB recording that needs neither, and the first person to
+  try it pressed ctrl-c through the wait. The viewer is the same React app
+  built with the API answered from a file you drop, so a recipient reads a
+  shared analysis with nothing installed and nothing uploaded. Published at
+  `/viewer/` on GitHub Pages.
+
+  The browser and Python implementations of the format are checked
+  cell-for-cell on the same file by [tests/viewer_check.py](tests/viewer_check.py)
+  — on the current fixture, 6,912 cells with identical checksums. A viewer
+  that renders a *slightly* different matrix would be worse than none,
+  because nothing on screen would say so.
+
+- **Pull any Ollama model by name.** Ollama publishes no search API, so the
+  tab offers a name box rather than a result list — which reaches strictly
+  more: any tag, any namespace, anything published since. It resolves
+  against the registry first, so the size is on screen before the button,
+  and a model that cannot fit says "Won't fit" instead of offering a click
+  the server would refuse.
+
+### Fixed
+
+- **`modelmri open` looked like it had hung.** It printed "serving on …" and
+  *then* spent 26 seconds importing torch. It now says what it is doing
+  before the wait, and ctrl-c prints `stopped.` instead of a thirty-line
+  traceback through uvicorn and transformers.
+- **The HuggingFace tab took 3.4 seconds to show anything.** The curated list
+  fetched eight repos one at a time; it fetches them concurrently, so the
+  view the picker opens on takes 1.6 seconds.
+- **`npm run build:demo` did not exist**, and the `VITE_DEMO=1 npm run build`
+  form it replaced is not valid syntax in PowerShell or cmd — so the demo
+  target only ever built on a POSIX shell. All three targets are now vite
+  modes (`--mode demo|viewer`), selected the same way on every platform.
+
 ## [0.6.0] — 2026-08-09
 
 ### Added

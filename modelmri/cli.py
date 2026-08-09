@@ -53,12 +53,16 @@ def main() -> None:
         import uvicorn
 
         print(f"ModelMRI {__version__} serving on http://{args.host}:{args.port}")
-        uvicorn.run(
-            "modelmri.server:create_app",
-            factory=True,
-            host=args.host,
-            port=args.port,
-        )
+        try:
+            uvicorn.run(
+                "modelmri.server:create_app",
+                factory=True,
+                host=args.host,
+                port=args.port,
+            )
+        except KeyboardInterrupt:
+            print("\nstopped.")
+            return
     elif args.command == "open":
         from pathlib import Path
 
@@ -100,15 +104,29 @@ def main() -> None:
             # onto a connection-refused page reads as a broken install.
             threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
+        # Say this BEFORE the import, and say what it is. Printing
+        # "serving on ..." first and then spending 26 seconds importing torch
+        # and transformers looks exactly like a hang -- which is how the first
+        # person to run this ended up pressing ctrl-c through a traceback.
+        print(
+            "  starting the local server (importing torch — about 20 seconds\n"
+            "  the first time; the viewer at the URL below needs none of it)"
+        )
         import uvicorn
 
-        print(f"serving on {url}  (ctrl-c to stop)")
-        uvicorn.run(
-            "modelmri.server:create_app",
-            factory=True,
-            host=args.host,
-            port=args.port,
-        )
+        print(f"\nserving on {url}  (ctrl-c to stop)")
+        try:
+            uvicorn.run(
+                "modelmri.server:create_app",
+                factory=True,
+                host=args.host,
+                port=args.port,
+            )
+        except KeyboardInterrupt:
+            # Ctrl-C is how you stop this. It is not a crash, and it should
+            # not print thirty lines of somebody else's stack.
+            print("\nstopped.")
+            return
     elif args.command == "where":
         from . import paths
 

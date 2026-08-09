@@ -15,6 +15,7 @@ import Playground from "./Playground";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
+import { VIEWER } from "./viewer";
 import VLAPanel from "./VLAPanel";
 
 export default function App() {
@@ -94,9 +95,19 @@ export default function App() {
           See inside <span className="c">the model.</span>
         </h1>
         <p className="subline">
-          Attention, concepts, and steering for any local model — plus a
-          flight recorder for your agents. One pip install, everything on your
-          machine.
+          {VIEWER ? (
+            <>
+              Open a shared analysis — a <code>.mri</code> someone sent you.
+              No install, no model, no GPU. The file is read in this page and
+              never leaves your browser.
+            </>
+          ) : (
+            <>
+              Attention, concepts, and steering for any local model — plus a
+              flight recorder for your agents. One pip install, everything on
+              your machine.
+            </>
+          )}
         </p>
         {DEMO && (
           <p className="demo-banner">
@@ -106,21 +117,40 @@ export default function App() {
           </p>
         )}
         <div className="specrow">
-          <span>local-first</span>
-          <span>attention</span>
-          <span>sae features</span>
-          <span>steering</span>
-          <span>agent traces</span>
-          <span>your own models</span>
-          <span>mit ©2026</span>
+          {VIEWER ? (
+            <>
+              <span>no install</span>
+              <span>no upload</span>
+              <span>attention</span>
+              <span>read-only</span>
+              <span>mit ©2026</span>
+            </>
+          ) : (
+            <>
+              <span>local-first</span>
+              <span>attention</span>
+              <span>sae features</span>
+              <span>steering</span>
+              <span>agent traces</span>
+              <span>your own models</span>
+              <span>mit ©2026</span>
+            </>
+          )}
         </div>
       </div>
 
       <SessionBar session={session} onChange={setSession} />
       <Playground model={model} onModelChange={refresh} replay={session.open} />
-      <CustomPanel />
-      <VLAPanel />
-      <AgentsPanel />
+      {/* The viewer has no machine behind it. Panels that can only ever say
+          "install ModelMRI" are worse than absent — the one thing this page
+          does, it should do without three dead ends around it. */}
+      {!VIEWER && (
+        <>
+          <CustomPanel />
+          <VLAPanel />
+          <AgentsPanel />
+        </>
+      )}
       <footer>
         {/* Read from /api/session. It was the literal "MRI-0.3" and had been
             wrong since 0.4.0 — a version string nobody remembers to bump is a
