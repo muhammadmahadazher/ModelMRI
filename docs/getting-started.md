@@ -112,5 +112,8 @@ later.
 
 The token is stored owner-only in ModelMRI's config directory — run
 `modelmri where` to see exactly which file — and is sent to nowhere except
-huggingface.co. ModelMRI never asks for a password. See [SECURITY.md](../SECURITY.md)
-for what "owner-only" means on each platform.
+huggingface.co. ModelMRI never asks for a password. See
+[SECURITY.md](https://github.com/muhammadmahadazher/ModelMRI/blob/main/SECURITY.md)
+for what "owner-only" means on each platform — the same absolute form the
+custom-models guide uses, because SECURITY.md lives outside the docs tree and
+a relative link to it fails the strict build.
