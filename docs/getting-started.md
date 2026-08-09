@@ -36,8 +36,9 @@ to configure and no model to download:
 modelmri open their-analysis.mri
 ```
 
-That validates the file, starts the server with the analysis already open, and
-opens a tab. See [sharing what you found](guides/attention.md#sharing-what-you-found).
+That validates the file and opens it in about a third of a second — it serves
+the bundled viewer from the standard library, so it loads no model and imports
+no torch. See [sharing what you found](guides/attention.md#sharing-what-you-found).
 
 ## Your first look inside a model
 

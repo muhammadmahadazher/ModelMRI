@@ -9,6 +9,85 @@ import sys
 from . import __version__
 
 
+def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
+    """Serve the bundled `.mri` viewer, using only the standard library.
+
+    `modelmri open` used to start the full application, which imports torch
+    and transformers — measured at 26 seconds — to display a 54 KB recording
+    that needs neither. The first person to run it pressed ctrl-c partway
+    through, reasonably concluding it had hung.
+
+    Nothing here imports anything heavy. It serves the same viewer bundle
+    that is published to GitHub Pages, plus the one file, and the page opens
+    it from the `?f=` link rather than making you find and drop a file you
+    just named on the command line.
+
+    Two things this deliberately does NOT do: bind anything but the loopback
+    interface, and serve any directory other than the viewer's own. A local
+    file reader has no business being reachable from the network or exposing
+    the tree it happens to be started in.
+    """
+    import functools
+    import http.server
+    import socketserver
+    import threading
+    import webbrowser
+    from importlib.resources import files
+    from pathlib import Path
+
+    bundle = Path(str(files("modelmri") / "static" / "viewer"))
+    if not (bundle / "index.html").is_file():
+        print(
+            "modelmri: this build has no bundled viewer.\n"
+            "  Use `modelmri serve` and open the file from the page, or read\n"
+            "  it at https://muhammadmahadazher.github.io/ModelMRI/viewer/",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    payload = Path(target).read_bytes()
+    name = "session.mri"
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=str(bundle), **kw)
+
+        def do_GET(self):  # noqa: N802 - stdlib's spelling
+            if self.path.split("?")[0] == f"/{name}":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            super().do_GET()
+
+        def log_message(self, *a):  # a request log is noise here
+            pass
+
+    class Server(socketserver.TCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    try:
+        httpd = Server((host, port), functools.partial(Handler))
+    except OSError as err:
+        print(f"modelmri: cannot listen on {host}:{port} — {err}", file=sys.stderr)
+        print("  another ModelMRI may be running; try --port 5901", file=sys.stderr)
+        raise SystemExit(1) from err
+
+    url = f"http://{host}:{port}/?f={name}"
+    if browser:
+        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+    print(f"  reading it at {url}\n  (ctrl-c to stop)")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped.")
+    finally:
+        httpd.server_close()
+
+
 def main() -> None:
     # Windows consoles hand Python a cp1252 stdout, which cannot encode a path
     # containing (say) a Cyrillic or CJK username. Printing where things live
@@ -92,43 +171,10 @@ def main() -> None:
         )
         print("  no model will be loaded — this is a recording\n")
 
-        # The server picks this up in create_app. An environment variable
-        # rather than a module global because uvicorn may import the factory
-        # in a fresh interpreter.
-        os.environ["MODELMRI_OPEN"] = str(target.resolve())
-
-        url = f"http://{args.host}:{args.port}"
-        if not args.no_browser:
-            import threading
-            import webbrowser
-
-            # After the server is listening, not before -- a tab that opens
-            # onto a connection-refused page reads as a broken install.
-            threading.Timer(1.5, lambda: webbrowser.open(url)).start()
-
-        # Say this BEFORE the import, and say what it is. Printing
-        # "serving on ..." first and then spending 26 seconds importing torch
-        # and transformers looks exactly like a hang -- which is how the first
-        # person to run this ended up pressing ctrl-c through a traceback.
-        print(
-            "  starting the local server (importing torch — about 20 seconds\n"
-            "  the first time; the viewer at the URL below needs none of it)"
+        serve_viewer(
+            target, host=args.host, port=args.port, browser=not args.no_browser
         )
-        import uvicorn
-
-        print(f"\nserving on {url}  (ctrl-c to stop)")
-        try:
-            uvicorn.run(
-                "modelmri.server:create_app",
-                factory=True,
-                host=args.host,
-                port=args.port,
-            )
-        except KeyboardInterrupt:
-            # Ctrl-C is how you stop this. It is not a crash, and it should
-            # not print thirty lines of somebody else's stack.
-            print("\nstopped.")
-            return
+        return
     elif args.command == "where":
         from . import paths
 

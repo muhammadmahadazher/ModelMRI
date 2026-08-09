@@ -61,7 +61,15 @@ packages = ["modelmri"]
 # output: unlike force-include it tolerates the path being absent (fresh
 # clone, CI) and never double-adds files already inside the package.
 [tool.hatch.build]
-artifacts = ["modelmri/static/app/index.html", "modelmri/static/app/assets/**"]
+artifacts = [
+    "modelmri/static/app/index.html",
+    "modelmri/static/app/assets/**",
+    # The `.mri` viewer. Shipped so `modelmri open` can serve it from the
+    # standard library alone -- reading a 54 KB recording should not import
+    # torch, which costs 26 seconds and is needed for none of it.
+    "modelmri/static/viewer/index.html",
+    "modelmri/static/viewer/assets/**",
+]
 exclude = ["modelmri/static/app/.gitkeep"]
 
 [build-system]

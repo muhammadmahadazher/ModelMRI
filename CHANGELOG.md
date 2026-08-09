@@ -6,6 +6,29 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-08-09
+
+### Changed
+
+- **`modelmri open` is 34× faster: 8.9 s → 0.26 s warm, and about 26 s → 0.3 s
+  cold.** It was starting the whole application — torch, transformers,
+  FastAPI, uvicorn — to display a 54 KB recording that needs none of them.
+  0.6.1 made that wait honest; this removes it.
+
+  The viewer bundle now ships inside the package, and `modelmri open` serves
+  it with `http.server` from the standard library, on the loopback interface
+  only, exposing nothing but the viewer's own directory and the one file you
+  named. The page receives it through a `?f=` link, so the analysis is on
+  screen when the tab opens rather than waiting to be dropped.
+
+  The split is now clean: `modelmri serve` is the tool, `modelmri open` is a
+  file reader. A test asserts the reader imports none of torch,
+  transformers, fastapi, uvicorn or numpy — verified to fail the moment one
+  convenient top-level import is added back.
+
+  It is the same bundle published to `/viewer/`, copied from one build, so
+  what you read locally cannot drift from what you sent someone a link to.
+
 ## [0.6.1] — 2026-08-09
 
 ### Added

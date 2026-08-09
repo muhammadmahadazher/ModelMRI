@@ -103,6 +103,10 @@ def main() -> int:
             else "modelmri/static/app"
         )
         built, dest = base / out, ROOT / out
+        # The viewer has two homes: viewer-dist/ for the Pages deploy, and
+        # inside the package so `modelmri open` can serve it without a
+        # backend. One build, copied twice, so they cannot diverge.
+        also = ROOT / "modelmri" / "static" / "viewer" if args.viewer else None
         if not built.is_dir():
             print(f"build produced nothing at {built}", file=sys.stderr)
             return 1
@@ -114,6 +118,10 @@ def main() -> int:
         shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(built, dest, dirs_exist_ok=True)
         print(f"copied {built} -> {dest}", flush=True)
+        if also is not None:
+            shutil.rmtree(also, ignore_errors=True)
+            shutil.copytree(built, also, dirs_exist_ok=True)
+            print(f"copied {built} -> {also}", flush=True)
         if args.demo or args.viewer:
             return 0 if (dest / "index.html").is_file() else 1
         final = dest

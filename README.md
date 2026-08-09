@@ -127,7 +127,13 @@ That writes **one 54 KB file** holding the tokens, the attention, the generation
   <img src="docs/media/viewer.png" alt="The same analysis open in the browser viewer: replay banner, attention arcs from 'Amsterdam' back through the prompt" width="800">
 </p>
 
-<p align="center"><em>The recipient opens it at <a href="https://muhammadmahadazher.github.io/ModelMRI/viewer/">the viewer</a> — nothing installed, nothing uploaded, the file is read in their browser. Or <code>modelmri open gpt2.mri</code> if they have it locally.</em></p>
+<p align="center"><em>The recipient opens it at <a href="https://muhammadmahadazher.github.io/ModelMRI/viewer/">the viewer</a> — nothing installed, nothing uploaded, the file is read in their browser.</em></p>
+
+Locally it's the same page, served from the package by the standard library:
+
+```bash
+modelmri open gpt2.mri     # ~0.3s — no torch, no model, no GPU
+```
 
 Every panel reads a recording through the same calls it uses for a live model, so the arcs, the layer/head dials and the token strip all behave normally. The status pill says `replay` and the footer says *recorded, not live*, so it can never be mistaken for your own run.
 

@@ -67,11 +67,20 @@ what you think you found.
 Share this view → "L8 H3 copies the subject token" → gpt2.mri (54 KB)
 ```
 
-The person you send it to needs one command, and no model:
+The person you send it to needs **nothing at all**: the
+[hosted viewer](https://muhammadmahadazher.github.io/ModelMRI/viewer/) reads
+the file in their browser. Nothing is uploaded — there is no server behind
+that page to upload to.
+
+If they do have ModelMRI installed, the same page is bundled with it:
 
 ```bash
-pip install modelmri && modelmri open gpt2.mri
+modelmri open gpt2.mri     # ~0.3s, no model, no torch
 ```
+
+That serves the viewer from the standard library on the loopback interface
+and hands it the one file. It is deliberately *not* `modelmri serve`: reading
+a 54 KB recording should not import torch, which used to cost 26 seconds.
 
 Or, if they already have ModelMRI running: click **Open a shared analysis**,
 or drop the file anywhere on the page. It works with **no model loaded** — the panels read the recording

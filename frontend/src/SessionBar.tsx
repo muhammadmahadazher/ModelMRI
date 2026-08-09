@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { closeSession, errorText, openSession, SessionState } from "./api";
-import { VIEWER } from "./viewer";
+import { autoOpenPath, VIEWER } from "./viewer";
 
 /** Open someone else's analysis, or put yours down.
  *
@@ -39,6 +39,31 @@ export default function SessionBar({
       setBusy(false);
     }
   };
+
+  // `modelmri open somebody.mri` serves the file next to the viewer and
+  // links to it, so the analysis is already on screen when the tab opens —
+  // nobody should have to find and drop a file they just named on the
+  // command line.
+  useEffect(() => {
+    const path = autoOpenPath();
+    if (!path || session.open) return;
+    let live = true;
+    setBusy(true);
+    void fetch(path)
+      .then((r) => {
+        if (!r.ok) throw new Error(`could not read ${path} (HTTP ${r.status})`);
+        return r.arrayBuffer();
+      })
+      .then((buf) => openSession(buf))
+      .then((s) => live && onChange(s))
+      .catch((e) => live && setErr(errorText(e)))
+      .finally(() => live && setBusy(false));
+    return () => {
+      live = false;
+    };
+    // Once, on mount. Re-running on `session` would reopen it after a close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // A file dropped anywhere on the page should open, not navigate away from
   // the app — which is what the browser does by default, discarding whatever

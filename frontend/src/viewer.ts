@@ -22,6 +22,21 @@
 
 export const VIEWER = import.meta.env.VITE_VIEWER === "1";
 
+/** A `.mri` named in the URL, for `modelmri open` to point us at.
+ *
+ *  Only a same-origin relative path is honoured. A viewer that fetched any
+ *  URL a link handed it would be a way to make someone's browser retrieve
+ *  arbitrary addresses by sending them a link, which is not a thing a file
+ *  reader should do.
+ */
+export function autoOpenPath(): string | null {
+  if (!VIEWER) return null;
+  const raw = new URLSearchParams(location.search).get("f");
+  if (!raw) return null;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) return null;
+  return raw;
+}
+
 const FORMAT = "modelmri-session";
 const FORMAT_VERSION = 1;
 
