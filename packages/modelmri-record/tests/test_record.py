@@ -14,12 +14,40 @@ from modelmri_record.redact import default_redactor, make_redactor  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch, tmp_path):
-    """Never touch the network; land traces in a temp dir."""
+    """Never touch the network; land traces in a temp dir.
+
+    MODELMRI_TRACE_DIR is set explicitly because the undelivered-trace
+    location is no longer the working directory: this package is imported by
+    the user's agent, so the CWD is normally their git repo, and a trace
+    holds full prompts and tool output. Pointing it at tmp_path keeps every
+    assertion below unchanged while testing the supported override.
+    """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODELMRI_TRACE_DIR", str(tmp_path / "modelmri-traces"))
     monkeypatch.setattr(
         rec.urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError())
     )
     return tmp_path
+
+
+def test_a_trace_never_lands_in_the_working_directory(monkeypatch, tmp_path):
+    """The default, with no override at all.
+
+    Without this the whole suite could pass while the shipped default wrote
+    into whatever repo the recorder was imported from — which is exactly the
+    state this file was in before the location moved.
+    """
+    monkeypatch.delenv("MODELMRI_TRACE_DIR", raising=False)
+    monkeypatch.setenv("MODELMRI_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+
+    with rec.trace("cwd-check", endpoint="http://127.0.0.1:1/nope"):
+        rec.step("llm_call", name="a", duration_ms=1)
+
+    assert not (tmp_path / "modelmri-traces").exists(), "wrote into the CWD"
+    assert not list(tmp_path.glob("*.json"))
+    parked = list((tmp_path / "home" / "data" / "undelivered").glob("*.json"))
+    assert len(parked) == 1, "the trace was not kept anywhere"
 
 
 def written(tmp_path) -> dict:
