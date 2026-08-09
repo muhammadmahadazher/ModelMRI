@@ -38,6 +38,10 @@ export default function AttentionPanel({
   const [err, setErr] = useState("");
   const [ranked, setRanked] = useState<Ablation | null>(null);
   const [ranking, setRanking] = useState(false);
+  const [baseline, setBaseline] = useState<"zero" | "mean">("zero");
+  // Seconds per forward pass, measured on THIS model. Null until one
+  // ranking has run — an estimate before that would be a number we made up.
+  const [secPerPass, setSecPerPass] = useState<number | null>(null);
   // A comparison against the same generation with one head removed. Null
   // means we are showing the run itself rather than a difference.
   const [diff, setDiff] = useState<AttentionDiff | null>(null);
@@ -68,15 +72,35 @@ export default function AttentionPanel({
     }
   }
 
-  async function rank() {
+  async function rank(scope: "layer" | "all" = "layer") {
     setRanking(true);
     setErr("");
     try {
-      const result = await rankHeads(layer, "zero");
+      const result = await rankHeads(layer, baseline, scope);
       setRanked(result);
+      // What a ranking costs is dominated by the forward-pass count, and the
+      // per-pass cost is stable enough to extrapolate from: measured on an
+      // RTX 4060, one layer of gpt2 runs 71 ms/pass and predicts the full
+      // 146-pass sweep at 10.4 s against 10.28 s actual; Qwen3-0.6B's
+      // 307 ms/pass predicts 138 s against 137.2 s. Both within 1%. So the
+      // whole-model button can quote a real number instead of a guess —
+      // and it only exists once a measurement has been taken.
+      if (result.passes > 0) setSecPerPass(result.elapsed_s / result.passes);
       // Open the head that moved the answer most — the whole point is to
-      // stop the user picking blind.
-      if (result.ranked.length) setHead(result.ranked[0].head);
+      // stop the user picking blind. Which head that is depends on what was
+      // asked: ranking one layer answers "which head here", so stay here;
+      // ranking the model answers "which head anywhere", so go there. Staying
+      // put after a whole-model sweep leaves the winner named in the list and
+      // the arcs showing something else.
+      const scoped =
+        scope === "all"
+          ? result.ranked
+          : result.ranked.filter((r) => r.layer === layer);
+      const best = (scoped.length ? scoped : result.ranked)[0];
+      if (best) {
+        setHead(best.head);
+        if (best.layer !== layer) setLayer(best.layer);
+      }
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -84,17 +108,32 @@ export default function AttentionPanel({
     }
   }
 
-  // A ranking is about one layer's heads under one generation. Changing
-  // either makes it an answer to a question nobody asked.
+  /** "11s" / "2m 17s" — a wait the user can decide about. */
+  const humanSeconds = (s: number) =>
+    s < 90 ? `${Math.max(1, Math.round(s))}s` : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+
+  const layerPasses = heads + 2;
+  const allPasses = layers * heads + 2;
+  // A result covering more than one layer came from a whole-model sweep, and
+  // reads differently: the list is ranked across layers, not within one.
+  const wholeModel =
+    !!ranked && new Set(ranked.ranked.map((r) => r.layer)).size > 1;
+
+  // A ranking is about specific layers under one generation, so moving to a
+  // layer it does not cover makes it an answer to a question nobody asked.
+  // It must NOT be discarded for a layer it does cover: a whole-model sweep
+  // ranks every layer and then jumps to the winning one, and clearing on any
+  // layer change would delete the result the moment it arrived.
+  useEffect(() => {
+    setRanked((r) => (r && r.ranked.some((x) => x.layer === layer) ? r : null));
+  }, [layer]);
+
+  // A new generation invalidates everything derived from the old one, and
+  // the per-pass rate belongs to whichever model produced it.
   useEffect(() => {
     setRanked(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layer, epoch]);
-
-  // A difference is about one head of one generation. Anything that changes
-  // either makes it a picture of something else.
-  useEffect(() => {
     setDiff(null);
+    setSecPerPass(null);
   }, [epoch]);
 
   useEffect(() => {
@@ -194,14 +233,58 @@ export default function AttentionPanel({
         {/* Needs a forward pass per head, so it needs a model — a recording
             does not carry one. */}
         {!replay && (
-          <button
-            className="ghost sm"
-            onClick={() => void rank()}
-            disabled={ranking}
-            title="Zero each head in this layer and measure how far the answer moves"
-          >
-            {ranking ? "ranking…" : "Rank heads"}
-          </button>
+          <>
+            <button
+              className="ghost sm"
+              onClick={() => void rank("layer")}
+              disabled={ranking}
+              title={
+                `${layerPasses} forward passes — one per head, plus a baseline ` +
+                `and a noise-floor pass` +
+                (secPerPass
+                  ? `. About ${humanSeconds(layerPasses * secPerPass)} on this model.`
+                  : "")
+              }
+            >
+              {ranking ? "ranking…" : "Rank heads"}
+              <span className="meta">
+                {" "}
+                {secPerPass
+                  ? `≈ ${humanSeconds(layerPasses * secPerPass)}`
+                  : `${layerPasses} passes`}
+              </span>
+            </button>
+            {/* Only offered once one layer has been timed on THIS model. A
+                whole-model sweep is 10s on gpt2 and 137s on Qwen3-0.6B, and
+                the difference is not something the user can guess — so the
+                button does not exist until it can state which one this is. */}
+            {secPerPass !== null && layers > 1 && (
+              <button
+                className="ghost sm"
+                onClick={() => void rank("all")}
+                disabled={ranking}
+                title={`Rank every head in the model — ${allPasses} forward passes`}
+              >
+                all {layers} layers
+                <span className="meta">
+                  {" "}
+                  ≈ {humanSeconds(allPasses * secPerPass)}
+                </span>
+              </button>
+            )}
+            {/* The panel already tells the user this changes the order. It
+                should let them look. */}
+            <select
+              className="sm"
+              value={baseline}
+              onChange={(e) => setBaseline(e.target.value as "zero" | "mean")}
+              disabled={ranking}
+              title="What a removed head is replaced with — this changes the ranking"
+            >
+              <option value="zero">zero-ablation</option>
+              <option value="mean">mean-ablation</option>
+            </select>
+          </>
         )}
         {!replay && <ShareButton layer={layer} head={head} />}
         <span className="spacer" />
@@ -217,8 +300,10 @@ export default function AttentionPanel({
         <div className="ranking">
           <div className="ranking-head">
             <strong>
-              Removing one head from layer {layer}, and measuring how far the
-              answer to {JSON.stringify(ranked.target_token)} moves
+              Removing one head from{" "}
+              {wholeModel ? "anywhere in the model" : `layer ${layer}`}, and
+              measuring how far the answer to{" "}
+              {JSON.stringify(ranked.target_token)} moves
             </strong>
             <span className="meta">
               {ranked.passes} forward passes · {ranked.elapsed_s}s ·{" "}
@@ -226,15 +311,25 @@ export default function AttentionPanel({
             </span>
           </div>
           <ol className="ranking-list">
-            {ranked.ranked
-              .filter((r) => r.layer === layer)
+            {/* A whole-model sweep is ranked across layers; a single-layer
+                one only has this layer to show. */}
+            {(wholeModel
+              ? ranked.ranked
+              : ranked.ranked.filter((r) => r.layer === layer)
+            )
               .slice(0, 5)
               .map((r) => {
                 const noise = r.kl <= ranked.noise_floor_kl;
                 return (
-                  <li key={r.head} className={noise ? "faint" : ""}>
-                    <button className="ghost sm" onClick={() => setHead(r.head)}>
-                      H{r.head}
+                  <li key={`${r.layer}.${r.head}`} className={noise ? "faint" : ""}>
+                    <button
+                      className="ghost sm"
+                      onClick={() => {
+                        setLayer(r.layer);
+                        setHead(r.head);
+                      }}
+                    >
+                      {wholeModel ? `L${r.layer} H${r.head}` : `H${r.head}`}
                     </button>
                     <span className="mid">
                       {noise ? "below the noise floor" : `KL ${r.kl.toFixed(3)}`}

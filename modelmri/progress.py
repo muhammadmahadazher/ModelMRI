@@ -38,6 +38,11 @@ _CONFIG = (".json", ".txt", ".model")
 # How long a download may sit at the same byte count before we call it stalled.
 STALL_AFTER_S = 45.0
 
+# How much new data has to land before "already cached" is treated as having
+# been wrong. Large enough that a lock file or a rewritten config cannot trip
+# it, small enough to catch a real download in its first seconds.
+_CACHE_WRONG_AFTER = 32 * 1024 * 1024
+
 
 def _weight_files(names: list[tuple[str, int]]) -> list[tuple[str, int]]:
     """The single weight format a load will download, preferring safetensors."""
@@ -192,6 +197,19 @@ class _Tracker:
                 self._snap.bytes_done = done
                 if done > start_bytes and self._snap.stage == "resolving":
                     self._snap.stage = "weights"
+                # "Already cached" was decided from the tree's size before
+                # anything started, and a tree can be large for reasons other
+                # than holding what we need. Real case: a gpt2 cache with a
+                # legacy pytorch_model.bin beside the safetensors measured
+                # 1045 MB against an expected 551 MB, so the load announced
+                # "no download needed" and then downloaded for 275 seconds
+                # under that message. Bytes arriving is proof it was wrong.
+                if cached and done > start_bytes + _CACHE_WRONG_AFTER:
+                    cached = False
+                    last_change = now
+                    self._snap.detail = (
+                        f"downloading {total / 1e9:.1f} GB" if total else "downloading"
+                    )
                 # A download that dies mid-flight does not raise; it simply
                 # stops moving, and the load then hangs for as long as anyone
                 # is willing to wait. We watched one sit at 128 MB of 3 GB

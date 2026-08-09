@@ -1,5 +1,76 @@
 # Working log
 
+## 2026-08-09 (later) — 0.7.0 + 0.8.0, and auditing my own shipped numbers
+
+**Ranking heads, and comparing runs.** 0.7.0 added *Rank heads*: zero each
+head in a layer, run the model again, measure how far the next-token
+distribution moves. 0.8.0 added *what changes?* — the same generation with
+and without one head, subtracted cell by cell.
+
+**Then the launch post made me check a number, and the number was wrong.**
+
+Writing it up, I reached the claim that a raw logit difference overstates a
+head's importance by 6×. That figure came from a design review, not from me.
+Measuring it on gpt2 L0H0 with "The capital of France is": top logit −0.258,
+vocabulary mean −0.145, honest residual −0.113 — a **2.3×** overstatement.
+I published the measured one.
+
+That should have been the end of it. Instead I went looking for where the 6×
+came from, and found it in `ablate.py`'s own module docstring, alongside three
+more figures I had never taken. Measured, all of them:
+
+| Shipped | Measured |
+|---|---|
+| logit +21.96 / mean +18.06 / ~6× | −0.258 / −0.145 / **2.3×** |
+| zero ranks heads 0, 7, 10 | **7, 10, 9** |
+| mean ranks head 4 top | **3, 1, 10** (7 falls to sixth) |
+| layer-0 per-head KLs sum 4.07 vs 0.44 | **1.995 vs 0.208** |
+| gemma 0.003 vs 1.69 | **0.0007 vs 6.57** |
+| bf16 noise floor ~5e-3 | **exactly 0.0**, CPU and CUDA, fp32/bf16/fp16 |
+
+Every *qualitative* claim held — head_dim really does differ, the baseline
+really does reorder the ranking, the scores really do not add up, gemma really
+does invert. Every *quantitative* one was wrong. The docstring also named no
+prompt, which is why nobody could have checked it, so it names one now.
+
+**Timings were worse, because there were three of them.** README said 1.8 s
+for all 144 heads, `runtime.py` said 1.4 s, and I measured **10.28 s** through
+the real path on an RTX 4060. Three different figures for one measurement is
+proof on its own that none were taken. Qwen3-0.6B's full sweep is **137 s**,
+shipped as 19.6 s.
+
+That last number is a product problem, not just a documentation one, so the
+panel now quotes the cost before it starts — and the whole-model button does
+not appear until one layer has been ranked, because it cannot quote a number
+it has not measured. The extrapolation is honest: 71 ms/pass on gpt2 predicts
+10.4 s against 10.28 s actual; 307 ms/pass on Qwen3 predicts 138 s against
+137.2 s. Verified live in the browser: estimate ≈6 s, actual 5.95 s.
+
+Also exposed the mean baseline in the panel, which already *told* users the
+order depends on it. It does: zero ranks L0H7 first at KL 0.825; mean drops it
+to fifth at 0.070 and L0H10 out of the top five entirely.
+
+**Two bugs found by watching a load I only meant to use as a fixture.**
+
+Loading gpt2 sat at "reading from local cache, no download needed" for 275
+seconds while the byte counter climbed to **149%** of the total. Both symptoms,
+one cause and one aggravator:
+
+- The prefetch ignored TensorFlow, Flax, ONNX and TFLite weights but not
+  `rust_model.ot` or a redundant `pytorch_model.bin`. gpt2 ships all three:
+  **1.7 GB pulled where 523 MB was needed.** The `.bin` is only skipped when a
+  root-level `.safetensors` actually exists to load instead, so models that
+  predate safetensors still get their only weight file, and an adapter's
+  stray safetensors in a subfolder does not condemn the real weights.
+- "Already cached" was decided once, from the tree's size at t=0 — and the
+  tree was big because it held that legacy `.bin`. So the loader announced
+  nothing would download and then downloaded, under that message, with every
+  number on screen wrong in the same direction. Bytes arriving now counts as
+  proof the verdict was wrong.
+
+Both regression tests were run against the unfixed code first and failed for
+the stated reason.
+
 ## 2026-08-09 — 0.6.0–0.6.2: sharing a finding, and a 1.5 TB near-miss
 
 **The `.mri` format.** `*.mri` had been sitting in `.gitignore` since week one

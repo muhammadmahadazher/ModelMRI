@@ -262,6 +262,83 @@ def test_a_new_load_clears_a_previous_cancel():
         progress.TRACKER.finish()
 
 
+def _run_prefetch(monkeypatch, repo_files, repo="acme/model"):
+    """Execute the real `_PREFETCH` source with huggingface_hub stubbed.
+
+    The source is a string run as `python -c`, so the only way to test what
+    it actually asks for is to run it. Re-stating its patterns in the test
+    would assert that the test agrees with itself.
+    """
+    import types
+
+    captured: dict = {}
+
+    class FakeApi:
+        def list_repo_files(self, name):
+            if repo_files is None:
+                raise ConnectionError("hub unreachable")
+            return repo_files
+
+    fake = types.ModuleType("huggingface_hub")
+    fake.HfApi = FakeApi
+    fake.snapshot_download = lambda name, ignore_patterns=None: captured.update(
+        repo=name, ignore=list(ignore_patterns or [])
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake)
+    monkeypatch.setattr(sys, "argv", ["prefetch", repo])
+    exec(compile(runtime_mod._PREFETCH, "<prefetch>", "exec"), {"__name__": "__main__"})
+    return captured
+
+
+def test_a_redundant_second_copy_of_the_weights_is_not_downloaded(monkeypatch):
+    """gpt2 ships model.safetensors AND an identical pytorch_model.bin AND a
+    rust_model.ot. Measured: 1.7 GB pulled where 523 MB was needed, because
+    the ignore list covered TensorFlow, Flax, ONNX and TFLite but not Rust or
+    the redundant .bin. transformers loads the safetensors and never opens
+    the others."""
+    got = _run_prefetch(
+        monkeypatch,
+        [
+            "model.safetensors",
+            "pytorch_model.bin",
+            "rust_model.ot",
+            "tf_model.h5",
+            "config.json",
+        ],
+    )
+    assert "*.bin" in got["ignore"]
+    assert "*.ot" in got["ignore"]
+    assert "*.safetensors" not in got["ignore"]
+
+
+def test_a_repo_with_only_bin_weights_still_gets_them(monkeypatch):
+    """The whole point of checking rather than blacklisting. Plenty of models
+    predate safetensors, and refusing their only weight file would turn a
+    bandwidth saving into a model that cannot load at all."""
+    got = _run_prefetch(monkeypatch, ["pytorch_model.bin", "config.json"])
+    assert "*.bin" not in got["ignore"]
+    assert "*.ot" in got["ignore"]  # still useless, still skipped
+
+
+def test_safetensors_in_a_subfolder_does_not_condemn_the_real_weights(monkeypatch):
+    """An adapter or an onnx variant can ship a .safetensors that is not the
+    model's weights. Dropping the root .bin because of it would leave nothing
+    to load."""
+    got = _run_prefetch(
+        monkeypatch,
+        ["pytorch_model.bin", "adapter/extra.safetensors", "config.json"],
+    )
+    assert "*.bin" not in got["ignore"]
+
+
+def test_an_unreachable_hub_fetches_everything_rather_than_guessing(monkeypatch):
+    """No listing means no evidence. Skipping the .bin on a hunch is how a
+    load fails with the weights deliberately absent."""
+    got = _run_prefetch(monkeypatch, None)
+    assert "*.bin" not in got["ignore"]
+    assert got["repo"] == "acme/model"
+
+
 def test_the_prefetch_child_is_actually_killed(monkeypatch, tmp_path):
     """The point of the child process. A thread blocked in a socket read
     cannot be stopped from Python; a process can."""

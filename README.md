@@ -58,7 +58,7 @@ Rank heads → L0 H7  KL 0.866   p(" the") 0.112 → 0.073
              L0 H9  KL 0.426
 ```
 
-0.2s for one layer of gpt2; 1.8s for all 144 heads.
+One layer of gpt2 is 1.0s on an RTX 4060; all 144 heads is 10.3s. A bigger model costs more — Qwen3-0.6B is 28 layers × 16 heads, and the full sweep takes 137s — so the panel quotes the estimate before it starts and ranks one layer by default.
 
 Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
 

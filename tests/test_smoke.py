@@ -274,6 +274,46 @@ def test_load_progress_does_not_cry_stall_over_a_cached_model(tmp_path, monkeypa
         tracker.finish()
 
 
+def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
+    tmp_path, monkeypatch
+):
+    """ "No download needed" is decided from the directory's size at t=0, and
+    a directory can be big for reasons that are not "we already have it".
+
+    Seen for real on gpt2: the cache held a legacy `pytorch_model.bin` beside
+    the safetensors, so the tree measured 1045 MB against an expected 551 MB
+    and was declared complete. The loader then downloaded `rust_model.ot` for
+    275 seconds behind a message reading "reading from local cache, no
+    download needed", with the byte counter climbing past 100%. Every number
+    on screen was wrong in the same direction, which is the only kind of
+    wrong nobody catches.
+    """
+    from modelmri import progress
+
+    blobs = tmp_path / "models--acme--stale" / "blobs"
+    blobs.mkdir(parents=True)
+    # Bigger than expected, exactly like a cache holding a second format.
+    (blobs / "old").write_bytes(b"x" * 2000)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 1000)
+
+    tracker = progress._Tracker()
+    tracker.start("acme/stale")
+    try:
+        time.sleep(0.9)
+        assert "local cache" in tracker.snapshot().detail  # the initial verdict
+
+        # ...and now bytes arrive, which means it was not cached at all.
+        (blobs / "new").write_bytes(b"y" * (64 * 1024 * 1024))
+        deadline = time.time() + 5
+        while time.time() < deadline and "local cache" in tracker.snapshot().detail:
+            time.sleep(0.05)
+        assert "local cache" not in tracker.snapshot().detail
+        assert "download" in tracker.snapshot().detail
+    finally:
+        tracker.finish()
+
+
 def test_load_progress_records_failure():
     from modelmri import progress
 

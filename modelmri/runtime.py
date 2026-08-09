@@ -190,15 +190,34 @@ def _clean_partials(hf_id: str) -> int:
 # in our process.
 _PREFETCH = """
 import sys
-from huggingface_hub import snapshot_download
+from huggingface_hub import HfApi, snapshot_download
 repo = sys.argv[1]
-snapshot_download(
-    repo,
-    ignore_patterns=[
-        "*.h5", "*.msgpack", "*.tflite", "*.onnx", "*.onnx_data", "*.gguf",
-        "onnx/*", "coreml/*", "openvino/*", "tflite/*",
-    ],
-)
+
+# Weight formats nothing in this stack can load. Each is a complete
+# duplicate of the PyTorch weights, and skipping them is free.
+ignore = [
+    "*.h5", "*.msgpack", "*.tflite", "*.onnx", "*.onnx_data", "*.gguf",
+    "*.ot",
+    "onnx/*", "coreml/*", "openvino/*", "tflite/*",
+]
+
+# `pytorch_model.bin` is byte-for-byte redundant when safetensors is present
+# -- transformers loads the safetensors and never opens the .bin -- so
+# fetching both doubles the transfer for nothing. Measured on gpt2: 523 MB
+# of safetensors, an identical 523 MB .bin, and a 523 MB rust_model.ot, for
+# 1.7 GB downloaded where 523 MB was needed.
+#
+# Only dropped when a root-level .safetensors actually exists to load
+# instead. A repo whose weights live only in .bin still gets its .bin, and
+# an adapter's stray safetensors in a subdirectory does not count.
+try:
+    root = [f for f in HfApi().list_repo_files(repo) if "/" not in f]
+    if any(f.endswith(".safetensors") for f in root):
+        ignore += ["*.bin", "*.pth"]
+except Exception:
+    pass  # No listing, no optimisation -- fetch everything rather than guess.
+
+snapshot_download(repo, ignore_patterns=ignore)
 """
 
 
@@ -779,10 +798,12 @@ class ModelRuntime:
     def ablate_heads(self, layer: int | None = None, baseline: str = "zero") -> dict:
         """Rank heads by how far removing one moves the next-token answer.
 
-        `layer=None` sweeps every layer. That is n_layers x n_heads forward
-        passes — measured at 1.4 s for gpt2 and 19.6 s for Qwen3-0.6B on an
-        8 GB laptop GPU — so the panel asks for one layer by default and the
-        whole model only when told.
+        `layer=None` sweeps every layer, which is n_layers x n_heads + 2
+        forward passes and costs real time. Measured through this method on
+        an RTX 4060 Laptop in bf16: gpt2 (12x12) one layer 1.0 s, all 146
+        passes 10.3 s; Qwen3-0.6B (28x16) one layer 5.5 s, all 450 passes
+        137 s. So the panel asks for one layer by default and the whole model
+        only when told, and quotes the estimate before it starts.
 
         The measurement itself lives in `ablate`, along with the four things
         that make the number honest.
