@@ -165,7 +165,9 @@ def test_hub_signin_never_writes_the_token_into_the_repo(tmp_path, monkeypatch):
     from modelmri import hub
 
     target = tmp_path / "hub.json"
-    monkeypatch.setattr(hub, "CONFIG", target)
+    # The token location is resolved per-platform now, so patch the resolver
+    # rather than a module constant that no longer exists.
+    monkeypatch.setattr(hub, "_config_path", lambda: target)
     monkeypatch.setattr(
         hub, "whoami", lambda tok=None: hub.HubAuth(signed_in=True, user="tester")
     )
@@ -1004,3 +1006,97 @@ def test_the_logit_lens_agrees_with_the_model_it_is_reading():
         f"the lens's final row says {rows[-1]['tokens'][0]!r} but the model "
         f"says {truth!r} — the lens is not reading the model it claims to"
     )
+
+
+# ------------------------------------------------------------------- paths
+
+
+def test_paths_follow_each_platform_convention(monkeypatch, tmp_path):
+    """One dotfile directory on every OS was a Unix habit, not a decision.
+
+    Forced per-platform rather than trusting the developer's machine — this
+    project ships to Linux and macOS and has only ever been run on Windows.
+    """
+    from modelmri import paths
+
+    for var in (
+        "MODELMRI_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "LOCALAPPDATA",
+        "APPDATA",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(paths.Path, "home", classmethod(lambda cls: tmp_path))
+
+    monkeypatch.setattr(paths.sys, "platform", "linux")
+    assert paths.data_dir() == tmp_path / ".local" / "share" / "modelmri"
+    assert paths.config_dir() == tmp_path / ".config" / "modelmri"
+    assert paths.cache_dir() == tmp_path / ".cache" / "modelmri"
+
+    monkeypatch.setattr(paths.sys, "platform", "darwin")
+    assert paths.data_dir() == tmp_path / "Library" / "Application Support" / "ModelMRI"
+    assert paths.cache_dir() == tmp_path / "Library" / "Caches" / "ModelMRI"
+
+    monkeypatch.setattr(paths.sys, "platform", "win32")
+    assert paths.data_dir().parts[-1] == "ModelMRI"
+    assert "AppData" in str(paths.data_dir())
+
+
+def test_xdg_variables_are_honoured(monkeypatch, tmp_path):
+    from modelmri import paths
+
+    monkeypatch.delenv("MODELMRI_HOME", raising=False)
+    monkeypatch.setattr(paths.sys, "platform", "linux")
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "d"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "c"))
+    assert paths.data_dir() == tmp_path / "d" / "modelmri"
+    assert paths.config_dir() == tmp_path / "c" / "modelmri"
+
+
+def test_modelmri_home_overrides_everything(monkeypatch, tmp_path):
+    from modelmri import paths
+
+    monkeypatch.setenv("MODELMRI_HOME", str(tmp_path / "portable"))
+    assert paths.data_dir() == tmp_path / "portable" / "data"
+    assert paths.config_dir() == tmp_path / "portable" / "config"
+    assert paths.cache_dir() == tmp_path / "portable" / "cache"
+
+
+def test_hf_cache_honours_the_variable_huggingface_actually_uses(monkeypatch, tmp_path):
+    """HF_HUB_CACHE was ignored by all six hand-rolled copies of this.
+
+    huggingface_hub checks HF_HUB_CACHE before HF_HOME, so a machine that set
+    it downloaded models to one directory while ModelMRI searched another.
+    """
+    from modelmri import paths
+
+    for var in ("HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"):
+        monkeypatch.delenv(var, raising=False)
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    assert paths.hf_hub_cache() == tmp_path / "hf" / "hub"
+
+    # HF_HUB_CACHE wins over HF_HOME, as it does in the library.
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "direct"))
+    assert paths.hf_hub_cache() == tmp_path / "direct"
+
+
+def test_asking_where_things_go_does_not_create_them(monkeypatch, tmp_path):
+    """A read-only question must stay read-only."""
+    from modelmri import paths
+
+    monkeypatch.setenv("MODELMRI_HOME", str(tmp_path / "untouched"))
+    paths.describe()
+    paths.data_dir()
+    paths.config_dir()
+    assert not (tmp_path / "untouched").exists()
+
+
+def test_the_paths_endpoint_reports_them():
+    r = client().get("/api/paths")
+    assert r.status_code == 200
+    body = r.json()
+    for key in ("data", "config", "cache", "hf_home", "hf_hub_cache", "cwd"):
+        assert body.get(key), f"/api/paths did not report {key}"

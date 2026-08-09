@@ -87,7 +87,15 @@ def create_app(
     app.state.vla = VLAHandle()
     app.state.vla_reader = None
     app.state.custom = CustomHandle()
-    db_path = trace_db or str(Path.home() / ".modelmri" / "traces.sqlite")
+    if trace_db:
+        db_path = str(trace_db)
+    else:
+        # Platform data dir, but keep using an existing ~/.modelmri database
+        # rather than starting an empty one beside it and losing the history.
+        from . import paths
+
+        existing = paths.legacy_file("traces.sqlite")
+        db_path = str(existing or paths.data_dir() / "traces.sqlite")
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
     app.state.traces = traces
@@ -133,6 +141,18 @@ def create_app(
         from .progress import TRACKER
 
         return TRACKER.snapshot().to_dict()
+
+    @app.get("/api/paths")
+    def where() -> dict:
+        """Every directory this program reads or writes.
+
+        A tool that puts gigabytes on your disk should be able to say where,
+        without you reading its source. Nothing here creates a directory —
+        asking is not writing.
+        """
+        from . import paths
+
+        return paths.describe()
 
     @app.get("/api/accelerator")
     def accelerator() -> dict:

@@ -19,7 +19,7 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import devices, ollama, progress
+from . import devices, paths, ollama, progress
 from .saes import SAEHandle, SAEStatus
 
 
@@ -88,12 +88,8 @@ def _tree_bytes(root) -> int:
 
 def local_hf_models() -> list[dict]:
     """Models already in the HuggingFace cache (offline-usable)."""
-    import os
-    from pathlib import Path
 
-    hub = (
-        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-    )
+    hub = paths.hf_hub_cache()
     out: list[dict] = []
     if not hub.is_dir():
         return out

@@ -331,8 +331,19 @@ def _deliver(t: _Trace) -> None:
     except Exception:
         pass
     try:
-        out = Path("modelmri-traces")
-        out.mkdir(exist_ok=True)
+        # Where an undeliverable trace lands. It used to be a bare
+        # Path("modelmri-traces"), which resolves against the CWD of whatever
+        # app imported the recorder — usually somebody's git repo. Traces carry
+        # full prompts and tool output, so that is untracked JSON of your
+        # conversations sitting one `git add -A` from being pushed.
+        #
+        # MODELMRI_TRACE_DIR overrides it. Still stdlib only; os is imported
+        # for this one lookup.
+        import os
+
+        override = os.environ.get("MODELMRI_TRACE_DIR", "").strip()
+        out = Path(override).expanduser() if override else Path("modelmri-traces")
+        out.mkdir(parents=True, exist_ok=True)
         # Second-resolution stamps collide: three quick runs of the same
         # agent overwrote each other and only the last survived. The trace id
         # is already unique, so use it.

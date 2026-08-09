@@ -23,11 +23,12 @@ attention *received* per patch, reshaped to the 32x32 grid, per head.
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from . import paths
 
 DEFAULT_VLA_REPO = "lerobot/smolvla_base"
 VLM_REPO = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
@@ -54,11 +55,7 @@ class VLAStatus:
 
 
 def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
-    root = (
-        Path(hf_home)
-        if hf_home
-        else Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-    )
+    root = Path(hf_home) if hf_home else paths.hf_home()
     owner, name = repo.split("/", 1)
     base = root / "hub" / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []

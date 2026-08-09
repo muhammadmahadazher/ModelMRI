@@ -21,7 +21,6 @@ from __future__ import annotations
 import base64
 import io
 import json
-import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +51,9 @@ class FrameSample:
 
 
 def default_hf_home() -> Path:
-    return Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    from . import paths
+
+    return paths.hf_home()
 
 
 def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) -> Path:

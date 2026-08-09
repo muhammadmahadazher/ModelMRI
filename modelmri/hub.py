@@ -21,8 +21,25 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import paths
+
 HUB_API = "https://huggingface.co/api"
-CONFIG = Path.home() / ".modelmri" / "hub.json"
+
+
+def _config_path() -> Path:
+    """Where the token lives.
+
+    Platform convention, with the pre-0.6 `~/.modelmri/hub.json` still read if
+    it exists — moving the default without looking at the old place would sign
+    people out on upgrade and leave a token file behind that nobody knows is
+    there.
+    """
+    from . import paths
+
+    if legacy := paths.legacy_file("hub.json"):
+        return legacy
+    return paths.config_dir() / "hub.json"
+
 
 # Small, current, ungated models that actually fit an 8 GB GPU. Shown when
 # the user has not searched for anything yet.
@@ -51,8 +68,8 @@ class HubAuth:
 def _read_stored_token() -> tuple[str | None, str | None]:
     """(token, source) — ours first, then the HF CLI's, then the env."""
     try:
-        if CONFIG.is_file():
-            token = json.loads(CONFIG.read_text(encoding="utf-8")).get("token")
+        if _config_path().is_file():
+            token = json.loads(_config_path().read_text(encoding="utf-8")).get("token")
             if token:
                 return token, "modelmri"
     except Exception:
@@ -64,8 +81,7 @@ def _read_stored_token() -> tuple[str | None, str | None]:
 
     # whatever `huggingface-cli login` wrote
     for path in (
-        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
-        / "token",
+        paths.hf_home() / "token",
         Path.home() / ".huggingface" / "token",
     ):
         try:
@@ -117,10 +133,10 @@ def sign_in(tok: str) -> HubAuth:
             "HuggingFace rejected that token. Create a fresh one with 'read' "
             "access at huggingface.co/settings/tokens."
         )
-    CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(json.dumps({"token": tok}), encoding="utf-8")
+    _config_path().parent.mkdir(parents=True, exist_ok=True)
+    _config_path().write_text(json.dumps({"token": tok}), encoding="utf-8")
     try:  # best effort on Windows, meaningful on posix
-        CONFIG.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _config_path().chmod(stat.S_IRUSR | stat.S_IWUSR)
     except Exception:
         pass
     auth.source = "modelmri"
@@ -129,7 +145,7 @@ def sign_in(tok: str) -> HubAuth:
 
 def sign_out() -> HubAuth:
     try:
-        CONFIG.unlink(missing_ok=True)
+        _config_path().unlink(missing_ok=True)
     except Exception:
         pass
     return whoami()  # a CLI/env token may still be active — report honestly

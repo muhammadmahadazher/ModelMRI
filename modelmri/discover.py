@@ -259,9 +259,13 @@ def roots() -> list[Path]:
     if env := os.environ.get("MODELMRI_MODELS_DIR"):
         found += [Path(p) for p in env.split(os.pathsep) if p.strip()]
     found.append(Path.cwd())
-    hf = os.environ.get("HF_HOME")
-    if hf:
-        found.append(Path(hf))
+    # Ask huggingface_hub where it actually caches, rather than reading one of
+    # the four environment variables it honours and hoping that is the one set.
+    from . import paths
+
+    for candidate in (paths.hf_home(), paths.hf_hub_cache().parent):
+        if candidate not in found:
+            found.append(candidate)
     out: list[Path] = []
     for p in found:
         try:

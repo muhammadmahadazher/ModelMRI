@@ -52,8 +52,9 @@ def hub_cache() -> Path:
     """Where huggingface_hub keeps blobs, honouring the usual overrides."""
     if hub := os.environ.get("HF_HUB_CACHE"):
         return Path(hub)
-    home = os.environ.get("HF_HOME")
-    base = Path(home) if home else Path.home() / ".cache" / "huggingface"
+    from . import paths
+
+    base = paths.hf_home()
     return base / "hub"
 
 

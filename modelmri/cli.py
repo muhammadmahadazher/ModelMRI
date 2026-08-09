@@ -21,6 +21,8 @@ def main() -> None:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=5900)
 
+    sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
+
     args = parser.parse_args()
     if args.command == "serve":
         import uvicorn
@@ -32,5 +34,23 @@ def main() -> None:
             host=args.host,
             port=args.port,
         )
+    elif args.command == "where":
+        from . import paths
+
+        info = paths.describe()
+        platform = info.pop("platform")
+        width = max(len(k) for k in info)
+        print(f"ModelMRI {__version__} on {platform}")
+        print()
+        for key, value in info.items():
+            if value is None:
+                continue
+            print(f"  {key:<{width}}  {value}")
+        print()
+        print("  Override any of it:")
+        print("    MODELMRI_HOME        all of the above under one directory")
+        print("    MODELMRI_MODELS_DIR  extra places to look for your models")
+        print("    MODELMRI_TRACE_DIR   where undelivered traces are written")
+        print("    HF_HOME/HF_HUB_CACHE where models download (HuggingFace's)")
     else:
         parser.print_help()

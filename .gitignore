@@ -56,3 +56,8 @@ Thumbs.db
 /nanhead.py
 /rep[0-9]*.py
 /refute*.py
+
+# Traces the recorder could not deliver. They contain full prompts and tool
+# output, and they land in whatever directory the host app was started from —
+# including this one, when the shipped demo runs with no viewer listening.
+modelmri-traces/
