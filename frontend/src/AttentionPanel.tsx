@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
+  Ablation,
   AttentionData,
   errorText,
   exportSession,
   getAttention,
   getAttentionMeta,
+  rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
 
@@ -32,6 +34,31 @@ export default function AttentionPanel({
   };
 
   const [err, setErr] = useState("");
+  const [ranked, setRanked] = useState<Ablation | null>(null);
+  const [ranking, setRanking] = useState(false);
+
+  async function rank() {
+    setRanking(true);
+    setErr("");
+    try {
+      const result = await rankHeads(layer, "zero");
+      setRanked(result);
+      // Open the head that moved the answer most — the whole point is to
+      // stop the user picking blind.
+      if (result.ranked.length) setHead(result.ranked[0].head);
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setRanking(false);
+    }
+  }
+
+  // A ranking is about one layer's heads under one generation. Changing
+  // either makes it an answer to a question nobody asked.
+  useEffect(() => {
+    setRanked(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layer, epoch]);
 
   useEffect(() => {
     let live = true;
@@ -89,6 +116,27 @@ export default function AttentionPanel({
       </option>
     ));
 
+  /** Head options, ordered by a ranking when there is one.
+   *
+   *  The dropdown is 144 numbers and no reason to pick any of them. Once
+   *  heads are ranked, the label carries the score and the order carries the
+   *  answer — so the first entry is the head worth opening.
+   */
+  const headOptions = () => {
+    if (!ranked) return options(heads);
+    const byHead = new Map(
+      ranked.ranked.filter((r) => r.layer === layer).map((r) => [r.head, r]),
+    );
+    return [...byHead.entries()]
+      .sort((a, b) => b[1].kl - a[1].kl)
+      .map(([h, score]) => (
+        <option key={h} value={h}>
+          {h} · KL {score.kl < ranked.noise_floor_kl ? "—" : score.kl.toFixed(3)}
+          {score.flips_top ? " · flips" : ""}
+        </option>
+      ));
+  };
+
   return (
     <div ref={scanRef} className="panel attn">
       <div className="sect">
@@ -103,9 +151,21 @@ export default function AttentionPanel({
         </select>
         <label className="meta">head</label>
         <select value={head} onChange={(e) => setHead(Number(e.target.value))}>
-          {options(heads)}
+          {headOptions()}
         </select>
         <span className="meta">{info}</span>
+        {/* Needs a forward pass per head, so it needs a model — a recording
+            does not carry one. */}
+        {!replay && (
+          <button
+            className="ghost sm"
+            onClick={() => void rank()}
+            disabled={ranking}
+            title="Zero each head in this layer and measure how far the answer moves"
+          >
+            {ranking ? "ranking…" : "Rank heads"}
+          </button>
+        )}
         {!replay && <ShareButton layer={layer} head={head} />}
         <span className="spacer" />
         {/* Arc thickness encodes weight, which cannot be read without a
@@ -116,6 +176,53 @@ export default function AttentionPanel({
           <span><i style={{ height: 6 }} />0.50</span>
         </span>
       </div>
+      {ranked && (
+        <div className="ranking">
+          <div className="ranking-head">
+            <strong>
+              Removing one head from layer {layer}, and measuring how far the
+              answer to {JSON.stringify(ranked.target_token)} moves
+            </strong>
+            <span className="meta">
+              {ranked.passes} forward passes · {ranked.elapsed_s}s ·{" "}
+              {ranked.baseline}-ablation
+            </span>
+          </div>
+          <ol className="ranking-list">
+            {ranked.ranked
+              .filter((r) => r.layer === layer)
+              .slice(0, 5)
+              .map((r) => {
+                const noise = r.kl <= ranked.noise_floor_kl;
+                return (
+                  <li key={r.head} className={noise ? "faint" : ""}>
+                    <button className="ghost sm" onClick={() => setHead(r.head)}>
+                      H{r.head}
+                    </button>
+                    <span className="mid">
+                      {noise ? "below the noise floor" : `KL ${r.kl.toFixed(3)}`}
+                    </span>
+                    <span className="meta">
+                      p({JSON.stringify(ranked.target_token)}){" "}
+                      {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+                      {r.flips_top && " · changes the top token"}
+                    </span>
+                  </li>
+                );
+              })}
+          </ol>
+          {/* The caveat travels with the numbers. An ordered list reads as
+              truth, and two of these scores are not what a reader assumes. */}
+          <div className="hint">
+            These are <em>not</em> each head's share of the prediction — they do
+            not add up, and are not meant to. Each says only: removing this one
+            head, on its own, moves the answer this much. The ranking also
+            depends on what a removed head is replaced with; this used{" "}
+            <code>{ranked.baseline}</code>, and on some layers the mean baseline
+            gives a different order.
+          </div>
+        </div>
+      )}
       {err ? (
         <div className="hint err">
           Could not compute this attention map — {err}. Generate again, or pick

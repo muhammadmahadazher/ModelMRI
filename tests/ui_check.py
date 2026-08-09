@@ -348,6 +348,44 @@ async def main() -> int:
             else f"no ring on: {ringless[:6]}",
         )
 
+        print("\nhead ranking")
+        # A leaderboard is read as truth. These check that the numbers arrive
+        # with what they do not mean attached, because two of the three ways
+        # this feature can lie are about interpretation rather than arithmetic.
+        rank_btn = page.locator("button", has_text="Rank heads")
+        if await rank_btn.count() == 0:
+            print("    (no model loaded on this server — skipped)")
+        else:
+            await rank_btn.first.click()
+            try:
+                await page.wait_for_selector(".ranking", timeout=120_000)
+            except Exception:
+                check("ranking returns a result", False, "timed out")
+            else:
+                text = await page.locator(".ranking").inner_text()
+                check("the ranking says what it measured", "forward passes" in text)
+                check("the baseline is named", "ablation" in text, text[:60])
+                check(
+                    "the scores are not presented as shares",
+                    "do not add up" in text,
+                    "the caveat is missing",
+                )
+                check(
+                    "the baseline's effect on the order is stated",
+                    "different order" in text,
+                )
+                labelled = await page.evaluate(
+                    """() => {
+                      const sel = document.querySelectorAll('.panel.attn select')[1];
+                      return [...sel.options].slice(0, 3).map(o => o.text);
+                    }"""
+                )
+                check(
+                    "the head dropdown carries the ranking",
+                    all("KL" in o for o in labelled),
+                    str(labelled),
+                )
+
         print("\nshared sessions (.mri)")
         # Round-trips a session through the page the way a person does: export
         # from the panel, hand the bytes to the file input, read what appears.

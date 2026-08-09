@@ -680,6 +680,25 @@ def create_app(
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
 
+    @app.get("/api/attention/ablate")
+    async def ablate_heads(
+        layer: int | None = None, baseline: str = "zero", scope: str = "layer"
+    ):
+        """Rank heads by how far removing one moves the next-token answer.
+
+        `scope=layer` (default) does n_heads passes; `scope=all` does
+        n_layers x n_heads. The default is the cheap one on purpose —
+        measured at 0.12-0.68 s per layer against 1.4-19.6 s for a whole
+        model — so the button is a click rather than a job.
+        """
+        target = None if scope == "all" else (layer if layer is not None else 0)
+        try:
+            return await asyncio.to_thread(runtime.ablate_heads, target, baseline)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
     # ---------------- sessions (.mri) ----------------
     #
     # A `.mri` is one analysis without the model: tokens, attention, the

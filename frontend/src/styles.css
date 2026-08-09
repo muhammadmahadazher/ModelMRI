@@ -1865,6 +1865,48 @@ code {
   footer a { display: inline-block; padding: 12px 0; }
 }
 
+/* ---------- head ranking ----------
+   A leaderboard is read as truth, so the caveat is part of the component
+   rather than a tooltip: these scores are marginal sensitivities, not
+   shares, and the order depends on the baseline. */
+.ranking {
+  margin: 10px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-panel);
+  background: color-mix(in oklab, var(--acc) 4%, var(--color-card));
+  animation: rise var(--dur-medium) var(--ease-out) both;
+}
+.ranking-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+.ranking-head strong { font-size: 13px; }
+.ranking-list {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+.ranking-list li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 3px 0;
+}
+.ranking-list li + li { border-top: 1px solid var(--hair-soft); }
+/* Below the measured noise floor: shown, because hiding it would imply the
+   list is complete, but never presented as a result. */
+.ranking-list li.faint { opacity: 0.55; }
+@media (prefers-reduced-motion: reduce) {
+  .ranking { animation: none; }
+}
+
 /* ---------- the size guard and the stop button ----------
    A download you cannot stop is a trap, and one that could never load is a
    trap with a long fuse. Both surfaces are deliberately plain: this is a

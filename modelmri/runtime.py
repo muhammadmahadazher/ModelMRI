@@ -24,7 +24,7 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import capacity, devices, paths, ollama, progress, session
+from . import ablate, capacity, devices, paths, ollama, progress, session
 from .saes import SAEHandle, SAEStatus
 
 
@@ -640,6 +640,61 @@ class ModelRuntime:
             "tokens": self._attn_tokens,
             "matrix": [[round(v, 4) for v in row] for row in matrix.tolist()],
         }
+
+    def ablate_heads(self, layer: int | None = None, baseline: str = "zero") -> dict:
+        """Rank heads by how far removing one moves the next-token answer.
+
+        `layer=None` sweeps every layer. That is n_layers x n_heads forward
+        passes — measured at 1.4 s for gpt2 and 19.6 s for Qwen3-0.6B on an
+        8 GB laptop GPU — so the panel asks for one layer by default and the
+        whole model only when told.
+
+        The measurement itself lives in `ablate`, along with the four things
+        that make the number honest.
+        """
+        if self.replay is not None:
+            raise RuntimeError(
+                "This is a recording. Ranking heads means running the model, "
+                "and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise RuntimeError(
+                "Ollama serves text only — there is no forward pass to "
+                "intervene in. Load the model through HuggingFace."
+            )
+        if not self.loaded or self.last_ids is None:
+            raise RuntimeError("Generate something first, then rank its heads.")
+        if self.last_ids_epoch != self.epoch:
+            raise RuntimeError(
+                "That generation was produced by a different model. Generate again."
+            )
+
+        cfg = self.model.config
+        n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+        if layer is not None and not 0 <= layer < n_layers:
+            raise ValueError(f"layer must be in [0,{n_layers})")
+        layers = list(range(n_layers)) if layer is None else [layer]
+
+        with self._lock:
+            # Attribute at the last prompt token: its next-token distribution
+            # is the model's answer to the question, before any of its own
+            # output feeds back in.
+            size = int(self.last_ids.shape[0])
+            position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            try:
+                return ablate.rank_heads(
+                    self.model,
+                    self._block,
+                    self.last_ids.unsqueeze(0).to(self.device),
+                    position=position,
+                    layers=layers,
+                    n_heads=n_heads,
+                    baseline=baseline,
+                    decode=lambda t: self.tokenizer.decode([t]),
+                )
+            except ablate.AblationError as err:
+                # Not a crash: a shape this code cannot read honestly.
+                raise RuntimeError(str(err)) from err
 
     # ---------------- sessions (.mri) ----------------
 

@@ -6,6 +6,47 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-09
+
+### Added
+
+- **Rank attention heads by ablation.** The panel offered 144 heat maps and
+  no reason to open any of them. **Rank heads** zeroes each head in a layer
+  in turn, runs the model again, and measures how far the next-token
+  distribution moves — so the dropdown becomes ordered, the top head is
+  selected for you, and browsing becomes asking.
+
+  Measured on an RTX 4060 Laptop: **0.2 s for one layer of gpt2** (14 forward
+  passes), **1.8 s for all 144 heads**. It is a click, not a job.
+
+  Four things make the number mean what it says, and each was a way to ship
+  a confident wrong answer:
+
+  * **The cut goes before the output projection**, where heads are still
+    separable — after `o_proj` they are summed and cannot be pulled apart.
+    Verified by construction: zeroing all heads one slice at a time gives
+    bit-identical logits to zeroing the whole tensor.
+  * **`head_dim` is read from the projection, not computed as
+    `hidden_size // n_heads`.** That quotient is right for gpt2 and wrong by
+    2× on Qwen3-0.6B (128, not 64) and wrong on gemma-3-270m (256, not 160),
+    where it would ablate half of one head plus half of the next and rank
+    them confidently. Mismatches are refused rather than guessed.
+  * **KL divergence, not a logit difference.** Softmax is shift-invariant and
+    ablation moves whole logit vectors: on gpt2 L0H0 the top token's logit
+    moves +21.96 while the vocabulary mean moves +18.06, so a raw logit
+    difference would call that head about six times more important than it is.
+  * **A measured noise floor**, from running the same forward pass twice with
+    nothing ablated. Anything at or below it is shown greyed, because in
+    bf16 the arithmetic alone can move further than the smallest real signal.
+
+  Two things it deliberately does not claim. These are **not** each head's
+  share of the prediction — measured on gpt2 layer 0, the twelve per-head
+  scores sum to 1.995 while ablating the whole layer gives 0.208 — and the
+  order depends on the baseline: zero-ablation ranks heads 7, 10, 9 there,
+  while replacing each head with its own mean ranks 9, 7, 2. Both baselines
+  are offered, the one used is named in the response and on screen, and the
+  panel says plainly that the scores do not add up.
+
 ## [0.6.3] — 2026-08-09
 
 Everything here came from a hostile audit of the code 0.6.0–0.6.2 shipped

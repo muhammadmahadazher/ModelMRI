@@ -48,7 +48,21 @@ Type a prompt, watch it stream, then hover any token — arcs show which earlier
 
 > On GPT-2, the generated token `" Paris"` attends back to `" capital"` and `" France"`. The information was always there. Nobody was looking.
 
-### 2. Find a concept and turn it off
+### 2. Ask which heads actually mattered
+
+144 heat maps and no reason to open any of them is a browsing tool. **Rank heads** zeroes each head in a layer, runs the model again, and measures how far the answer moves — so the dropdown arrives ordered and the top head is already selected.
+
+```
+Rank heads → L0 H7  KL 0.866   p(" the") 0.112 → 0.073
+             L0 H10 KL 0.526
+             L0 H9  KL 0.426
+```
+
+0.2s for one layer of gpt2; 1.8s for all 144 heads.
+
+It reports what it measured and nothing more. These are **not** each head's share of the prediction — on gpt2 layer 0 the twelve per-head scores sum to 1.995 while ablating the whole layer gives 0.208 — and the ranking depends on what a removed head is replaced with, so the baseline is named on screen and both are offered. `head_dim` is read from the model rather than computed as `hidden_size // n_heads`, which is wrong by 2× on Qwen3 and would rank half-heads confidently.
+
+### 3. Find a concept and turn it off
 
 Load a sparse autoencoder and ModelMRI shows the human-interpretable features firing on every token. Click one, drag the slider, and run a deterministic A/B:
 
@@ -60,7 +74,7 @@ feature #974 @ -40   San Diego, and is located in the San Diego State University
 
 Same prompt, greedy decoding, no prompt tricks. We reached into layer 8 and turned the concept down. Clearing the steer restores the baseline byte-for-byte.
 
-### 3. Find the step where your agent died
+### 4. Find the step where your agent died
 
 Two lines of `modelmri.record` around any agent run gives you a timeline: LLM calls, tool calls, subagents, each as a block. The failure glows. Click it for the exact input, output, tokens, and error.
 
@@ -75,7 +89,7 @@ with trace("fix-failing-tests"):
 
 Or instrument automatically: `modelmri.record.instrument_anthropic()`.
 
-### 4. Look inside a robot policy
+### 5. Look inside a robot policy
 
 This is the part nobody else ships. ModelMRI loads the **vision tower of the real SmolVLA checkpoint** and runs actual robot-camera frames through it, painting each image patch's attention back onto the frame. Scrub an episode, run the policy, drag the layer slider.
 
@@ -89,7 +103,7 @@ Measured on PushT frames — share of attention mass in the top 5% of patches:
 
 Early layers look everywhere; deep layers lock on. No robot hardware required — it reads public LeRobot datasets straight from disk.
 
-### 5. Debug a model you trained yourself
+### 6. Debug a model you trained yourself
 
 Everything above is transformer-shaped. This isn't. Point ModelMRI at your own `nn.Module` — an MLP, a small CNN, whatever you're training — and get a layer-by-layer map of one real forward pass.
 
@@ -113,7 +127,7 @@ Dead units, saturated activations, and **the first layer where a `nan` appears**
 
 A `state_dict` alone is refused, with the reason: it's weights without an architecture, and guessing one would produce a map that looks authoritative and describes a network you never trained.
 
-### 6. Send someone the finding, not the model
+### 7. Send someone the finding, not the model
 
 You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
 
@@ -185,6 +199,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 |---|---|
 | Playground · streaming · any local model · Ollama | ✅ |
 | Attention inspector | ✅ |
+| Head ranking by ablation | ✅ |
 | SAE feature browser + activation steering | ✅ |
 | Agent trace timeline + step inspector | ✅ |
 | Robot policy (VLA) attention over real episodes | ✅ perception |

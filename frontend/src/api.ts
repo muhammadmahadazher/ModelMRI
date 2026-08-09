@@ -159,6 +159,44 @@ export const getAttention = (layer: number, head: number) =>
     json<AttentionData>(r),
   );
 
+/** How far removing one head moves the next-token answer.
+ *
+ *  Deliberately not called "importance". These are marginal sensitivities to
+ *  removing one head alone; they are not additive and not shares of the
+ *  prediction — measured on gpt2 layer 0, the twelve per-head scores sum to
+ *  1.995 while ablating the whole layer gives 0.208.
+ */
+export interface HeadScore {
+  layer: number;
+  head: number;
+  kl: number;
+  p_top_before: number;
+  p_top_after: number;
+  flips_top: boolean;
+}
+
+export interface Ablation {
+  baseline: string;
+  position: number;
+  target_token: string;
+  /** Same forward pass twice with nothing ablated. Anything at or below
+   *  this is arithmetic, not the model. */
+  noise_floor_kl: number;
+  passes: number;
+  elapsed_s: number;
+  ranked: HeadScore[];
+  means: string;
+}
+
+export const rankHeads = (
+  layer: number,
+  baseline: "zero" | "mean" = "zero",
+  scope: "layer" | "all" = "layer",
+) =>
+  fetch(
+    `/api/attention/ablate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
+  ).then((r) => json<Ablation>(r));
+
 export const getSessionState = () =>
   fetch("/api/session/state").then((r) => json<SessionState>(r));
 
