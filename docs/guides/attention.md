@@ -55,6 +55,79 @@ You will also see a large **attention sink** on the first token or a chat
 template's opening tag. That's real and well documented, not a bug: heads that
 have nothing useful to do park their mass somewhere harmless.
 
+## Which heads actually mattered
+
+144 heat maps and no reason to open any particular one is a browsing tool.
+**Rank heads** turns it into a question: zero one head, run the model again,
+and measure how far the next-token distribution moves.
+
+```
+Rank heads → L0 H7  KL 0.825   p(" the") 0.082 → 0.065
+             L0 H10 KL 0.559
+             L0 H9  KL 0.469
+```
+
+The head dropdown comes back ordered, with each head's score on it, and the
+top head is selected for you. **all N layers** ranks the whole model.
+
+That button only appears after you have ranked one layer, and that is
+deliberate — it quotes what the sweep will cost, and it cannot quote a number
+it has not measured. The cost is dominated by the forward-pass count
+(`n_layers × n_heads + 2`), and the per-pass time is stable enough to
+extrapolate from: on an RTX 4060, gpt2 runs 71 ms/pass and one layer predicts
+the full sweep at 10.4 s against 10.28 s actual; Qwen3-0.6B's 307 ms/pass
+predicts 138 s against 137.2 s. Both within 1%.
+
+!!! warning "Three ways this number can be a confident lie"
+    - **`head_dim` is not `hidden_size // n_heads`.** That quotient is right
+      for gpt2 (768/12) and Qwen2.5-0.5B (896/14), and wrong on Qwen3-0.6B
+      (64 against a real 128) and gemma-3-270m-it (160 against 256). It is
+      read off the output projection's own width instead, and a mismatch is
+      refused rather than guessed — the quotient would ablate half of one head
+      plus half of the next and rank the result confidently.
+    - **KL, not a logit difference.** Softmax is shift-invariant, and ablation
+      moves whole logit vectors. Zeroing gpt2's L0H0 on "The capital of France
+      is" moves the top token's logit by −0.258, but the whole vocabulary
+      moves by −0.145 — so the honest residual is −0.113, and a raw logit
+      difference would call that head 2.3× more important than it is.
+    - **The baseline is part of the answer.** Zeroing a head and replacing it
+      with its own mean over positions are different questions. On gpt2 layer
+      0 they give different answers: zero ranks heads 7, 10, 9; mean ranks 3,
+      1, 10, dropping head 7 to sixth. Both are offered and the one you used
+      is named on screen.
+
+And the claim it refuses to make: these are **not** each head's share of the
+prediction. On gpt2 layer 0 the twelve per-head scores sum to 1.995 while
+zeroing the whole layer gives 0.208 — eight times too much. On
+gemma-3-270m-it layer 0 it inverts: four per-head scores sum to 0.0007
+against 6.57 for the layer, so every head looks irrelevant alone while the
+layer is load-bearing. Each score says one thing only: removing *this* head,
+on its own, moves the answer this much.
+
+Scores at or below the measured noise floor are greyed rather than ranked.
+The floor is one extra forward pass with nothing ablated, and it measures
+exactly 0.0 on CPU and CUDA in fp32, bf16 and fp16 — the pass is what
+establishes that rather than assuming it.
+
+## What changes when a head is gone
+
+Next to any ranked head, **what changes?** subtracts two runs of the same
+sequence: the model as it is, and the model with that head removed. Arcs
+appear in one colour where attention *increased* without the head and another
+where it decreased, scaled against the difference's own peak.
+
+Both sides are forward passes over one token sequence, never two generations.
+Sampling diverges, and chat templates insert anywhere from 0 to 29 leading
+tokens, so subtracting two generations would line up token 5 of one sentence
+against token 5 of a different one and draw a smooth picture of nothing.
+
+!!! note "Why it opens at the next layer"
+    Ablation removes a head's *output*. The layer that head lives in is
+    computed from an unchanged input, so its attention is bit-identical every
+    time — comparing there is guaranteed to show zero. The first layer that
+    can differ is the next one, so that is where it opens. If a difference is
+    genuinely zero, the panel says so instead of showing you an empty canvas.
+
 ## Sharing what you found
 
 A screenshot of a heat map cannot be explored, and "download this 8 GB model,

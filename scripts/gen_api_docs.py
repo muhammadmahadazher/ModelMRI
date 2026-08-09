@@ -82,6 +82,27 @@ def _matches(path: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def render() -> str:
+    import modelmri
+
+    # Which modelmri got imported is not a detail. Running this as
+    # `python scripts/gen_api_docs.py` puts `scripts/` on sys.path -- not the
+    # repo -- so `import modelmri` finds whatever is installed. With an older
+    # wheel installed that silently REMOVED three live endpoints from the
+    # reference and reported success, which is the exact failure this
+    # generator exists to prevent: a table of things that used to be true.
+    used = Path(modelmri.__file__).resolve().parent
+    if used != ROOT / "modelmri":
+        raise SystemExit(
+            f"refusing to generate docs from {used}\n"
+            f"  (expected {ROOT / 'modelmri'})\n"
+            f"That is a different copy of modelmri -- version {modelmri.__version__} "
+            f"-- and its routes are not this repo's. Run from the repo root with "
+            f"the repo on the path:\n"
+            f"  python -c \"import sys; sys.path.insert(0, '.'); "
+            f'from scripts.gen_api_docs import main; raise SystemExit(main())"\n'
+            f"or install this checkout first: pip install -e ."
+        )
+
     from modelmri.server import create_app
 
     schema = create_app().openapi()

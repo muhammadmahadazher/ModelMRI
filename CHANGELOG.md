@@ -6,6 +6,55 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The head ranking says what it will cost before it runs.** The button
+  carries the forward-pass count, and once one layer has been ranked it
+  carries a time estimate measured on the loaded model. **all N layers**
+  appears only at that point, because before it there is no measurement to
+  quote and a whole-model sweep is 10 s on gpt2 and 137 s on Qwen3-0.6B —
+  a difference the user cannot guess. Extrapolating from one layer is
+  accurate to within 1% (71 ms/pass on gpt2 predicts 10.4 s against 10.28 s;
+  307 ms/pass on Qwen3 predicts 138 s against 137.2 s).
+- **The mean baseline is selectable.** The panel already told users the
+  ranking depends on what a removed head is replaced with; now they can see
+  it. On gpt2 with a 261-token generation, zero-ablation ranks L0H7 first at
+  KL 0.825 while mean-ablation drops it to fifth at 0.070 and removes L0H10
+  from the top five.
+
+### Fixed
+
+- **A redundant second copy of the weights is no longer downloaded.** The
+  prefetch skipped TensorFlow, Flax, ONNX and TFLite formats but not Rust
+  (`*.ot`) or a `pytorch_model.bin` sitting beside safetensors. Measured on
+  gpt2: **1.7 GB pulled where 523 MB was needed.** The `.bin` is dropped only
+  when a root-level `.safetensors` exists to load instead, so pre-safetensors
+  models still get their only weight file and an adapter's safetensors in a
+  subfolder does not condemn the real weights. With no repo listing, nothing
+  is skipped — a guess there fails the load with the weights deliberately
+  absent.
+- **"No download needed" can no longer be said while downloading.** That
+  verdict was decided once from the cache tree's size at t=0, and the tree was
+  large because it held the redundant `.bin` above. Real case: gpt2 measured
+  1045 MB against an expected 551 MB, so the load announced it had everything
+  and then downloaded for 275 seconds under that message, with the byte
+  counter climbing to 149%. New bytes arriving now retracts the verdict.
+- **A whole-model ranking opens the head it just named.** It kept the current
+  layer's best instead of the global winner, so the list said L0 H7 while the
+  arcs showed something else. A ranking also survives the layer change it
+  causes, rather than clearing the result the moment it arrives.
+
+### Changed
+
+- **Corrected every measured figure in the head-ranking documentation.** The
+  logit-difference, baseline-ordering, additivity and noise-floor numbers in
+  `ablate.py`, the CHANGELOG and the README came from a design review rather
+  than a measurement, and none of them reproduced. The timings existed in
+  three mutually inconsistent versions (README 1.8 s, `runtime.py` 1.4 s,
+  actual 10.28 s). All are now measured, and `ablate.py` names the prompt it
+  measured with — a KL without one cannot be checked by anybody, which is how
+  the wrong ones survived. See LOG.md for the full before/after table.
+
 ## [0.8.0] — 2026-08-09
 
 ### Added
@@ -57,8 +106,13 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   distribution moves — so the dropdown becomes ordered, the top head is
   selected for you, and browsing becomes asking.
 
-  Measured on an RTX 4060 Laptop: **0.2 s for one layer of gpt2** (14 forward
-  passes), **1.8 s for all 144 heads**. It is a click, not a job.
+  Measured on an RTX 4060 Laptop in bf16: **1.0 s for one layer of gpt2**
+  (14 forward passes), **10.3 s for all 144 heads**, and **137 s** for
+  Qwen3-0.6B's 28 × 16. One layer is a click; the whole model is a wait, and
+  the panel says which it is about to be.
+
+  *(Corrected 2026-08-09 — this entry originally read 0.2 s and 1.8 s, and
+  `runtime.py` carried a third figure again. See Unreleased.)*
 
   Four things make the number mean what it says, and each was a way to ship
   a confident wrong answer:
@@ -73,20 +127,28 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
     where it would ablate half of one head plus half of the next and rank
     them confidently. Mismatches are refused rather than guessed.
   * **KL divergence, not a logit difference.** Softmax is shift-invariant and
-    ablation moves whole logit vectors: on gpt2 L0H0 the top token's logit
-    moves +21.96 while the vocabulary mean moves +18.06, so a raw logit
-    difference would call that head about six times more important than it is.
+    ablation moves whole logit vectors: on gpt2 L0H0 with "The capital of
+    France is", the top token's logit moves −0.258 while the vocabulary mean
+    moves −0.145, so the honest residual is −0.113 and a raw logit difference
+    would call that head 2.3× more important than it is.
   * **A measured noise floor**, from running the same forward pass twice with
-    nothing ablated. Anything at or below it is shown greyed, because in
-    bf16 the arithmetic alone can move further than the smallest real signal.
+    nothing ablated. It measures exactly 0.0 on this path — CPU and CUDA,
+    fp32, bf16 and fp16 — and one pass per ranking is what establishes that
+    rather than assuming it. Batching, TF32 or another accelerator can lift
+    it above the smallest real signals, and nothing else would notice.
 
   Two things it deliberately does not claim. These are **not** each head's
   share of the prediction — measured on gpt2 layer 0, the twelve per-head
-  scores sum to 1.995 while ablating the whole layer gives 0.208 — and the
-  order depends on the baseline: zero-ablation ranks heads 7, 10, 9 there,
-  while replacing each head with its own mean ranks 9, 7, 2. Both baselines
-  are offered, the one used is named in the response and on screen, and the
-  panel says plainly that the scores do not add up.
+  scores sum to 1.995 while ablating the whole layer gives 0.208, and on
+  gemma-3-270m-it layer 0 four per-head scores sum to 0.0007 against 6.57 for
+  the whole layer — and the order depends on the baseline: zero-ablation
+  ranks heads 7, 10, 9 there, while replacing each head with its own mean
+  ranks 3, 1, 10. Both baselines are offered, the one used is named in the
+  response and on screen, and the panel says plainly that the scores do not
+  add up.
+
+  *(Corrected 2026-08-09 — the logit, noise-floor and mean-baseline figures
+  in this entry were wrong as first published. See Unreleased.)*
 
 ## [0.6.3] — 2026-08-09
 

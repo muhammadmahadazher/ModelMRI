@@ -16,31 +16,41 @@ projection. `attn_output` arrives at `c_proj`/`o_proj` as
 columns `[h*head_dim : (h+1)*head_dim]`. After the projection the heads are
 summed and cannot be pulled apart at all.
 
-**head_dim is not `hidden_size // n_heads`.** Measured: correct for gpt2 and
-Qwen2.5, wrong by 2x on Qwen3-0.6B (128, not 64) and wrong on gemma-3-270m
-(256, not 160). Using the quotient there ablates half of one head plus half
-of the next and produces a ranking that is confidently about nothing. It is
-read off the projection's input width instead, and asserted.
+**head_dim is not `hidden_size // n_heads`.** Measured: correct for gpt2
+(768/12 = 64) and Qwen2.5-0.5B (896/14 = 64), wrong by 2x on Qwen3-0.6B
+(quotient 64, real 128) and wrong on gemma-3-270m-it (quotient 160, real
+256). Using the quotient there ablates half of one head plus half of the
+next and produces a ranking that is confidently about nothing. It is read
+off the projection's input width instead, and asserted.
+
+Every number below was measured on gpt2 with the prompt "The capital of
+France is", attributing at the last prompt token. The prompt is named
+because a KL without one is not reproducible — which is how this docstring
+previously came to carry four figures that were wrong.
 
 **KL, not a logit difference.** Softmax is invariant to a constant shift, and
-ablation shifts whole logit vectors. Measured on gpt2 L0H0: the top token's
-logit moves +21.96, but the mean move across the vocabulary is +18.06 — so
-the honest residual is +3.90, and a raw logit difference would have called
-that head about six times more important than it is.
+ablation shifts whole logit vectors. Zeroing L0H0 moves the top token's logit
+by -0.258, but the mean move across the whole vocabulary is -0.145 — so the
+honest residual is -0.113, and a raw logit difference would call that head
+2.3x more important than it is.
 
 **The baseline is part of the answer.** Zeroing a head is one choice, and on
-gpt2 layer 0 it is the whole result: zero-ablation ranks heads 0, 7, 10 far
-above the rest; replacing each head with its mean over positions ranks head 4
-top and drops 0, 7 and 10 to nothing. Same model, same prompt, different
-question. So the baseline is named in the response and on screen, and both
-are offered — a single unlabelled number here would be the lie.
+gpt2 layer 0 it is most of the result. Zero-ablation ranks heads 7 (0.784),
+10 (0.543) and 9 (0.415) far above the rest. Replacing each head with its own
+mean over positions ranks 3 (0.0105), 1 (0.0080) and 10 (0.0062) — head 7
+falls to sixth, head 9 to eighth, and head 0 goes from fifth to last. Same
+model, same prompt, different question. So the baseline is named in the
+response and on screen, and both are offered — a single unlabelled number
+here would be the lie.
 
 One thing this does NOT measure: a head's share of the prediction. Per-head
-scores are not additive and not close to it (gpt2 layer 0: the twelve
-per-head KLs sum to 4.07 while ablating the whole layer gives 0.44; gemma
-layer 0 goes the other way, 0.003 against 1.69). It answers "removing this
-one head alone moves the answer most", which is a different and smaller
-claim.
+scores are not additive and are not close to it. On gpt2 layer 0 the twelve
+per-head KLs sum to 1.995 while zeroing the whole layer gives 0.208 — eight
+times too much. On gemma-3-270m-it layer 0 it goes the other way and much
+harder: four per-head KLs sum to 0.0007 against 6.57 for the whole layer, so
+every head looks irrelevant alone while the layer is load-bearing. It answers
+"removing this one head alone moves the answer most", which is a different
+and smaller claim.
 """
 
 from __future__ import annotations
@@ -166,9 +176,16 @@ def rank_heads(
 
         # The noise floor, measured rather than assumed: the same forward
         # pass twice, with nothing ablated. Anything at or below this is the
-        # arithmetic moving, not the model. bf16 is not deterministic enough
-        # to skip this — a batched bf16 sweep produces KLs of ~5e-3 with no
-        # ablation at all, which is larger than the smallest real signal.
+        # arithmetic moving, not the model.
+        #
+        # On this code path it measures exactly 0.0 — checked on CPU and on
+        # CUDA, in fp32, bf16 and fp16, because a single unbatched sequence
+        # replayed through the same kernels is bit-identical. That is the
+        # argument for keeping the pass, not for dropping it: the floor is
+        # zero *here*, and one pass is what proves it rather than assumes it.
+        # Batching, TF32, or a different accelerator can all lift it above
+        # the smallest real signals, and this is the only thing that would
+        # notice.
         floor = _kl(base, _distribution(model(ids).logits[0, position]))
 
         top_id = int(base.argmax())
