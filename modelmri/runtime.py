@@ -19,7 +19,7 @@ from typing import Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import devices, paths, ollama, progress
+from . import devices, paths, ollama, progress, session
 from .saes import SAEHandle, SAEStatus
 
 
@@ -137,8 +137,15 @@ class ModelRuntime:
         # Last completed generation (prompt + output), for attention capture.
         self.last_ids: torch.Tensor | None = None
         self.last_ids_epoch = -1
+        self.last_prompt: str = ""
+        self.last_n_prompt_tokens: int = 0
         self._attn: list[torch.Tensor] | None = None  # per layer: [H, S, S] fp16
         self._attn_tokens: list[str] | None = None
+        # An opened `.mri`. When set, the attention methods serve it instead of
+        # the model, so every panel reads a shared session through the same
+        # calls it uses for a live one. Loading a model clears it -- you asked
+        # for live weights, you should not silently keep getting a recording.
+        self.replay: session.Session | None = None
         # SAE state
         self.sae: SAEHandle | None = None
         self._feats: torch.Tensor | None = None  # [S, d_sae] fp16, last generation
@@ -177,8 +184,10 @@ class ModelRuntime:
             st = ollama.status()
             if not st["up"]:
                 raise RuntimeError(
-                    "Ollama is not running at 127.0.0.1:11434 — start it, or "
-                    "install from ollama.com"
+                    f"Ollama is not running at {st.get('host') or ollama.default_host()}"
+                    " — start it, or "
+                    "install from ollama.com. Set OLLAMA_HOST if it listens "
+                    "somewhere else."
                 )
             if hf_id not in st["models"]:
                 raise ValueError(
@@ -191,6 +200,7 @@ class ModelRuntime:
                 self.tokenizer = None
                 self.backend = "ollama"
                 self.hf_id = hf_id
+                self.replay = None
                 self.last_ids = None
                 self._attn = None
                 self._attn_tokens = None
@@ -261,6 +271,7 @@ class ModelRuntime:
             self.epoch += 1
             self.backend = "hf"
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
+            self.replay = None
             self.last_ids = None
             self._attn = None
             self._attn_tokens = None
@@ -378,8 +389,18 @@ class ModelRuntime:
             # belong to a model that is no longer here; committing them would
             # point the attention view at the wrong weights.
             return
+        # Producing your own generation is an unambiguous request to look at
+        # it. Leaving a shared session open would mean the token strip shows
+        # what you just generated while the heat map below it still describes
+        # somebody else's run -- a discrepancy nothing on screen explains.
+        self.replay = None
         self.last_ids = ids[0].detach().to("cpu")
         self.last_ids_epoch = epoch
+        # Kept for export. The ids alone cannot say where the prompt ended,
+        # and a shared session that cannot show what was asked is a heat map
+        # with no question attached.
+        self.last_prompt = prompt
+        self.last_n_prompt_tokens = int(inputs["input_ids"].shape[1])
         self._attn = None  # invalidate caches; recomputed on demand
         self._attn_tokens = None
         self._feats = None
@@ -388,6 +409,8 @@ class ModelRuntime:
 
     def attention_meta(self) -> dict:
         """Shape info for the last generation's attention, without computing it."""
+        if self.replay is not None:
+            return self.replay.attention_meta()
         if self.backend == "ollama":
             return {"available": False, "reason": "internals unavailable via Ollama"}
         if not self.loaded or self.last_ids is None:
@@ -408,6 +431,8 @@ class ModelRuntime:
         Computed with a single full forward pass over the last generated
         sequence; all layers are cached so switching heads is instant.
         """
+        if self.replay is not None:
+            return self.replay.attention_slice(layer, head)
         if not self.loaded or self.last_ids is None:
             raise RuntimeError("Generate something first, then inspect attention.")
         if self.last_ids_epoch != self.epoch:
@@ -439,6 +464,85 @@ class ModelRuntime:
             "head": head,
             "tokens": self._attn_tokens,
             "matrix": [[round(v, 4) for v in row] for row in matrix.tolist()],
+        }
+
+    # ---------------- sessions (.mri) ----------------
+
+    # One byte per attention value before gzip. 24 MB of them is already a
+    # large thing to attach to a message; past that we export the cross
+    # through the view you are on instead of the full cube, and say so.
+    _FULL_EXPORT_BUDGET = 24_000_000
+
+    def export_session(self, layer: int = 0, head: int = 0, note: str = "") -> bytes:
+        """Serialise the current analysis to a `.mri` someone else can open."""
+        if self.replay is not None:
+            raise RuntimeError(
+                "You are viewing a shared session. Close it, then generate "
+                "something of your own to export."
+            )
+        if self.backend == "ollama":
+            raise RuntimeError(
+                "Ollama serves text only — there are no internals to export. "
+                "Load the model through HuggingFace to capture a session."
+            )
+        # Populates the attention cache if this is the first look, and raises
+        # the same guidance the panel would if there is nothing to capture.
+        self.attention(layer, head)
+
+        n_layers, n_heads = len(self._attn), int(self._attn[0].shape[0])
+        size = int(self.last_ids.shape[0])
+        full = n_layers * n_heads * size * size <= self._FULL_EXPORT_BUDGET
+        if full:
+            wanted = [(li, hi) for li in range(n_layers) for hi in range(n_heads)]
+            scope = "every layer and head"
+        else:
+            wanted = [(li, head) for li in range(n_layers)]
+            wanted += [(layer, hi) for hi in range(n_heads) if hi != head]
+            scope = (
+                f"every layer at head {head}, and every head at layer {layer} — "
+                f"the full cube would have been "
+                f"{n_layers * n_heads * size * size / 1e6:.0f} MB before compression"
+            )
+
+        tokens = self._attn_tokens or []
+        cut = min(self.last_n_prompt_tokens, len(tokens))
+        return session.build(
+            model_id=self.hf_id,
+            device=self.device,
+            dtype=str(next(self.model.parameters()).dtype).removeprefix("torch."),
+            n_params=sum(p.numel() for p in self.model.parameters()),
+            tokens=tokens,
+            prompt=self.last_prompt,
+            generation="".join(tokens[cut:]),
+            attention={(li, hi): self._attn[li][hi] for li, hi in wanted},
+            n_layers=n_layers,
+            n_heads=n_heads,
+            note=note,
+            scope=scope,
+        )
+
+    def open_session(self, data: bytes) -> dict:
+        """Open a `.mri`. Replaces any session already open; leaves the model."""
+        parsed = session.parse(data)
+        self.replay = parsed
+        return self.session_info()
+
+    def close_session(self) -> dict:
+        self.replay = None
+        return self.session_info()
+
+    def session_info(self) -> dict:
+        """What the UI needs to say whether you are looking at a recording."""
+        if self.replay is None:
+            return {"open": False}
+        return {
+            "open": True,
+            "meta": self.replay.meta,
+            "prompt": self.replay.prompt,
+            "generation": self.replay.generation,
+            "n_tokens": len(self.replay.tokens),
+            "n_slices": len(self.replay.attention),
+            "slices": sorted(self.replay.attention),
         }
 
     # ---------------- SAE features ----------------

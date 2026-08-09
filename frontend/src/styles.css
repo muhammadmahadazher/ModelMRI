@@ -1865,6 +1865,92 @@ code {
   footer a { display: inline-block; padding: 12px 0; }
 }
 
+/* ---------- shared sessions (.mri) ----------
+   A recording must never be mistakable for a live model. Amber is the one
+   accent not already spoken for by a panel, and the banner carries a full
+   tinted surface rather than a badge, because a badge is exactly the thing
+   an eye skips on the way to the heat map. */
+.replay {
+  border-color: color-mix(in oklab, var(--sem-agent) 38%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 6%, var(--color-card));
+}
+.h-replay { color: var(--sem-agent); }
+.d-replay { background: var(--sem-agent); }
+.replay .readout { grid-template-columns: none; gap: 0; }
+.replay-text {
+  margin: 10px 0 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--color-ink) 4%, transparent);
+}
+.replay-text p {
+  margin: 2px 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--color-ink);
+  /* A shared prompt can be a paragraph or a single token; let it wrap and
+     cap the height so the banner cannot push the analysis off-screen. */
+  max-height: 7.5em;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.replay-text p:last-child { margin-bottom: 0; }
+
+.session-open-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 4px;
+}
+
+.share-row { display: inline-flex; align-items: center; gap: 6px; }
+.share-note {
+  width: min(280px, 42vw);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--color-ink);
+  background: var(--color-paper);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+/* Drop anywhere. The veil is the affordance — without it the page gives no
+   sign that a dragged file is going somewhere useful, and the browser's own
+   default (navigate away, losing the session) is the worst possible answer. */
+.drop-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: color-mix(in oklab, var(--sem-agent) 10%, transparent);
+  backdrop-filter: blur(6px);
+  animation: veilIn 140ms var(--ease-out) both;
+}
+@keyframes veilIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.drop-veil span {
+  padding: 14px 22px;
+  border-radius: 12px;
+  border: 2px dashed var(--sem-agent);
+  background: var(--color-card);
+  color: var(--sem-agent);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drop-veil { animation: none; }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════
    KEYBOARD FOCUS — deliberately the last thing in this file.
 

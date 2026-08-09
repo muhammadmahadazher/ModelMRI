@@ -13,15 +13,32 @@ import { errorText, getPaths, PathInfo } from "./api";
 const LABELS: Record<string, string> = {
   hf_hub_cache: "models download to",
   hf_home: "huggingface root",
-  data: "traces database",
-  config: "settings & token",
+  models_dirs: "your own models",
+  trace_db: "trace database",
+  hub_token: "huggingface token",
+  undelivered_traces: "undelivered traces",
+  data: "data directory",
+  config: "config directory",
   cache: "scratch",
   cwd: "started in",
   legacy: "older location, still read",
   override: "MODELMRI_HOME",
 };
 
-const ORDER = ["hf_hub_cache", "hf_home", "data", "config", "cache", "cwd", "legacy", "override"];
+const ORDER = [
+  "hf_hub_cache",
+  "hf_home",
+  "models_dirs",
+  "trace_db",
+  "hub_token",
+  "undelivered_traces",
+  "data",
+  "config",
+  "cache",
+  "cwd",
+  "legacy",
+  "override",
+];
 
 export default function StoragePanel() {
   const [open, setOpen] = useState(false);
@@ -67,7 +84,12 @@ export default function StoragePanel() {
             <>
               <dl className="readout">
                 {ORDER.map((key) => {
-                  const value = (info as unknown as Record<string, string | null>)[key];
+                  const raw = (
+                    info as unknown as Record<string, string | string[] | null>
+                  )[key];
+                  // MODELMRI_MODELS_DIR takes a list; an empty one means the
+                  // user never set it, so the row is noise rather than news.
+                  const value = Array.isArray(raw) ? raw.join(" · ") : raw;
                   if (!value) return null;
                   return (
                     <div className="storage-row" key={key}>

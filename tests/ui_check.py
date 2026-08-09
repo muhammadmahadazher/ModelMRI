@@ -342,6 +342,92 @@ async def main() -> int:
             else f"no ring on: {ringless[:6]}",
         )
 
+        print("\nshared sessions (.mri)")
+        # Round-trips a session through the page the way a person does: export
+        # from the panel, hand the bytes to the file input, read what appears.
+        # The API tests cannot see whether the banner is legible or whether the
+        # panels that cannot work in replay are still on screen offering to.
+        await page.set_viewport_size({"width": 1440, "height": 900})
+        await page.wait_for_timeout(200)
+        opener = page.locator("button", has_text="Open a shared analysis")
+        check("an .mri can be opened before anything is loaded", await opener.count() == 1)
+
+        can_export = await page.evaluate(
+            "async () => (await fetch('/api/session/export')).status === 200"
+        )
+        if not can_export:
+            print("  (no generation on this server — skipping the round trip)")
+        else:
+            result = await page.evaluate(
+                """async () => {
+                  const r = await fetch('/api/session/export?layer=0&head=0&note=probe');
+                  const file = new File([await r.blob()], 'probe.mri');
+                  const input = document.querySelector('input[type=file][accept=".mri"]');
+                  const dt = new DataTransfer(); dt.items.add(file);
+                  input.files = dt.files;
+                  input.dispatchEvent(new Event('change', {bubbles: true}));
+                  await new Promise(res => setTimeout(res, 900));
+                  const panel = document.querySelector('.panel.replay');
+                  const heads = [...document.querySelectorAll('.panel h2')]
+                                  .map(h => h.textContent);
+                  return {
+                    banner: !!panel,
+                    note: panel ? /probe/.test(panel.innerText) : false,
+                    pill: [...document.querySelectorAll('.pill')]
+                            .some(p => /replay/.test(p.textContent)),
+                    attention: heads.some(h => /ATTENTION/.test(h)),
+                    features: heads.some(h => /FEATURES/.test(h)),
+                    share: [...document.querySelectorAll('button')]
+                             .some(b => /Share this view/.test(b.textContent)),
+                  };
+                }"""
+            )
+            check("opening one shows the shared-session banner", result["banner"])
+            check("the sender's note is shown", result["note"])
+            check("the status pill says replay, not the model name", result["pill"])
+            check("attention still works from the recording", result["attention"])
+            # The two that would otherwise offer controls with nothing behind
+            # them: features need activations, and re-exporting a recording as
+            # your own run would be a lie.
+            check("the features panel is not offered in replay", not result["features"])
+            check("you cannot re-share a session you are viewing", not result["share"])
+
+            closed = await page.evaluate(
+                """async () => {
+                  [...document.querySelectorAll('button')]
+                    .find(b => b.textContent.trim() === 'Close').click();
+                  await new Promise(res => setTimeout(res, 800));
+                  return !document.querySelector('.panel.replay');
+                }"""
+            )
+            check("closing it returns to the live model", closed)
+
+        refused = await page.evaluate(
+            """async () => {
+              const junk = new File([new Blob(['not a session'])], 'x.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(junk);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(res => setTimeout(res, 700));
+              const msg = document.querySelector('.session-open-row .hint.err');
+              return {
+                text: msg ? msg.textContent : '',
+                intact: !document.querySelector('.panel.replay'),
+              };
+            }"""
+        )
+        check(
+            "a file that is not a session is refused in words",
+            "not a ModelMRI session" in refused["text"] and refused["intact"],
+            refused["text"][:70],
+        )
+        check(
+            "the refusal names no exception class",
+            "Error" not in refused["text"],
+            refused["text"][:70],
+        )
+
         print("\nthe page does not scroll sideways")
         for width in (1440, 768, 375):
             await page.set_viewport_size({"width": width, "height": 900})

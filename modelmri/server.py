@@ -8,8 +8,8 @@ import threading
 from dataclasses import asdict
 from importlib.resources import files
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -94,8 +94,7 @@ def create_app(
         # rather than starting an empty one beside it and losing the history.
         from . import paths
 
-        existing = paths.legacy_file("traces.sqlite")
-        db_path = str(existing or paths.data_dir() / "traces.sqlite")
+        db_path = str(paths.trace_db_path())
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
     app.state.traces = traces
@@ -551,6 +550,60 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=409)
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+
+    # ---------------- sessions (.mri) ----------------
+    #
+    # A `.mri` is one analysis without the model: tokens, attention, the
+    # generation and its settings. It is how you show someone the head you
+    # found without asking them to download 8 GB and reproduce your prompt.
+
+    @app.get("/api/session/state")
+    def session_state() -> dict:
+        return runtime.session_info()
+
+    @app.get("/api/session/export")
+    async def session_export(layer: int = 0, head: int = 0, note: str = ""):
+        try:
+            blob = await asyncio.to_thread(runtime.export_session, layer, head, note)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        name = (runtime.hf_id or "session").replace("/", "-")
+        return Response(
+            content=blob,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}.mri"',
+                # The browser must not treat this as a gzip transfer encoding
+                # and silently inflate it -- the bytes are the file.
+                "Content-Length": str(len(blob)),
+            },
+        )
+
+    # A session is JSON and attention matrices; 64 MB is far past any real one
+    # and stops an accidental upload of something else from being buffered.
+    _SESSION_LIMIT = 64 * 1024 * 1024
+
+    # Raw body rather than multipart: the client already has the bytes, and
+    # multipart would pull in python-multipart for nothing.
+    @app.post("/api/session/open")
+    async def session_open(request: Request):
+        data = await request.body()
+        if len(data) > _SESSION_LIMIT:
+            return JSONResponse(
+                {"error": f"that file is larger than {_SESSION_LIMIT // 1_000_000} MB "
+                          "— sessions are not that big, so this is probably not one"},
+                status_code=413,
+            )
+        try:
+            return await asyncio.to_thread(runtime.open_session, data)
+        except ValueError as err:  # SessionError is one
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/session/close")
+    def session_close() -> dict:
+        return runtime.close_session()
 
     @app.websocket("/ws/generate")
     async def ws_generate(ws: WebSocket) -> None:

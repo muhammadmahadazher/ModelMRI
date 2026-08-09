@@ -6,6 +6,71 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-09
+
+### Added
+
+- **Shared sessions (`.mri`).** An analysis you can send to someone who has
+  no GPU. "Share this view" in the attention panel writes one file holding
+  the tokens, the attention, the generation and a note; opening it drives
+  every panel through the same calls a live model does, so a laptop with
+  nothing installed reads it identically. A 29-token gpt2 run with all 144
+  attention maps is **54 KB** — attention is quantised to uint8 against each
+  matrix's own maximum (worst measured error 0.002, and the strongest
+  attention in every row is preserved) and gzipped. The file states its own
+  precision, because a number that has quietly lost some is the thing this
+  project exists to catch. Drag one anywhere onto the page to open it.
+
+  Loading a model or generating your own run closes an open session: reading
+  your output above someone else's heat map is a discrepancy nothing on
+  screen could explain.
+
+### Fixed
+
+Seventeen portability and path bugs, from a 24-agent audit of code that was
+already tested and shipped. They share one shape — a location computed
+correctly in one module and approximately in another, so the tool downloads
+to a directory it does not search.
+
+- **`import modelmri` crashed where no home directory resolves.** `LEGACY =
+  Path.home() / ".modelmri"` ran at import, and `Path.home()` raises rather
+  than degrading. That killed `modelmri serve` and even `modelmri where` on
+  a container running as a UID with no passwd entry — and it fired *before*
+  `MODELMRI_HOME`, the documented fix for that exact situation, could be read.
+- **The HuggingFace token was created world-readable, then narrowed.**
+  `write_text` makes the file at 0644 under a typical umask; the `chmod` came
+  after. On a shared host that window is enough. It is now opened at 0600 and
+  moved into place atomically, so an interrupted write cannot leave a
+  half-written credential either. SECURITY.md now also states plainly that
+  the mode is POSIX-only, and both it and the docs stopped naming
+  `~/.modelmri/hub.json`, which has not been the location since 0.6.
+- **`HF_HUB_CACHE` was ignored in four places.** The robot panel reported a
+  checkpoint missing while it sat in the real cache, and the fix it suggested
+  re-downloaded into the directory it was not reading. The dataset picker
+  listed datasets from three roots that the opener looked for in one, so it
+  advertised datasets it then refused to open. The download meter watched a
+  directory nothing was written to. `HUGGINGFACE_HUB_CACHE` — still honoured
+  by `huggingface_hub` itself — was missing everywhere, and a blank-but-set
+  variable resolved to the working directory.
+- **`MODELMRI_MODELS_DIR=~/models` matched nothing.** Neither of the two
+  places that parsed it expanded `~`, so it became the literal directory
+  `<cwd>/~/models`: the scanner silently dropped it, and the adapter loader
+  refused every file under it as outside the allowed roots. One resolver now.
+- **`HF_HUB_CACHE=D:\hf` made the model scan walk the whole drive**, because
+  the scan root was the cache's *parent*.
+- **Undelivered traces were written to the working directory** — which, for a
+  library imported by your agent, is normally your git repo. A trace holds
+  full prompts and tool output.
+- **`modelmri where` named directories nothing was using.** It now reports the
+  actual trace database, token file and undelivered-trace directory, resolved
+  by the same code the callers use, and survives having no home.
+- **`OLLAMA_HOST` was never read**, so Ollama on another port or another
+  machine reported as not running. Bare `host:port` is accepted.
+- **`modelmri where` could die with a UnicodeEncodeError** on a Windows
+  console whose code page cannot encode the user's own path — the command
+  that answers "where is my stuff?" failing precisely for the people whose
+  stuff is hardest to find.
+
 ## [0.5.1] — 2026-08-08
 
 ### Fixed

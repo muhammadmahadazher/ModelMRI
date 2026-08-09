@@ -3,12 +3,19 @@ import { useScanOnData } from "./useScanOnData";
 import {
   AttentionData,
   errorText,
+  exportSession,
   getAttention,
   getAttentionMeta,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
 
-export default function AttentionPanel({ epoch }: { epoch: number }) {
+export default function AttentionPanel({
+  epoch,
+  replay,
+}: {
+  epoch: number;
+  replay?: boolean;
+}) {
   const scanRef = useScanOnData(epoch);
   const [layers, setLayers] = useState(0);
   const [heads, setHeads] = useState(0);
@@ -99,6 +106,7 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
           {options(heads)}
         </select>
         <span className="meta">{info}</span>
+        {!replay && <ShareButton layer={layer} head={head} />}
         <span className="spacer" />
         {/* Arc thickness encodes weight, which cannot be read without a
             key. Three stops is enough to calibrate the eye. */}
@@ -119,9 +127,82 @@ export default function AttentionPanel({ epoch }: { epoch: number }) {
           <div className="hint">
             hover or focus a token → arcs show what it attended to · click or
             Enter to pin · arc thickness = attention weight
+            {replay && " · recorded, not live"}
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/** Save this analysis as a `.mri`, optionally with a note.
+ *
+ *  The note is the reason the format exists. "L14 H3 moves the subject token"
+ *  is what you want to say when you send it; without somewhere to put that,
+ *  the file arrives as a heat map with no claim attached and the recipient
+ *  has to guess what they are meant to be seeing.
+ */
+function ShareButton({ layer, head }: { layer: number; head: number }) {
+  const [open, setOpen] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const save = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const { blob, filename } = await exportSession(layer, head, note);
+      // Object URL rather than a data: URI — a session is megabytes, and a
+      // data: URI that large is refused by the browser without saying why.
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setOpen(false);
+      setNote("");
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        className="ghost sm"
+        onClick={() => setOpen(true)}
+        title="Save this analysis as a .mri anyone can open without the model"
+      >
+        Share this view
+      </button>
+    );
+  }
+
+  return (
+    <span className="share-row">
+      <input
+        autoFocus
+        className="share-note"
+        placeholder="what did you find? (optional)"
+        value={note}
+        maxLength={200}
+        onChange={(e) => setNote(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save();
+          if (e.key === "Escape") setOpen(false);
+        }}
+      />
+      <button className="ghost sm" onClick={() => void save()} disabled={busy}>
+        {busy ? "packing…" : "Save .mri"}
+      </button>
+      <button className="ghost sm" onClick={() => setOpen(false)}>
+        Cancel
+      </button>
+      {err && <span className="hint err">{err}</span>}
+    </span>
   );
 }

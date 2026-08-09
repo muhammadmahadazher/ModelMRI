@@ -14,6 +14,8 @@ import ModelPicker from "./ModelPicker";
 interface Props {
   model: ModelStatus | null;
   onModelChange: () => Promise<void>;
+  /** A shared `.mri` is open: the attention below is a recording. */
+  replay?: boolean;
 }
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
@@ -23,7 +25,7 @@ const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
 // meant the UI could not honestly name them.
 const DECODE = { max_new_tokens: 256, temperature: 0.7 };
 
-export default function Playground({ model, onModelChange }: Props) {
+export default function Playground({ model, onModelChange, replay }: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -77,6 +79,28 @@ export default function Playground({ model, onModelChange }: Props) {
       live = false;
     };
   }, [epoch, model?.loaded]);
+
+  // Opening or closing a shared session swaps what /api/attention answers
+  // without any generation happening, so the one-shot restore above never
+  // fires again. Re-ask on every transition: opening must mount the panel,
+  // and closing must unmount it rather than leave the recording on screen
+  // labelled as live.
+  const wasReplay = useRef(replay);
+  useEffect(() => {
+    if (wasReplay.current === replay) return;
+    wasReplay.current = replay;
+    let live = true;
+    void getAttentionMeta()
+      .then((m) => {
+        if (!live) return;
+        restored.current = m.available;
+        setEpoch(m.available ? (e) => e + 1 : 0);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [replay]);
 
   // A cold load is minutes long. Poll the server so the wait is legible
   // instead of a frozen button.
@@ -145,6 +169,10 @@ export default function Playground({ model, onModelChange }: Props) {
         setBusy("");
         setLastPrompt(p);
         setEpoch((e) => e + 1);
+        // The server drops any open session on a committed generation, so
+        // the banner has to go with it — otherwise the page keeps claiming
+        // you are reading a recording while showing your own output.
+        if (replay) void onModelChange();
       },
         onError: (message) => {
           setOutput(`Error: ${message}`);
@@ -231,8 +259,13 @@ export default function Playground({ model, onModelChange }: Props) {
         )}
       </div>
 
-      {epoch > 0 && introspectable && <AttentionPanel epoch={epoch} />}
       {epoch > 0 && introspectable && (
+        <AttentionPanel epoch={epoch} replay={replay} />
+      )}
+      {/* Features need the model's activations, which a `.mri` does not carry
+          — it is an observation, not a checkpoint. Mounting the panel anyway
+          would offer a control that can only ever answer "no model loaded". */}
+      {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel epoch={epoch} prompt={lastPrompt} onSteering={setSteering} />
       )}
     </>

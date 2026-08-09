@@ -627,6 +627,7 @@ def test_record_module_offline(tmp_path, monkeypatch):
     import json as _json
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODELMRI_TRACE_DIR", str(tmp_path / "parked"))
     from modelmri.record import step, trace
 
     with trace("offline-run", endpoint="http://127.0.0.1:1/nope"):
@@ -634,7 +635,7 @@ def test_record_module_offline(tmp_path, monkeypatch):
         with step("subagent", name="child"):
             step("tool_call", name="b", duration_ms=5)
 
-    files = list((tmp_path / "modelmri-traces").glob("*.json"))
+    files = list((tmp_path / "parked").glob("*.json"))
     assert len(files) == 1
     doc = _json.loads(files[0].read_text())
     kinds = [s["kind"] for s in doc["steps"]]
@@ -947,6 +948,7 @@ def test_the_documented_import_path_redacts(tmp_path, monkeypatch):
     likely to follow the docs. It is one re-export now.
     """
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODELMRI_TRACE_DIR", str(tmp_path / "parked"))
     from modelmri.record import step, trace
 
     secret = "sk-ant-api03-" + "A" * 40
@@ -955,7 +957,7 @@ def test_the_documented_import_path_redacts(tmp_path, monkeypatch):
     with trace("leak-check", endpoint="http://127.0.0.1:1/nope"):
         step("llm_call", name="call", input=f"Authorization: Bearer {secret}")
 
-    written = list((tmp_path / "modelmri-traces").glob("*.json"))
+    written = list((tmp_path / "parked").glob("*.json"))
     assert written, "the recorder wrote nothing to fall back to"
     body = written[0].read_text(encoding="utf-8")
     assert secret not in body, "the documented import path leaked a credential"

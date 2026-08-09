@@ -21,6 +21,9 @@ OUT = ROOT / "docs" / "reference" / "api.md"
 # first. Anything unmatched lands in "Other" and is therefore visible rather
 # than silently dropped.
 GROUPS: list[tuple[str, tuple[str, ...]]] = [
+    # Before "Session", and matching the trailing slash on purpose: these are
+    # the `.mri` routes, not the app-status one at `/api/session`.
+    ("Shared sessions (.mri)", ("/api/session/",)),
     ("Session", ("/api/session", "/")),
     ("Model", ("/api/model", "/api/models", "/api/accelerator", "/api/hub/models")),
     ("Discovery", ("/api/hub", "/api/ollama")),
@@ -54,7 +57,8 @@ it does not silently close as a success.
 |---|---|
 | 200 | fine |
 | 409 | you asked for something in the wrong order, or a dependency is down. The body has an actionable message. |
-| 422 | the request was malformed, the model is gated and you have not accepted its licence, or a custom adapter could not be loaded. |
+| 413 | the upload was larger than the limit — a `.mri` is not that big, so it is probably not one. |
+| 422 | the request was malformed, the model is gated and you have not accepted its licence, a custom adapter could not be loaded, or a session file could not be read. |
 
 There is deliberately no 500 path for ordinary failures: an unreachable
 Ollama, a stalled download, an out-of-memory load and a user's adapter

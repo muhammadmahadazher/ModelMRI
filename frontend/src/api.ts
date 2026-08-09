@@ -19,6 +19,8 @@ export interface AttentionMeta {
   n_layers?: number;
   n_heads?: number;
   n_tokens?: number;
+  /** True when these numbers came from an opened `.mri`, not a live model. */
+  replay?: boolean;
 }
 
 export interface AttentionData {
@@ -26,6 +28,29 @@ export interface AttentionData {
   head: number;
   tokens: string[];
   matrix: number[][];
+  replay?: boolean;
+}
+
+/** An opened `.mri` — someone else's analysis, without their model. */
+export interface SessionState {
+  open: boolean;
+  meta?: {
+    model: string | null;
+    device: string | null;
+    dtype: string | null;
+    n_params: number | null;
+    note?: string;
+    scope?: string;
+    precision?: string;
+    created_at?: string | null;
+    modelmri?: string | null;
+  };
+  prompt?: string;
+  generation?: string;
+  n_tokens?: number;
+  n_slices?: number;
+  /** "layer:head" keys this session actually captured. */
+  slices?: string[];
 }
 
 /** A failure the server took the trouble to explain.
@@ -113,6 +138,41 @@ export const getAttention = (layer: number, head: number) =>
   fetch(`/api/attention?layer=${layer}&head=${head}`).then((r) =>
     json<AttentionData>(r),
   );
+
+export const getSessionState = () =>
+  fetch("/api/session/state").then((r) => json<SessionState>(r));
+
+export const openSession = (data: ArrayBuffer) =>
+  fetch("/api/session/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: data,
+  }).then((r) => json<SessionState>(r));
+
+export const closeSession = () =>
+  fetch("/api/session/close", { method: "POST" }).then((r) =>
+    json<SessionState>(r),
+  );
+
+/** Download the current analysis as a `.mri`.
+ *
+ *  Not a plain `<a download>`: the server answers a failure as JSON with a
+ *  409, and a link would cheerfully save that JSON as a `.mri` file. Fetching
+ *  it means an error stays an error and reaches the panel as a sentence.
+ */
+export async function exportSession(
+  layer: number,
+  head: number,
+  note: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const r = await fetch(
+    `/api/session/export?layer=${layer}&head=${head}&note=${encodeURIComponent(note)}`,
+  );
+  if (!r.ok) throw new ApiError(r.status, await r.text());
+  const disposition = r.headers.get("Content-Disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { blob: await r.blob(), filename: match?.[1] || "session.mri" };
+}
 
 export interface SAEStatus {
   loaded: boolean;
@@ -656,6 +716,13 @@ export interface PathInfo {
   cache: string;
   hf_home: string;
   hf_hub_cache: string;
+  /** The actual files, not the directories that would contain them on a
+   *  clean install. An upgrade from <=0.5.1 keeps reading `~/.modelmri`, and
+   *  naming only the directory sent people looking in the wrong place. */
+  trace_db: string;
+  hub_token: string;
+  undelivered_traces: string;
+  models_dirs: string[];
   cwd: string;
   legacy: string | null;
   platform: string;

@@ -55,6 +55,41 @@ You will also see a large **attention sink** on the first token or a chat
 template's opening tag. That's real and well documented, not a bug: heads that
 have nothing useful to do park their mass somewhere harmless.
 
+## Sharing what you found
+
+A screenshot of a heat map cannot be explored, and "download this 8 GB model,
+use my exact prompt, and look at layer 14 head 3" is not a thing you can ask
+of a reader. **Share this view** writes a `.mri` instead: the tokens, the
+attention, the generation, the decode settings, and a one-line note saying
+what you think you found.
+
+```
+Share this view → "L8 H3 copies the subject token" → gpt2.mri (54 KB)
+```
+
+Open one by clicking **Open a shared analysis** or dropping the file anywhere
+on the page. It works with **no model loaded** — the panels read the recording
+through exactly the same calls they use for a live model, so the arcs, the
+token strip and the layer/head dials all behave normally. The status pill says
+`replay` and the panel footer says *recorded, not live*, so there is never a
+moment where you could mistake one for the other.
+
+What a `.mri` deliberately does **not** contain: weights. It is an
+observation, not a checkpoint. That is also why the features panel disappears
+in replay — SAE features need activations, which means it needs the model.
+
+!!! note "Attention is stored lossily, and the file says so"
+    Attention values are quantised to one byte against each matrix's own
+    maximum, then gzipped — that is what turns tens of megabytes into tens of
+    kilobytes. Worst measured error on a real gpt2 run is 0.002, and the
+    strongest attention in every row survives, so the picture you send is the
+    picture they see. But if you plan to do arithmetic on the numbers rather
+    than look at them, read `meta.precision` in the file first.
+
+Loading a model, or generating your own run, closes an open session. Your
+output above someone else's heat map would be a discrepancy nothing on screen
+could explain.
+
 ## Limits worth knowing
 
 - **Ollama models have no attention view.** Ollama serves text over HTTP; the

@@ -99,6 +99,18 @@ Dead units, saturated activations, and **the first layer where a `nan` appears**
 
 A `state_dict` alone is refused, with the reason: it's weights without an architecture, and guessing one would produce a map that looks authoritative and describes a network you never trained.
 
+### 6. Send someone the finding, not the model
+
+You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
+
+```
+Share this view → "L8 H3 copies the subject token" → gpt2.mri   (54 KB)
+```
+
+A `.mri` holds the tokens, the attention, the generation and your note. Drop it on any ModelMRI and it opens **with no model loaded** — same arcs, same layer/head dials, same everything, because the panels read it through the same calls a live model uses. The status pill says `replay` so it can't be mistaken for your own run.
+
+It's an observation, not a checkpoint: no weights, and the file states its own precision rather than letting you assume it's exact.
+
 ---
 
 ## Install

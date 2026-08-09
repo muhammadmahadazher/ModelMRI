@@ -7,6 +7,16 @@ can script. Generated from the app's own OpenAPI schema by
 Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 
 
+## Shared sessions (.mri)
+
+| method | path | notes |
+|---|---|---|
+| `GET` | `/api/session/export` | Session Export |
+| `GET` | `/api/session/state` | Session State |
+| `POST` | `/api/session/close` | Session Close |
+| `POST` | `/api/session/open` | Session Open |
+
+
 ## Session
 
 | method | path | notes |
@@ -117,7 +127,8 @@ it does not silently close as a success.
 |---|---|
 | 200 | fine |
 | 409 | you asked for something in the wrong order, or a dependency is down. The body has an actionable message. |
-| 422 | the request was malformed, the model is gated and you have not accepted its licence, or a custom adapter could not be loaded. |
+| 413 | the upload was larger than the limit — a `.mri` is not that big, so it is probably not one. |
+| 422 | the request was malformed, the model is gated and you have not accepted its licence, a custom adapter could not be loaded, or a session file could not be read. |
 
 There is deliberately no 500 path for ordinary failures: an unreachable
 Ollama, a stalled download, an out-of-memory load and a user's adapter

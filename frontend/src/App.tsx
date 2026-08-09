@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Accelerator, getAccelerator, getSession, ModelStatus } from "./api";
+import {
+  Accelerator,
+  getAccelerator,
+  getSession,
+  getSessionState,
+  ModelStatus,
+  SessionState,
+} from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
+import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
 import VLAPanel from "./VLAPanel";
@@ -13,11 +21,17 @@ export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
   const [version, setVersion] = useState<string | null>(null);
   const [accel, setAccel] = useState<Accelerator | null>(null);
+  // Sessions live on the server, so a reload must find one that is still open
+  // rather than quietly showing an empty page beside a loaded recording.
+  const [session, setSession] = useState<SessionState>({ open: false });
 
   useEffect(() => {
     let live = true;
     void getAccelerator()
       .then((a) => live && setAccel(a))
+      .catch(() => undefined);
+    void getSessionState()
+      .then((s) => live && setSession(s))
       .catch(() => undefined);
     return () => {
       live = false;
@@ -32,15 +46,25 @@ export default function App() {
     } catch {
       setModel(null);
     }
+    // The server can close a shared session on its own — loading a model or
+    // committing a generation both do — so re-read it rather than trusting
+    // the last value the client happened to set.
+    try {
+      setSession(await getSessionState());
+    } catch {
+      /* leave the banner as it is rather than blanking it on a blip */
+    }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const pill = model?.loaded
-    ? `${model.hf_id} · ${model.device}`
-    : "no model loaded";
+  const pill = session.open
+    ? `replay · ${session.meta?.model ?? "shared session"}`
+    : model?.loaded
+      ? `${model.hf_id} · ${model.device}`
+      : "no model loaded";
 
   return (
     <main>
@@ -92,7 +116,8 @@ export default function App() {
         </div>
       </div>
 
-      <Playground model={model} onModelChange={refresh} />
+      <SessionBar session={session} onChange={setSession} />
+      <Playground model={model} onModelChange={refresh} replay={session.open} />
       <CustomPanel />
       <VLAPanel />
       <AgentsPanel />
