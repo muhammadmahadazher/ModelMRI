@@ -45,6 +45,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/hub/auth` | Hub Auth |
 | `GET` | `/api/ollama` | Ollama Status |
+| `GET` | `/api/ollama/resolve` | Ollama Resolve |
 | `GET` | `/api/ollama/size` | Ollama Size |
 | `POST` | `/api/hub/signin` | Hub Signin |
 | `POST` | `/api/hub/signout` | Hub Signout |
