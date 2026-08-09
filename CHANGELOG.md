@@ -6,6 +6,47 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-09
+
+### Added
+
+- **Compare two runs.** Rank the heads in a layer, then ask **what changes?**
+  — and the panel shows the attention map with that head removed, subtracted
+  from the one without. Arcs run both ways: one colour where the model
+  attends *more* without the head, another where it attends *less*.
+
+  The comparison is two forward passes over **one token sequence**, never two
+  generations. That is the whole design. A cell-by-cell difference means
+  something exactly when index *i* is the same token on both sides, and two
+  generations do not guarantee that: sampling diverges above temperature
+  zero, and chat templates insert a different number of leading tokens per
+  model (measured: 0 for gpt2, 8 for Qwen3-0.6B, 29 for Qwen2.5-0.5B-Instruct).
+  Subtracting misaligned sequences produces a smooth, plausible, entirely
+  fictitious picture.
+
+- **It tells you when zero is the only possible answer.** Ablating a head
+  removes its *output*, so the layer it lives in is computed from an
+  unchanged input and its attention is bit-identical — every time, by
+  construction. The first build of this shipped a button that compared a
+  layer against an ablation in that same layer and could therefore only ever
+  show nothing; it now opens at layer L+1, the first layer that can differ,
+  and an all-zero result explains itself rather than rendering a blank
+  canvas.
+
+  Measured on gpt2 removing L0 H7: 0.000 at layer 0, then 0.086 at layer 1,
+  0.493 at layer 3, 0.113 at layer 11 — the change propagates rather than
+  landing in one place.
+
+### Changed
+
+- Steering now installs through one shared function used by both generation
+  and attention capture. Two implementations of "what steering does" would
+  drift, and the comparison would then be between a real run and an
+  approximation of one.
+- The attention cache is keyed by intervention, so two runs can be held at
+  once. All variants are dropped together — a stale baseline beside a fresh
+  intervention would render a difference between two different generations.
+
 ## [0.7.0] — 2026-08-09
 
 ### Added

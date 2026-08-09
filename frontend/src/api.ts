@@ -188,6 +188,32 @@ export interface Ablation {
   means: string;
 }
 
+/** One run's attention minus another's, over the same token sequence. */
+export interface AttentionDiff {
+  layer: number;
+  head: number;
+  a: string;
+  b: string;
+  tokens: string[];
+  matrix: number[][];
+  max_abs: number;
+  moved: number;
+  cells: number;
+  /** Set when the difference is exactly zero and there is a reason worth
+   *  stating — e.g. ablating a head cannot change its own layer. */
+  note: string;
+}
+
+export const getAttentionDiff = (
+  layer: number,
+  head: number,
+  a: string,
+  b: string,
+) =>
+  fetch(
+    `/api/attention/diff?layer=${layer}&head=${head}&a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`,
+  ).then((r) => json<AttentionDiff>(r));
+
 export const rankHeads = (
   layer: number,
   baseline: "zero" | "mean" = "zero",

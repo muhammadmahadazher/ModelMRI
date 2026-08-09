@@ -672,9 +672,26 @@ def create_app(
         return doc
 
     @app.get("/api/attention")
-    async def attention(layer: int = 0, head: int = 0):
+    async def attention(layer: int = 0, head: int = 0, variant: str = "live"):
         try:
-            return await asyncio.to_thread(runtime.attention, layer, head)
+            return await asyncio.to_thread(runtime.attention, layer, head, variant)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/attention/diff")
+    async def attention_diff(
+        layer: int = 0, head: int = 0, a: str = "live", b: str = "steered"
+    ):
+        """`a` minus `b` for one head, over one token sequence.
+
+        Both sides are forward passes over the same generation, so index i is
+        the same token in both by construction — the only arrangement in
+        which subtracting two attention matrices means anything.
+        """
+        try:
+            return await asyncio.to_thread(runtime.attention_diff, layer, head, a, b)
         except RuntimeError as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except ValueError as err:

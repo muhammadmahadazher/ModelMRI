@@ -60,6 +60,10 @@ Rank heads → L0 H7  KL 0.866   p(" the") 0.112 → 0.073
 
 0.2s for one layer of gpt2; 1.8s for all 144 heads.
 
+Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
+
+Both sides are forward passes over the **same token sequence**, never two generations — sampling diverges, and chat templates insert 0, 8 or 29 leading tokens depending on the model, so subtracting two generations would align token 5 of one against token 5 of a different sentence.
+
 It reports what it measured and nothing more. These are **not** each head's share of the prediction — on gpt2 layer 0 the twelve per-head scores sum to 1.995 while ablating the whole layer gives 0.208 — and the ranking depends on what a removed head is replaced with, so the baseline is named on screen and both are offered. `head_dim` is read from the model rather than computed as `hidden_size // n_heads`, which is wrong by 2× on Qwen3 and would rank half-heads confidently.
 
 ### 3. Find a concept and turn it off
@@ -200,6 +204,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 | Playground · streaming · any local model · Ollama | ✅ |
 | Attention inspector | ✅ |
 | Head ranking by ablation | ✅ |
+| Compare two runs (signed attention diff) | ✅ |
 | SAE feature browser + activation steering | ✅ |
 | Agent trace timeline + step inspector | ✅ |
 | Robot policy (VLA) attention over real episodes | ✅ perception |

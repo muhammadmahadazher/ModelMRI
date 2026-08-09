@@ -3,9 +3,11 @@ import { useScanOnData } from "./useScanOnData";
 import {
   Ablation,
   AttentionData,
+  AttentionDiff,
   errorText,
   exportSession,
   getAttention,
+  getAttentionDiff,
   getAttentionMeta,
   rankHeads,
 } from "./api";
@@ -36,6 +38,35 @@ export default function AttentionPanel({
   const [err, setErr] = useState("");
   const [ranked, setRanked] = useState<Ablation | null>(null);
   const [ranking, setRanking] = useState(false);
+  // A comparison against the same generation with one head removed. Null
+  // means we are showing the run itself rather than a difference.
+  const [diff, setDiff] = useState<AttentionDiff | null>(null);
+
+  /** Show what removing one head changes — at the first layer where it can.
+   *
+   *  Removing a head zeroes its OUTPUT, so the layer it lives in is computed
+   *  from an unchanged input and its attention is bit-identical. Wired
+   *  naively, this button compared the viewed layer against an ablation in
+   *  that same layer and was therefore guaranteed to show nothing at all.
+   *  The first layer that can differ is the next one, so go there.
+   */
+  async function compare(cutLayer: number, cutHead: number) {
+    const at = Math.min(cutLayer + 1, layers - 1);
+    setErr("");
+    setLayer(at);
+    try {
+      const result = await getAttentionDiff(
+        at,
+        head,
+        "live",
+        `ablate:${cutLayer}.${cutHead}`,
+      );
+      setDiff(result);
+    } catch (e) {
+      setErr(errorText(e));
+      setDiff(null);
+    }
+  }
 
   async function rank() {
     setRanking(true);
@@ -59,6 +90,12 @@ export default function AttentionPanel({
     setRanked(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layer, epoch]);
+
+  // A difference is about one head of one generation. Anything that changes
+  // either makes it a picture of something else.
+  useEffect(() => {
+    setDiff(null);
+  }, [epoch]);
 
   useEffect(() => {
     let live = true;
@@ -207,6 +244,14 @@ export default function AttentionPanel({
                       {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
                       {r.flips_top && " · changes the top token"}
                     </span>
+                    <span className="spacer" />
+                    <button
+                      className="ghost sm"
+                      onClick={() => void compare(r.layer, r.head)}
+                      title={`Show what changes at layer ${r.layer + 1} when L${r.layer} H${r.head} is removed`}
+                    >
+                      what changes?
+                    </button>
                   </li>
                 );
               })}
@@ -230,12 +275,48 @@ export default function AttentionPanel({
         </div>
       ) : (
         <>
-          {data && <ArcCanvas tokens={data.tokens} matrix={data.matrix} />}
-          <div className="hint">
-            hover or focus a token → arcs show what it attended to · click or
-            Enter to pin · arc thickness = attention weight
-            {replay && " · recorded, not live"}
-          </div>
+          {diff ? (
+            <>
+              <div className="diffbar">
+                <strong>
+                  Layer {diff.layer}, head {diff.head} — what changed when{" "}
+                  {diff.b.replace("ablate:", "L").replace(".", " H")} was removed
+                </strong>
+                <span className="meta">
+                  {diff.moved} of {diff.cells} cells moved · largest{" "}
+                  {diff.max_abs.toFixed(3)}
+                </span>
+                <span className="spacer" />
+                <span className="diff-key" aria-hidden="true">
+                  <i className="up" /> attends more <i className="down" /> less
+                </span>
+                <button className="ghost sm" onClick={() => setDiff(null)}>
+                  Back to the map
+                </button>
+              </div>
+              {diff.note ? (
+                <div className="hint">{diff.note}</div>
+              ) : (
+                <ArcCanvas tokens={diff.tokens} matrix={diff.matrix} signed />
+              )}
+              <div className="hint">
+                A difference between two forward passes over the{" "}
+                <em>same</em> tokens — so position {"i"} is the same token on
+                both sides. Comparing two separate generations would not be:
+                different sampling, or a different chat template, shifts every
+                index and the subtraction becomes fiction.
+              </div>
+            </>
+          ) : (
+            <>
+              {data && <ArcCanvas tokens={data.tokens} matrix={data.matrix} />}
+              <div className="hint">
+                hover or focus a token → arcs show what it attended to · click
+                or Enter to pin · arc thickness = attention weight
+                {replay && " · recorded, not live"}
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

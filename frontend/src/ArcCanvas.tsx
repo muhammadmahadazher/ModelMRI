@@ -4,13 +4,18 @@ import { useThemeVersion } from "./theme";
 interface Props {
   tokens: string[];
   matrix: number[][];
+  /** The matrix is a DIFFERENCE, so values run both ways. Arcs are ranked
+   *  and scaled by magnitude, and coloured by direction: one hue for "this
+   *  run attended more here", another for "less". Without this a diff would
+   *  render only its increases and quietly drop half the answer. */
+  signed?: boolean;
 }
 
 /** Canvas height in CSS pixels. The backing store is this times the DPR. */
 const CANVAS_H = 110;
 
 /** Token chips with hover/pin-driven attention arcs drawn on a canvas below. */
-export default function ArcCanvas({ tokens, matrix }: Props) {
+export default function ArcCanvas({ tokens, matrix, signed }: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pinned, setPinned] = useState(-1);
@@ -37,19 +42,28 @@ export default function ArcCanvas({ tokens, matrix }: Props) {
         return r.left - rowRect.left + r.width / 2;
       });
 
+      // In signed mode the interesting values go both ways, so rank and
+      // threshold on magnitude. Ranking on the raw value would show only
+      // the increases and silently drop every place attention moved AWAY —
+      // which is half of what a comparison is for.
       const edges = matrix[i]
         .map((w, j) => ({ w, j }))
-        .filter(({ w, j }) => j <= i && w >= 0.02)
-        .sort((a, b) => b.w - a.w)
+        .filter(({ w, j }) => j <= i && (signed ? Math.abs(w) : w) >= 0.02)
+        .sort((a, b) => (signed ? Math.abs(b.w) - Math.abs(a.w) : b.w - a.w))
         .slice(0, 12);
 
       // --model is not a variable this stylesheet defines. getPropertyValue
       // returned "", canvas ignores an unparseable strokeStyle, and the arcs
       // silently drew in the default black instead of the attention colour.
-      const color =
-        getComputedStyle(document.documentElement)
-          .getPropertyValue("--color-attn")
-          .trim() || "#1a5fd0";
+      const css = getComputedStyle(document.documentElement);
+      const pick = (name: string, fallback: string) =>
+        css.getPropertyValue(name).trim() || fallback;
+      // --sem-error is the palette's "divergence" hue and --sem-base its
+      // "baseline"; both are already contrast-checked in light and dark.
+      const color = pick("--color-attn", "#1a5fd0");
+      const up = pick("--sem-error", "#c1121f");
+      const down = pick("--sem-base", "#0f766e");
+      const peak = edges.length ? Math.abs(edges[0].w) : 1;
       for (const { w, j } of edges) {
         const x1 = centers[i];
         const x2 = centers[j];
@@ -57,14 +71,19 @@ export default function ArcCanvas({ tokens, matrix }: Props) {
         ctx.beginPath();
         ctx.moveTo(x1, 4);
         ctx.quadraticCurveTo((x1 + x2) / 2, depth, x2, 4);
-        ctx.lineWidth = 1 + 7 * w;
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = Math.min(1, 0.18 + w);
+        const mag = signed ? Math.abs(w) : w;
+        // Scaled against this diff's own maximum: differences are small in
+        // absolute terms (a 0.05 shift is large for attention), so the fixed
+        // 0..1 scale used for weights would draw every arc hairline.
+        const scale = signed ? mag / Math.max(peak, 1e-6) : mag;
+        ctx.lineWidth = 1 + 7 * scale;
+        ctx.strokeStyle = signed ? (w >= 0 ? up : down) : color;
+        ctx.globalAlpha = Math.min(1, 0.18 + scale);
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
     },
-    [matrix],
+    [matrix, signed],
   );
 
   // Size the canvas to the token row after layout; redraw pin if any.

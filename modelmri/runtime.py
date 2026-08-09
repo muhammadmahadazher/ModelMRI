@@ -19,7 +19,7 @@ import sys
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -237,7 +237,11 @@ class ModelRuntime:
         self.last_ids_epoch = -1
         self.last_prompt: str = ""
         self.last_n_prompt_tokens: int = 0
-        self._attn: list[torch.Tensor] | None = None  # per layer: [H, S, S] fp16
+        # One entry per intervention: "live", "steered", "ablate:L.H".
+        # Comparing two runs means holding two, and they must all be dropped
+        # together — a stale "live" beside a fresh "steered" would render a
+        # difference between two different generations.
+        self._attn_variants: dict[str, list[torch.Tensor]] = {}
         self._attn_tokens: list[str] | None = None
         # An opened `.mri`. When set, the attention methods serve it instead of
         # the model, so every panel reads a shared session through the same
@@ -308,7 +312,7 @@ class ModelRuntime:
                 self.hf_id = hf_id
                 self.replay = None
                 self.last_ids = None
-                self._attn = None
+                self._attn_variants.clear()
                 self._attn_tokens = None
                 self.sae = None
                 self._feats = None
@@ -394,7 +398,7 @@ class ModelRuntime:
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.replay = None
             self.last_ids = None
-            self._attn = None
+            self._attn_variants.clear()
             self._attn_tokens = None
             self.sae = None
             self._feats = None
@@ -524,28 +528,12 @@ class ModelRuntime:
         def _generate() -> None:
             result["ids"] = self.model.generate(**gen_kwargs)
 
+        # One installer, shared with the attention capture. Two copies of
+        # "what steering does" would eventually disagree, and the comparison
+        # would then be between a real run and an approximation of one.
         steer_handle = None
         if self._steer is not None and self.sae is not None:
-            fid, scale = self._steer
-            direction = self.sae.steering_vector(fid).to(self.device)
-            block = self._block(self.sae.layer)
-
-            if self.sae.point == "resid_post":
-
-                def _steer_post(module, args, output):  # noqa: ANN001
-                    tup = isinstance(output, tuple)
-                    hidden = output[0] if tup else output
-                    moved = hidden + scale * direction.to(hidden.dtype)
-                    return ((moved,) + tuple(output[1:])) if tup else moved
-
-                steer_handle = block.register_forward_hook(_steer_post)
-            else:
-
-                def _steer_hook(module, args):  # noqa: ANN001
-                    hidden = args[0]
-                    return (hidden + scale * direction.to(hidden.dtype),) + args[1:]
-
-                steer_handle = block.register_forward_pre_hook(_steer_hook)
+            steer_handle = self._steer_handle()
 
         try:
             worker = threading.Thread(target=_generate, daemon=True)
@@ -576,7 +564,7 @@ class ModelRuntime:
         # with no question attached.
         self.last_prompt = prompt
         self.last_n_prompt_tokens = int(inputs["input_ids"].shape[1])
-        self._attn = None  # invalidate caches; recomputed on demand
+        self._attn_variants.clear()  # recomputed on demand
         self._attn_tokens = None
         self._feats = None
 
@@ -600,14 +588,70 @@ class ModelRuntime:
             "n_tokens": int(self.last_ids.shape[0]),
         }
 
-    def attention(self, layer: int, head: int) -> dict:
-        """Token strings + [S, S] attention matrix for one layer/head.
+    def _capture(self, variant: str = "live") -> list[torch.Tensor]:
+        """Every layer's attention for the last generation, under `variant`.
 
-        Computed with a single full forward pass over the last generated
-        sequence; all layers are cached so switching heads is instant.
+        The whole comparison feature rests on this being the SAME token
+        sequence every time. It is a second forward pass over `last_ids`, not
+        a second generation — so the two sides cannot disagree about what
+        token 5 is, and a cell-by-cell difference means something.
+
+        Generating twice would look equivalent and would not be: with
+        temperature above zero the sampled tokens diverge, and even at
+        greedy a different chat template inserts a different number of
+        leading tokens. Subtracting misaligned sequences produces a smooth,
+        plausible, entirely fictitious picture.
         """
-        if self.replay is not None:
-            return self.replay.attention_slice(layer, head)
+        cached = self._attn_variants.get(variant)
+        if cached is not None:
+            return cached
+
+        ids = self.last_ids.unsqueeze(0).to(self.device)
+        handles: list[Any] = []
+        try:
+            if variant.startswith("ablate:"):
+                _, _, spec = variant.partition(":")
+                try:
+                    a_layer, a_head = (int(x) for x in spec.split("."))
+                except ValueError as err:
+                    raise ValueError(
+                        f"cannot read {variant!r} — expected ablate:LAYER.HEAD"
+                    ) from err
+                block = self._block(a_layer)
+                n_heads = self.model.config.num_attention_heads
+                head_dim = ablate.head_geometry(block, n_heads)
+                if not 0 <= a_head < n_heads:
+                    raise ValueError(f"head must be in [0,{n_heads})")
+                handles.append(
+                    ablate.out_projection(block).register_forward_pre_hook(
+                        ablate._cut(a_head, head_dim, "zero")
+                    )
+                )
+            elif variant == "steered":
+                if self._steer is None or self.sae is None:
+                    raise RuntimeError(
+                        "Nothing is being steered, so there is no steered run "
+                        "to compare against. Set a feature and a scale first."
+                    )
+                handles.append(self._steer_handle())
+            elif variant != "live":
+                raise ValueError(f"unknown variant {variant!r}")
+
+            with torch.no_grad():
+                out = self.model(ids, output_attentions=True)
+        finally:
+            for handle in handles:
+                handle.remove()
+
+        captured = [a[0].detach().to(torch.float16).cpu() for a in out.attentions]
+        self._attn_variants[variant] = captured
+        if self._attn_tokens is None:
+            self._attn_tokens = [
+                self.tokenizer.decode([tid]) for tid in self.last_ids.tolist()
+            ]
+        return captured
+
+    def _ready_for_attention(self) -> None:
         if not self.loaded or self.last_ids is None:
             raise RuntimeError("Generate something first, then inspect attention.")
         if self.last_ids_epoch != self.epoch:
@@ -615,31 +659,122 @@ class ModelRuntime:
                 "That generation was produced by a different model. Generate again."
             )
 
-        with self._lock:
-            if self._attn is None:
-                with torch.no_grad():
-                    out = self.model(
-                        self.last_ids.unsqueeze(0).to(self.device),
-                        output_attentions=True,
-                    )
-                self._attn = [
-                    a[0].detach().to(torch.float16).cpu() for a in out.attentions
-                ]
-                self._attn_tokens = [
-                    self.tokenizer.decode([tid]) for tid in self.last_ids.tolist()
-                ]
+    def attention(self, layer: int, head: int, variant: str = "live") -> dict:
+        """Token strings + [S, S] attention matrix for one layer/head.
 
-        n_layers, n_heads = len(self._attn), self._attn[0].shape[0]
+        One full forward pass over the last generated sequence; all layers
+        are cached so switching heads is instant. `variant` selects which run
+        to look at — see `_capture`.
+        """
+        if self.replay is not None:
+            return self.replay.attention_slice(layer, head)
+        self._ready_for_attention()
+
+        with self._lock:
+            captured = self._capture(variant)
+
+        n_layers, n_heads = len(captured), captured[0].shape[0]
         if not (0 <= layer < n_layers and 0 <= head < n_heads):
             raise ValueError(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
 
-        matrix = self._attn[layer][head].to(torch.float32)
+        matrix = captured[layer][head].to(torch.float32)
         return {
             "layer": layer,
             "head": head,
+            "variant": variant,
             "tokens": self._attn_tokens,
             "matrix": [[round(v, 4) for v in row] for row in matrix.tolist()],
         }
+
+    def attention_diff(
+        self, layer: int, head: int, a: str = "live", b: str = "steered"
+    ) -> dict:
+        """`a` minus `b`, cell by cell, over one token sequence.
+
+        Both sides are forward passes over the same `last_ids`, so index i is
+        the same token in both by construction. That is the only arrangement
+        in which subtracting two attention matrices means anything — see the
+        note in `_capture`, and `compare_replay` for the case where the other
+        side comes from a file and the alignment has to be checked instead of
+        guaranteed.
+        """
+        if self.replay is not None:
+            raise RuntimeError(
+                "You are viewing a recording. Close it to compare two runs of "
+                "your own model."
+            )
+        self._ready_for_attention()
+
+        with self._lock:
+            left, right = self._capture(a), self._capture(b)
+
+        n_layers, n_heads = len(left), left[0].shape[0]
+        if not (0 <= layer < n_layers and 0 <= head < n_heads):
+            raise ValueError(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
+
+        delta = left[layer][head].to(torch.float32) - right[layer][head].to(
+            torch.float32
+        )
+        rows = [[round(v, 4) for v in row] for row in delta.tolist()]
+        peak = float(delta.abs().max()) if delta.numel() else 0.0
+
+        # An all-zero difference is a result, and one specific case produces
+        # it every time for a reason worth stating rather than leaving the
+        # user to conclude the intervention did nothing.
+        note = ""
+        if peak == 0.0 and b.startswith("ablate:"):
+            cut_layer = int(b.partition(":")[2].split(".")[0])
+            if layer <= cut_layer:
+                note = (
+                    f"Exactly zero, and it has to be: ablation removes a "
+                    f"head's OUTPUT, while layer {layer}'s attention weights "
+                    f"are computed from its input. Removing a head at layer "
+                    f"{cut_layer} can only change attention at layer "
+                    f"{cut_layer + 1} and above. Look downstream."
+                )
+        elif peak == 0.0:
+            note = "The two runs produced identical attention here."
+
+        return {
+            "layer": layer,
+            "head": head,
+            "a": a,
+            "b": b,
+            "tokens": self._attn_tokens,
+            "matrix": rows,
+            "max_abs": round(peak, 4),
+            "moved": int((delta.abs() > 0.01).sum()),
+            "cells": int(delta.numel()),
+            "note": note,
+        }
+
+    def _steer_handle(self):
+        """Install the steering hook and return its handle.
+
+        Lifted out of `generate_stream` so the attention capture can install
+        exactly the same intervention. Two implementations of "what steering
+        does" would eventually disagree, and the comparison would be between
+        a real run and an approximation of one.
+        """
+        fid, scale = self._steer
+        direction = self.sae.steering_vector(fid).to(self.device)
+        block = self._block(self.sae.layer)
+
+        if self.sae.point == "resid_post":
+
+            def _post(module, args, output):  # noqa: ANN001
+                tup = isinstance(output, tuple)
+                hidden = output[0] if tup else output
+                moved = hidden + scale * direction.to(hidden.dtype)
+                return ((moved,) + tuple(output[1:])) if tup else moved
+
+            return block.register_forward_hook(_post)
+
+        def _pre(module, args):  # noqa: ANN001
+            hidden = args[0]
+            return (hidden + scale * direction.to(hidden.dtype),) + args[1:]
+
+        return block.register_forward_pre_hook(_pre)
 
     def ablate_heads(self, layer: int | None = None, baseline: str = "zero") -> dict:
         """Rank heads by how far removing one moves the next-token answer.
@@ -719,7 +854,8 @@ class ModelRuntime:
         # the same guidance the panel would if there is nothing to capture.
         self.attention(layer, head)
 
-        n_layers, n_heads = len(self._attn), int(self._attn[0].shape[0])
+        captured = self._attn_variants["live"]
+        n_layers, n_heads = len(captured), int(captured[0].shape[0])
         size = int(self.last_ids.shape[0])
         full = n_layers * n_heads * size * size <= self._FULL_EXPORT_BUDGET
         if full:
@@ -744,7 +880,7 @@ class ModelRuntime:
             tokens=tokens,
             prompt=self.last_prompt,
             generation="".join(tokens[cut:]),
-            attention={(li, hi): self._attn[li][hi] for li, hi in wanted},
+            attention={(li, hi): captured[li][hi] for li, hi in wanted},
             n_layers=n_layers,
             n_heads=n_heads,
             note=note,

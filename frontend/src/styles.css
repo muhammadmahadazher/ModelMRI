@@ -1865,6 +1865,38 @@ code {
   footer a { display: inline-block; padding: 12px 0; }
 }
 
+/* ---------- comparing two runs ----------
+   The arcs go both ways here, so the key is not optional: without it a red
+   arc and a teal arc are just two arcs. */
+.diffbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  margin: 8px 0 4px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--color-ink) 5%, transparent);
+}
+.diffbar strong { font-size: 13px; }
+.diff-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--color-mute);
+  text-transform: uppercase;
+}
+.diff-key i {
+  display: inline-block;
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+}
+.diff-key i.up { background: var(--sem-error); }
+.diff-key i.down { background: var(--sem-base); }
+
 /* ---------- head ranking ----------
    A leaderboard is read as truth, so the caveat is part of the component
    rather than a tooltip: these scores are marginal sensitivities, not
