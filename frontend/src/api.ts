@@ -646,3 +646,19 @@ export const clearTraces = (keepDemo = true) =>
   fetch(`/api/traces?keep_demo=${keepDemo}`, { method: "DELETE" }).then((r) =>
     json<{ deleted: number }>(r),
   );
+
+// ----------------------------------------------------------------- storage
+
+export interface PathInfo {
+  override: string | null;
+  data: string;
+  config: string;
+  cache: string;
+  hf_home: string;
+  hf_hub_cache: string;
+  cwd: string;
+  legacy: string | null;
+  platform: string;
+}
+
+export const getPaths = () => fetch("/api/paths").then((r) => json<PathInfo>(r));

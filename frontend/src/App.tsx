@@ -5,6 +5,7 @@ import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
+import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
 import VLAPanel from "./VLAPanel";
 
@@ -101,6 +102,7 @@ export default function App() {
             version string that lies. */}
         <span>{version ? `MRI-${version}` : "MRI"}</span>
         <span>MIT ©2026</span>
+        <StoragePanel />
         <span className="spacer" />
         <a href="https://github.com/muhammadmahadazher/ModelMRI">
           github.com/muhammadmahadazher/ModelMRI
