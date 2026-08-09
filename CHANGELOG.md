@@ -6,6 +6,8 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-10
+
 ### Added
 
 - **The head ranking says what it will cost before it runs.** The button
