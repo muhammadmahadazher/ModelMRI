@@ -23,6 +23,7 @@ import functools
 import http.server
 import socketserver
 import sys
+import urllib.parse
 import threading
 from pathlib import Path
 
@@ -103,6 +104,55 @@ def serve(directory: Path, port: int) -> socketserver.TCPServer:
     return httpd
 
 
+# `?f=` names a file the local server is serving. Each of these tries to make
+# the page fetch somewhere else; a backslash defeated the first version of the
+# guard, which pattern-matched instead of resolving.
+HOSTILE = [
+    "https://evil.example/x.mri",
+    "//evil.example/x.mri",
+    "\\\\evil.example\\x.mri",
+    "\\/evil.example/x.mri",
+    "http://127.0.0.1:9/x.mri",
+    "/etc/passwd",
+    "../../../../etc/passwd",
+    "..%2f..%2fpyproject.toml",
+    "javascript:alert(1)",
+    "data:text/plain,x",
+]
+
+
+async def hostile_side(port: int) -> dict:
+    """Load the viewer with each hostile `?f=` and watch what it requests."""
+    from playwright.async_api import async_playwright
+
+    escaped: list[str] = []
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        seen: list[str] = []
+        page.on("request", lambda r: seen.append(r.url))
+        for probe in HOSTILE:
+            seen.clear()
+            url = f"http://127.0.0.1:{port}/?f={urllib.parse.quote(probe, safe='')}"
+            try:
+                await page.goto(url, wait_until="networkidle")
+            except Exception:
+                pass
+            await page.wait_for_timeout(400)
+            for requested in seen:
+                # Anything off this origin, or reaching above the served
+                # directory, means the guard let it through.
+                if not requested.startswith(f"http://127.0.0.1:{port}/"):
+                    escaped.append(f"{probe} -> {requested}")
+            opened = await page.evaluate(
+                "() => !!document.querySelector('.panel.replay')"
+            )
+            if opened:
+                escaped.append(f"{probe} -> opened a session")
+        await browser.close()
+    return {"escaped": escaped, "probes": len(HOSTILE)}
+
+
 async def browser_side(port: int) -> dict:
     from playwright.async_api import async_playwright
 
@@ -166,6 +216,7 @@ def main() -> int:
     httpd = serve(VIEWER, port)
     try:
         got = asyncio.run(browser_side(port))
+        hostile = asyncio.run(hostile_side(port))
     finally:
         httpd.shutdown()
 
@@ -190,6 +241,16 @@ def main() -> int:
         print(f"  [{mark}] {shown:9} {detail}")
         if not same and key != "tokens":
             print(f"         python={expected[key]}  browser={got.get(key)}")
+
+    print()
+    clean = not hostile["escaped"]
+    ok = ok and clean
+    print(
+        f"  [{'PASS' if clean else 'FAIL'}] ?f=       "
+        f"{hostile['probes']} hostile values, none escaped the origin"
+        if clean
+        else f"  [FAIL] ?f=       escaped: {hostile['escaped'][:4]}"
+    )
 
     print()
     print(

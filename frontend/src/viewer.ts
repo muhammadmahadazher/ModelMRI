@@ -24,17 +24,41 @@ export const VIEWER = import.meta.env.VITE_VIEWER === "1";
 
 /** A `.mri` named in the URL, for `modelmri open` to point us at.
  *
- *  Only a same-origin relative path is honoured. A viewer that fetched any
+ *  Only a file the page is already serving. A viewer that fetched whatever
  *  URL a link handed it would be a way to make someone's browser retrieve
- *  arbitrary addresses by sending them a link, which is not a thing a file
- *  reader should do.
+ *  arbitrary addresses — including LAN and localhost ones the sender cannot
+ *  reach — just by getting them to click a link.
+ *
+ *  The first version of this tried to spot absolute URLs by pattern:
+ *  reject anything matching `scheme:` or starting with `//`. That is exactly
+ *  the wrong shape of check, and it was bypassed by a backslash —
+ *  `?f=\\evil.com/x` is not caught by either test, and the URL parser then
+ *  resolves it as protocol-relative. Do not pattern-match URLs. Resolve
+ *  them and compare the resolved origin, which is the only thing that
+ *  cannot be spelled around.
  */
 export function autoOpenPath(): string | null {
   if (!VIEWER) return null;
   const raw = new URLSearchParams(location.search).get("f");
   if (!raw) return null;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//")) return null;
-  return raw;
+  // Backslashes and control characters have no business in a filename here
+  // and every business in a bypass. Refuse them before parsing, so the rule
+  // is legible without knowing URL-parser trivia.
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\u0000-\u001f\u007f\s]/.test(raw)) return null;
+
+  let resolved: URL;
+  try {
+    resolved = new URL(raw, location.href);
+  } catch {
+    return null;
+  }
+  if (resolved.origin !== location.origin) return null;
+  // ...and inside the directory the viewer itself was served from, so a
+  // same-origin host cannot be walked with `../`.
+  const dir = new URL(".", location.href).pathname;
+  if (!resolved.pathname.startsWith(dir)) return null;
+  return resolved.pathname + resolved.search;
 }
 
 const FORMAT = "modelmri-session";

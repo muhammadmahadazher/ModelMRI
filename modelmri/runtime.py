@@ -13,6 +13,7 @@ attn_implementation="eager".
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -153,9 +154,23 @@ def _preflight(hf_id: str, accel, confirm: bool) -> None:
     )
 
 
+def _repo_dir(hf_id: str) -> Path:
+    """The cache directory for a repo id, with the id neutralised.
+
+    `hf_id` arrives from an HTTP body. Replacing only "/" left backslashes
+    and dots intact, so on Windows `a\\..\\..\\x` walked straight out of the
+    cache — and the one caller that follows this deletes files. Everything
+    that is not a plain repo-id character becomes a dash; the result can only
+    ever name a directory inside the cache.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "--", hf_id.replace("/", "--"))
+    safe = safe.replace("..", "--").strip(". ")
+    return paths.hf_hub_cache() / f"models--{safe or 'unnamed'}"
+
+
 def _clean_partials(hf_id: str) -> int:
     """Delete the half-written blobs a cancelled download left. Bytes freed."""
-    repo = paths.hf_hub_cache() / f"models--{hf_id.replace('/', '--')}"
+    repo = _repo_dir(hf_id)
     freed = 0
     try:
         for stub in repo.rglob("*.incomplete"):

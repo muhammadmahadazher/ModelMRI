@@ -32,12 +32,43 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 FORMAT = "modelmri-session"
 FORMAT_VERSION = 1
+
+# Bounds on untrusted input. A `.mri` is meant to be forwarded, so `parse`
+# takes bytes a stranger sent — and every one of these was reachable.
+#
+# MAX_FILE is on the compressed bytes; MAX_INFLATED stops a gzip bomb, which
+# the server's 64 MB body cap did not (64 MB of zeros inflates to ~69 GB).
+# MAX_CELLS bounds n^2, because the expensive thing is per-slice cells rather
+# than tokens. MAX_DIM keeps layer/head counts to something that is a shape.
+MAX_FILE = 256 * 1024 * 1024
+MAX_INFLATED = 512 * 1024 * 1024
+MAX_CELLS = 24_000_000
+MAX_DIM = 4096
+
+
+def _inflate(data: bytes) -> bytes:
+    """gunzip, refusing to keep going past MAX_INFLATED.
+
+    `gzip.decompress` has no bound at all: it allocates whatever the stream
+    tells it to. Decompressing incrementally and checking `eof` is the only
+    way to tell "the file ended" from "the file is still going and we have
+    stopped listening".
+    """
+    engine = zlib.decompressobj(31)  # 31 = gzip wrapper
+    raw = engine.decompress(data, MAX_INFLATED)
+    if not engine.eof:
+        raise SessionError(
+            f"this file expands to more than {MAX_INFLATED // 1024 // 1024} MB. "
+            f"A session holds an observation, not a model — that is not one."
+        )
+    return raw
 
 
 class SessionError(ValueError):
@@ -60,6 +91,17 @@ def _quantise(matrix: Any) -> tuple[str, float]:
         # truncation turns that into two different bytes -- so the "fast" path
         # would quietly export a different matrix than the portable one.
         m = matrix.detach().to(torch.float64)
+        # NaN loses every comparison, so `max()` returns nan, the scale
+        # becomes nan, and every cell quantises to 0: a smooth, plausible,
+        # entirely blank heat map with nothing on screen saying the numbers
+        # were never there. Refuse instead.
+        if m.numel() and not bool(torch.isfinite(m).all()):
+            raise SessionError(
+                "this attention map contains non-finite values (nan or inf), "
+                "so there is nothing honest to export. That usually means the "
+                "model produced nan during the forward pass — the custom-model "
+                "panel reports which layer first goes non-finite."
+            )
         peak = float(m.max()) if m.numel() else 0.0
         scale = (peak / 255.0) if peak > 0 else 1.0
         q = (m / scale + 0.5).clamp(0, 255).to(torch.uint8).contiguous()
@@ -68,6 +110,11 @@ def _quantise(matrix: Any) -> tuple[str, float]:
     peak = 0.0
     for row in matrix:
         for v in row:
+            if v != v or v in (float("inf"), float("-inf")):
+                raise SessionError(
+                    "this attention map contains non-finite values (nan or "
+                    "inf), so there is nothing honest to export."
+                )
             if v > peak:
                 peak = v
     scale = (peak / 255.0) if peak > 0 else 1.0
@@ -189,12 +236,22 @@ def build(
 
 
 def parse(data: bytes) -> Session:
-    """Read a `.mri`, refusing anything that is not one, with the reason."""
+    """Read a `.mri`, refusing anything that is not one, with the reason.
+
+    Every bound below exists because this function takes bytes a stranger
+    sent you. The whole premise of the format is that it travels.
+    """
     if not data:
         raise SessionError("the file is empty")
+    if len(data) > MAX_FILE:
+        raise SessionError(
+            f"this file is {len(data) / 1e6:,.0f} MB. A session is the "
+            f"observation, not the model — a large one is tens of megabytes, "
+            f"so this is almost certainly not one."
+        )
     try:
-        raw = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
-    except (OSError, EOFError) as err:
+        raw = _inflate(data) if data[:2] == b"\x1f\x8b" else data
+    except (OSError, EOFError, zlib.error) as err:
         raise SessionError(f"could not decompress the file: {err}") from err
 
     try:
@@ -223,6 +280,46 @@ def parse(data: bytes) -> Session:
     if not isinstance(tokens, list) or not all(isinstance(t, str) for t in tokens):
         raise SessionError("the session's token list is missing or malformed")
 
+    # Cells, not tokens. Cost is n^2 per slice, so the token count is the
+    # wrong thing to bound: a 31 KB file claiming 10,000 tokens asks for a
+    # hundred million Python floats the moment a layer/head dial is clicked,
+    # and the identical loop runs in the browser viewer for whoever you
+    # forwarded it to.
+    size = len(tokens)
+    if size * size > MAX_CELLS:
+        raise SessionError(
+            f"this session claims {size:,} tokens, which is {size * size / 1e6:,.0f} "
+            f"million attention cells per map — more than ModelMRI will render. "
+            f"The file is either damaged or not a session."
+        )
+
+    # Validated before anything is built from it. `attention` is indexed by
+    # string keys and iterated by the panels; a list or a dict with non-string
+    # keys got past this and turned every later request into a 500.
+    attention = doc.get("attention")
+    if attention is None:
+        attention = {}
+    # `or {}` here turned a malformed value into an empty one: a file whose
+    # attention was `[]` opened as a session with no maps rather than being
+    # refused, which is a damaged file presented as an intact empty one.
+    if not isinstance(attention, dict) or not all(
+        isinstance(k, str) and isinstance(v, dict) for k, v in attention.items()
+    ):
+        raise SessionError("the session's attention index is missing or malformed")
+
+    # These reach the UI as loop bounds. A float, a negative, or 1e20 is not
+    # a shape — it is a hang or a crash in whatever renders it.
+    counts = {}
+    for key in ("n_layers", "n_heads"):
+        value = doc.get(key) or 0
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= MAX_DIM
+        ):
+            raise SessionError(f"the session's {key} is not a sensible number")
+        counts[key] = value
+
     return Session(
         meta={
             **(doc.get("meta") or {}),
@@ -232,8 +329,8 @@ def parse(data: bytes) -> Session:
         tokens=tokens,
         prompt=doc.get("prompt") or "",
         generation=doc.get("generation") or "",
-        attention=doc.get("attention") or {},
+        attention=attention,
         lens=doc.get("lens") or [],
-        n_layers=int(doc.get("n_layers") or 0),
-        n_heads=int(doc.get("n_heads") or 0),
+        n_layers=counts["n_layers"],
+        n_heads=counts["n_heads"],
     )

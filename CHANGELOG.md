@@ -6,6 +6,61 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-08-09
+
+Everything here came from a hostile audit of the code 0.6.0–0.6.2 shipped
+earlier the same day. Nineteen findings were confirmed against the running
+code and four were refuted; these are the ones that mattered.
+
+### Security
+
+- **The viewer's `?f=` guard was bypassable, and the bypass was real.** The
+  filter tried to spot absolute URLs by pattern — reject `scheme:` or a
+  leading `//`. A backslash walked through both: `?f=\/evil.example/x`
+  resolves protocol-relative, and I reproduced the viewer issuing a live
+  cross-origin GET to `http://evil.example/x`. A link was enough, and the
+  page is publicly hosted. It now resolves the URL and compares the origin,
+  which is the only rule that cannot be spelled around, and rejects
+  backslashes and control characters outright. Ten hostile values are fired
+  at a real browser on every CI run.
+
+- **`_clean_partials` could delete outside the cache.** It built a directory
+  name by replacing `/` in an id that arrives in an HTTP body, leaving
+  backslashes and `..` intact — and that function deletes files. The id is
+  now reduced to characters that can only name a directory inside the cache.
+
+- **The local viewer server answered to any `Host`**, so a page on any site
+  could point a name it controls at `127.0.0.1` and read the recording
+  (DNS rebinding). It now answers only to loopback names, and `--host`
+  prints a warning when it is not loopback.
+
+### Fixed
+
+- **A `.mri` had no bounds at all**, and it is a format designed to be
+  forwarded. A 3 MB gzip bomb allocated 3 GB; a 31 KB file claiming 20,000
+  tokens asked for 400 million floats per map — in the recipient's browser
+  too. Decompression is now incremental and bounded, and the cell count,
+  file size, and layer/head counts are all checked before anything is built.
+- **A malformed `.mri` wedged the server.** `open_session` installed the
+  parsed object before validating it, so one bad file made every attention
+  request 500 for the rest of the process. Validation now happens in
+  `parse`, which cannot leave broken state behind.
+- **NaN attention exported as a plausible blank heat map.** NaN loses every
+  comparison, so the peak became NaN, the scale became NaN, and every cell
+  quantised to zero — a smooth, believable picture of nothing, which is the
+  precise failure this project exists to prevent. It is refused now, on both
+  the tensor and the pure-Python path.
+- **"Download it anyway" applied to the wrong model.** The refusal carried
+  only its message, so the override used whatever was selected at the moment
+  of the click — and picking a different model left a refusal on screen
+  asserting something no longer true. It carries its model now, names it on
+  the button, and a new pick retires it.
+- The viewer server was single-threaded despite setting `daemon_threads`
+  (which does nothing on `TCPServer`), so one held keep-alive socket stalled
+  every later request; `HEAD` returned 404 where `GET` returned 200; and a
+  client disconnecting mid-response printed a traceback at someone who only
+  wanted to look at a file.
+
 ## [0.6.2] — 2026-08-09
 
 ### Changed

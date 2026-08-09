@@ -41,9 +41,16 @@ export default function Playground({ model, onModelChange, replay }: Props) {
   const [epoch, setEpoch] = useState(0);
   const [lastPrompt, setLastPrompt] = useState("");
   const [prog, setProg] = useState<LoadProgress | null>(null);
-  // The size guard's message, when it refused. Held separately from `meta`
-  // so it can carry its own "load it anyway" affordance.
-  const [oversize, setOversize] = useState("");
+  // The size guard's refusal, WITH the model it was about. Holding only the
+  // message meant "Download it anyway" applied the override to whatever was
+  // selected at the moment of the click — so picking a different model left
+  // a refusal on screen about a model no longer chosen, and then confirmed
+  // past the ceiling for one the guard had never looked at.
+  const [oversize, setOversize] = useState<{
+    id: string;
+    source: "hf" | "ollama";
+    message: string;
+  } | null>(null);
   // The steering hook lives on the runtime, not on the panel, so any
   // generation fired while it is installed is silently steered.
   const [steering, setSteering] = useState(false);
@@ -128,14 +135,19 @@ export default function Playground({ model, onModelChange, replay }: Props) {
     };
   }, [busy]);
 
-  async function ensureLoaded(confirm = false): Promise<boolean> {
-    if (isLoadedPick) return true;
+  async function ensureLoaded(
+    confirm = false,
+    target?: { id: string; source: "hf" | "ollama" },
+  ): Promise<boolean> {
+    const id = target?.id ?? pick;
+    const src = target?.source ?? source;
+    if (!target && isLoadedPick) return true;
     setBusy("loading");
     setMeta("");
-    setOversize("");
+    setOversize(null);
     try {
       const t = performance.now();
-      const result = await loadModel(pick, source, confirm);
+      const result = await loadModel(id, src, confirm);
       // A stopped load is not a failure. Say what happened and stay put.
       if ("cancelled" in result) {
         setMeta(result.message);
@@ -151,7 +163,7 @@ export default function Playground({ model, onModelChange, replay }: Props) {
       // Offering the override here is the difference between a guard and a
       // wall — but it must be a deliberate second click, never a default.
       if (message.includes("Load it anyway")) {
-        setOversize(message);
+        setOversize({ id, source: src, message });
         setMeta("");
       } else {
         setMeta(message);
@@ -244,6 +256,9 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           setPick(id);
           setSource(src);
           setPickerOpen(false);
+          // A refusal is about one model. Keeping it on screen after a
+          // different pick is an assertion that is no longer true.
+          setOversize(null);
         }}
       />
 
@@ -266,12 +281,22 @@ export default function Playground({ model, onModelChange, replay }: Props) {
             !
           </span>
           <div>
-            <p>{oversize}</p>
+            <p>{oversize.message}</p>
             <div className="row">
-              <button className="ghost sm" onClick={() => void ensureLoaded(true)}>
-                Download it anyway
+              <button
+                className="ghost sm"
+                onClick={() => {
+                  // Re-select as well as load. The override names its own
+                  // model, so without this the picker would keep showing a
+                  // different one while that model downloaded.
+                  setPick(oversize.id);
+                  setSource(oversize.source);
+                  void ensureLoaded(true, { id: oversize.id, source: oversize.source });
+                }}
+              >
+                Download {oversize.id} anyway
               </button>
-              <button className="ghost sm" onClick={() => setOversize("")}>
+              <button className="ghost sm" onClick={() => setOversize(null)}>
                 Pick something else
               </button>
             </div>

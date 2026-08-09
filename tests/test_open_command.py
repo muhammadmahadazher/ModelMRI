@@ -175,15 +175,29 @@ def test_a_missing_file_says_so(tmp_path):
     assert "no such file" in done.stderr
 
 
-def test_the_viewer_only_auto_opens_a_same_origin_path():
-    """`?f=` names a file the local server is serving. Honouring an absolute
-    URL would turn a link into a way to make someone's browser fetch an
-    arbitrary address — not something a file reader should offer."""
+def test_the_viewer_resolves_urls_rather_than_pattern_matching_them():
+    """`?f=` names a file the local server is serving.
+
+    The first version tried to spot absolute URLs by pattern — reject
+    `scheme:` or a leading `//`. A backslash walked straight through both
+    (`?f=\\\\evil.com/x` resolves protocol-relative), so a link was enough to
+    make someone's browser fetch a host of the sender's choosing, including
+    LAN and localhost addresses the sender cannot reach.
+
+    The rule is now the only one that cannot be spelled around: resolve the
+    URL and compare its origin. This test asserts the *approach*, because a
+    future 'simplification' back to a regex would silently reopen it.
+    tests/viewer_check.py proves the behaviour in a real browser.
+    """
     source = (ROOT / "frontend" / "src" / "viewer.ts").read_text(encoding="utf-8")
     assert "autoOpenPath" in source
-    # The guard, and a comment saying why, must both survive.
-    assert 'startsWith("//")' in source
-    assert "arbitrary addresses" in source or "arbitrary" in source
+    assert "resolved.origin !== location.origin" in source, (
+        "the origin comparison is gone — a pattern match is not a substitute"
+    )
+    assert "new URL(raw, location.href)" in source
+    # And the pattern-matching form must not come back.
+    assert 'startsWith("//")' not in source
+    assert "/^[a-z][a-z0-9+.-]*:/i" not in source
 
 
 def test_the_viewer_has_exactly_one_build_output():

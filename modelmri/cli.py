@@ -48,24 +48,87 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
     payload = Path(target).read_bytes()
     name = "session.mri"
 
+    # Said once, plainly, rather than assumed. The docstring above promises
+    # loopback; --host takes anything, and a recording is somebody's prompts.
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        print(
+            f"  NOTE: serving on {host}, not loopback — anyone who can reach "
+            f"this\n  machine on port {port} can read this recording.",
+            file=sys.stderr,
+        )
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *a, **kw):
             super().__init__(*a, directory=str(bundle), **kw)
 
+        def _is_ours(self) -> bool:
+            """Reject a request that reached us under someone else's name.
+
+            A page on any website can point a name it controls at 127.0.0.1
+            and then read whatever answers — DNS rebinding. The recording is
+            somebody's prompts and generations, so checking the Host is the
+            difference between "served to me" and "served to a tab I happened
+            to have open".
+            """
+            sent = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+            if sent in ("127.0.0.1", "localhost", "::1", "", host):
+                return True
+            self.send_error(
+                421,
+                "Misdirected Request",
+                f"This viewer only answers to localhost, not {sent!r}.",
+            )
+            return False
+
+        def _payload_headers(self) -> bool:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            # It is one local file for one local page; nothing should cache
+            # it, and nothing else should be allowed to frame or embed it.
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            return True
+
         def do_GET(self):  # noqa: N802 - stdlib's spelling
+            if not self._is_ours():
+                return
             if self.path.split("?")[0] == f"/{name}":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/octet-stream")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
+                self._payload_headers()
                 self.wfile.write(payload)
                 return
             super().do_GET()
 
+        def do_HEAD(self):  # noqa: N802
+            # Overriding do_GET alone made HEAD /session.mri answer 404 while
+            # GET answered 200 — the two disagreeing about whether a file
+            # exists is the kind of thing that breaks a client for no visible
+            # reason.
+            if not self._is_ours():
+                return
+            if self.path.split("?")[0] == f"/{name}":
+                self._payload_headers()
+                return
+            super().do_HEAD()
+
         def log_message(self, *a):  # a request log is noise here
             pass
 
-    class Server(socketserver.TCPServer):
+        def handle_one_request(self):
+            # A browser that closes a keep-alive socket, or a scanner sending
+            # a malformed path, otherwise prints a full traceback into the
+            # terminal of someone who only wanted to look at a file.
+            try:
+                super().handle_one_request()
+            except (ConnectionError, TimeoutError):
+                self.close_connection = True
+
+    class Server(socketserver.ThreadingTCPServer):
+        # ThreadingTCPServer, not TCPServer. `daemon_threads` on a
+        # single-threaded server does nothing at all: one browser holding a
+        # keep-alive socket open stalled every later request, and the page
+        # simply never finished loading.
         allow_reuse_address = True
         daemon_threads = True
 

@@ -218,6 +218,73 @@ def test_garbage_gets_a_reason_not_a_traceback(data):
         session.parse(data)
 
 
+# --------------------------------------------- bounds on somebody else's file
+#
+# `parse` takes bytes a stranger sent — that is the entire premise of the
+# format. Every bound below was reachable before it existed.
+
+
+def test_a_gzip_bomb_is_refused_rather_than_allocated():
+    """3 MB of gzip that becomes 3 GB of memory. The server's 64 MB body cap
+    did not help: it bounds the compressed side."""
+    bomb = gzip.compress(b"\0" * (3 * 1024 * 1024 * 1024), 9)
+    assert len(bomb) < 10_000_000, "the bomb should be small — that is the point"
+    with pytest.raises(session.SessionError, match="expands to more than"):
+        session.parse(bomb)
+
+
+def test_an_enormous_token_count_is_refused_before_any_matrix_is_built():
+    """Cost is n^2 per slice, so a small file can ask for a hundred million
+    Python floats — and the identical loop runs in the recipient's browser."""
+    doc = json.loads(gzip.decompress(_build()))
+    doc["tokens"] = ["t"] * 20_000  # 400 million cells per map
+    with pytest.raises(session.SessionError, match="attention cells"):
+        session.parse(gzip.compress(json.dumps(doc).encode()))
+
+
+def test_a_file_far_larger_than_any_session_is_refused_on_sight():
+    big = b"\x00" * (session.MAX_FILE + 1)
+    with pytest.raises(session.SessionError, match="almost certainly not one"):
+        session.parse(big)
+
+
+# `{1: {}}` is deliberately absent: JSON object keys are always strings, so
+# a non-string key cannot survive a round trip and testing for it would be
+# testing the json module.
+@pytest.mark.parametrize("bad", [[], "x", 7, {"0:0": "not-a-dict"}, {"0:0": []}])
+def test_a_malformed_attention_index_is_refused(bad):
+    """It reached the panels unvalidated, and every later request 500'd."""
+    doc = json.loads(gzip.decompress(_build()))
+    doc["attention"] = bad
+    with pytest.raises(session.SessionError, match="attention index"):
+        session.parse(gzip.compress(json.dumps(doc).encode()))
+
+
+@pytest.mark.parametrize("bad", [-1, 1e20, "12", 10**9, 1.5, True])
+def test_nonsense_layer_and_head_counts_are_refused(bad):
+    """These reach the UI as loop bounds. 1e20 is not a shape."""
+    doc = json.loads(gzip.decompress(_build()))
+    doc["n_layers"] = bad
+    with pytest.raises(session.SessionError, match="sensible number"):
+        session.parse(gzip.compress(json.dumps(doc).encode()))
+
+
+def test_non_finite_attention_is_refused_rather_than_exported_as_zeros():
+    """NaN loses every comparison, so the peak became NaN, the scale became
+    NaN, and every cell quantised to 0 — a plausible blank heat map with
+    nothing saying the numbers were never there."""
+    nan = float("nan")
+    with pytest.raises(session.SessionError, match="non-finite"):
+        _build(attention={(0, 0): [[1.0, 0.0], [nan, 0.5]]}, tokens=["a", "b"])
+
+
+def test_non_finite_attention_is_refused_on_the_tensor_path_too():
+    torch = pytest.importorskip("torch")
+    bad = torch.tensor([[1.0, 0.0], [float("inf"), 0.5]])
+    with pytest.raises(session.SessionError, match="non-finite"):
+        _build(attention={(0, 0): bad}, tokens=["a", "b"])
+
+
 def test_an_uncompressed_session_still_opens():
     """Some transports gunzip on the way through; do not punish the user."""
     raw = gzip.decompress(_build())
