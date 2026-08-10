@@ -15,10 +15,10 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
       - name: Lint, format, test
         run: |
           uv sync --dev
@@ -31,10 +31,10 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Lint & build (skips until frontend exists)
@@ -54,13 +54,13 @@ jobs:
   ui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
       - name: Build the UI and the viewer
         run: |
           cd frontend
@@ -91,9 +91,14 @@ jobs:
           done
           status=0
           uv run python tests/ui_check.py http://127.0.0.1:5900/ || status=$?
-          # Stop the server before the job ends. Left running it holds the
-          # environment open, and setup-uv's cache prune then fails in
-          # post-cleanup with exit 2 — every check green, job reported red.
+          # Stop the server before the job ends. A background process left
+          # holding the environment open is its own bug, and under setup-uv v5
+          # it also broke the job: the cache prune failed in post-cleanup with
+          # exit 2, so every check passed and the job still reported red.
+          #
+          # v9 defaults `prune-cache` to false, so that particular failure
+          # cannot happen now. The kill stays because it was always the right
+          # thing to do — not because of the symptom it used to prevent.
           kill "$server" 2>/dev/null || true
           wait "$server" 2>/dev/null || true
           exit "$status"

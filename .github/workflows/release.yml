@@ -14,7 +14,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # No dependency caching in this job, on purpose: it builds the
@@ -22,12 +22,20 @@ jobs:
       # supply-chain path straight into the wheel. It runs once per tag, so
       # the cache would save nothing worth that risk.
       #
-      # setup-node only caches when `cache:` names a package manager, so
-      # omitting it is the off switch — there is no `cache: false`.
-      - uses: actions/setup-node@v4  # zizmor: ignore[cache-poisoning]
+      # Turning caching off EXPLICITLY, not by omission.
+      #
+      # Under setup-node v4 the only way in was the `cache:` input, so leaving
+      # it out was the off switch. v7 added `package-manager-cache`, which
+      # defaults to caching whenever package.json carries `packageManager` or
+      # `devEngines.packageManager`. This repo has neither today, so the
+      # upgrade changes nothing — but that makes the guarantee depend on a
+      # field nobody is watching, in the one job whose cache would land inside
+      # the artifacts people install. Say no out loud.
+      - uses: actions/setup-node@v7  # zizmor: ignore[cache-poisoning]
         with:
           node-version: 22
-      - uses: astral-sh/setup-uv@v5
+          package-manager-cache: false
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: false
 
