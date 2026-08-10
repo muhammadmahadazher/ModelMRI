@@ -40,7 +40,17 @@ jobs:
           # installs is what matters. `--no-deps` audits exactly those pins
           # rather than re-resolving them, which also avoids pip choking on
           # local build tags like torch==2.11.0+cu128 that PyPI never saw.
-          uv export --format requirements-txt --no-hashes \
+          #
+          # `--no-emit-workspace` drops the `-e .` line for our own packages.
+          # Auditing ourselves against PyPI is meaningless, and worse than
+          # meaningless: under --strict, pip-audit fails when it cannot find a
+          # package, so the moment __version__ was bumped to an unpublished
+          # 0.8.1 this job went red with "Dependency not found on PyPI:
+          # modelmri (0.8.1)". It passed at 0.8.0 only because 0.8.0 was
+          # already released — meaning the check was quietly coupled to "the
+          # dev version is already on PyPI" and would break during every
+          # release, which is the one time it must not.
+          uv export --format requirements-txt --no-hashes --no-emit-workspace \
             | sed -E 's/\+[A-Za-z0-9.]+//' > /tmp/audit.txt
           uvx pip-audit --requirement /tmp/audit.txt --no-deps --strict \
             $(cat .github/pip-audit-ignore.txt | grep -v '^#' | grep . \
