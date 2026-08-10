@@ -1193,6 +1193,13 @@ def create_app(
                 else:
                     await ws.send_json({"type": "done"})
         except WebSocketDisconnect:
+            # The reader closed the tab or hit Stop. There is no one left to
+            # tell and nothing to clean up — the generation thread is a daemon
+            # and the queue goes with the frame. This is the one place in the
+            # package where catching and doing nothing is the whole correct
+            # behaviour, which is why it says so rather than looking like the
+            # seventeen swallowed exceptions that came out of this file's
+            # neighbours.
             pass
 
     return app
