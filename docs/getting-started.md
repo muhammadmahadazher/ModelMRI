@@ -1,3 +1,7 @@
+---
+description: "Install ModelMRI with pip, load a model already on your machine, and run a first attention analysis. Includes the stdlib-only recorder for tracing agents without installing PyTorch."
+---
+
 # Getting started
 
 ## Install

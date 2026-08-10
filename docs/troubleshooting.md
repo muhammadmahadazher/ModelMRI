@@ -1,3 +1,7 @@
+---
+description: "Fixes for real ModelMRI problems: stalled HuggingFace downloads, CPU-only PyTorch builds, gated repositories, missing sparse autoencoders, and models that will not load."
+---
+
 # Troubleshooting
 
 Most of these are things that actually happened during development, with what

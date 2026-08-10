@@ -1,3 +1,7 @@
+---
+description: "Visualise what a vision-language-action robot policy is looking at. ModelMRI runs SmolVLA's vision tower over real LeRobot episode frames and paints per-patch attention onto the camera image."
+---
+
 # Robot policies
 
 The same question — *what is it looking at?* — asked of a vision-language-action

@@ -43,16 +43,33 @@ def test_the_curated_list_carries_names_and_nothing_else():
 
 
 def test_sizes_come_from_the_registry(monkeypatch):
+    """Every name is resolved live, and the picker's order is still the
+    curated one.
+
+    These are two different claims and only one of them is about ordering.
+    `suggested` resolves through a ThreadPoolExecutor, so the order the
+    lookups *happen* in is whatever the scheduler chose — comparing `seen`
+    against SUGGESTED positionally asserted a property the code never had,
+    and duly went red once the machine was busy enough to reorder two of the
+    eight. What must hold is that each name is looked up exactly once, in any
+    order, and that `pool.map` hands the rows back in the curated order,
+    because that order is what the user reads down.
+    """
     seen: list[str] = []
 
     def fake_resolve(name, timeout=10.0):
-        seen.append(name)
+        seen.append(name)  # list.append is atomic under the GIL; the order is not
         return {"found": True, "bytes": 2_000_000_000, "name": name, "error": ""}
 
     monkeypatch.setattr(ollama, "resolve", fake_resolve)
     out = ollama.suggested(vram_gb=8.0)
 
-    assert seen == list(ollama.SUGGESTED), "every entry must be looked up"
+    assert sorted(seen) == sorted(ollama.SUGGESTED), (
+        "every entry must be looked up exactly once"
+    )
+    assert [row["name"] for row in out] == list(ollama.SUGGESTED), (
+        "the picker must keep the curated order"
+    )
     assert all(row["size_gb"] == 2.0 for row in out)
 
 

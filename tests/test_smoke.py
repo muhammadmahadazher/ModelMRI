@@ -973,7 +973,10 @@ def test_the_version_is_single_sourced():
     UI footer already shipped "MRI-0.3" for the whole 0.4 line. hatchling
     reads modelmri/__init__.py; nothing else should restate it.
     """
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # tomllib is 3.11+; the dev group backfills 3.10
+        import tomli as tomllib
     from pathlib import Path
 
     pj = tomllib.loads(

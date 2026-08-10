@@ -3,11 +3,91 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ModelMRI</title>
+
+    <title>ModelMRI — see inside a local language model</title>
+
+    <!-- The page is a React app, so a crawler that does not run JavaScript
+         sees only this head. It used to say "ModelMRI" and nothing else: no
+         description, no card, no structured data. -->
+    <meta
+      name="description"
+      content="ModelMRI is an open-source local-first tool for inspecting language models: attention maps, causal head ranking by ablation, sparse-autoencoder features, steering, a logit lens, and a flight recorder for agent runs. Runs on your machine via pip install modelmri. MIT licensed."
+    />
+    <link rel="canonical" href="https://muhammadmahadazher.github.io/ModelMRI/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="ModelMRI" />
+    <meta property="og:title" content="ModelMRI — see inside a local language model" />
+    <meta
+      property="og:description"
+      content="Attention arcs, causal head ranking, SAE features and steering for any local model. Runs entirely on your machine. Try it in the browser with no install."
+    />
+    <meta property="og:url" content="https://muhammadmahadazher.github.io/ModelMRI/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ModelMRI — see inside a local language model" />
+    <meta
+      name="twitter:description"
+      content="Attention arcs, causal head ranking, SAE features and steering for any local model. Runs entirely on your machine."
+    />
+
+    <!-- Structured data. Everything asserted here is checkable from the repo:
+         the licence, the languages, the install command, the price. Nothing
+         about accuracy or quality is claimed, because schema.org has no field
+         for a claim like that and inventing one would be the sort of thing
+         this project exists to refuse. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "ModelMRI",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Windows, macOS, Linux",
+        "url": "https://muhammadmahadazher.github.io/ModelMRI/",
+        "downloadUrl": "https://pypi.org/project/modelmri/",
+        "codeRepository": "https://github.com/muhammadmahadazher/ModelMRI",
+        "programmingLanguage": ["Python", "TypeScript"],
+        "license": "https://opensource.org/licenses/MIT",
+        "isAccessibleForFree": true,
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "author": { "@type": "Person", "name": "Muhammad Mahad Azher" },
+        "description": "An open-source, local-first tool for inspecting the internals of language models: attention maps, causal attention-head ranking by ablation, sparse-autoencoder features, feature steering, a logit lens, an agent-run flight recorder, and a shareable .mri analysis format that opens in a browser with nothing installed.",
+        "featureList": [
+          "Attention maps for any layer and head of a local causal language model",
+          "Causal ranking of attention heads by ablation, scored with KL divergence",
+          "Comparison of two forward passes over one token sequence",
+          "Sparse-autoencoder feature inspection and steering",
+          "Logit lens for models with no public sparse autoencoder",
+          "Flight recorder for agent runs via the modelmri-record package",
+          "Vision-tower attention for robot policies (VLA)",
+          "A .mri share format that opens in a browser with no install"
+        ]
+      }
+    </script>
+
     <style>html{background:#0a0e14}</style>
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <!-- Not an apology for JavaScript: a crawler or a reader without it
+           still deserves to know what this is and where to get it. -->
+      <main>
+        <h1>ModelMRI</h1>
+        <p>
+          An open-source, local-first tool for looking inside a language model:
+          attention maps, causal attention-head ranking by ablation,
+          sparse-autoencoder features, steering, a logit lens, and a flight
+          recorder for agent runs. Everything runs on your own machine.
+        </p>
+        <p><code>pip install modelmri</code> then <code>modelmri serve</code></p>
+        <p>
+          <a href="https://github.com/muhammadmahadazher/ModelMRI">Source on GitHub</a> ·
+          <a href="https://muhammadmahadazher.github.io/ModelMRI/docs/">Documentation</a> ·
+          <a href="https://pypi.org/project/modelmri/">PyPI</a>
+        </p>
+        <p>This page needs JavaScript to run the interactive demo.</p>
+      </main>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

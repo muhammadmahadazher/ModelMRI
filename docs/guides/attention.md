@@ -1,3 +1,7 @@
+---
+description: "Read per-layer, per-head attention weights in ModelMRI, rank attention heads by causal ablation scored with KL divergence, and compare two forward passes over one token sequence."
+---
+
 # Attention
 
 After any generation, ModelMRI can show you which tokens each token looked at.

@@ -1,3 +1,7 @@
+---
+description: "The ModelMRI HTTP API reference: load models, stream generation over a websocket, fetch attention matrices, load sparse autoencoders, steer features, and import agent traces."
+---
+
 # HTTP API
 
 Everything the UI does goes through this API, so anything you can see you
