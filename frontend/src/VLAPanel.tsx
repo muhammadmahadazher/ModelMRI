@@ -17,6 +17,9 @@ import {
 } from "./api";
 import FrameCanvas from "./FrameCanvas";
 
+/** Shown as the placeholder, and used when the box is left blank. */
+const DEFAULT_POLICY = "lerobot/smolvla_base";
+
 /** Robot-policy introspection: scrub a real episode, then see what the
  *  policy's vision tower attends to on that exact frame. */
 export default function VLAPanel() {
@@ -35,6 +38,9 @@ export default function VLAPanel() {
   // Every cached LeRobot dataset, not the one that happened to be configured.
   const [datasets, setDatasets] = useState<VLADatasetInfo[]>([]);
   const [chosen, setChosen] = useState("");
+  // The policy checkpoint. Blank means the server's default; anything else
+  // is loaded by discovering its vision tower rather than assuming SmolVLA's.
+  const [policy, setPolicy] = useState("");
   const debounce = useRef<number | undefined>(undefined);
 
   // Status only. Opening the dataset imports pyarrow and pyav and decodes
@@ -108,7 +114,7 @@ export default function VLAPanel() {
     setBusy("load");
     setErr("");
     try {
-      setVla(await loadVLA());
+      setVla(await loadVLA(policy));
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -170,6 +176,32 @@ export default function VLAPanel() {
               : datasets.length === 1
                 ? `${datasets[0].repo_id} is the only one cached — any LeRobot v3.0 dataset works, and this list grows as you pull them`
                 : "no LeRobot dataset cached — pull any LeRobot v3.0 dataset and it appears here"}
+          </span>
+
+          {/* The POLICY, not just the dataset.
+              The dataset side was always dynamic; the policy was pinned to
+              SmolVLA by three hardcoded values — the tensor prefix, the repo
+              its vision config came from, and the module class. All three are
+              read from the checkpoint now, so this box is the difference
+              between "a SmolVLA viewer" and "a VLA viewer". */}
+          <div className="row policy-row">
+            <label className="meta" htmlFor="vla-policy">
+              policy
+            </label>
+            <input
+              id="vla-policy"
+              className="share-note"
+              placeholder={DEFAULT_POLICY}
+              value={policy}
+              onChange={(e) => setPolicy(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void onOpen()}
+              spellCheck={false}
+            />
+          </div>
+          <span className="meta">
+            any checkpoint whose weights carry a vision tower — the tensor
+            prefix and the vision config are read from the file, not assumed.
+            Blank uses <code>{DEFAULT_POLICY}</code>.
           </span>
         </div>
         {err && (

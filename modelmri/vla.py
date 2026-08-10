@@ -1,14 +1,28 @@
 """VLA (Vision-Language-Action) introspection — looking inside a robot policy.
 
-What this does: loads the **vision tower of the actual SmolVLA checkpoint**
-(`lerobot/smolvla_base`, 197 tensors, verified byte-for-byte from its
-model.safetensors) and runs real robot-camera frames through it with eager
-attention, so every patch of the frame gets an attention value we can draw
-back onto the image.
+What this does: loads the **vision tower of a real policy checkpoint** and
+runs real robot-camera frames through it with eager attention, so every patch
+of the frame gets an attention value we can draw back onto the image.
 
-Honesty about scope (v0.4, "perception" mode):
-  * These are SmolVLA's own weights — not a stand-in model.
-  * SmolVLA freezes its vision encoder during training, so this tower is
+**Any policy, not one policy.** Three things used to be hardcoded to SmolVLA:
+the tensor prefix (`model.vlm_with_expert.vlm.model.vision_model.`), the repo
+its vision config came from, and the module class. Every other checkpoint
+found zero tensors and was told its "layout is not supported" — true only
+because nothing had looked. Now all three come from the checkpoint:
+
+  * the prefix is DISCOVERED by scanning the tensor names for a vision-shaped
+    path segment, and the busiest candidate wins,
+  * the config is read from the checkpoint's own `vision_config`, or from the
+    VLM it names (SmolVLA's config carries `vlm_model_name`),
+  * the module is built by `AutoModel.from_config`, which on SmolVLM's vision
+    config produces exactly the class this used to name.
+
+A checkpoint that genuinely has no recognisable vision tower is refused with
+the top-level names it *does* have, which is a report rather than a verdict.
+
+Honesty about scope ("perception" mode):
+  * These are the policy's own weights — not a stand-in model.
+  * SmolVLA freezes its vision encoder during training, so its tower is
     architecturally SmolVLM2's; it is nonetheless the exact module the
     policy sees the world through.
   * The action expert (which turns those features into motor commands)
@@ -31,8 +45,114 @@ from pathlib import Path
 from . import paths
 
 DEFAULT_VLA_REPO = "lerobot/smolvla_base"
-VLM_REPO = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-VISION_PREFIX = "model.vlm_with_expert.vlm.model.vision_model."
+
+# The name segments a vision tower goes by across published policies. This is
+# a list of naming conventions, not a list of supported models: the prefix is
+# DISCOVERED from the checkpoint's own tensor names, and the module is built
+# from the checkpoint's own config.
+#
+# This used to be one hardcoded string —
+# `model.vlm_with_expert.vlm.model.vision_model.` — SmolVLA's exact layout,
+# alongside a hardcoded VLM repo for the config and a hardcoded module class.
+# Any other policy found zero tensors and was told its "checkpoint layout is
+# not supported", which was true only because nothing had looked.
+VISION_HINTS = (
+    "vision_model",
+    "vision_tower",
+    "vision_encoder",
+    "image_encoder",
+    "visual",
+)
+
+
+def discover_vision_prefix(keys) -> tuple[str, int]:
+    """The state-dict prefix of this checkpoint's vision tower.
+
+    Returns (prefix, tensor_count) for the busiest candidate — the tower is
+    the largest group of tensors under any one vision-shaped name, and a
+    stray `visual_proj` weight elsewhere cannot outvote 197 of them.
+
+    Raises if nothing matches, naming what WAS found so the answer is
+    actionable rather than "unsupported".
+    """
+    counts: dict[str, int] = {}
+    for key in keys:
+        for hint in VISION_HINTS:
+            marker = f"{hint}."
+            idx = key.find(marker)
+            # A path segment, not a substring: `supervision_model` must not
+            # match `vision_model`.
+            if idx < 0 or (idx and key[idx - 1] != "."):
+                continue
+            prefix = key[: idx + len(marker)]
+            counts[prefix] = counts.get(prefix, 0) + 1
+            break
+    if not counts:
+        roots = sorted({k.split(".")[0] for k in keys})[:8]
+        raise RuntimeError(
+            "No vision tower found in this checkpoint. Looked for a tensor "
+            f"path containing any of {', '.join(VISION_HINTS)}; the top-level "
+            f"names present are {', '.join(roots)}. If this policy keeps its "
+            "vision encoder under another name, open an issue with that name "
+            "and it becomes one line here."
+        )
+    prefix, n = max(counts.items(), key=lambda kv: kv[1])
+    return prefix, n
+
+
+def _vision_config(policy_snap: Path, hf_home: str | Path | None):
+    """The vision config for this policy, from the policy itself.
+
+    Three sources, in order of directness:
+
+    1. a `vision_config` block in the checkpoint's own config,
+    2. the VLM it names — SmolVLA's config carries
+       `vlm_model_name: HuggingFaceTB/SmolVLM2-500M-Video-Instruct`, which is
+       where the hardcoded constant came from, except now it is read rather
+       than assumed,
+    3. the checkpoint's config as a whole, if it *is* a vision config.
+    """
+    import json
+
+    from transformers import AutoConfig
+
+    raw = {}
+    cfg_file = policy_snap / "config.json"
+    if cfg_file.is_file():
+        try:
+            raw = json.loads(cfg_file.read_text("utf-8"))
+        except ValueError:
+            raw = {}
+
+    if isinstance(raw.get("vision_config"), dict):
+        from transformers import AutoConfig as _AC
+
+        return _AC.for_model(
+            raw["vision_config"].get("model_type", "clip_vision_model"),
+            **raw["vision_config"],
+        )
+
+    named = raw.get("vlm_model_name") or raw.get("vlm_repo")
+    if named:
+        try:
+            snap = _snapshot(str(named), hf_home)
+        except FileNotFoundError as err:
+            raise RuntimeError(
+                f"This policy's vision config comes from {named}, which is not "
+                f"in your HuggingFace cache. {err}"
+            ) from err
+        return AutoConfig.from_pretrained(str(snap)).vision_config
+
+    cfg = AutoConfig.from_pretrained(str(policy_snap))
+    if hasattr(cfg, "vision_config"):
+        return cfg.vision_config
+    if hasattr(cfg, "patch_size") and hasattr(cfg, "num_hidden_layers"):
+        return cfg
+    raise RuntimeError(
+        "This checkpoint does not say what its vision encoder is: no "
+        "`vision_config` block, no `vlm_model_name`, and its own config is "
+        "not a vision config."
+    )
 
 
 @dataclass
@@ -96,13 +216,16 @@ class VLAHandle:
     def load(
         self, repo: str = DEFAULT_VLA_REPO, hf_home: str | Path | None = None
     ) -> VLAStatus:
-        """Load the policy's vision tower. Blocking — run in a worker thread."""
+        """Load a policy's vision tower. Blocking — run in a worker thread.
+
+        Architecture-agnostic by construction: the tensor prefix is discovered
+        from the checkpoint, the config comes from the checkpoint, and the
+        module is built from that config by `AutoModel`. Nothing here names
+        SmolVLA.
+        """
         import torch
         from safetensors.torch import load_file
-        from transformers import AutoConfig
-        from transformers.models.smolvlm.modeling_smolvlm import (
-            SmolVLMVisionTransformer,
-        )
+        from transformers import AutoModel
 
         t0 = time.time()
         policy_snap = _snapshot(repo, hf_home)
@@ -110,36 +233,30 @@ class VLAHandle:
         if not weights_file.is_file():
             raise RuntimeError(f"{repo} has no model.safetensors at {policy_snap}")
 
-        try:
-            vlm_snap = _snapshot(VLM_REPO, hf_home)
-        except FileNotFoundError as err:
-            raise RuntimeError(
-                f"SmolVLA's vision config comes from {VLM_REPO}, which is not cached. {err}"
-            ) from err
-
         from . import devices
 
         accel = devices.detect()
-        cfg = AutoConfig.from_pretrained(str(vlm_snap)).vision_config
+        cfg = _vision_config(policy_snap, hf_home)
         cfg._attn_implementation = "eager"  # sdpa returns no attention weights
-        model = SmolVLMVisionTransformer(cfg)
+        # From the config, not from a class name. `AutoModel.from_config` on
+        # SmolVLM's vision config produces exactly the SmolVLMVisionTransformer
+        # this used to hardcode — same 197 parameters, same key set — and it
+        # produces the right module for a SigLIP or CLIP tower too.
+        model = AutoModel.from_config(cfg)
 
         state = load_file(str(weights_file))
+        prefix, found = discover_vision_prefix(state.keys())
         vision_state = {
-            k[len(VISION_PREFIX) :]: v
-            for k, v in state.items()
-            if k.startswith(VISION_PREFIX)
+            k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)
         }
-        if not vision_state:
-            raise RuntimeError(
-                f"No vision-tower tensors ('{VISION_PREFIX}*') found in {repo} — "
-                "this checkpoint layout is not supported."
-            )
         missing, unexpected = model.load_state_dict(vision_state, strict=False)
         if missing:
             raise RuntimeError(
-                f"{len(missing)} vision tensors missing from {repo} (e.g. {missing[:3]}) — refusing "
-                "to show attention from a partially-initialised model."
+                f"Found {found} vision tensors under '{prefix}' in {repo}, but "
+                f"{len(missing)} the module needs are absent (e.g. "
+                f"{', '.join(missing[:3])}). That means this tower is a "
+                f"different architecture from the config describing it — "
+                "refusing to show attention from a partially-initialised model."
             )
         model.eval()
         try:
@@ -158,7 +275,8 @@ class VLAHandle:
                 loaded=True,
                 mode="perception",
                 reason=(
-                    "vision tower of the real SmolVLA checkpoint; the action expert "
+                    f"vision tower of the real {repo} checkpoint "
+                    f"({found} tensors under '{prefix}'); the action expert "
                     "needs the optional lerobot extra"
                 ),
                 repo=repo,

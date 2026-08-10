@@ -388,11 +388,16 @@ export interface VLAHeat {
 
 export const getVLA = () => fetch("/api/vla").then((r) => json<VLAStatus>(r));
 
-export const loadVLA = () =>
+/** Load a policy's vision tower. Blank repo = the server's default.
+ *
+ *  Any checkpoint carrying a vision tower works: the tensor prefix and the
+ *  vision config are read from the file rather than assumed, so this is not
+ *  limited to the one policy it was built against. */
+export const loadVLA = (repo?: string) =>
   fetch("/api/vla/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: "{}",
+    body: JSON.stringify(repo && repo.trim() ? { repo: repo.trim() } : {}),
   }).then((r) => json<VLAStatus>(r));
 
 export const getVLAEpisodes = () =>

@@ -1849,6 +1849,19 @@ code {
    44x44 comfortable-thumb target from Apple's HIG / WCAG 2.5.5 AAA, applied
    ONLY to coarse pointers — shrinking desktop density to phone ergonomics
    helps nobody, and these controls sit at 36-40px on a mouse for a reason. */
+/* What the agents panel records, said once at the top. It reads as "the
+   calls the model above made" otherwise, which is the wrong mental model and
+   makes a bundled sample look like your own agent failing. */
+.agents-what {
+  margin: 0 0 10px;
+  max-width: 78ch;
+  line-height: 1.55;
+}
+
+/* The policy box in the robot panel, beside its label. */
+.policy-row { margin-top: 10px; gap: 8px; align-items: center; }
+.policy-row input { flex: 1 1 22rem; min-width: 0; }
+
 /* Prompt vs generated, in the token strip. The row was undifferentiated, so
    "what you typed" and "what the model produced" looked the same — which is
    the first distinction anyone needs to read an attention map. Weight and a

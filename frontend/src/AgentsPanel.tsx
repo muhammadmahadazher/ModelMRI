@@ -75,6 +75,23 @@ export default function AgentsPanel() {
     );
   }
 
+  // Bundled samples in the list, so the panel can name them and offer to
+  // remove them rather than leaving a red "1 error" nobody recognises.
+  const demos = list.filter((t) => t.demo).length;
+
+  async function wipe(keepDemo: boolean) {
+    setClearing(true);
+    try {
+      await clearTraces(keepDemo);
+      setList(await getTraces());
+      setDoc(null);
+    } catch {
+      /* the list is refetched either way */
+    } finally {
+      setClearing(false);
+    }
+  }
+
   const maxMs = doc
     ? Math.max(...doc.steps.map((s) => s.started_ms + s.duration_ms), 1)
     : 1;
@@ -88,29 +105,54 @@ export default function AgentsPanel() {
         <span className="rule" />
       </div>
 
+      {/* What this panel is, which nothing said.
+          It records YOUR agent's steps — an external program you instrumented
+          with `modelmri-record` — and has no connection to the model selected
+          in the playground above. Reading it as "the calls that model made"
+          is the obvious guess, and it is wrong, so say so once, here. */}
+      <p className="agents-what meta">
+        A flight recorder for agent runs: your program calls{" "}
+        <b>modelmri-record</b> and its steps land here. Independent of the model
+        loaded above — an agent usually calls a hosted API, not this process.
+      </p>
+
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
           {list.length} recording{list.length === 1 ? "" : "s"}
+          {demos > 0 && ` · ${demos} bundled sample${demos === 1 ? "" : "s"}`}
         </span>
         <span className="spacer" />
         <button
           className="ghost sm"
           disabled={clearing}
-          onClick={() => {
-            setClearing(true);
-            void clearTraces(true)
-              .then(() => getTraces())
-              .then((l) => {
-                setList(l);
-                setDoc(null);
-              })
-              .catch(() => undefined)
-              .finally(() => setClearing(false));
-          }}
+          title="Removes runs you recorded, and keeps the bundled sample"
+          onClick={() => void wipe(true)}
         >
           {clearing ? "Clearing…" : "Clear my runs"}
         </button>
+        {/* The sample kept reappearing as "1 error" in a list of your work,
+            and the only clear button deliberately spared it. If you have seen
+            it, you should be able to be rid of it. */}
+        {demos > 0 && (
+          <button
+            className="ghost sm"
+            disabled={clearing}
+            title="Removes the bundled sample too"
+            onClick={() => void wipe(false)}
+          >
+            Remove sample
+          </button>
+        )}
       </div>
+
+      {demos > 0 && (
+        <p className="hint">
+          The run marked <b>demo</b> is sample data shipped with ModelMRI
+          (<code>examples/record_demo.py</code>). Its failing step is
+          deliberate — a timeline needs an error to show what one looks like.
+          It is not your agent failing.
+        </p>
+      )}
 
       <div className="trace-list">
         {groups.map(({ name, runs }) => {

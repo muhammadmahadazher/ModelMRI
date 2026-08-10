@@ -54,7 +54,9 @@ class OllamaPullRequest(BaseModel):
 
 
 class VLALoadRequest(BaseModel):
-    repo: str = "lerobot/smolvla_base"
+    # One constant, in vla.py. Two copies of a default is two things to
+    # forget to change.
+    repo: str = VLA_DEFAULT_REPO
 
 
 class VLAAnalyseRequest(BaseModel):
