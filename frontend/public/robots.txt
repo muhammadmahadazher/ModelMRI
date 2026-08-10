@@ -1,5 +1,21 @@
 # ModelMRI — https://muhammadmahadazher.github.io/ModelMRI/
 #
+# READ THIS BEFORE TRUSTING THIS FILE.
+#
+# The site is a GitHub Pages *project* page, so it is served from
+# /ModelMRI/ and this file lands at /ModelMRI/robots.txt. Crawlers only ever
+# read robots.txt at the domain root, and
+# https://muhammadmahadazher.github.io/robots.txt is a 404 — there is no
+# user-page repository behind it. So nothing below is currently enforced.
+#
+# That is not an argument for deleting it. A 404 at the root means "no
+# restrictions", which is the same posture this file describes, so the
+# practical loss is only the two Sitemap lines: they are not discovered
+# automatically and have to be submitted directly to Google Search Console
+# and Bing Webmaster Tools. The file becomes live the moment the project
+# moves to a custom domain or a user-page repo exists, and until then it
+# states the intent in the one place a maintainer would look for it.
+#
 # Everything here is public, MIT-licensed documentation for an open-source
 # tool. Crawlers, including the ones that build training sets and answer
 # questions, are welcome to all of it. Naming them below is redundant — an
