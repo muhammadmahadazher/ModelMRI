@@ -230,12 +230,27 @@ export default function AttentionPanel({
         <span className="rule" />
       </div>
       <div className="row" style={{ margin: "10px 0" }}>
-        <label className="meta">layer</label>
-        <select value={layer} onChange={(e) => setLayer(Number(e.target.value))}>
+        {/* `htmlFor`/`id`, not adjacency. These read as "layer" and "head" to
+            anyone looking at them, and as two unnamed combo boxes to a screen
+            reader — the visual label was never connected to the control. */}
+        <label className="meta" htmlFor="attn-layer">
+          layer
+        </label>
+        <select
+          id="attn-layer"
+          value={layer}
+          onChange={(e) => setLayer(Number(e.target.value))}
+        >
           {options(layers)}
         </select>
-        <label className="meta">head</label>
-        <select value={head} onChange={(e) => setHead(Number(e.target.value))}>
+        <label className="meta" htmlFor="attn-head">
+          head
+        </label>
+        <select
+          id="attn-head"
+          value={head}
+          onChange={(e) => setHead(Number(e.target.value))}
+        >
           {headOptions()}
         </select>
         <span className="meta">{info}</span>
@@ -414,7 +429,13 @@ export default function AttentionPanel({
             </>
           ) : (
             <>
-              {data && <ArcCanvas tokens={data.tokens} matrix={data.matrix} />}
+              {data && (
+            <ArcCanvas
+              tokens={data.tokens}
+              matrix={data.matrix}
+              nPrompt={data.n_prompt}
+            />
+          )}
               <div className="hint">
                 hover or focus a token → arcs show what it attended to · click
                 or Enter to pin · arc thickness = attention weight

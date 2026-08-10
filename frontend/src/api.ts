@@ -6,6 +6,10 @@ export interface ModelStatus {
   device: string | null;
   dtype: string | null;
   n_params: number | null;
+  /** Was this model instruction-tuned? False means a base model, which
+   *  continues text rather than answering — the usual reason an answer
+   *  looks wrong when nothing is broken. */
+  instruct?: boolean;
 }
 
 export interface SessionInfo {
@@ -27,6 +31,9 @@ export interface AttentionData {
   layer: number;
   head: number;
   tokens: string[];
+  /** How many leading tokens are the prompt; the rest is the model's own
+   *  output. The panel rests on the last prompt token. */
+  n_prompt?: number;
   matrix: number[][];
   replay?: boolean;
 }

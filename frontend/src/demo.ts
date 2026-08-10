@@ -270,6 +270,9 @@ export async function demoFetch(
       layer,
       head,
       tokens,
+      // Without this the demo's panel would rest on nothing and show the
+      // blank canvas this replaced — the demo is held to the tool's standard.
+      n_prompt: run.n_prompt ?? 0,
       // Decoded with the viewer's function, against the same uint8 encoding
       // the .mri format uses — one decoder, so the two surfaces cannot
       // disagree about what a byte meant.

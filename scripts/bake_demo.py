@@ -123,10 +123,12 @@ def bake_llm(scenario: dict) -> dict:
     print(f"  attention: {n_layers} x {n_heads} = {n_layers * n_heads} slices")
     attn: dict[str, dict] = {}
     tokens: list[str] = []
+    n_prompt = 0
     for layer in range(n_layers):
         for head in range(n_heads):
             block = get(f"/api/attention?layer={layer}&head={head}")
             tokens = tokens or block["tokens"]
+            n_prompt = n_prompt or int(block.get("n_prompt") or 0)
             blob, scale = _quantise(block["matrix"])
             # Tokens are identical across every slice of one run, so storing
             # them 448 times would cost more than the matrices do.
@@ -178,6 +180,9 @@ def bake_llm(scenario: dict) -> dict:
             "generation": generation,
             "meta": meta,
             "tokens": tokens,
+            # So the demo's panel rests on the last prompt token too, rather
+            # than reverting to the empty canvas this replaced.
+            "n_prompt": n_prompt,
             "layers": list(range(n_layers)),
             "attention": attn,
             "ablate": ablate,

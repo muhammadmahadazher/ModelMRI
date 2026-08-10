@@ -184,6 +184,20 @@ def _bundle_checks(llm: dict, meta: dict) -> None:
         f"{len(llm.get('tokens', []))} tokens against a meta saying {n}",
     )
 
+    # Where the prompt ends. The panel rests on the last prompt token, so a
+    # missing or wrong boundary puts the demo back to the blank canvas this
+    # replaced — or marks the wrong chips as the model's own words.
+    n_prompt = llm.get("n_prompt", 0)
+    check(
+        "the prompt/output boundary is recorded and inside the sequence",
+        isinstance(n_prompt, int) and 0 < n_prompt < n,
+        f"n_prompt={n_prompt!r} against {n} tokens",
+        note=f"prompt ends at {n_prompt}, first generated token "
+        f"{llm['tokens'][n_prompt]!r}"
+        if isinstance(n_prompt, int) and 0 < n_prompt < n
+        else "",
+    )
+
     # Each slice must decode to a square of the right size and say which head
     # it is — a slice mislabelled renders under the wrong control, which is
     # the whole class of bug this file exists for.

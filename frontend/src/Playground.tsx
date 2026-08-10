@@ -342,6 +342,37 @@ export default function Playground({ model, onModelChange, replay }: Props) {
             {busy === "generating" && <span className="cursor">▋</span>}
           </>
         )}
+        {/* Why the answer can be wrong, said before anyone has to wonder.
+            Two different causes get mistaken for a broken tool:
+
+            a base model is a text CONTINUER — gpt2 finishes your sentence, it
+            was never trained to answer a question — and any temperature above
+            zero SAMPLES, so the same prompt gives a different answer each
+            time. gpt2 on "The Eiffel Tower is located in the city of" gives
+            Paris at T=0 and Amsterdam at T=0.7, measured.
+
+            ModelMRI shows what the model did; it does not improve it. That is
+            the product. But a reader who knows neither of these concludes the
+            instrument is faulty, and this panel is where they find out. */}
+        {output !== "" && busy !== "generating" && model?.loaded && (
+          <p className="gen-caveat">
+            {model.instruct === false && (
+              <>
+                <b>{model.hf_id}</b> is a base model — it continues text rather
+                than answering questions, and is often factually wrong.{" "}
+              </>
+            )}
+            {DECODE.temperature > 0 && (
+              <>
+                Temperature {DECODE.temperature} samples, so the same prompt
+                gives a different answer each run.{" "}
+              </>
+            )}
+            {(model.instruct === false || DECODE.temperature > 0) && (
+              <>The panels below show what it actually did, not a corrected version.</>
+            )}
+          </p>
+        )}
       </div>
 
       {epoch > 0 && introspectable && (

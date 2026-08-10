@@ -228,6 +228,15 @@ class ModelStatus:
     device: str | None = None
     dtype: str | None = None
     n_params: int | None = None
+    # Does this model expect a conversation, or is it a raw text continuer?
+    #
+    # The same signal `generate_stream` already branches on: a tokenizer with
+    # a chat template was instruction-tuned, one without was not. It is worth
+    # publishing because the difference explains most "why is it answering
+    # nonsense" — gpt2 continues your sentence, it does not answer your
+    # question, and a UI that does not say so invites the reader to conclude
+    # the tool is broken when the tool is working exactly as intended.
+    instruct: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -282,7 +291,10 @@ class ModelRuntime:
 
     def status(self) -> ModelStatus:
         if self.backend == "ollama" and self.hf_id:
-            return ModelStatus(loaded=True, hf_id=self.hf_id, device="ollama")
+            # Ollama serves chat-tuned builds; it has no base-model story.
+            return ModelStatus(
+                loaded=True, hf_id=self.hf_id, device="ollama", instruct=True
+            )
         if self.model is None:
             return ModelStatus(loaded=False, device=self.device)
         return ModelStatus(
@@ -291,6 +303,7 @@ class ModelRuntime:
             device=self.device,
             dtype=str(next(self.model.parameters()).dtype).removeprefix("torch."),
             n_params=sum(p.numel() for p in self.model.parameters()),
+            instruct=bool(getattr(self.tokenizer, "chat_template", None)),
         )
 
     def load(
@@ -702,6 +715,15 @@ class ModelRuntime:
             "head": head,
             "variant": variant,
             "tokens": self._attn_tokens,
+            # Where the prompt ends and the model's own output starts.
+            #
+            # Without it the strip is one undifferentiated row of chips, and
+            # the panel has no meaningful token to rest on. The last prompt
+            # token is the right one: its row answers "what did the model look
+            # at to decide its first word", and on a long generation it is
+            # still on screen, where the final token — 24,000px to the right
+            # inside a scroll container — is not.
+            "n_prompt": int(self.last_n_prompt_tokens or 0),
             "matrix": [[round(v, 4) for v in row] for row in matrix.tolist()],
         }
 

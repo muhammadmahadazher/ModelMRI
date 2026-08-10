@@ -9,13 +9,21 @@ interface Props {
    *  run attended more here", another for "less". Without this a diff would
    *  render only its increases and quietly drop half the answer. */
   signed?: boolean;
+  /** How many leading tokens are the prompt. Used to pick the token the
+   *  panel rests on, and to mark where the model's own output begins. */
+  nPrompt?: number;
 }
 
 /** Canvas height in CSS pixels. The backing store is this times the DPR. */
 const CANVAS_H = 110;
 
 /** Token chips with hover/pin-driven attention arcs drawn on a canvas below. */
-export default function ArcCanvas({ tokens, matrix, signed }: Props) {
+export default function ArcCanvas({
+  tokens,
+  matrix,
+  signed,
+  nPrompt = 0,
+}: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [pinned, setPinned] = useState(-1);
@@ -23,6 +31,23 @@ export default function ArcCanvas({ tokens, matrix, signed }: Props) {
   // the CSS but leaves this canvas holding the old palette until something
   // else happens to redraw it. Depending on the version forces the repaint.
   const themeV = useThemeVersion();
+
+  /** What the panel shows when you are not pointing at anything.
+   *
+   *  It used to show nothing: a ~250px empty rectangle, with the sentence
+   *  explaining that you should hover printed UNDERNEATH it. So the first
+   *  thing a visitor met was a void, and the instruction for escaping the
+   *  void was the last thing they read.
+   *
+   *  The LAST PROMPT token is the right default, for two reasons. Its row
+   *  answers the question the panel exists for — what did the model look at
+   *  to decide its first word — and it is near the left of the strip, so the
+   *  arcs are on screen. Resting on the final token instead looks identical
+   *  to the old empty panel on any real generation: the strip is a scroll
+   *  container 24,820px wide here, and the arcs were drawn past the right
+   *  edge of a viewport showing the first 800px of it.
+   */
+  const resting = nPrompt > 0 && nPrompt <= matrix.length ? nPrompt - 1 : -1;
 
   const draw = useCallback(
     (i: number) => {
@@ -33,6 +58,10 @@ export default function ArcCanvas({ tokens, matrix, signed }: Props) {
       // The context is transformed to CSS pixels by the sizing effect, so
       // clear in those units rather than the device-pixel backing size.
       ctx.clearRect(0, 0, row.scrollWidth, CANVAS_H);
+      // -1 means "nothing hovered or pinned", which is a resting state, not
+      // an empty one. Hover still overrides it and leaving returns here, so
+      // exploration is unchanged — there is simply never a blank panel.
+      if (i < 0) i = resting;
       if (i < 0 || !matrix[i]) return;
 
       const rowRect = row.getBoundingClientRect();
@@ -83,7 +112,7 @@ export default function ArcCanvas({ tokens, matrix, signed }: Props) {
       }
       ctx.globalAlpha = 1;
     },
-    [matrix, signed],
+    [matrix, signed, resting],
   );
 
   // Size the canvas to the token row after layout; redraw pin if any.
@@ -128,11 +157,21 @@ export default function ArcCanvas({ tokens, matrix, signed }: Props) {
             // which also makes the strip arrow-free but fully tabbable.
             <span
               key={i}
-              className={`tok ${pinned === i ? "pin" : ""}`}
+              // `gen` marks the model's own output. The strip was one
+              // undifferentiated row, so "what you typed" and "what it
+              // produced" looked identical — and which is which is the first
+              // thing anyone needs to read an attention map.
+              className={`tok ${pinned === i ? "pin" : ""} ${
+                nPrompt > 0 && i >= nPrompt ? "gen" : ""
+              } ${nPrompt > 0 && i === nPrompt ? "gen-start" : ""}`}
               tabIndex={0}
               role="button"
               aria-pressed={pinned === i}
-              aria-label={`token ${i + 1} of ${tokens.length}: ${t.trim() || "space"}`}
+              aria-label={
+                `token ${i + 1} of ${tokens.length}` +
+                (nPrompt > 0 ? (i >= nPrompt ? ", generated" : ", prompt") : "") +
+                `: ${t.trim() || "space"}`
+              }
               onMouseEnter={() => pinned < 0 && draw(i)}
               onMouseLeave={() => pinned < 0 && draw(-1)}
               onFocus={() => pinned < 0 && draw(i)}

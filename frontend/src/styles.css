@@ -1849,12 +1849,54 @@ code {
    44x44 comfortable-thumb target from Apple's HIG / WCAG 2.5.5 AAA, applied
    ONLY to coarse pointers — shrinking desktop density to phone ergonomics
    helps nobody, and these controls sit at 36-40px on a mouse for a reason. */
+/* Prompt vs generated, in the token strip. The row was undifferentiated, so
+   "what you typed" and "what the model produced" looked the same — which is
+   the first distinction anyone needs to read an attention map. Weight and a
+   rule, not colour: the strip already spends its colour budget on pinning
+   and the arcs beneath it. */
+.tok.gen { font-weight: 600; }
+.tok.gen-start { position: relative; }
+.tok.gen-start::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-attn, #1a5fd0);
+  opacity: 0.5;
+}
+
+/* Why an answer can be wrong, under the answer. Muted and small: it is a
+   footnote to the output, not a warning about it — the model behaving like a
+   base model at temperature 0.7 is the instrument working. */
+.gen-caveat {
+  margin: 12px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--sf-line, rgba(128, 128, 128, 0.22));
+  color: var(--color-mute);
+  font-size: 12px;
+  line-height: 1.55;
+  max-width: 72ch;
+}
+.gen-caveat b { color: var(--color-text, inherit); font-weight: 600; }
+
 @media (pointer: coarse) {
   button,
   .model-row,
   .trace-row,
   .cand,
   .tl-block { min-height: 44px; }
+
+  /* Dropdowns were missed by the rule above and sat at 20px on a phone —
+     the layer, head and baseline selectors, which are the controls this
+     panel exists to be driven by. */
+  select { min-height: 44px; }
+
+  /* `min-height` cannot grow a button whose height is set elsewhere, and
+     this one measured 25px. Padding reaches it. */
+  .trace-more { padding-block: 10px; }
 
   .icon-btn { width: 44px; height: 44px; }
 
