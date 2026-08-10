@@ -4,7 +4,80 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-08-10
+
+The release where several things that were already on screen turned out not to
+be true, and the tool learned to say so. If you read one entry, read the sparse
+autoencoder one: the features panel was plotting the wrong features.
+
+### Fixed — things that were wrong on screen
+
+- **The SAE was reading activations it was never trained on, so the features
+  panel plotted the wrong features.** Two causes, and only one was suspected.
+  `saes.py` read `cfg.get("apply_b_dec_to_input", False)`, and the default
+  release's `cfg.json` has no such key — so an SAE whose training forward always
+  ran `sae_in = x - b_dec` was treated as one that had declined it. Larger, and
+  declared nowhere at all: SAELens SAEs are trained on TransformerLens
+  activations, which are centered along `d_model`, while HuggingFace's residual
+  stream is not — measured `d_model` mean 0.507 on gpt2 layer 8. Feeding an
+  uncentered stream to an SAE trained on a centered one does not error; it
+  returns features, in the right shape, with plausible magnitudes, for a vector
+  the SAE never saw.
+
+  Measured on gpt2 `blocks.8.hook_resid_pre`, prompt "The Eiffel Tower is
+  located in the city of", 11 tokens, float32, fraction of variance unexplained:
+
+  | input convention | L0 | FVU |
+  |---|---|---|
+  | raw, no b_dec — what 0.8.4 shipped | 7491.5 | 13579.24 |
+  | raw + b_dec | 2745.4 | 12908.35 |
+  | centered, no b_dec | 1344.0 | 0.4219 |
+  | centered + b_dec | 60.5 | 0.0010 |
+
+  The top-8 features on the last token — what the violet bar chart draws —
+  overlapped the correct top-8 **two of eight**.
+
+  The fix is not a new default, because "always center" would break Gemma Scope
+  SAEs, which are trained on raw HuggingFace activations, exactly as badly in
+  the other direction. `SAEHandle.calibrate` now runs all four conventions
+  against the model the SAE is attached to and keeps the one that reconstructs.
+  An SAE is a checkable claim: encode, decode, see how much variance comes back.
+  The panel states which convention won, that it was measured rather than read
+  from a config, what the config declared, the FVU and the features per token —
+  and refuses to plot at all when nothing reconstructs (FVU >= 1 carries less of
+  the activation than a constant would).
+
+- **The hosted demo published the machine that baked it.** Reported from a
+  phone: the page said it was running CUDA on an RTX 4060 and listed 17
+  HuggingFace repositories as "cached, loads offline" on a laptop the visitor
+  had never touched. `accelerator`, `discovered`, five `device: "cuda:0"`
+  fields and a duplicated sample trace are now synthesised from the recording.
+  No model files were ever uploaded; what leaked was metadata. The privacy
+  check had missed all of it because it scanned for identifier *shapes* — home
+  paths, usernames, drive letters — and a GPU model name is none of those; it
+  now asserts the positive form instead.
+
+- **The logit lens served a live model inside a recording.** `/api/lens` is the
+  only replay-sensitive route whose guard was not in `runtime.py`, so it never
+  passed one. `model is None` covered for it only while nothing was loaded:
+  open a `.mri` with your own model still resident and the lens reported the
+  live model's layers under a pill reading "recorded, not live".
+
+- **`attention_meta` had one answer for two opposite instructions.** "No model
+  loaded" and "nothing generated yet" both arrived as a bare
+  `{"available": false}`, so the panel could not tell you to pick a model or to
+  press the button in front of you.
+
+- **The documented steering example demonstrated a feature you could not have
+  found.** Under the corrected encoding, feature #974 has activation 0.0000 and
+  rank 994 of 24,576 — it does not fire, so nobody following "click a feature
+  that fired" would reach it. The output still reproduces, because steering
+  uses `W_dec` and the calibration bug never touched it. Replaced with #5856,
+  the top-firing feature on that token, which flips Paris to London at -40.
+
+- An unclosed `cfg.json` handle in `saes.py`, and `session.py`'s `v != v` NaN
+  idiom replaced with `math.isfinite` — same answer, one call, and it no longer
+  reads as a typo.
 
 ### Added
 
@@ -952,7 +1025,8 @@ the import path `modelmri`'s README documents. If you import from
 - Standalone, dependency-free recorder split out of `modelmri`: `trace()`,
   `step()`, `instrument_anthropic()`, and a credential scrubber.
 
-[Unreleased]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.8.4...v0.9.0
 [0.5.0]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/muhammadmahadazher/ModelMRI/compare/v0.1.0...v0.4.0
 [0.1.0]: https://github.com/muhammadmahadazher/ModelMRI/releases/tag/v0.1.0
