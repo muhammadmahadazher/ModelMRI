@@ -6,6 +6,38 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The hosted demo runs the whole tool, and CI keeps it that way.** It is the
+  only ModelMRI most visitors will ever touch, and it was the least verified
+  surface in the repo — the `.mri` viewer beside it is gated cell-for-cell,
+  while the demo's entire gate was `test -f demo-dist/index.html`.
+
+  * **The head selector works.** It read `layer` and never `head`, then fell
+    back to the first baked slice, so **141 of 144 selections drew a different
+    head's arcs than the dial said** — silently. All 144 slices are baked now,
+    keyed on the pair, and a genuine miss returns 422 with the reason in the
+    same words the viewer uses.
+  * **Rank heads works** — the capability the README leads with had no handler
+    and answered 409 under advice that could not work. Every layer under both
+    baselines, both whole-model sweeps, and the 60 comparisons the ranked rows
+    can ask for are baked from a real run.
+  * **Twelve other dead endpoints** now answer: the accelerator badge, storage
+    panel, logit lens, HF tab, session state and progress among them.
+  * **An unrecorded prompt is refused** instead of answered. Typing "what is
+    2+2" used to return a confident sentence about the Eiffel Tower, with
+    attention over the Eiffel Tower's tokens underneath the words you typed.
+  * **"Share this view" works**, serving a real `.mri` of the demo's own run —
+    so the demo → viewer hop is something a visitor can do rather than read
+    about.
+  * The bundle records **what produced it**: model, revision, dtype, device
+    and prompt.
+
+- **`tests/demo_check.py`**, wired into the Pages workflow. It extracts every
+  `/api/...` literal `api.ts` can call, diffs it against what `demo.ts`
+  answers, and fails on any gap — so the next dead endpoint fails a build
+  rather than a visitor.
+
 ## [0.8.1] — 2026-08-10
 
 ### Fixed

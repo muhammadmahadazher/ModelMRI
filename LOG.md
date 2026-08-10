@@ -1,5 +1,62 @@
 # Working log
 
+## 2026-08-10 (later) — the demo was a diorama
+
+The audit's design phase asked which surface most deserved the next feature,
+and the answer was uncomfortable: the hosted demo. It is the only ModelMRI
+99% of visitors will ever touch, the README links it twice — and it was the
+least verified thing in the repo. The `.mri` viewer beside it, built on the
+identical patched-fetch trick, is gated cell-for-cell by `viewer_check.py`.
+The demo's entire gate was `test -f demo-dist/index.html`.
+
+That asymmetry showed, in the first thirty seconds:
+
+- **Move the head dropdown.** `demo.ts` read `layer` and never `head`, then
+  fell back to the first baked slice. Three slices were baked against a meta
+  advertising 12 x 12, so **141 of 144 selections drew a different head's arcs
+  than the dial said** — and silently, which is the only kind of wrong nobody
+  reports.
+- **Click "Rank heads."** The capability the README leads with had no handler
+  at all: 409, under panel advice to "generate again", which could not work.
+  Twelve endpoints were dead the same way — accelerator badge, storage panel,
+  logit lens, HF tab.
+- **Type a prompt.** Any prompt returned the baked generation. "what is 2+2"
+  produced a confident sentence about the Eiffel Tower, then attention over
+  the Eiffel Tower's tokens beneath the words you had typed.
+
+Now the demo bakes all 144 slices, a ranking for every layer under both
+baselines, both whole-model sweeps, the 60 comparisons the ranked rows can
+ask for, the small endpoints every panel calls on first paint, and a real
+`.mri` of its own run so "Share this view" produces a file that opens in the
+viewer next door. 697 KB for the LLM bundle, against the 54 KB the robot
+bundle already cost — completeness was never what made it small.
+
+A miss now 422s with its reason, in the same words `viewer.ts` uses, and
+`demoFetch` returns `{status, payload}` like `viewerFetch` so it *can*. An
+unrecorded prompt is refused, naming the prompt this demo did record: a
+banner does not fix answering the wrong question.
+
+**The gate is the point.** `tests/demo_check.py` extracts every `/api/...`
+literal `api.ts` can call, diffs it against what `demo.ts` answers, and fails
+on any gap — so the next dead endpoint fails a build rather than a visitor.
+
+**Two bugs found by looking rather than reasoning:**
+
+- The first version of `demo_check.py` treated every handler as a prefix, so
+  `/api/sae/available` counted as covered by the exact-match `/api/sae`. The
+  check under-reported the very gaps it exists to find, and reported 5
+  unhandled endpoints where there were 11.
+- A loop variable named `baseline` in `bake_demo.py` shadowed the one holding
+  the generated text, and the demo shipped the literal string **"mean"** as
+  its generation. No schema check would catch that — it is a string either
+  way. Caught by opening the built demo and reading it. `demo_check.py` now
+  asserts a generation is a generation.
+
+Verified on the live public URL after deploy: 144 of 144 slices return the
+layer and head asked for, an unbaked slice 422s, both baselines rank and
+disagree, "what changes?" reports 7 of 529 cells moved, and 21 endpoints
+return zero occurrences of "not available in the demo".
+
 ## 2026-08-10 — 0.8.1: auditing the audit
 
 Yesterday's correction pass fixed the numbers it went looking for. This one
