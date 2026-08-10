@@ -44,7 +44,7 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
   const [err, setErr] = useState("");
   // Which SAEs exist for the model that is loaded. Empty is the common,
   // honest answer — an SAE is trained per model and public ones exist for
-  // about a dozen models in total.
+  // only a handful; `catalogue` below is the ones this build knows.
   const [opts, setOpts] = useState<{
     model: string | null;
     matching: SAEOption[];
@@ -185,8 +185,8 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
           <div className="resting-empty">
             <b>No sparse autoencoder exists for {opts?.model ?? "this model"}.</b>{" "}
             An SAE is trained against one model at one layer — it is GPU-months
-            of someone else's work, not a setting. Public ones cover about a
-            dozen models in total.
+            of someone else's work, not a setting. Public ones exist for only
+            a handful of models.
             {opts?.catalogue.length ? (
               <> Known SAEs: {opts.catalogue.map((c) => c.repo.split("/")[1]).join(", ")}.</>
             ) : null}{" "}

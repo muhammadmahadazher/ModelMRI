@@ -4,7 +4,7 @@ A SAE is trained against one model's residual stream at one layer. There is no
 such thing as a general one, and there is no way to make a model's features
 appear if nobody has trained an autoencoder for it — that is GPU-months of
 someone else's work, not a feature this tool can implement. Public SAEs exist
-for maybe a dozen models in total.
+for only a handful of models; the table below is what this build knows of.
 
 So this is a lookup table, not a capability. Its job is to stop you typing
 repository names, and to say plainly when the answer for your model is "none

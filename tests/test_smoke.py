@@ -314,6 +314,47 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
         tracker.finish()
 
 
+def test_the_recorder_wheel_size_is_stated_identically_everywhere():
+    """Four files quote the recorder wheel's size, and they drifted apart.
+
+    A commit in this repo already corrected "7 KiB" once, with the note "a
+    figure nobody rechecks is a figure that drifts" — and then it drifted
+    again: docs/index.md, docs/guides/agents.md and pyproject.toml still said
+    7 KiB while README.md said 9 KiB and the wheel was 8.94 KiB. Prose has no
+    build step, so this is the build step.
+
+    Checks the four against each other always, and against the real wheel
+    whenever one has been built.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sites = {
+        "docs/index.md": r"stdlib only — ([\d.]+) KiB",
+        "docs/guides/agents.md": r"No torch, no SDK pins, ([\d.]+) KiB",
+        "pyproject.toml": r"Stdlib-only and ([\d.]+) KiB",
+        "README.md": r"an? ([\d.]+) KiB wheel",
+    }
+    found: dict[str, float] = {}
+    for rel, pattern in sites.items():
+        text = (root / rel).read_text("utf-8")
+        m = re.search(pattern, text)
+        assert m, f"{rel} no longer states the recorder wheel size"
+        found[rel] = float(m.group(1))
+
+    assert len(set(found.values())) == 1, f"the four disagree: {found}"
+
+    # And against the artefact itself, when there is one to weigh.
+    wheels = sorted((root / "packages" / "modelmri-record" / "dist").glob("*.whl"))
+    if wheels:
+        actual = wheels[-1].stat().st_size / 1024
+        stated = next(iter(found.values()))
+        assert abs(actual - stated) < 0.1, (
+            f"{wheels[-1].name} is {actual:.2f} KiB, the docs say {stated} KiB"
+        )
+
+
 def test_load_progress_records_failure():
     from modelmri import progress
 

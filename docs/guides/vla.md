@@ -33,7 +33,9 @@ gigabytes.
 !!! note "No LeRobot dependency"
     ModelMRI reads the dataset format directly with `pyarrow` and `pyav`
     instead of importing `lerobot`, whose torch and numpy pins conflict with a
-    current install. The format is stable and the reader is about 200 lines.
+    current install. The format is stable, and the reader is one module that
+    imports no `lerobot` code at all — which is the property that matters,
+    and the one that stays true as the file grows.
 
     One detail that cost real time: PushT's cache ref is `v3.0`, not `main`.
     Anything that assumes `main` finds nothing and reports an empty dataset.

@@ -123,15 +123,18 @@ _CURRENT: dict = {"hook": None}
 
 
 def test_ranking_uses_kl_so_a_constant_logit_shift_scores_zero():
-    """Ablation shifts whole logit vectors. Measured on gpt2 L0H0: the top
-    token's logit moves +21.96 while the vocabulary mean moves +18.06, so a
-    raw logit difference calls that head ~6x more important than it is."""
+    """Ablation shifts whole logit vectors. Measured on gpt2 L0H0 with the
+    prompt "The capital of France is": the top token's logit moves -0.258
+    while the vocabulary mean moves -0.145, so the honest residual is -0.113
+    and a raw logit difference calls that head 2.3x more important than it is.
+    """
     p = torch.tensor([0.7, 0.2, 0.1])
     shifted = torch.log(p) + 12.345  # same distribution, different logits
     q = torch.softmax(shifted, dim=-1)
     # Not zero — float32 round-tripping through log/softmax costs ~1e-8.
-    # The bound is set against the smallest real per-head signal measured on
-    # gpt2 layer 0 (0.003), which this is five orders of magnitude below.
+    # The bound is set against the smallest per-head signal worth resolving on
+    # gpt2 layer 0 (0.0028, head 6), which this is three orders of magnitude
+    # below.
     assert ablate._kl(p, q) < 1e-6
 
 
@@ -218,9 +221,13 @@ def test_an_unknown_baseline_is_refused():
 
 
 def test_the_answer_carries_a_measured_noise_floor():
-    """bf16 is not deterministic enough to assume: a batched bf16 sweep
-    produces KLs around 5e-3 with nothing ablated at all, which is larger
-    than the smallest real per-head signal."""
+    """The floor is measured, not assumed. On this code path it comes out at
+    exactly 0.0 — checked on CPU and CUDA in fp32, bf16 and fp16, because one
+    unbatched sequence replayed through the same kernels is bit-identical.
+    That is the argument for spending the pass rather than dropping it: the
+    floor is zero *here*, and this is what proves it. Batching, TF32 or a
+    different accelerator can lift it above the smallest real signals, and
+    nothing else would notice."""
     out = _tiny_run()
     assert "noise_floor_kl" in out
     assert out["noise_floor_kl"] >= 0

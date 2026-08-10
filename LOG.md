@@ -1,5 +1,58 @@
 # Working log
 
+## 2026-08-10 — 0.8.1: auditing the audit
+
+Yesterday's correction pass fixed the numbers it went looking for. This one
+went looking for the ones it missed, by sweeping every numeric claim in the
+repo — README, docs, docstrings, comments, tests — and asking of each: is
+there evidence anyone measured this? 45 candidates, adversarially verified
+(default verdict: refute). 8 survived.
+
+**The correction had missed its own back yard.** `tests/test_ablate.py:127`
+still carried the retracted `+21.96 / +18.06 / ~6x` verbatim, and `:225` still
+claimed a bf16 noise floor "around 5e-3" that measures exactly 0.0. The test
+file asserting that we rank by KL rather than logit difference was explaining
+why using the number that motivated the rule and was wrong. `server.py:708`
+still shipped `0.12-0.68 s per layer against 1.4-19.6 s` — the same stale
+timings corrected in four other files, and this copy is served publicly in the
+OpenAPI schema at `/docs`.
+
+**README's ranking block did not reproduce.** It showed `L0 H7 KL 0.866,
+p(" the") 0.112 -> 0.073`. Measured: 0.784 / 0.085 -> 0.062 in fp32, and
+0.898 / 0.098 -> 0.057 in bf16. Neither matches, and `0.866` appears exactly
+once in the entire git history — in the commit that wrote it.
+
+The fix is not a better number, it is the setup line. The same three heads
+score **0.784 (fp32), 0.898 (bf16), 0.825 (over a 261-token generation)**. A
+KL depends on prompt, dtype and sequence length, so a figure quoted without
+them cannot be checked by anyone — which is precisely how three different
+values coexisted in three files, each looking authoritative.
+
+**Four more, all the same species — a figure nobody rechecks:**
+
+- `7 KiB` for the recorder wheel, in three files, against a real 9,152 bytes
+  (8.9 KiB), while README said 9 KiB. A previous commit had *already* fixed
+  this once with the note "a figure nobody rechecks is a figure that drifts",
+  and it drifted again. Now `test_the_recorder_wheel_size_is_stated_identically_everywhere`
+  checks the four sites against each other and against the built wheel. Run
+  against the unfixed tree it fails with `the four disagree: {7.0, 8.9, 8.9, 8.9}`.
+- "attention rows summing to **1.000**" for six models. The recorded figures
+  are 1.000-1.002, and two of the six had no recorded run at all —
+  Llama-3.2-1B-Instruct (gated, 403) and OLMo-2-1B (download stalls). A table
+  headed "Verified, not asserted" now contains only what was.
+- "the reader is about **200 lines**" for `vla_data.py`, which is 286
+  non-blank and was 256 when the sentence was written — wrong on the day it
+  shipped. Replaced with the property that stays true: it imports no
+  `lerobot` code.
+- "public SAEs exist for about **a dozen** models", in six places, sourced
+  from nothing. The registry knows four repositories, so it says four.
+
+**One finding I rejected.** The sweep flagged LOG.md's "byte counter climbed
+to 149%" as invented, on the grounds that nothing in the repo computes it.
+Nothing does — it was read off a live load: 819,086,596 bytes counted against
+an expected 550,959,861, which is 148.7%. Recomputed and kept. An observation
+recorded in this log *is* the measurement; that is what this file is for.
+
 ## 2026-08-09 (later) — 0.7.0 + 0.8.0, and auditing my own shipped numbers
 
 **Ranking heads, and comparing runs.** 0.7.0 added *Rank heads*: zero each

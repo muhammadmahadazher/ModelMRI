@@ -53,10 +53,17 @@ Type a prompt, watch it stream, then hover any token — arcs show which earlier
 144 heat maps and no reason to open any of them is a browsing tool. **Rank heads** zeroes each head in a layer, runs the model again, and measures how far the answer moves — so the dropdown arrives ordered and the top head is already selected.
 
 ```
-Rank heads → L0 H7  KL 0.866   p(" the") 0.112 → 0.073
-             L0 H10 KL 0.526
-             L0 H9  KL 0.426
+gpt2 · "The capital of France is" · zero-ablation · bf16
+
+Rank heads → L0 H7  KL 0.898   p(" the") 0.098 → 0.057
+             L0 H10 KL 0.535
+             L0 H9  KL 0.412
 ```
+
+The setup line is not decoration. The same three heads on the same model score
+0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
+generation — a KL depends on the prompt, the dtype and the sequence, so a
+figure quoted without them cannot be checked by anyone.
 
 One layer of gpt2 is 1.0s on an RTX 4060; all 144 heads is 10.3s. A bigger model costs more — Qwen3-0.6B is 28 layers × 16 heads, and the full sweep takes 137s — so the panel quotes the estimate before it starts and ranks one layer by default.
 
@@ -164,7 +171,7 @@ The browser viewer and the Python tool are checked cell-for-cell against the sam
 ```bash
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
-pip install modelmri-record       # just the agent recorder — stdlib only, a 9 KiB wheel
+pip install modelmri-record       # just the agent recorder — stdlib only, an 8.9 KiB wheel
 modelmri serve
 ```
 
@@ -217,7 +224,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 ## Honest limits
 
 - **Attention needs eager attention.** SDPA and FlashAttention never materialize the weights, so ModelMRI loads models with `attn_implementation="eager"`. Slower, but it's the only way to see anything.
-- **SAE features need an SAE that exists.** They are trained per model, and public ones cover about a dozen models in total — there is none for most of what you will load, and no amount of code makes one appear. ModelMRI offers the one that matches your model, says plainly when there is none, and falls back to a logit lens, which needs nothing but the model.
+- **SAE features need an SAE that exists.** They are trained per model, and public ones exist for only a handful — this build knows of four repositories — so there is none for most of what you will load, and no amount of code makes one appear. ModelMRI offers the one that matches your model, says plainly when there is none, and falls back to a logit lens, which needs nothing but the model.
 - **Custom models get a layer map, not attention.** Attention and SAE features need a transformer; for an arbitrary `nn.Module` ModelMRI shows shapes, activation statistics and pathologies. Loading an adapter runs your Python — see [SECURITY.md](SECURITY.md).
 - **VLA mode is the perception half.** SmolVLA's vision tower is real and loaded from the real checkpoint; the action expert needs `lerobot`, whose torch/numpy pins conflict with the core runtime, so it lives behind an opt-in extra rather than degrading everyone's install.
 

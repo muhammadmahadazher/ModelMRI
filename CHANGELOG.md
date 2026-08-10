@@ -8,6 +8,38 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [0.8.1] — 2026-08-10
 
+### Fixed
+
+- **Eight more shipped numbers that nobody had measured.** A sweep of every
+  numeric claim in the repo — README, docs, docstrings, comments, tests — put
+  45 candidates through adversarial verification; 8 survived it.
+
+  * `tests/test_ablate.py` still carried the **retracted `+21.96 / +18.06 /
+    ~6x`** verbatim, and a bf16 noise floor "around 5e-3" that measures
+    exactly 0.0. The test explaining why we rank by KL was doing so with the
+    figure that was wrong.
+  * `server.py` still shipped `0.12-0.68 s per layer against 1.4-19.6 s` —
+    the stale timings corrected elsewhere, and this copy is served publicly
+    in the OpenAPI schema at `/docs`.
+  * **README's ranking block did not reproduce.** It showed `L0 H7 KL 0.866,
+    p(" the") 0.112 → 0.073`; measured values are 0.784 / 0.085 → 0.062
+    (fp32) and 0.898 / 0.098 → 0.057 (bf16). The block now names its model,
+    prompt, baseline and dtype, because the same three heads score 0.784,
+    0.898 and 0.825 under three different setups — a KL without them cannot
+    be checked by anyone.
+  * The recorder wheel's **`7 KiB`** in three files (README said 9 KiB)
+    against a real 8.9 KiB. Now guarded by a test that checks all four sites
+    against each other and against the built wheel.
+  * "attention rows summing to **1.000**" for six models: the recorded
+    figures are 1.000–1.002, and two of the six had no recorded run at all
+    (Llama-3.2-1B-Instruct is gated; OLMo-2-1B's download stalls). The
+    "Verified, not asserted" table now contains only what was.
+  * "the reader is about **200 lines**" for `vla_data.py` — 286 non-blank,
+    and 256 on the day the sentence shipped. Replaced with the property that
+    stays true: it imports no `lerobot` code.
+  * "public SAEs exist for about **a dozen** models", in six places, sourced
+    from nothing. The registry knows four repositories, so it says four.
+
 ### Added
 
 - **The head ranking says what it will cost before it runs.** The button

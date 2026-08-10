@@ -444,8 +444,8 @@ def create_app(
         """Which SAEs fit the model that is loaded, and what else exists.
 
         An empty `matching` is the common, honest answer: sparse autoencoders
-        are trained per model, and public ones exist for about a dozen models
-        in total. The panel says so rather than looking broken.
+        are trained per model, and public ones exist for only a handful. The
+        panel says so, and names the ones it knows, rather than looking broken.
         """
         from . import sae_registry
 
@@ -703,10 +703,12 @@ def create_app(
     ):
         """Rank heads by how far removing one moves the next-token answer.
 
-        `scope=layer` (default) does n_heads passes; `scope=all` does
-        n_layers x n_heads. The default is the cheap one on purpose —
-        measured at 0.12-0.68 s per layer against 1.4-19.6 s for a whole
-        model — so the button is a click rather than a job.
+        `scope=layer` (default) does n_heads + 2 passes; `scope=all` does
+        n_layers x n_heads + 2. The default is the cheap one on purpose.
+        Measured on an RTX 4060 Laptop in bf16: gpt2 (12x12) one layer 1.0 s,
+        all 146 passes 10.3 s; Qwen3-0.6B (28x16) one layer 5.5 s, all 450
+        passes 137 s. One layer is a click; the whole model is a wait, which
+        is why the panel quotes the estimate before starting.
         """
         target = None if scope == "all" else (layer if layer is not None else 0)
         try:

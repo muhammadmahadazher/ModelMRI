@@ -4,7 +4,7 @@ import { errorText, getLens, LensRow } from "./api";
 /** Logit lens — the answer for every model that has no sparse autoencoder.
  *
  *  Most models have none and never will: an SAE is trained per model, and
- *  public ones exist for about a dozen models in total. This asks the other
+ *  public ones exist for only a handful of models. This asks the other
  *  question you can put to a residual stream, using nothing but the model —
  *  what token would it have emitted if it had stopped at layer N.
  *
