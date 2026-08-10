@@ -87,9 +87,38 @@ def model_revision(hf_id: str) -> str:
         return "unknown"
 
 
+def _forget_the_device(payload):
+    """Null every `device` field on the way out.
+
+    The status pill renders `${hf_id} · ${device}`, so a baked `"cuda:0"` told
+    every visitor their model was on CUDA — on a phone, on a Mac, on anything.
+    It is the same mistake as publishing the GPU's name, one field further
+    down, and it survived the first privacy pass for the same reason: "cuda:0"
+    is not a path, a username or a drive letter, so an identifier-shaped scan
+    walks past it.
+
+    Done here rather than at each call site because there were four
+    (scenarios, both llm bundles, vla) and a fifth endpoint would have been a
+    fifth chance to forget. `demo.ts` already reads `s.device ?? "recorded"` —
+    the frontend was always ready for this; only the data was not.
+
+    `dtype` deliberately survives. It is a property of the recording — these
+    weights really were bfloat16 — not a claim about the reader's machine.
+    """
+    if isinstance(payload, dict):
+        return {
+            k: (None if k == "device" and isinstance(v, str) else _forget_the_device(v))
+            for k, v in payload.items()
+        }
+    if isinstance(payload, list):
+        return [_forget_the_device(v) for v in payload]
+    return payload
+
+
 def write(name: str, payload: object) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / name
+    payload = _forget_the_device(payload)
     path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     print(f"  {name:<26} {path.stat().st_size / 1024:7.1f} KB")
 
@@ -353,8 +382,31 @@ def main() -> int:
             "per-platform, never hardcoded."
         ),
     }
+    # The accelerator is the same class of leak and was missed the first time,
+    # because it carries no username and no path — so the machine-identifier
+    # scan walked straight past "NVIDIA GeForce RTX 4060 Laptop GPU". A visitor
+    # on a phone was shown CUDA, that GPU's name, and 8.6 GB of its VRAM.
+    #
+    # There is no honest device to report: nothing runs behind this page. The
+    # dtype stays because it is a property of the recording rather than of any
+    # machine reading it — these attention weights really were produced in
+    # bfloat16, and that is worth saying.
+    env["accelerator"] = {
+        "kind": "recorded",
+        "torch_device": None,
+        "name": None,
+        "vram_gb": None,
+        "dtype": "bfloat16",
+        "reason": (
+            "This page is a recording — nothing runs here, so there is no "
+            "device to detect. Installed, ModelMRI finds your own accelerator "
+            "(NVIDIA, AMD, Intel or Apple silicon), names it, and explains "
+            "which it chose and why."
+        ),
+    }
     print("  hub_auth         synthesised (signed out)")
     print("  paths            synthesised (no machine paths published)")
+    print("  accelerator      synthesised (no device named)")
 
     # A real .mri of the demo's own run, so "Share this view" produces a file
     # that actually opens in the viewer next door — the one hop the demo was
@@ -376,19 +428,51 @@ def main() -> int:
 
     print("\nAgents: trace")
     traces = get("/api/traces")
+    # One entry, not three. The sample trace had been imported into the local
+    # database more than once, so the demo shipped two runs with the same name,
+    # the same ten steps and the same 17,110 ms — which reads as two real runs
+    # that happened to be identical, rather than one sample recorded twice.
+    # Only the trace the panel actually opens is published, so the list and the
+    # detail view cannot disagree.
     trace = get(f"/api/traces/{traces[0]['id']}") if traces else None
-    write("traces.json", {"list": traces[:3], "trace": trace})
+    write("traces.json", {"list": traces[:1], "trace": trace})
 
-    print("\nDiscovery: what is actually on this machine")
-    disco = get("/api/models/discovered")
-    # The model ids and sizes are real; the paths are this machine's directory
-    # layout and have no business on the public internet. Replaced with a
-    # plausible generic root so the demo's picker still reads as a real one.
-    for m in disco.get("models", []):
-        leaf = m["path"].replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-        m["path"] = f"~/.cache/huggingface/hub/{leaf}"
-    disco["roots"] = ["~/models"]
+    print("\nDiscovery: the models this recording can actually replay")
+    # This used to publish `/api/models/discovered` verbatim, generalising only
+    # the paths. That left the model ids and sizes intact — which is an
+    # inventory of what is in one person's HuggingFace cache, listed on a
+    # public website under "On this machine" and annotated "cached, loads
+    # offline". For a visitor every word of that is false: it is not their
+    # machine, nothing is cached, and clicking a model the recording has no
+    # scenario for cannot load anything.
+    #
+    # Synthesised from the scenarios instead, which is the same rule already
+    # applied to hub_auth and paths. The list is now exactly what the demo can
+    # replay, so the picker is honest in both directions: everything shown
+    # works, and nothing shown belongs to anybody.
+    disco = {
+        "models": [
+            {
+                "id": s["id"],
+                "name": s["id"],
+                "path": None,
+                "kind": "demo",
+                "size_gb": None,
+                "loadable": True,
+                "note": "recorded for this demo — opens instantly, nothing to download",
+            }
+            for s in SCENARIOS
+        ],
+        "roots": [],
+        "truncated": False,
+        "demo_note": (
+            "This list is the demo's own recordings. Installed, this tab shows "
+            "the models already on your machine — your HuggingFace cache, plain "
+            "folders and GGUF files — found without you typing a path."
+        ),
+    }
     write("discovered.json", disco)
+    print(f"  discovered       synthesised from {len(disco['models'])} scenario(s)")
 
     print("\nCustom: the adapter template, inspected")
     try:

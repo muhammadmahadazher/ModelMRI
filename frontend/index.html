@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
+    <!-- head:start — replaced per build target by the modelmri-head plugin in
+         vite.config.ts. One index.html feeds three builds (app, demo, viewer),
+         so anything written here is written to all three unless it is swapped.
+         What follows is the demo's version, which is also what you get if you
+         open this file directly. Do not remove the markers; the build asserts
+         they are present exactly once and fails if they are not. -->
+
     <title>ModelMRI — see inside a local language model</title>
 
     <!-- The page is a React app, so a crawler that does not run JavaScript
@@ -64,10 +71,13 @@
       }
     </script>
 
+    <!-- head:end -->
+
     <style>html{background:#0a0e14}</style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- noscript:start — also swapped per target; see head:start above. -->
     <noscript>
       <!-- Not an apology for JavaScript: a crawler or a reader without it
            still deserves to know what this is and where to get it. -->
@@ -88,6 +98,7 @@
         <p>This page needs JavaScript to run the interactive demo.</p>
       </main>
     </noscript>
+    <!-- noscript:end -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
