@@ -35,6 +35,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Set up before the first step that needs it, not before the docs build
+      # further down: the demo parity check runs on Python too, and
+      # `python` is not on PATH on the runner without this.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build the demo
         run: |
           cd frontend
@@ -47,6 +53,14 @@ jobs:
           grep -q "demo/llm.json\|assets/" demo-dist/index.html || true
           echo "demo build OK: $(du -sh demo-dist | cut -f1)"
 
+      # The demo is the only ModelMRI most visitors will ever touch, and its
+      # entire gate used to be the `test -f` above — while the .mri viewer
+      # beside it is checked cell-for-cell. That asymmetry is how the demo
+      # came to advertise 12x12 attention over three baked slices, and to
+      # answer 409 on the button the README leads with.
+      - name: The demo answers everything the tool does
+        run: python tests/demo_check.py
+
       - name: Build the .mri viewer
         run: |
           cd frontend
@@ -58,9 +72,6 @@ jobs:
           test ! -d modelmri/static/viewer/demo
           echo "viewer build OK: $(du -sh modelmri/static/viewer | cut -f1)"
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Build the docs
         run: |
           pip install --quiet mkdocs-material

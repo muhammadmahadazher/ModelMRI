@@ -1,4 +1,4 @@
-import { DEMO } from "./demo";
+import { DEMO, demoSessionFile } from "./demo";
 
 export interface ModelStatus {
   loaded: boolean;
@@ -249,6 +249,16 @@ export async function exportSession(
   head: number,
   note: string,
 ): Promise<{ blob: Blob; filename: string }> {
+  // This one call wants bytes and a Content-Disposition, so it never went
+  // through the patched fetch — which meant "Share this view" 404'd on the
+  // demo against its own origin. The demo ships a real `.mri` of its own run,
+  // so the demo -> viewer hop is something a visitor can do rather than read
+  // about.
+  if (DEMO) {
+    const blob = await demoSessionFile();
+    if (!blob) throw new ApiError(409, "this demo bundle carries no .mri");
+    return { blob, filename: "modelmri-demo.mri" };
+  }
   const r = await fetch(
     `/api/session/export?layer=${layer}&head=${head}&note=${encodeURIComponent(note)}`,
   );

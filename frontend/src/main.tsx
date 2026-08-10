@@ -38,15 +38,17 @@ if (DEMO) {
       const body = init?.body ? JSON.parse(init.body as string) : undefined;
       // a beat of latency so streaming/loading states are still visible
       await new Promise((r) => setTimeout(r, 120));
-      const payload = await demoFetch(url, body);
-      if (payload === undefined) {
+      const answer = await demoFetch(url, body);
+      if (answer === undefined) {
+        // Nothing reachable should land here — tests/demo_check.py fails the
+        // build on any endpoint api.ts can call and demo.ts does not answer.
         return new Response(JSON.stringify({ error: "not available in the demo" }), {
           status: 409,
           headers: { "Content-Type": "application/json" },
         });
       }
-      return new Response(JSON.stringify(payload), {
-        status: 200,
+      return new Response(JSON.stringify(answer.payload), {
+        status: answer.status,
         headers: { "Content-Type": "application/json" },
       });
     }

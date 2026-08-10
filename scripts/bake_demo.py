@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -25,10 +26,20 @@ BASE = "http://127.0.0.1:5900"
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "frontend" / "public" / "demo"
 PROMPT = "The Eiffel Tower is located in the city of"
+DEMO_MODEL = "gpt2"
 VLA_EPISODE, VLA_FRAME = 3, 60
-# keep the payload small: these are the layers the UI offers in demo mode
-LLM_LAYERS = [0, 6, 11]
 VLA_LAYERS = [0, 3, 6, 9, 11]
+
+# The LLM bundle bakes EVERY layer/head, not a sample. Three slices used to be
+# baked against a meta advertising 12 x 12, so 141 of 144 selections drew a
+# different head's arcs than the controls said — and the fallback was silent,
+# which is the only kind of wrong nobody reports. Completeness is also nearly
+# free here: gpt2's 144 slices of 23 x 23 cost about as much as the robot
+# bundle already does.
+#
+# How many ranked heads offer a "what changes?" button. AttentionPanel renders
+# `.slice(0, 5)`, so five is the reachable set, not a sample of it.
+RANKED_ROWS = 5
 
 
 def get(path: str, timeout: float = 900) -> dict:
@@ -44,6 +55,23 @@ def post(path: str, body: dict, timeout: float = 900) -> dict:
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
+
+
+def model_revision(hf_id: str) -> str:
+    """The exact snapshot the demo was baked from, so it can be reproduced.
+
+    "gpt2" is a moving target; `gpt2@607a30d` is not. Read from the local hub
+    cache rather than the network, because the bake already ran against these
+    weights and a second lookup could answer about different ones.
+    """
+    try:
+        from modelmri import paths
+
+        repo = paths.hf_hub_cache() / f"models--{hf_id.replace('/', '--')}"
+        snaps = sorted((repo / "snapshots").iterdir())
+        return snaps[-1].name if snaps else "unknown"
+    except Exception:
+        return "unknown"
 
 
 def write(name: str, payload: object) -> None:
@@ -70,17 +98,71 @@ def main() -> int:
     )["generation"]
 
     meta = get("/api/attention/meta")
+    n_layers, n_heads = meta["n_layers"], meta["n_heads"]
+
+    print(f"  attention: {n_layers} x {n_heads} = {n_layers * n_heads} slices")
     attn = {
-        str(layer): get(f"/api/attention?layer={layer}&head=0") for layer in LLM_LAYERS
+        f"{layer}.{head}": get(f"/api/attention?layer={layer}&head={head}")
+        for layer in range(n_layers)
+        for head in range(n_heads)
     }
+
+    # Rank heads is the capability the README leads with, and the demo had no
+    # handler for it at all — the button answered 409 under advice that could
+    # not work. Both baselines, because the panel offers both and they
+    # genuinely disagree; plus the whole-model sweep the second button runs.
+    print(f"  rankings: {n_layers} layers x 2 baselines + 2 sweeps")
+    # NOT `baseline` — that name already holds the generated text, and reusing
+    # it here silently wrote the string "mean" into the demo's generation and
+    # into features.json. Caught by opening the built demo and reading what it
+    # said, which is the only place it was visible.
+    ablate: dict[str, dict] = {}
+    for cut in ("zero", "mean"):
+        for layer in range(n_layers):
+            ablate[f"{layer}.{cut}"] = get(
+                f"/api/attention/ablate?layer={layer}&baseline={cut}&scope=layer"
+            )
+        ablate[f"all.{cut}"] = get(f"/api/attention/ablate?baseline={cut}&scope=all")
+
+    # "what changes?" on each ranked row. The panel opens the comparison at
+    # layer+1 (an ablation cannot change its own layer) against the head the
+    # ranking just selected, so that is exactly the reachable set.
+    print(f"  comparisons: {n_layers} layers x {RANKED_ROWS} ranked rows")
+    diff: dict[str, dict] = {}
+    for layer in range(n_layers):
+        rows = ablate[f"{layer}.zero"]["ranked"][:RANKED_ROWS]
+        if not rows:
+            continue
+        at = min(layer + 1, n_layers - 1)
+        head = rows[0]["head"]  # rank() selects the top head before compare()
+        for row in rows:
+            key = f"{at}.{head}.{layer}.{row['head']}"
+            diff[key] = get(
+                f"/api/attention/diff?layer={at}&head={head}"
+                f"&a=live&b=ablate:{layer}.{row['head']}"
+            )
+
+    session = get("/api/session")
     write(
         "llm.json",
         {
             "prompt": PROMPT,
             "generation": baseline,
             "meta": meta,
-            "layers": LLM_LAYERS,
+            "layers": list(range(n_layers)),
             "attention": attn,
+            "ablate": ablate,
+            "diff": diff,
+            # What produced this bundle. A demo that cannot say what it
+            # replayed is a screenshot with buttons.
+            "provenance": {
+                "model": session["model"]["hf_id"],
+                "revision": model_revision(session["model"]["hf_id"]),
+                "dtype": session["model"]["dtype"],
+                "device": session["model"]["device"],
+                "prompt": PROMPT,
+                "modelmri": session["version"],
+            },
         },
     )
 
@@ -108,6 +190,65 @@ def main() -> int:
             "scale": -40,
         },
     )
+
+    # The endpoints the panels call on first paint. Each of these used to
+    # answer 409 "not available in the demo", which is how the accelerator
+    # badge, the storage panel, the logit lens and the HF tab all rendered as
+    # broken rather than as recorded.
+    print("\nEnvironment: the small endpoints every panel calls")
+    env: dict[str, object] = {}
+    for name, path in (
+        ("accelerator", "/api/accelerator"),
+        ("progress", "/api/model/progress"),
+        ("sae_available", "/api/sae/available"),
+        ("lens", "/api/lens?top_k=5"),
+        ("session_state", "/api/session/state"),
+        ("hub_auth", "/api/hub/auth"),
+        ("vla_datasets", "/api/vla/datasets"),
+    ):
+        try:
+            env[name] = get(path, timeout=120)
+            print(f"  {name:<16} ok")
+        except urllib.error.HTTPError as err:
+            print(f"  {name:<16} skipped ({err.code})")
+
+    # `/api/paths` publishes this machine's directory layout. The shapes are
+    # real; the paths are generalised, exactly as the discovery bundle does.
+    try:
+        p = get("/api/paths")
+        home = str(Path.home()).replace("\\", "/")
+
+        def scrub(value: object) -> object:
+            if isinstance(value, str):
+                return value.replace("\\", "/").replace(home, "~")
+            if isinstance(value, dict):
+                return {k: scrub(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [scrub(v) for v in value]
+            return value
+
+        env["paths"] = scrub(p)
+        print("  paths            ok (generalised)")
+    except urllib.error.HTTPError as err:
+        print(f"  paths            skipped ({err.code})")
+
+    # A real .mri of the demo's own run, so "Share this view" produces a file
+    # that actually opens in the viewer next door — the one hop the demo was
+    # describing but could not perform.
+    try:
+        import base64
+
+        with urllib.request.urlopen(
+            f"{BASE}/api/session/export?layer=0&head=0&note="
+            + urllib.parse.quote("Baked from the ModelMRI demo run"),
+            timeout=300,
+        ) as r:
+            env["session_mri"] = base64.b64encode(r.read()).decode("ascii")
+        print(f"  session_mri      ok ({len(env['session_mri']) / 1024:.1f} KB b64)")
+    except (urllib.error.HTTPError, urllib.error.URLError) as err:
+        print(f"  session_mri      skipped ({err})")
+
+    write("env.json", env)
 
     print("\nAgents: trace")
     traces = get("/api/traces")
