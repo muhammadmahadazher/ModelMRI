@@ -75,6 +75,21 @@ class SessionError(ValueError):
     """The file is not a session we can open, and we say why."""
 
 
+def _boundary(doc: dict, n_tokens: int) -> int:
+    """Where the prompt ends, from an untrusted file.
+
+    Additive field: sessions written before it exists carry nothing, and 0
+    means "unknown" — the panel then rests on no token rather than claiming
+    the whole sequence is prompt. Anything outside [0, n_tokens] is a
+    malformed claim about the file's own token list, so it is discarded
+    rather than believed.
+    """
+    raw = doc.get("n_prompt")
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return 0
+    return raw if 0 <= raw <= n_tokens else 0
+
+
 def _quantise(matrix: Any) -> tuple[str, float]:
     """[S,S] floats -> (base64 uint8, scale). value ~= byte * scale.
 
@@ -149,11 +164,15 @@ class Session:
     lens: list[dict] = field(default_factory=list)
     n_layers: int = 0
     n_heads: int = 0
+    # Where the prompt ends. Additive: a file written before this carries 0,
+    # which every reader must treat as "unknown" and not as "all prompt".
+    n_prompt: int = 0
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
         return {
             "available": bool(self.attention),
+            "n_prompt": self.n_prompt,
             "n_layers": self.n_layers,
             "n_heads": self.n_heads,
             "n_tokens": len(self.tokens),
@@ -173,6 +192,8 @@ class Session:
         return {
             "layer": layer,
             "head": head,
+            # So a replayed session rests on the same token a live one does.
+            "n_prompt": self.n_prompt,
             "tokens": self.tokens,
             "matrix": _dequantise(block["q"], block["scale"], len(self.tokens)),
             "replay": True,
@@ -191,6 +212,7 @@ def build(
     attention: dict[tuple[int, int], list[list[float]]],
     n_layers: int,
     n_heads: int,
+    n_prompt: int = 0,
     lens: list[dict] | None = None,
     note: str = "",
     scope: str = "",
@@ -227,6 +249,7 @@ def build(
         "prompt": prompt,
         "generation": generation,
         "tokens": tokens,
+        "n_prompt": int(n_prompt or 0),
         "n_layers": n_layers,
         "n_heads": n_heads,
         "attention": blocks,
@@ -331,6 +354,7 @@ def parse(data: bytes) -> Session:
         generation=doc.get("generation") or "",
         attention=attention,
         lens=doc.get("lens") or [],
+        n_prompt=_boundary(doc, len(tokens)),
         n_layers=counts["n_layers"],
         n_heads=counts["n_heads"],
     )

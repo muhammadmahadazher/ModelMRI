@@ -38,6 +38,8 @@ interface Scenario {
   n_params: number | null;
   device: string | null;
   dtype: string | null;
+  /** Base model or instruction-tuned. Drives the caveat under the output. */
+  instruct?: boolean;
 }
 
 async function index(): Promise<{ default: string; scenarios: Scenario[] }> {
@@ -119,6 +121,7 @@ export async function demoFetch(
         device: s.device ?? "recorded",
         dtype: s.dtype ?? "bfloat16",
         n_params: s.n_params,
+        instruct: s.instruct ?? null,
       },
       _demo: { ...(await llm()), scenarios: (await index()).scenarios.map((x) => x.id) },
     });
@@ -212,12 +215,19 @@ export async function demoFetch(
       );
     }
     active = match.id;
+    // The real runtime clears steering on every load, because a hook left
+    // installed silently steers the next generation of a different model.
+    steerActive = false;
     return ok({
       loaded: true,
       hf_id: match.id,
       device: match.device ?? "recorded",
       dtype: match.dtype ?? "bfloat16",
       n_params: match.n_params,
+      // Without this the base-model caveat never fires in the demo, and the
+      // temperature half of it fires alone — asserting sampling on a replay
+      // that is deterministic by construction.
+      instruct: match.instruct ?? null,
     });
   }
 
@@ -314,12 +324,53 @@ export async function demoFetch(
     return ok(d);
   }
 
-  if (p === "/api/sae") return ok((await bundle<any>("features")).sae);
-  if (p === "/api/sae/load") return ok((await bundle<any>("features")).sae);
-  if (p === "/api/features/summary") return ok((await bundle<any>("features")).summary);
-  if (p.startsWith("/api/features/")) return ok((await bundle<any>("features")).detail);
+  // Features, SAE and steering belong to ONE scenario.
+  //
+  // features.json is gpt2's: a 768-dim GPT-2 SAE, gpt2's 23-token sentence,
+  // and a steered completion of it. Served unconditionally, selecting
+  // Qwen3-0.6B left the page reporting a GPT-2 SAE loaded against a 1024-dim
+  // model, a feature strip showing gpt2's words under Qwen3's output, and an
+  // A/B pairing Qwen3's baseline against gpt2's steered text. That is the
+  // failure this module's own docstring says was eliminated — one model's
+  // sentence attributed to another.
+  //
+  // The real server cannot do this: `load()` clears `sae`, `_feats` and
+  // `_steer` on every model change, so the panel falls to "no SAE exists for
+  // this model". These branches now behave the same way.
+  const saeScenario = async () => (await index()).default;
+  const hasSAE = async () => (await current()).id === (await saeScenario());
+
+  if (p === "/api/sae") {
+    if (!(await hasSAE())) {
+      return ok({ loaded: false, repo: null, hook: null, layer: null, d_in: null });
+    }
+    return ok((await bundle<any>("features")).sae);
+  }
+  if (p === "/api/sae/load") {
+    if (!(await hasSAE())) {
+      const s = await current();
+      return refuse(
+        422,
+        `No public sparse autoencoder exists for ${s.id}. This demo recorded ` +
+          `one for ${await saeScenario()}; installed, ModelMRI checks the SAE's ` +
+          `d_in against the model's hidden size and refuses a mismatch rather ` +
+          `than showing you another model's features.`,
+      );
+    }
+    return ok((await bundle<any>("features")).sae);
+  }
+  if (p === "/api/features/summary" || p.startsWith("/api/features/")) {
+    if (!(await hasSAE())) {
+      return refuse(409, "Load an SAE first.");
+    }
+    const f = await bundle<any>("features");
+    return ok(p === "/api/features/summary" ? f.summary : f.detail);
+  }
   if (p === "/api/steer") {
     const id = (body as any)?.feature_id;
+    if (id != null && !(await hasSAE())) {
+      return refuse(409, "Load an SAE first.");
+    }
     steerActive = id != null;
     return ok(
       steerActive
@@ -376,12 +427,24 @@ export async function demoFetch(
       ],
     });
   }
+  // The robot panel's scrubber and layer dial are the same class of control
+  // as the attention panel's, and were serving the same silent lie: the
+  // nearest BAKED frame or layer, under a control naming the one you asked
+  // for. The attention side was fixed to refuse; these now match.
   if (p === "/api/vla/frame") {
     const v = await bundle<any>("vla");
     const want = Number(q.get("t") ?? v.frame);
-    const keys = Object.keys(v.frames).map(Number);
-    const nearest = keys.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
-    return ok(v.frames[String(nearest)]);
+    const have = Object.keys(v.frames).map(Number).sort((a, b) => a - b);
+    const frame = v.frames[String(want)];
+    if (!frame) {
+      return refuse(
+        422,
+        `this demo recorded frames ${have.join(", ")} of episode ${v.episode}, ` +
+          `not frame ${want}. Installed, ModelMRI decodes any frame of any ` +
+          `LeRobot episode you have pulled.`,
+      );
+    }
+    return ok(frame);
   }
   if (p === "/api/vla/analyse") {
     const v = await bundle<any>("vla");
@@ -406,8 +469,15 @@ export async function demoFetch(
     const v = await bundle<any>("vla");
     const want = Number(q.get("layer") ?? 0);
     const have: number[] = v.layers;
-    const nearest = have.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a));
-    return ok(v.attention[String(nearest)]);
+    const block = v.attention[String(want)];
+    if (!block) {
+      return refuse(
+        422,
+        `this demo recorded the vision tower at layers ${have.join(", ")}, ` +
+          `not layer ${want}. Installed, every layer is available.`,
+      );
+    }
+    return ok(block);
   }
   return undefined;
 }

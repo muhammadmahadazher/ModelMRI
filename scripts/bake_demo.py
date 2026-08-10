@@ -158,19 +158,49 @@ def bake_llm(scenario: dict) -> dict:
     # "what changes?" on each ranked row. The panel opens the comparison at
     # layer+1 (an ablation cannot change its own layer) against the head the
     # ranking just selected, so that is exactly the reachable set.
-    print(f"  comparisons: {n_layers} layers x {RANKED_ROWS} ranked rows")
+    # "what changes?" on each ranked row.
+    #
+    # The panel opens the comparison at layer+1 (an ablation cannot change its
+    # own layer) against the head the ranking just selected — and WHICH head
+    # that is depends on the baseline, because the two baselines rank
+    # differently. Baking only the zero-baseline heads left every mean-baseline
+    # comparison 422ing under a message claiming the demo records what the
+    # ranking offers. A whole-model sweep jumps to the global winner, so its
+    # top rows need their own entries too.
+    #
+    # No substituting a nearby head: the diff is of one specific head's
+    # attention, so serving another under the same controls is exactly the
+    # bug this file exists to prevent. Bake the reachable set instead.
+    print(f"  comparisons: {n_layers} layers x 2 baselines x {RANKED_ROWS} rows")
     diff: dict[str, dict] = {}
-    for layer in range(n_layers):
-        rows = ablate[f"{layer}.zero"]["ranked"][:RANKED_ROWS]
-        if not rows:
-            continue
-        at = min(layer + 1, n_layers - 1)
-        head = rows[0]["head"]  # rank() selects the top head before compare()
-        for row in rows:
-            diff[f"{at}.{head}.{layer}.{row['head']}"] = get(
-                f"/api/attention/diff?layer={at}&head={head}"
-                f"&a=live&b=ablate:{layer}.{row['head']}"
-            )
+
+    def bake_diff(at: int, head: int, cut_layer: int, cut_head: int) -> None:
+        key = f"{at}.{head}.{cut_layer}.{cut_head}"
+        if key in diff:
+            return
+        diff[key] = get(
+            f"/api/attention/diff?layer={at}&head={head}"
+            f"&a=live&b=ablate:{cut_layer}.{cut_head}"
+        )
+
+    for cut in ("zero", "mean"):
+        for layer in range(n_layers):
+            rows = ablate[f"{layer}.{cut}"]["ranked"][:RANKED_ROWS]
+            if not rows:
+                continue
+            at = min(layer + 1, n_layers - 1)
+            head = rows[0]["head"]  # rank() selects the top head first
+            for row in rows:
+                bake_diff(at, head, layer, row["head"])
+
+        # The whole-model sweep selects the global winner, which is usually a
+        # different layer AND head from any single-layer ranking.
+        sweep = ablate[f"all.{cut}"]["ranked"][:RANKED_ROWS]
+        if sweep:
+            best = sweep[0]
+            at = min(best["layer"] + 1, n_layers - 1)
+            for row in sweep:
+                bake_diff(at, best["head"], row["layer"], row["head"])
 
     session = get("/api/session")
     write(
@@ -207,6 +237,8 @@ def bake_llm(scenario: dict) -> dict:
         "n_tokens": n_tokens,
         "generation": generation,
         "n_params": session["model"]["n_params"],
+        # Base vs instruction-tuned, so the demo's caveat can say which.
+        "instruct": bool(session["model"].get("instruct")),
         "device": session["model"]["device"],
         "dtype": session["model"]["dtype"],
     }

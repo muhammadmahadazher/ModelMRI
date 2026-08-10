@@ -178,16 +178,56 @@ def suggested(vram_gb: float | None = None, timeout: float = 6.0) -> list[dict]:
         return {
             "name": name,
             "size_gb": gb,
-            # Weights alone are not the whole story — context and overhead
-            # cost more — so the ceiling is the same one the download guard
-            # uses rather than a second opinion invented here.
-            "fits": None
-            if (not gb or vram_gb is None)
-            else gb <= max(4 * vram_gb, 20.0),
+            # Will this RUN on the GPU, which is the question the chip answers.
+            #
+            # This used `max(4 * vram_gb, 20.0)` — `capacity.guard`'s ceiling
+            # for refusing a DOWNLOAD, which is deliberately generous because
+            # a model too big for VRAM still runs on the CPU. Against a 20 GB
+            # floor every curated entry here is under 6 GB, so the verdict was
+            # `True` for every model at every GPU size, including a 1 GB card:
+            # a constant wearing the costume of a measurement.
+            #
+            # Ollama loads GGUF weights into VRAM and needs room on top for
+            # the KV cache and context, so the honest test is the weights
+            # against the card with headroom left. It is approximate, and the
+            # chip only ever says "bigger than this GPU", never "will fit".
+            "fits": None if (not gb or not vram_gb) else gb <= vram_gb * 0.8,
         }
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         return list(pool.map(one, SUGGESTED))
+
+
+def is_instruct(
+    name: str, host: str | None = None, timeout: float = 3.0
+) -> bool | None:
+    """Is this Ollama model instruction-tuned, or a base text continuer?
+
+    Ollama publishes both — `llama3.2:1b-text-fp16`, `qwen2.5:0.5b-base` and
+    `gemma2:2b-text-q4_0` are all base tags — so this cannot be assumed. It
+    was, and the assumption silenced the caveat that explains why a base model
+    answers strangely, for exactly the models that need it.
+
+    The signal is Ollama's own: `/api/show` returns the chat template a model
+    was published with, and a base model has none. Same distinction the
+    HuggingFace path draws from `tokenizer.chat_template`.
+
+    Returns None when the daemon cannot be asked. Unknown is not False —
+    False is the positive claim "this is a base model", which the UI states
+    in those words.
+    """
+    host = host or default_host()
+    try:
+        req = urllib.request.Request(
+            f"{host}/api/show",
+            data=json.dumps({"model": name}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            doc = json.load(resp)
+    except Exception:
+        return None
+    return bool((doc.get("template") or "").strip())
 
 
 def status(host: str | None = None, timeout: float = 1.5) -> dict:

@@ -73,6 +73,8 @@ interface Doc {
   prompt?: string;
   generation?: string;
   tokens?: string[];
+  /** Where the prompt ends; 0 when the file predates the field. */
+  n_prompt?: number;
   n_layers?: number;
   n_heads?: number;
   attention?: Record<string, { q: string; scale: number }>;
@@ -232,6 +234,7 @@ export async function viewerFetch(
     if (!open) return ok({ available: false });
     return ok({
       available: Object.keys(open.attention ?? {}).length > 0,
+      n_prompt: open.n_prompt ?? 0,
       n_layers: open.n_layers ?? 0,
       n_heads: open.n_heads ?? 0,
       n_tokens: (open.tokens ?? []).length,
@@ -262,6 +265,9 @@ export async function viewerFetch(
       return ok({
         layer,
         head,
+        // So a shared analysis rests on a token too, instead of opening
+        // on the empty canvas the resting state exists to replace.
+        n_prompt: open.n_prompt ?? 0,
         tokens,
         matrix: dequantise(block.q, block.scale, tokens.length),
         replay: true,

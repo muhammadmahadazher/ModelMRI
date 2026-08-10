@@ -47,6 +47,46 @@ def _build(**over) -> bytes:
 # ----------------------------------------------------------- round trip
 
 
+def test_the_prompt_boundary_survives_a_round_trip():
+    """The panel rests on the last prompt token, so a shared session that
+    loses the boundary opens on the blank canvas the resting state replaced —
+    someone else's analysis, arriving worse than your own."""
+    got = session.parse(_build(n_prompt=2))
+    assert got.n_prompt == 2
+    assert got.attention_meta()["n_prompt"] == 2
+    assert got.attention_slice(0, 0)["n_prompt"] == 2
+
+
+def test_a_boundary_outside_the_token_list_is_discarded():
+    """`n_prompt` arrives in a file a stranger sent. A value past the end
+    would mark generated tokens as prompt, or index off the matrix.
+
+    Zero means "unknown" — every reader treats it as "rest on nothing",
+    which is the safe reading. It must NOT mean "all prompt"."""
+    import gzip
+    import json
+
+    for hostile in (99, -1, "3", True, None):
+        raw = json.loads(gzip.decompress(_build()))
+        raw["n_prompt"] = hostile
+        blob = gzip.compress(json.dumps(raw).encode())
+        assert session.parse(blob).n_prompt == 0, f"accepted {hostile!r}"
+
+
+def test_an_older_session_without_a_boundary_still_opens():
+    """The field is additive. Files written before it exists must not become
+    unreadable, and must report unknown rather than a guess."""
+    import gzip
+    import json
+
+    raw = json.loads(gzip.decompress(_build()))
+    del raw["n_prompt"]
+    blob = gzip.compress(json.dumps(raw).encode())
+    parsed = session.parse(blob)
+    assert parsed.n_prompt == 0
+    assert parsed.tokens == ["The", " cat", " sat"]
+
+
 def test_round_trip_keeps_what_the_panels_read():
     got = session.parse(_build())
     assert got.tokens == ["The", " cat", " sat"]
@@ -56,6 +96,7 @@ def test_round_trip_keeps_what_the_panels_read():
     assert got.meta["n_params"] == 124_000_000
     assert got.attention_meta() == {
         "available": True,
+        "n_prompt": 0,
         "n_layers": 1,
         "n_heads": 1,
         "n_tokens": 3,
@@ -172,6 +213,7 @@ def test_the_file_carries_no_weights():
         "tokens",
         "n_layers",
         "n_heads",
+        "n_prompt",
         "attention",
         "lens",
     }

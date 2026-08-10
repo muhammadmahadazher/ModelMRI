@@ -627,11 +627,24 @@ export function streamGenerate(
     // word so the streaming UI behaves exactly as it does locally.
     let cancelled = false;
     void (async () => {
-      const { generation } = await fetch("/api/model/prompt", {
+      const res = await fetch("/api/model/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
-      }).then((r) => r.json());
+      });
+      // The demo refuses a prompt it did not record, and the sentence saying
+      // so is the entire point of the refusal. Destructuring straight off
+      // `r.json()` took `generation` from a `{error}` body, got undefined,
+      // and streamed the literal word "undefined" into the output panel as
+      // the model's answer — then called onDone, so every panel below
+      // refreshed as though a real generation had happened. Exactly the
+      // confusion the refusal was written to prevent.
+      if (!res.ok) {
+        const message = errorText(new ApiError(res.status, await res.text()));
+        if (!cancelled) h.onError(message);
+        return;
+      }
+      const { generation } = await res.json();
       const pieces = String(generation).match(/\s*\S+/g) ?? [];
       for (const piece of pieces) {
         if (cancelled) return;

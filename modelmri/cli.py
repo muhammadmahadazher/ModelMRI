@@ -152,10 +152,28 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
 
 
 def _tree_bytes(root) -> int:
+    """Bytes this tree occupies on disk.
+
+    `lstat`, not `stat`, and symlinks are not followed. The HuggingFace cache
+    is built out of `snapshots/` symlinks pointing at `blobs/`, so following
+    them counts every weight file two or three times: an 8 GB cache was
+    reported at 20 GB, in the confirmation prompt for deleting it.
+    """
+    total = 0
     try:
-        return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+        for f in root.rglob("*"):
+            try:
+                st = f.lstat()
+            except OSError:
+                continue
+            # S_ISREG on the entry itself: a symlink contributes only its own
+            # tiny inode, and the blob it points at is counted once, where it
+            # actually lives.
+            if not f.is_symlink() and st.st_mode & 0o170000 == 0o100000:
+                total += st.st_size
     except OSError:
-        return 0
+        return total
+    return total
 
 
 def uninstall(*, yes: bool = False, models: bool = False) -> int:
@@ -182,7 +200,7 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
     print(f"ModelMRI {__version__} — what is on this machine\n")
 
     targets: list[tuple[str, Path]] = []
-    seen: set[Path] = set()
+    kept: list[Path] = []
     for label, path in (
         ("data", paths.data_dir()),
         ("config", paths.config_dir()),
@@ -192,11 +210,15 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
         if path is None:
             continue
         resolved = Path(path)
-        # cache_dir() lives under data_dir() on some platforms; deleting the
-        # parent first would make the child look like a phantom failure.
-        if resolved in seen or not resolved.exists():
+        if not resolved.exists():
             continue
-        seen.add(resolved)
+        # On Windows cache_dir() is data_dir()/Cache — nested, not equal — so
+        # an equality check saw two distinct paths, listed both, deleted the
+        # parent, and then reported the child as a failure it had itself
+        # caused. Containment is the test that matches the comment.
+        if any(resolved == k or k in resolved.parents for k in kept):
+            continue
+        kept.append(resolved)
         targets.append((label, resolved))
 
     if not targets:
@@ -204,17 +226,21 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
     for label, path in targets:
         print(f"  {label:<8} {path}  ({_tree_bytes(path) / 1e6:.1f} MB)")
 
+    # Existence, not size, decides whether this is disclosed and whether
+    # `--models` acts on it. Gating on bytes meant an empty-but-present cache
+    # silently did nothing under `--models`, and the SHARED warning — the
+    # whole reason this is opt-in — disappeared with it.
     hub = paths.hf_hub_cache()
-    hub_bytes = _tree_bytes(hub) if hub.exists() else 0
-    if hub_bytes:
+    if hub.exists():
+        hub_bytes = _tree_bytes(hub)
         print(f"\n  models   {hub} ({hub_bytes / 1e9:.2f} GB)")
         print(
             "           SHARED with transformers, datasets and anything else "
             "using\n           the HuggingFace cache."
             + (" Deleting it, as asked." if models else " Left alone.")
         )
-    if models and hub_bytes:
-        targets.append(("models", hub))
+        if models:
+            targets.append(("models", hub))
 
     if not targets:
         return 0
@@ -232,19 +258,44 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
     import shutil
 
     freed = 0
+    failures = 0
     for label, path in targets:
-        size = _tree_bytes(path)
-        try:
-            shutil.rmtree(path)
-            freed += size
+        before = _tree_bytes(path)
+        errors: list[str] = []
+        # rmtree stops at the FIRST entry it cannot remove, having already
+        # deleted everything it walked before that. Reporting "could not
+        # remove <the whole directory>" then tells the user it was left alone
+        # when most of it is gone. Collect every failure and re-measure.
+        # `onexc` is 3.12+; `onerror` is what 3.10 and 3.11 have, and it is
+        # only deprecated, not removed. This package supports >=3.10, so it
+        # has to speak both.
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=lambda _f, p, e: errors.append(f"{p}: {e}"))
+        else:
+            shutil.rmtree(
+                path, onerror=lambda _f, p, info: errors.append(f"{p}: {info[1]}")
+            )
+        after = _tree_bytes(path) if path.exists() else 0
+        freed += before - after
+        if errors:
+            failures += 1
+            print(
+                f"  PARTLY removed {label:<8} {path}\n"
+                f"    {len(errors)} item(s) could not be deleted; "
+                f"{after / 1e6:.1f} MB remains:",
+                file=sys.stderr,
+            )
+            for line in errors[:5]:
+                print(f"      {line}", file=sys.stderr)
+        else:
             print(f"  removed {label:<8} {path}")
-        except OSError as err:
-            print(f"  could NOT remove {path}: {err}", file=sys.stderr)
 
     print(f"\nfreed {freed / 1e6:.1f} MB")
     print("\nThe package itself is still installed. To remove it:")
     print("  pip uninstall modelmri modelmri-record")
-    return 0
+    # A partial delete is not success. Exit non-zero so a script that chains
+    # off this does not assume the machine is clean.
+    return 2 if failures else 0
 
 
 def main() -> None:

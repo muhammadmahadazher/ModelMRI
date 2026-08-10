@@ -60,6 +60,7 @@ def test_opening_a_session_makes_attention_work_without_a_model():
     meta = c.get("/api/attention/meta").json()
     assert meta == {
         "available": True,
+        "n_prompt": 0,
         "n_layers": 2,
         "n_heads": 2,
         "n_tokens": 4,

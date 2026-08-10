@@ -229,6 +229,8 @@ class ModelStatus:
     dtype: str | None = None
     n_params: int | None = None
     # Does this model expect a conversation, or is it a raw text continuer?
+    # None means unknown, which is NOT the same as False -- False is the
+    # positive claim "this is a base model" and the UI renders it as one.
     #
     # The same signal `generate_stream` already branches on: a tokenizer with
     # a chat template was instruction-tuned, one without was not. It is worth
@@ -236,7 +238,7 @@ class ModelStatus:
     # nonsense" — gpt2 continues your sentence, it does not answer your
     # question, and a UI that does not say so invites the reader to conclude
     # the tool is broken when the tool is working exactly as intended.
-    instruct: bool = False
+    instruct: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -260,6 +262,9 @@ class ModelRuntime:
         # interpreted by another model's weights -- which does not crash, it
         # just quietly reports numbers about nothing.
         self.epoch = 0
+        # Base vs instruction-tuned for an Ollama model, from Ollama itself.
+        # None until asked, and None again on any HF load.
+        self._ollama_instruct: bool | None = None
         # Last completed generation (prompt + output), for attention capture.
         self.last_ids: torch.Tensor | None = None
         self.last_ids_epoch = -1
@@ -291,9 +296,19 @@ class ModelRuntime:
 
     def status(self) -> ModelStatus:
         if self.backend == "ollama" and self.hf_id:
-            # Ollama serves chat-tuned builds; it has no base-model story.
+            # NOT unconditionally True. Ollama publishes base tags —
+            # `llama3.2:1b-text-fp16`, `qwen2.5:0.5b-base`, `gemma2:2b-text-*`
+            # all exist — and claiming instruction-tuning for them silences
+            # the one caveat that explains why they answer strangely, which is
+            # the caveat's whole reason for existing.
+            #
+            # None, not False: unknown is a third state. False is a positive
+            # claim ("this is a base model") that the UI renders as such.
             return ModelStatus(
-                loaded=True, hf_id=self.hf_id, device="ollama", instruct=True
+                loaded=True,
+                hf_id=self.hf_id,
+                device="ollama",
+                instruct=self._ollama_instruct,
             )
         if self.model is None:
             return ModelStatus(loaded=False, device=self.device)
@@ -342,6 +357,9 @@ class ModelRuntime:
                 self.tokenizer = None
                 self.backend = "ollama"
                 self.hf_id = hf_id
+                # Asked once per load, from Ollama's own metadata. None when
+                # it cannot be determined — never assumed.
+                self._ollama_instruct = ollama.is_instruct(hf_id)
                 self.replay = None
                 self.last_ids = None
                 self._attn_variants.clear()
@@ -932,6 +950,7 @@ class ModelRuntime:
             prompt=self.last_prompt,
             generation="".join(tokens[cut:]),
             attention={(li, hi): captured[li][hi] for li, hi in wanted},
+            n_prompt=cut,
             n_layers=n_layers,
             n_heads=n_heads,
             note=note,

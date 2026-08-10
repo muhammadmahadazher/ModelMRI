@@ -12,6 +12,7 @@ import {
 import AttentionPanel from "./AttentionPanel";
 import FeaturesPanel from "./FeaturesPanel";
 import ModelPicker from "./ModelPicker";
+import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
 interface Props {
@@ -36,6 +37,9 @@ export default function Playground({ model, onModelChange, replay }: Props) {
     "The Eiffel Tower is located in the city of",
   );
   const [output, setOutput] = useState("");
+  // Did the last generation fail? The output box holds an error sentence
+  // then, and nothing below it describes a model's behaviour.
+  const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState<"" | "loading" | "generating">("");
   const [meta, setMeta] = useState("");
   const [epoch, setEpoch] = useState(0);
@@ -188,6 +192,7 @@ export default function Playground({ model, onModelChange, replay }: Props) {
     if (!(await ensureLoaded())) return;
     setBusy("generating");
     setOutput("");
+    setFailed(false);
     pieces.current = 0;
     t0.current = performance.now();
     const p = prompt;
@@ -217,6 +222,9 @@ export default function Playground({ model, onModelChange, replay }: Props) {
         if (replay) void onModelChange();
       },
         onError: (message) => {
+          // Marked, not inferred from the text: the caveat under the output
+          // must not explain a generation that never happened.
+          setFailed(true);
           setOutput(`Error: ${message}`);
           setBusy("");
         },
@@ -354,25 +362,46 @@ export default function Playground({ model, onModelChange, replay }: Props) {
             ModelMRI shows what the model did; it does not improve it. That is
             the product. But a reader who knows neither of these concludes the
             instrument is faulty, and this panel is where they find out. */}
-        {output !== "" && busy !== "generating" && model?.loaded && (
-          <p className="gen-caveat">
-            {model.instruct === false && (
-              <>
-                <b>{model.hf_id}</b> is a base model — it continues text rather
-                than answering questions, and is often factually wrong.{" "}
-              </>
-            )}
-            {DECODE.temperature > 0 && (
-              <>
-                Temperature {DECODE.temperature} samples, so the same prompt
-                gives a different answer each run.{" "}
-              </>
-            )}
-            {(model.instruct === false || DECODE.temperature > 0) && (
-              <>The panels below show what it actually did, not a corrected version.</>
-            )}
-          </p>
-        )}
+        {/* Only under an answer the model actually produced. It used to render
+            under a FAILED generation too — "connection closed before
+            completion" followed by a note explaining that the panels below
+            describe it, when there are no panels and nothing was described.
+
+            And `sampled` is false on a replay: the demo and an opened .mri
+            play back one fixed recording, so claiming a different answer each
+            run is exactly wrong there. That inversion shipped: on the hosted
+            demo the true half (gpt2 is a base model) was suppressed because
+            the payload carried no `instruct`, while the false half was
+            asserted. */}
+        {(() => {
+          const sampled = DECODE.temperature > 0 && !DEMO && !replay;
+          const base = model?.instruct === false;
+          const show =
+            output !== "" &&
+            busy !== "generating" &&
+            !failed &&
+            model?.loaded &&
+            (base || sampled);
+          if (!show) return null;
+          return (
+            <p className="gen-caveat">
+              {base && (
+                <>
+                  <b>{model.hf_id}</b> is a base model — it continues text rather
+                  than answering questions, and is often factually wrong.{" "}
+                </>
+              )}
+              {sampled && (
+                <>
+                  Temperature {DECODE.temperature} samples, so the same prompt
+                  gives a different answer each run.{" "}
+                </>
+              )}
+              The panels below show what it actually did, not a corrected
+              version.
+            </p>
+          );
+        })()}
       </div>
 
       {epoch > 0 && introspectable && (

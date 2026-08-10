@@ -75,6 +75,60 @@ def test_the_fit_verdict_uses_this_machines_gpu(monkeypatch):
     assert all(row["fits"] is None for row in unknown), "no GPU is not 'too big'"
 
 
+def test_the_fit_verdict_is_not_a_constant(monkeypatch):
+    """It was one, and that is the whole reason this test exists.
+
+    `fits` used `max(4 * vram_gb, 20.0)` — the ceiling for refusing a
+    DOWNLOAD, which is deliberately generous because a model too big for VRAM
+    still runs on the CPU. Against a 20 GB floor every curated entry is under
+    6 GB, so the answer was True on a 24 GB card and True on a 1 GB card
+    alike: a chip that looked like a measurement and was a constant.
+    """
+    monkeypatch.setattr(
+        ollama,
+        "resolve",
+        lambda name, timeout=10.0: {"found": True, "bytes": 5_000_000_000},
+    )
+    verdicts = {
+        vram: ollama.suggested(vram_gb=vram)[0]["fits"] for vram in (2.0, 8.6, 24.0)
+    }
+    assert verdicts[2.0] is False, "5 GB cannot run on a 2 GB card"
+    assert verdicts[24.0] is True
+    assert len(set(verdicts.values())) > 1, f"still constant across GPUs: {verdicts}"
+
+
+def test_a_base_ollama_tag_is_not_called_instruction_tuned(monkeypatch):
+    """Ollama publishes base tags — llama3.2:1b-text-fp16, qwen2.5:0.5b-base.
+    Reporting every Ollama model as instruction-tuned silenced the base-model
+    caveat for exactly the models that need it."""
+    import json as _json
+    from contextlib import contextmanager
+    import urllib.request
+
+    def answer(template: str):
+        @contextmanager
+        def _open(_req, timeout=None):
+            class R:
+                def read(self_inner):
+                    return _json.dumps({"template": template}).encode()
+
+            yield R()
+
+        return _open
+
+    monkeypatch.setattr(urllib.request, "urlopen", answer("{{ .Prompt }}"))
+    assert ollama.is_instruct("qwen3:0.6b") is True
+
+    monkeypatch.setattr(urllib.request, "urlopen", answer(""))
+    assert ollama.is_instruct("llama3.2:1b-text-fp16") is False
+
+    def boom(_req, timeout=None):
+        raise OSError("daemon down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert ollama.is_instruct("anything") is None, "unknown must not read as base"
+
+
 def test_a_registry_that_cannot_be_reached_still_offers_the_names(monkeypatch):
     """Offline, a picker with names and no metadata beats an empty one."""
 
