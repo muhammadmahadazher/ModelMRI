@@ -6,6 +6,50 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-08-10
+
+### Changed
+
+- **The robot panel takes any policy, not just SmolVLA.** Three values pinned
+  it to one checkpoint: the tensor prefix
+  (`model.vlm_with_expert.vlm.model.vision_model.`), the repo its vision
+  config came from, and the module class. `load()` accepted a `repo`
+  argument, so the plumbing looked general — but any other policy found zero
+  tensors under that prefix and was told its layout was "not supported",
+  which was true only because nothing had looked.
+
+  All three now come from the checkpoint. The prefix is **discovered** by
+  scanning tensor names for a vision-shaped path segment (`vision_model`,
+  `vision_tower`, `vision_encoder`, `image_encoder`, `visual`), with the
+  busiest candidate winning so one stray `visual_proj` cannot outvote a real
+  tower. The config is read from the checkpoint's own `vision_config`, or
+  from the VLM it names — SmolVLA's `config.json` carries
+  `vlm_model_name`, which is where the constant came from. The module is
+  built by `AutoModel.from_config`.
+
+  Checked against the real weights before being trusted: discovery returns
+  exactly the string that was hardcoded (197 tensors), and
+  `AutoModel.from_config` produces the identical 197-parameter module.
+  Loading SmolVLA is unchanged — perception mode, 12 × 12, 32 × 32 grid.
+
+  A checkpoint with no recognisable tower is refused with the top-level
+  names it *does* have — a report you can act on rather than a verdict. The
+  panel has a **policy** box beside the dataset picker, so this is reachable
+  rather than merely possible.
+
+- **The agents panel says what it records.** It is a flight recorder for an
+  external agent you instrumented with `modelmri-record` — usually calling a
+  hosted API — and has nothing to do with the model loaded in the
+  playground. Nothing on screen said so, which made "the calls that model
+  made" the obvious and wrong reading.
+
+  The bundled sample (`examples/record_demo.py`) has a deliberately failing
+  step so a timeline has an error to render. It was marked with a small
+  `demo` pill and nothing else, and **"Clear my runs" deliberately spared
+  it** — so the one button that looked like it would remove it could not.
+  There is now a sentence naming it and its file, a count of bundled samples,
+  and a **Remove sample** button.
+
 ## [0.8.2] — 2026-08-10
 
 ### Fixed
