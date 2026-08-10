@@ -1,5 +1,48 @@
 # Working log
 
+## 2026-08-10 (later still) — the timing claim was wrong twice
+
+Yesterday's correction replaced three inconsistent timings with one measured
+set — 1.0 s, 10.3 s, 137 s on an RTX 4060 — and a claim that extrapolating
+the whole-model sweep from one layer is "within 1%". Both were taken honestly.
+Both are wrong, and finding out why was worth more than the numbers.
+
+Re-measured, the same code on the same GPU:
+
+| | earlier | now |
+|---|---|---|
+| gpt2, one layer | 1.0 s | 0.17–0.56 s |
+| gpt2, all 146 passes | 10.3 s | 1.6–5.8 s |
+| Qwen3-0.6B, all 450 | 137 s | 19.9–51.9 s |
+
+**Absolute seconds do not transfer, even between sessions on one machine.**
+Per-pass cost for the same model ranged **12 to 71 ms** depending on process
+and GPU state — a 6× spread. Every figure in seconds I published was a
+measurement of one afternoon, presented as a property of the tool.
+
+**The "within 1%" was an artefact of measuring once.** Across three repeats
+the naive extrapolation was off by −12.1%, −1.0%, +0.9% on gpt2 and +46.8%,
++0.8%, −2.5% on Qwen3. The outliers are the *first* run each time.
+
+**The cause is CUDA warm-up, and it had a product consequence.** The first
+ranking after loading a model runs several times slower than the rest —
+Qwen3's first layer 3.05 s against 0.80 and 0.78; its first whole-model sweep
+51.9 s against 19.9 and 20.0. The panel derived its estimate from the *latest*
+ranking, and the "all N layers" button appears only after the first one. So
+the very first estimate a user ever saw was computed from the slowest sample
+that will ever be taken — the worst case, by construction, 46.8% over on that
+run. It now keeps the **fastest** rate seen, because warm-up only inflates.
+
+What is actually true, and now shipped: the **pass count** is portable (146
+for gpt2, 450 for Qwen3-0.6B); the per-pass cost is not, so it is measured on
+the user's machine; back to back the rate is steady (1.0–1.1× over six runs)
+and once warm the extrapolation holds to within 2.5%. Every seconds-figure
+has been removed from README, docs, `runtime.py`, `server.py` and the panel.
+
+The lesson is not "measure" — I did measure. It is that a number measured
+**once** is a sample, and shipping it as a property is the same error as not
+measuring at all, wearing better clothes.
+
 ## 2026-08-10 (later) — the demo was a diorama
 
 The audit's design phase asked which surface most deserved the next feature,
@@ -152,9 +195,11 @@ shipped as 19.6 s.
 That last number is a product problem, not just a documentation one, so the
 panel now quotes the cost before it starts — and the whole-model button does
 not appear until one layer has been ranked, because it cannot quote a number
-it has not measured. The extrapolation is honest: 71 ms/pass on gpt2 predicts
-10.4 s against 10.28 s actual; 307 ms/pass on Qwen3 predicts 138 s against
-137.2 s. Verified live in the browser: estimate ≈6 s, actual 5.95 s.
+it has not measured. Verified live in the browser: estimate ≈6 s, actual
+5.95 s.
+
+**(Superseded 2026-08-10.)** The "within 1%" extrapolation claim written here
+does not hold, and the absolute seconds do not either. See the entry above.
 
 Also exposed the mean baseline in the panel, which already *told* users the
 order depends on it. It does: zero ranks L0H7 first at KL 0.825; mean drops it

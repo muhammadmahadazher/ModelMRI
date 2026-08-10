@@ -356,6 +356,22 @@ def create_app(
 
         return _ollama.status()
 
+    @app.get("/api/ollama/suggested")
+    async def ollama_suggested() -> list[dict]:
+        """Somewhere to start on the Ollama tab, sized against this GPU.
+
+        The HuggingFace tab opens on curated picks annotated with whether they
+        fit; the Ollama tab opened on an empty box and a blinking cursor. Same
+        panel, same job, two different first impressions.
+
+        Names are curated, sizes are not: each is resolved live against the
+        registry, so a republished tag cannot leave a stale number on screen.
+        """
+        from . import ollama as _ollama
+
+        vram = getattr(runtime.accel, "vram_gb", None)
+        return await asyncio.to_thread(_ollama.suggested, vram)
+
     @app.post("/api/model/prompt")
     async def prompt(req: PromptRequest):
         if not runtime.loaded:
@@ -704,11 +720,14 @@ def create_app(
         """Rank heads by how far removing one moves the next-token answer.
 
         `scope=layer` (default) does n_heads + 2 passes; `scope=all` does
-        n_layers x n_heads + 2. The default is the cheap one on purpose.
-        Measured on an RTX 4060 Laptop in bf16: gpt2 (12x12) one layer 1.0 s,
-        all 146 passes 10.3 s; Qwen3-0.6B (28x16) one layer 5.5 s, all 450
-        passes 137 s. One layer is a click; the whole model is a wait, which
-        is why the panel quotes the estimate before starting.
+        n_layers x n_heads + 2 — 146 for gpt2, 450 for Qwen3-0.6B. The
+        default is the cheap one on purpose.
+
+        The response carries `elapsed_s` and `passes` so a caller can derive
+        the rate on ITS machine. Seconds measured on mine do not transfer: the
+        same model ranged 12-71 ms/pass across sessions on one RTX 4060, and
+        the first ranking after a load runs several times slower than the rest
+        while CUDA warms up.
         """
         target = None if scope == "all" else (layer if layer is not None else 0)
         try:

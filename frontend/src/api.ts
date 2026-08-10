@@ -440,6 +440,21 @@ export interface OllamaState {
   host: string;
 }
 
+/** A curated Ollama model, sized live and marked against this GPU. */
+export interface OllamaSuggestion {
+  name: string;
+  size_gb: number;
+  /** null when the size or the GPU is unknown — "unknown" is not "fits". */
+  fits: boolean | null;
+}
+
+/** Somewhere to start on the Ollama tab, the way the HuggingFace tab opens on
+ *  curated picks. Ollama has no search API, so this is a starting point, not
+ *  a substitute for one — the name box reaches every model, this reaches the
+ *  eight most people want first. */
+export const getOllamaSuggested = () =>
+  fetch("/api/ollama/suggested").then((r) => json<OllamaSuggestion[]>(r));
+
 export const getHubAuth = () => fetch("/api/hub/auth").then((r) => json<HubAuth>(r));
 
 export const hubSignIn = (token: string) =>

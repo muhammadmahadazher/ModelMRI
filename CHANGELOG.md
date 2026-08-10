@@ -75,13 +75,16 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 ### Added
 
 - **The head ranking says what it will cost before it runs.** The button
-  carries the forward-pass count, and once one layer has been ranked it
-  carries a time estimate measured on the loaded model. **all N layers**
-  appears only at that point, because before it there is no measurement to
-  quote and a whole-model sweep is 10 s on gpt2 and 137 s on Qwen3-0.6B —
-  a difference the user cannot guess. Extrapolating from one layer is
-  accurate to within 1% (71 ms/pass on gpt2 predicts 10.4 s against 10.28 s;
-  307 ms/pass on Qwen3 predicts 138 s against 137.2 s).
+  carries the forward-pass count — the portable part, 146 for gpt2 and 450
+  for Qwen3-0.6B — and once one layer has been ranked, an estimate measured
+  on *your* machine. **all N layers** appears only at that point, because
+  before it there is no measurement to quote and the difference between
+  seconds and minutes is not something a user can guess.
+
+  The estimate uses the **fastest** rate seen, not the latest, because the
+  first ranking after a load pays for CUDA warm-up and runs several times
+  slower — and the button appears exactly after that first ranking, so the
+  latest-rate version quoted its worst possible number.
 - **The mean baseline is selectable.** The panel already told users the
   ranking depends on what a removed head is replaced with; now they can see
   it. On gpt2 with a 261-token generation, zero-ablation ranks L0H7 first at
@@ -172,13 +175,16 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   distribution moves — so the dropdown becomes ordered, the top head is
   selected for you, and browsing becomes asking.
 
-  Measured on an RTX 4060 Laptop in bf16: **1.0 s for one layer of gpt2**
-  (14 forward passes), **10.3 s for all 144 heads**, and **137 s** for
-  Qwen3-0.6B's 28 × 16. One layer is a click; the whole model is a wait, and
-  the panel says which it is about to be.
+  The cost is **14 forward passes for one layer of gpt2 and 146 for all
+  144 heads**; Qwen3-0.6B's 28 × 16 is 450. One layer is a click; the whole
+  model is a wait, and the panel says which it is about to be.
 
-  *(Corrected 2026-08-09 — this entry originally read 0.2 s and 1.8 s, and
-  `runtime.py` carried a third figure again. See Unreleased.)*
+  *(Corrected twice. This entry originally read 0.2 s and 1.8 s, with
+  `runtime.py` carrying a third figure. It then read 1.0 s / 10.3 s / 137 s
+  — measured, but not reproducible: the same model ranged 12–71 ms/pass
+  across sessions on the same GPU, so seconds from one machine were never
+  going to transfer. It now states the pass count, which does. See
+  Unreleased.)*
 
   Four things make the number mean what it says, and each was a way to ship
   a confident wrong answer:

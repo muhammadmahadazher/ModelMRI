@@ -65,7 +65,7 @@ The setup line is not decoration. The same three heads on the same model score
 generation — a KL depends on the prompt, the dtype and the sequence, so a
 figure quoted without them cannot be checked by anyone.
 
-One layer of gpt2 is 1.0s on an RTX 4060; all 144 heads is 10.3s. A bigger model costs more — Qwen3-0.6B is 28 layers × 16 heads, and the full sweep takes 137s — so the panel quotes the estimate before it starts and ranks one layer by default.
+A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-0.6B is 450. What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
 
 Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
 

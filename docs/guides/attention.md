@@ -72,11 +72,28 @@ top head is selected for you. **all N layers** ranks the whole model.
 
 That button only appears after you have ranked one layer, and that is
 deliberate — it quotes what the sweep will cost, and it cannot quote a number
-it has not measured. The cost is dominated by the forward-pass count
-(`n_layers × n_heads + 2`), and the per-pass time is stable enough to
-extrapolate from: on an RTX 4060, gpt2 runs 71 ms/pass and one layer predicts
-the full sweep at 10.4 s against 10.28 s actual; Qwen3-0.6B's 307 ms/pass
-predicts 138 s against 137.2 s. Both within 1%.
+it has not measured *on your machine*.
+
+The portable part is the pass count: `n_heads + 2` for one layer,
+`n_layers × n_heads + 2` for the model. gpt2 is 146 passes, Qwen3-0.6B is 450.
+
+What a pass costs is not portable, and this surprised me. On one RTX 4060, the
+same model measured between **12 and 71 ms/pass** depending on the session —
+so any figure in seconds quoted from my machine would be wrong on yours by
+several times over. Two things are true and useful instead:
+
+- **Back to back, the rate is steady.** Six consecutive single-layer rankings
+  varied by 1.0–1.1×, and once warm the extrapolation to a full sweep held to
+  within **2.5%** across repeats on both models.
+- **The first ranking after loading a model is much slower** — CUDA warm-up.
+  Qwen3-0.6B's first layer took 3.05 s against 0.80 and 0.78 for the next two;
+  its first whole-model sweep 51.9 s against 19.9 and 20.0. So the panel keeps
+  the *fastest* rate it has seen rather than the most recent, because warm-up
+  only ever inflates.
+
+The estimate is therefore approximate and says so with a `≈`. It is there to
+tell you whether you are waiting seconds or minutes, which is the decision you
+actually make.
 
 !!! warning "Three ways this number can be a confident lie"
     - **`head_dim` is not `hidden_size // n_heads`.** That quotient is right

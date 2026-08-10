@@ -187,6 +187,13 @@ export async function demoFetch(
   if (p === "/api/sae/available") return ok((await bundle<any>("env")).sae_available ?? []);
   if (p === "/api/lens") return ok((await bundle<any>("env")).lens ?? {});
   if (p === "/api/vla/datasets") return ok((await bundle<any>("env")).vla_datasets ?? []);
+  // Sizes are real registry facts; `fits` is not, because a static page has
+  // no idea what GPU is reading it. Null means unknown, which is a different
+  // answer from "too big" and is rendered as such.
+  if (p === "/api/ollama/suggested") {
+    const rows = (await bundle<any>("env")).ollama_suggested ?? [];
+    return ok(rows.map((r: any) => ({ ...r, fits: null })));
+  }
 
   // Switch scenarios if one was recorded for this model, and refuse by name
   // if not. Answering "loaded" for a model the demo cannot replay is what put

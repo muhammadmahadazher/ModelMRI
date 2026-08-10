@@ -270,6 +270,11 @@ def main() -> int:
         ("lens", "/api/lens?top_k=5"),
         ("session_state", "/api/session/state"),
         ("vla_datasets", "/api/vla/datasets"),
+        # Public registry facts, not machine facts — safe to publish, and it
+        # gives the demo's Ollama tab the same "somewhere to start" the
+        # HuggingFace tab has. The fit verdict is dropped below, because a
+        # static page does not know the visitor's GPU.
+        ("ollama_suggested", "/api/ollama/suggested"),
     ):
         try:
             env[name] = get(path, timeout=120)
@@ -306,7 +311,7 @@ def main() -> int:
         "trace_db": "<your data dir>/traces.sqlite",
         "hub_token": "<your config dir>/hub.json",
         "demo_note": (
-            "These are placeholders. Run `modelmri paths` and the panel shows "
+            "These are placeholders. Run `modelmri where` and the panel shows "
             "the real locations for your OS and account — they are resolved "
             "per-platform, never hardcoded."
         ),

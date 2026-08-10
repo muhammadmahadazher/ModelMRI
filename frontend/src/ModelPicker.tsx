@@ -6,12 +6,14 @@ import {
   getHubAuth,
   getHubModels,
   getOllama,
+  getOllamaSuggested,
   HubAuth,
   HubModel,
   hubSignIn,
   hubSignOut,
   OllamaResolved,
   OllamaState,
+  OllamaSuggestion,
   pullOllama,
   resolveOllama,
 } from "./api";
@@ -68,6 +70,9 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
   } | null>(null);
   // Ollama's "search": a name, resolved against the registry.
   const [ollamaName, setOllamaName] = useState("");
+  // Curated Ollama picks, sized live. Fetched only when that tab is opened —
+  // eight registry lookups is not a cost to pay for a panel you never visit.
+  const [suggestions, setSuggestions] = useState<OllamaSuggestion[]>([]);
   const [resolved, setResolved] = useState<OllamaResolved | null>(null);
 
   async function doResolve() {
@@ -106,6 +111,20 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       live = false;
     };
   }, [open]);
+
+  // Only when the Ollama tab is actually opened, and only once.
+  useEffect(() => {
+    if (!open || tab !== "ollama" || suggestions.length) return;
+    let live = true;
+    void getOllamaSuggested()
+      .then((s) => live && setSuggestions(s))
+      // Offline, the name box still works and the installed list still
+      // renders. An empty curated strip is a smaller loss than an error.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [open, tab, suggestions.length]);
 
   useEffect(() => {
     if (!open || tab !== "hf") return;
@@ -538,13 +557,26 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                     </div>
                   </div>
                 )}
-                {ollama.suggested
-                  ?.filter((s) => !ollama.installed?.some((i) => i.name === s.name))
+                {/* Sizes resolved live against the registry, and marked
+                    against this GPU — the same annotation the HuggingFace tab
+                    puts on its curated picks. They used to be strings typed
+                    into the source ("2.6 GB"), which is a number nobody
+                    rechecks against tags that get republished. */}
+                {suggestions
+                  .filter((s) => !ollama.installed?.some((i) => i.name === s.name))
                   .map((s) => (
                     <div key={s.name} className="model-row static">
                       <span className="mid">{s.name}</span>
-                      <span className="chip">{s.size}</span>
-                      <span className="meta">{s.note}</span>
+                      {s.size_gb > 0 ? (
+                        <span className={`chip ${s.fits === false ? "warn" : ""}`}>
+                          {s.size_gb} GB
+                        </span>
+                      ) : (
+                        <span className="meta">size unknown offline</span>
+                      )}
+                      {s.fits === false && (
+                        <span className="meta">bigger than this GPU</span>
+                      )}
                       <span className="spacer" />
                       <button
                         className="ghost sm"

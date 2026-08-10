@@ -35,18 +35,6 @@ def default_host() -> str:
     return raw.rstrip("/")
 
 
-# Popular open models worth suggesting when Ollama is running but empty.
-# `ollama pull <name>` fetches these; sizes are the default quantisations.
-SUGGESTED = [
-    {"name": "qwen3:0.6b", "size": "0.5 GB", "note": "tiny, current"},
-    {"name": "qwen3:4b", "size": "2.6 GB", "note": "strong for its size"},
-    {"name": "llama3.2:3b", "size": "2.0 GB", "note": "Meta, general"},
-    {"name": "gemma3:4b", "size": "3.3 GB", "note": "Google, multimodal"},
-    {"name": "phi4-mini:3.8b", "size": "2.5 GB", "note": "Microsoft, reasoning"},
-    {"name": "deepseek-r1:1.5b", "size": "1.1 GB", "note": "reasoning traces"},
-]
-
-
 REGISTRY = "https://registry.ollama.ai/v2"
 
 
@@ -147,6 +135,61 @@ def manifest_size(name: str, timeout: float = 10.0) -> int:
     )
 
 
+# A starting point for the Ollama tab, mirroring `hub.SUGGESTED` for the
+# HuggingFace one. Names only — every size below is resolved live against the
+# registry, because a size written here would be a number nobody rechecks and
+# tags are republished.
+#
+# Ollama publishes no search API, so this is not a substitute for one: the
+# name box beside it still reaches strictly more models than any list can.
+# This exists because an empty panel is a worse first impression than eight
+# names, which is the same reason the HuggingFace tab has curated picks.
+SUGGESTED = [
+    "qwen3:0.6b",
+    "qwen3:1.7b",
+    "qwen3:8b",
+    "llama3.2:1b",
+    "llama3.2:3b",
+    "gemma3:1b",
+    "gemma3:4b",
+    "phi4-mini",
+]
+
+
+def suggested(vram_gb: float | None = None, timeout: float = 6.0) -> list[dict]:
+    """The curated Ollama list, sized live and marked against this GPU.
+
+    Fetched concurrently for the same reason the HuggingFace side is: this is
+    the view the tab opens on, and eight sequential registry lookups is a
+    visible wait on a panel that should feel instant.
+
+    Never raises. Offline, the names still appear with no size — a picker with
+    nothing in it is worse than one with names and no metadata.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(name: str) -> dict:
+        try:
+            info = resolve(name, timeout=timeout)
+            size = int(info.get("bytes") or 0)
+        except Exception:
+            size = 0
+        gb = round(size / 1e9, 2) if size else 0.0
+        return {
+            "name": name,
+            "size_gb": gb,
+            # Weights alone are not the whole story — context and overhead
+            # cost more — so the ceiling is the same one the download guard
+            # uses rather than a second opinion invented here.
+            "fits": None
+            if (not gb or vram_gb is None)
+            else gb <= max(4 * vram_gb, 20.0),
+        }
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(one, SUGGESTED))
+
+
 def status(host: str | None = None, timeout: float = 1.5) -> dict:
     """{up, models:[{name,size_gb,family}], suggested} — fast, never raises."""
     host = host or default_host()
@@ -173,6 +216,10 @@ def status(host: str | None = None, timeout: float = 1.5) -> dict:
             "up": True,
             "models": [m["name"] for m in models],  # back-compat
             "installed": models,
+            # Names only. Sizes come from `/api/ollama/suggested`, which
+            # resolves each against the registry — this used to carry strings
+            # like "2.6 GB" written by hand, which is a number nobody
+            # rechecks against tags that get republished.
             "suggested": SUGGESTED,
             "host": host,
         }
@@ -181,6 +228,10 @@ def status(host: str | None = None, timeout: float = 1.5) -> dict:
             "up": False,
             "models": [],
             "installed": [],
+            # Names only. Sizes come from `/api/ollama/suggested`, which
+            # resolves each against the registry — this used to carry strings
+            # like "2.6 GB" written by hand, which is a number nobody
+            # rechecks against tags that get republished.
             "suggested": SUGGESTED,
             "host": host,
         }

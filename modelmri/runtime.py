@@ -799,11 +799,19 @@ class ModelRuntime:
         """Rank heads by how far removing one moves the next-token answer.
 
         `layer=None` sweeps every layer, which is n_layers x n_heads + 2
-        forward passes and costs real time. Measured through this method on
-        an RTX 4060 Laptop in bf16: gpt2 (12x12) one layer 1.0 s, all 146
-        passes 10.3 s; Qwen3-0.6B (28x16) one layer 5.5 s, all 450 passes
-        137 s. So the panel asks for one layer by default and the whole model
-        only when told, and quotes the estimate before it starts.
+        forward passes: 146 for gpt2, 450 for Qwen3-0.6B. That count is the
+        portable part of the cost.
+
+        What a pass costs is not. On one RTX 4060 the same model measured
+        between 12 and 71 ms/pass across sessions, so no figure in seconds
+        belongs in this docstring — the panel measures a layer on the user's
+        machine and extrapolates. Back to back the rate is steady (1.0-1.1x
+        over six runs) and the extrapolation holds to within 2.5%, but the
+        FIRST ranking after a load pays CUDA warm-up and runs several times
+        slower (Qwen3: 3.05 s, then 0.80, 0.78), which is why the panel keeps
+        the fastest rate it has seen rather than the latest.
+
+        Hence: one layer by default, the whole model only when told.
 
         The measurement itself lives in `ablate`, along with the four things
         that make the number honest.
