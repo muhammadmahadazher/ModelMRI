@@ -49,6 +49,148 @@ def test_attention_without_model_is_409():
     assert r.status_code == 409
 
 
+def test_attribute_without_a_generation_is_409():
+    r = client().get("/api/attention/attribute")
+    assert r.status_code == 409
+    assert "Generate something first" in r.json()["error"]
+
+
+def test_attribute_on_a_recording_is_409():
+    """A `.mri` carries attention, not weights. Masking a token means running
+    the model again, so there is nothing here to measure — and an empty
+    ranking would read as "none of your words mattered"."""
+    app = create_app()
+    app.state.runtime.replay = object()
+
+    r = TestClient(app).get("/api/attention/attribute")
+    assert r.status_code == 409
+    assert "recording" in r.json()["error"]
+
+
+class _OffsetTok:
+    """Just enough tokenizer to exercise the offset mapping, no download."""
+
+    is_fast = True
+
+    def __init__(self, offsets, fast=True):
+        self._offsets = offsets
+        self.is_fast = fast
+
+    def __call__(self, texts, **kw):
+        return {"offset_mapping": [self._offsets]}
+
+
+def test_user_span_leaves_out_an_added_token_at_index_zero():
+    """gpt2's span starts at character 0, where the (0, 0) offset a fast
+    tokenizer gives its own added tokens also starts. The overlap test is
+    half-open, so index 0 stays out and the span is the five words."""
+    from modelmri.runtime import _user_span
+
+    prompt = "The capital of France is"
+    offsets = [(0, 0), (0, 3), (3, 11), (11, 14), (14, 21), (21, 24)]
+    assert _user_span(_OffsetTok(offsets), prompt, prompt) == (1, 6)
+
+
+def test_user_span_refuses_when_the_prompt_is_ambiguous():
+    """A chat template contains the words 'user', 'assistant' and 'model', so a
+    prompt of exactly one of those matches the scaffolding too. Unknown is a
+    state this field carries; a confident wrong span is not.
+
+    The offsets here are the real ones for this text, so without the ambiguity
+    guard `find` lands on the template's 'user' at index 1 and this returns
+    (1, 2) — a span pointing at the scaffolding, labelled as the user's."""
+    from modelmri.runtime import _user_span
+
+    text = "<|im_start|>user\nuser<|im_end|>\n"
+    offsets = [(0, 12), (12, 16), (16, 17), (17, 21), (21, 31), (31, 32)]
+    assert text[12:16] == "user" and text[17:21] == "user"
+    assert _user_span(_OffsetTok(offsets), "user", text) is None
+
+
+def test_user_span_refuses_a_slow_tokenizer():
+    """No offset mapping, nothing to map through."""
+    from modelmri.runtime import _user_span
+
+    tok = _OffsetTok([(0, 3)], fast=False)
+    assert _user_span(tok, "The", "The") is None
+
+
+def test_an_ollama_load_clears_the_user_span(monkeypatch):
+    """It is one model's character offsets through one model's tokenizer.
+    Carried across a load it would label the new model's tokens with the old
+    one's arithmetic — and unlike a wrong number, a wrong group name looks
+    like a fact about your prompt."""
+    from modelmri import ollama
+    from modelmri.runtime import ModelRuntime
+
+    monkeypatch.setattr(
+        ollama, "status", lambda host=None, timeout=None: {"up": True, "models": ["m"]}
+    )
+    monkeypatch.setattr(ollama, "is_instruct", lambda name, host=None: True)
+
+    rt = ModelRuntime()
+    assert rt.last_user_span is None, "the field has to exist before a generation"
+    rt.last_user_span = (3, 8)
+    rt.load("m", source="ollama")
+    assert rt.last_user_span is None
+
+
+def test_an_hf_load_clears_the_user_span(monkeypatch):
+    """The same rule on the path that matters more — swapping one HuggingFace
+    model for another, where the old span's indices are all still in range for
+    the new tokenizer and so would be believed."""
+    import torch
+
+    from modelmri import runtime as runtime_mod
+    from modelmri.runtime import ModelRuntime
+
+    class _Param:
+        dtype = torch.float32
+
+        def numel(self):
+            return 1
+
+    class _Model:
+        def to(self, *a, **k):
+            return self
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return iter([_Param()])
+
+    monkeypatch.setattr(runtime_mod, "_require_causal_lm", lambda *_a: None)
+    monkeypatch.setattr(runtime_mod, "_preflight", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        ModelRuntime, "_prefetch_weights", lambda self, hf_id: None, raising=True
+    )
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained", lambda *a, **k: object()
+    )
+    monkeypatch.setattr(
+        "transformers.AutoModelForCausalLM.from_pretrained", lambda *a, **k: _Model()
+    )
+
+    rt = ModelRuntime()
+    rt.last_user_span = (3, 8)
+    assert rt.load("acme/other").loaded
+    assert rt.last_user_span is None
+
+
+def test_attribute_via_ollama_is_409():
+    """Ollama hands back text. There is no forward pass to mask a token out
+    of, and the refusal says which backend to load instead."""
+    app = create_app()
+    rt = app.state.runtime
+    rt.backend, rt.hf_id = "ollama", "qwen3:0.6b"
+    assert rt.loaded, "the ollama refusal has to be what rejects this, not 'no model'"
+
+    r = TestClient(app).get("/api/attention/attribute")
+    assert r.status_code == 409
+    assert "Ollama" in r.json()["error"]
+
+
 def test_sae_status_unloaded():
     r = client().get("/api/sae")
     assert r.status_code == 200
@@ -777,6 +919,63 @@ def test_a_model_swap_mid_generation_does_not_poison_the_attention_view():
     for call in (lambda: rt.attention(0, 0), rt._compute_features):
         with pytest.raises(RuntimeError, match="different model"):
             call()
+
+
+@pytest.mark.parametrize("call", ("attribute_tokens", "ablate_heads"))
+def test_a_load_that_lands_while_an_intervention_waits_for_the_lock_is_refused(call):
+    """The epoch check used to be taken OUTSIDE `self._lock`, and `load` holds
+    that same lock across the epoch bump and the model swap. A load landing in
+    the window between the check and the acquisition therefore ran one model's
+    token ids under another model's weights and returned a full ranking, while
+    the identical call one moment later refused. Nothing downstream can catch
+    that: the ids are the right length and the KLs are finite."""
+    import threading
+
+    import torch
+
+    from modelmri.runtime import ModelRuntime
+
+    rt = ModelRuntime()
+    rt.backend = "hf"
+    rt.model = object()
+    rt.last_ids = torch.zeros(5, dtype=torch.long)
+    rt.last_n_prompt_tokens = 5
+    rt.epoch = rt.last_ids_epoch = 1
+
+    held, release = threading.Event(), threading.Event()
+
+    def hold_the_lock():
+        with rt._lock:
+            held.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold_the_lock)
+    holder.start()
+    assert held.wait(10)
+
+    raised: list[BaseException] = []
+
+    def intervene():
+        try:
+            getattr(rt, call)()
+        except BaseException as err:  # noqa: BLE001 - the refusal is the result
+            raised.append(err)
+
+    caller = threading.Thread(target=intervene)
+    caller.start()
+    # Long enough for the caller to be blocked on the lock in the interleaving
+    # this test is about. If it has not got there yet the epoch is already
+    # bumped when it does, and the refusal has to come either way — which is
+    # the point, and is why this cannot go flaky.
+    time.sleep(0.3)
+    rt.epoch = 2  # the load lands
+    release.set()
+    caller.join(10)
+    holder.join(10)
+
+    assert raised and "different model" in str(raised[0]), (
+        f"{call} returned instead of refusing: {raised}"
+    )
 
 
 def test_derived_state_is_served_when_the_epoch_still_matches(monkeypatch):

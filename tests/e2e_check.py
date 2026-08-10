@@ -1,4 +1,4 @@
-"""Full-stack smoke check — exercises EVERY feature against a live server.
+"""Full-stack smoke check — the load-bearing paths, against a live server.
 
     modelmri serve
     uv run python tests/e2e_check.py
@@ -6,6 +6,16 @@
 Unlike tests/test_smoke.py (fast, no downloads, runs in CI) this drives the
 real thing: real models, real SAEs, real robot frames. Run it before any
 release. Exit code is non-zero if anything fails.
+
+It does NOT drive every feature, and the docstring used to say it did.
+Measured by intersecting the routes declared in modelmri/server.py against
+the paths named in this file: 22 of 51 before the three attention
+interventions below were added, 25 after. Among the 26 it still never calls
+are /api/lens, /api/accelerator and the whole /api/session export/open/close
+round trip. Most of that gap is older than any one feature, and "run it
+before a release" is still the right instruction — but a green run here is
+not a statement about a route this file does not name, and reading it as one
+is how a new endpoint ships unexercised.
 """
 
 from __future__ import annotations
@@ -139,6 +149,57 @@ def main() -> int:
         check("tokens align with matrix", len(attn["tokens"]) == len(attn["matrix"]))
     code, _ = get("/api/attention?layer=999")
     check("bad layer -> 422", code == 422)
+
+    # The three interventions. They were the largest hole in this file: it
+    # drove the heat map and none of the things built on top of it, so a
+    # ranking endpoint could return a confidently wrong shape and still leave
+    # a green release check.
+    code, rank = get("/api/attention/ablate?layer=0")
+    ok = code == 200 and rank.get("ranked")
+    check("GET /api/attention/ablate", ok, f"{rank.get('passes')} passes")
+    if ok:
+        scores = [r["kl"] for r in rank["ranked"]]
+        check("head scores are ordered", scores == sorted(scores, reverse=True))
+        check(
+            "the ablation baseline is named in the response",
+            bool(rank.get("baseline")) and bool(rank.get("means")),
+            str(rank.get("baseline")),
+        )
+
+    code, diff = get("/api/attention/diff?layer=0&head=0&a=live&b=live")
+    check(
+        "GET /api/attention/diff",
+        code == 200 and ("matrix" in diff or "note" in diff),
+        str(diff.get("note", ""))[:60],
+    )
+
+    code, attr = get("/api/attention/attribute")
+    ok = code == 200 and attr.get("ranked")
+    check(
+        "GET /api/attention/attribute",
+        ok,
+        f"{attr.get('passes')} passes, floor {attr.get('noise_floor_kl')}"
+        if ok
+        else str(attr)[:80],
+    )
+    if ok:
+        check(
+            "the token ranking states its window and its floor",
+            attr.get("tested_span") is not None
+            and attr.get("noise_floor_kl") is not None
+            and "not found unimportant" in attr.get("coverage", ""),
+        )
+        # "typed" is a claim about the user's own words. A row that is neither
+        # inside the located span nor before the end of the prompt must not
+        # carry it, and both of the other labels used to collapse into it.
+        groups = {r["group"] for r in attr["ranked"]}
+        check(
+            "every row carries a group the server can justify",
+            groups <= {"typed", "template", "generated", "unknown"},
+            str(sorted(groups)),
+        )
+    code, _ = get("/api/attention/attribute?position=999999")
+    check("attributing outside the sequence -> 422", code == 422)
 
     section("5. SAE features + steering")
     code, sae = post("/api/sae/load", {})

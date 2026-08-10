@@ -137,12 +137,34 @@ def _cut(head: int, head_dim: int, baseline: str):
     return hook
 
 
-def _distribution(logits: torch.Tensor) -> torch.Tensor:
+def distribution(logits: torch.Tensor) -> torch.Tensor:
     return torch.softmax(logits.float(), dim=-1)
 
 
-def _kl(p: torch.Tensor, q: torch.Tensor) -> float:
-    """KL(p || q) in nats, with q floored so a zeroed tail cannot give inf."""
+def kl_nats(p: torch.Tensor, q: torch.Tensor) -> float:
+    """KL(p || q) in nats, with q floored so a zeroed tail cannot give inf.
+
+    Public, and imported by attribute.py rather than copied. Two KLs in one
+    package would drift into meaning two different things — the same argument
+    this file already makes for one `_cut` — and "how far the answer moved"
+    has to be one quantity if a head score and a token score are ever going to
+    be read on the same screen.
+
+    **The floor is part of the definition, and it is not free.** Every number
+    this package reports is this quantity, reproducibly — gpt2 index 0 comes
+    back 4.863085746765137 in float32 and 4.863086102936881 with the identical
+    arithmetic in float64, so it is not an accumulation artifact. But it is
+    BELOW the unfloored KL whenever the intervention collapses q's tail past
+    1e-12, and that is exactly the intervention with the largest score.
+    Measured on gpt2 (bf16/cuda, eager, "The capital of France is", last
+    prompt token), masking each index in turn: at index 0, 10483 of 50257
+    vocabulary entries fall under the floor and the p-weighted cost of
+    clamping them is 0.001672 nats, which accounts for the whole 0.001673 gap
+    against `log_softmax`-based 4.864759. At indices 1-4 the gap is 0.000000
+    to six places. So a shipped score is good to about four significant
+    figures as an estimate of the unfloored KL, and to all of them as this
+    package's own quantity, and the two claims are not the same claim.
+    """
     q = q.clamp_min(1e-12)
     return float((p * (p.clamp_min(1e-12).log() - q.log())).sum())
 
@@ -172,7 +194,7 @@ def rank_heads(
     started = time.perf_counter()
     with torch.no_grad():
         base_logits = model(ids).logits[0, position]
-        base = _distribution(base_logits)
+        base = distribution(base_logits)
 
         # The noise floor, measured rather than assumed: the same forward
         # pass twice, with nothing ablated. Anything at or below this is the
@@ -186,7 +208,7 @@ def rank_heads(
         # Batching, TF32, or a different accelerator can all lift it above
         # the smallest real signals, and this is the only thing that would
         # notice.
-        floor = _kl(base, _distribution(model(ids).logits[0, position]))
+        floor = kl_nats(base, distribution(model(ids).logits[0, position]))
 
         top_id = int(base.argmax())
         ranked: list[dict] = []
@@ -197,14 +219,14 @@ def rank_heads(
             for head in range(n_heads):
                 handle = proj.register_forward_pre_hook(_cut(head, head_dim, baseline))
                 try:
-                    after = _distribution(model(ids).logits[0, position])
+                    after = distribution(model(ids).logits[0, position])
                 finally:
                     handle.remove()
                 ranked.append(
                     {
                         "layer": layer,
                         "head": head,
-                        "kl": round(_kl(base, after), 5),
+                        "kl": round(kl_nats(base, after), 5),
                         "p_top_before": round(float(base[top_id]), 5),
                         "p_top_after": round(float(after[top_id]), 5),
                         # Did removing this head change the model's mind?

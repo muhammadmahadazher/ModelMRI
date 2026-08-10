@@ -135,19 +135,19 @@ def test_ranking_uses_kl_so_a_constant_logit_shift_scores_zero():
     # The bound is set against the smallest per-head signal worth resolving on
     # gpt2 layer 0 (0.0028, head 6), which this is three orders of magnitude
     # below.
-    assert ablate._kl(p, q) < 1e-6
+    assert ablate.kl_nats(p, q) < 1e-6
 
 
 def test_kl_is_finite_even_when_the_ablated_distribution_zeroes_a_token():
     p = torch.tensor([0.5, 0.5])
     q = torch.tensor([1.0, 0.0])
-    value = ablate._kl(p, q)
+    value = ablate.kl_nats(p, q)
     assert math.isfinite(value) and value > 0
 
 
 def test_kl_is_zero_for_an_identical_distribution():
     p = torch.tensor([0.25, 0.25, 0.5])
-    assert ablate._kl(p, p) == pytest.approx(0.0, abs=1e-9)
+    assert ablate.kl_nats(p, p) == pytest.approx(0.0, abs=1e-9)
 
 
 # ------------------------------------------------- what the answer says

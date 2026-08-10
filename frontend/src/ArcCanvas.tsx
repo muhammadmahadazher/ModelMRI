@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { useThemeVersion } from "./theme";
 
 interface Props {
@@ -12,6 +12,38 @@ interface Props {
   /** How many leading tokens are the prompt. Used to pick the token the
    *  panel rests on, and to mark where the model's own output begins. */
   nPrompt?: number;
+  /** Told which chip is pinned, INCLUDING the -1 written when the strip is
+   *  re-sized for a new generation.
+   *
+   *  That second call is the one that matters. Token attribution is measured
+   *  AT a position, so an owner holding "attribute at index 14" while the
+   *  strip underneath it becomes a different sequence is holding a stale
+   *  index — and index 14 of the new generation is a different word. Telling
+   *  the owner about the reset is what returns it to the default position
+   *  instead of stranding it there.
+   */
+  onPin?: (i: number) => void;
+  /** The index a ranking was measured at. That chip is marked, and — while
+   *  scores are being shown — every chip AFTER it is marked too: they are
+   *  outside the causal cone, so they were never candidates, and a bare chip
+   *  beside scored ones reads as "scored zero" rather than "not asked". */
+  attrPos?: number;
+  /** Per-chip score for the ramp, 0..1, already normalised by the caller
+   *  against the largest tested score. This component does not know what a
+   *  KL is and must not invent a scale for one.
+   *
+   *  `null` means NOT TESTED and renders nothing at all. A tested token whose
+   *  score is 0 still renders the bar's floor, because absence and "too small
+   *  to see" are different answers and only one of them is a measurement. */
+  scores?: (number | null)[];
+  /** First index the ranking actually tested. Everything from index 1 up to
+   *  here was a candidate the run had no budget for, and it is a THIRD state:
+   *  not scored, but also not "outside the causal cone" the way `after-attr`
+   *  chips are. Left unmarked they were simply blank — measured on gpt2 with
+   *  a 73-token prompt, 64 of 71 candidates tested, indices 1..7 rendered
+   *  with no mark of any kind while the panel's caveat offered two reasons
+   *  for a blank chip and neither was the true one. */
+  testedFrom?: number;
 }
 
 /** Canvas height in CSS pixels. The backing store is this times the DPR. */
@@ -23,10 +55,22 @@ export default function ArcCanvas({
   matrix,
   signed,
   nPrompt = 0,
+  onPin,
+  attrPos,
+  scores,
+  testedFrom,
 }: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const attrRef = useRef<HTMLSpanElement>(null);
   const [pinned, setPinned] = useState(-1);
+  // Through a ref so `pin` below keeps ONE identity for the life of the
+  // component. The sizing effect calls it, and an owner that rebuilds its
+  // handler every render would otherwise put that effect in the dependency
+  // list of its own re-renders: the canvas would be re-measured and the pin
+  // silently dropped every time anything above changed.
+  const onPinRef = useRef(onPin);
+  onPinRef.current = onPin;
   // Arcs are painted pixels, not styled elements: a theme change re-cascades
   // the CSS but leaves this canvas holding the old palette until something
   // else happens to redraw it. Depending on the version forces the repaint.
@@ -48,6 +92,14 @@ export default function ArcCanvas({
    *  edge of a viewport showing the first 800px of it.
    */
   const resting = nPrompt > 0 && nPrompt <= matrix.length ? nPrompt - 1 : -1;
+
+  /** Move the pin and tell the owner. One place, so the reset in the sizing
+   *  effect cannot drift from the click and Enter handlers — which is how the
+   *  owner would end up describing a position the strip no longer shows. */
+  const pin = useCallback((next: number) => {
+    setPinned(next);
+    onPinRef.current?.(next);
+  }, []);
 
   const draw = useCallback(
     (i: number) => {
@@ -139,54 +191,100 @@ export default function ArcCanvas({
     canvas.style.height = `${CANVAS_H}px`;
     // Draw in CSS pixels; the transform maps to the device grid.
     canvas.getContext("2d")!.setTransform(dpr, 0, 0, dpr, 0, 0);
-    setPinned(-1);
+    pin(-1);
     draw(-1);
-  }, [tokens, draw]);
+  }, [tokens, draw, pin]);
 
   useEffect(() => {
     draw(pinned);
   }, [pinned, draw, themeV]);
 
+  // Bring the attributed chip on screen when a ranking arrives. The strip is
+  // a horizontal scroller and the position being attributed is usually the
+  // last prompt token, which on a long generation is far off the right edge:
+  // measured on a 96-token gpt2 run, the ringed chip sat 4872px into a 965px
+  // window at scrollLeft 0, so the panel opened on 19 chips of which the only
+  // one carrying a bar was the sink at index 0 — while the text above it
+  // pointed at the strip four times. FeaturesPanel.tsx does the same thing
+  // for its peak activation; this is that rule, applied to the one view whose
+  // whole claim is "at THIS token".
+  useEffect(() => {
+    if (attrPos === undefined || attrPos < 0 || !scores) return;
+    attrRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [attrPos, scores]);
+
   return (
     <div className="attn-scroll">
       <div className="attn-inner">
         <div className="tokens" ref={rowRef}>
-          {tokens.map((t, i) => (
-            // Hover and click were the only ways in, so the arc view was
-            // pointer-only. Focus mirrors hover and Enter/Space mirrors click,
-            // which also makes the strip arrow-free but fully tabbable.
-            <span
-              key={i}
-              // `gen` marks the model's own output. The strip was one
-              // undifferentiated row, so "what you typed" and "what it
-              // produced" looked identical — and which is which is the first
-              // thing anyone needs to read an attention map.
-              className={`tok ${pinned === i ? "pin" : ""} ${
-                nPrompt > 0 && i >= nPrompt ? "gen" : ""
-              } ${nPrompt > 0 && i === nPrompt ? "gen-start" : ""}`}
-              tabIndex={0}
-              role="button"
-              aria-pressed={pinned === i}
-              aria-label={
-                `token ${i + 1} of ${tokens.length}` +
-                (nPrompt > 0 ? (i >= nPrompt ? ", generated" : ", prompt") : "") +
-                `: ${t.trim() || "space"}`
-              }
-              onMouseEnter={() => pinned < 0 && draw(i)}
-              onMouseLeave={() => pinned < 0 && draw(-1)}
-              onFocus={() => pinned < 0 && draw(i)}
-              onBlur={() => pinned < 0 && draw(-1)}
-              onClick={() => setPinned((p) => (p === i ? -1 : i))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setPinned((p) => (p === i ? -1 : i));
+          {tokens.map((t, i) => {
+            // undefined = no ranking on screen; null = this chip was not
+            // tested. Only a number earns a bar.
+            const score = scores?.[i];
+            const scored = typeof score === "number";
+            const marked = attrPos !== undefined && attrPos >= 0;
+            // A candidate the run had no budget for. Index 0 is always tested
+            // and is never in this state, so the bound starts at 1.
+            const untested =
+              marked &&
+              !!scores &&
+              testedFrom !== undefined &&
+              i >= 1 &&
+              i < testedFrom &&
+              !scored;
+            return (
+              // Hover and click were the only ways in, so the arc view was
+              // pointer-only. Focus mirrors hover and Enter/Space mirrors
+              // click, which also makes the strip arrow-free but fully
+              // tabbable.
+              <span
+                key={i}
+                ref={marked && i === attrPos ? attrRef : undefined}
+                // `gen` marks the model's own output. The strip was one
+                // undifferentiated row, so "what you typed" and "what it
+                // produced" looked identical — and which is which is the first
+                // thing anyone needs to read an attention map.
+                className={`tok ${pinned === i ? "pin" : ""} ${
+                  nPrompt > 0 && i >= nPrompt ? "gen" : ""
+                } ${nPrompt > 0 && i === nPrompt ? "gen-start" : ""} ${
+                  marked && i === attrPos ? "attr" : ""
+                } ${marked && scores && i > attrPos ? "after-attr" : ""} ${
+                  scored ? "scored" : ""
+                } ${untested ? "untested" : ""}`}
+                style={
+                  scored
+                    ? ({ "--tok-score": score } as CSSProperties)
+                    : undefined
                 }
-              }}
-            >
-              {t.replace(/ /g, "·") || "·"}
-            </span>
-          ))}
+                tabIndex={0}
+                role="button"
+                aria-pressed={pinned === i}
+                aria-label={
+                  `token ${i + 1} of ${tokens.length}` +
+                  (nPrompt > 0 ? (i >= nPrompt ? ", generated" : ", prompt") : "") +
+                  (marked && i === attrPos ? ", the position being attributed" : "") +
+                  (marked && scores && i > attrPos
+                    ? ", after that position, so not a candidate"
+                    : "") +
+                  (untested ? ", a candidate this run did not have budget to test" : "") +
+                  `: ${t.trim() || "space"}`
+                }
+                onMouseEnter={() => pinned < 0 && draw(i)}
+                onMouseLeave={() => pinned < 0 && draw(-1)}
+                onFocus={() => pinned < 0 && draw(i)}
+                onBlur={() => pinned < 0 && draw(-1)}
+                onClick={() => pin(pinned === i ? -1 : i)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    pin(pinned === i ? -1 : i);
+                  }
+                }}
+              >
+                {t.replace(/ /g, "·") || "·"}
+              </span>
+            );
+          })}
         </div>
         <canvas ref={canvasRef} style={{ display: "block" }} />
       </div>

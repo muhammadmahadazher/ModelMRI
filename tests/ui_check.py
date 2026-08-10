@@ -53,12 +53,29 @@ RESTING = {
 
 PASS: list[str] = []
 FAIL: list[str] = []
+SKIP: list[str] = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
     (PASS if ok else FAIL).append(name)
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}{(' - ' + detail) if detail else ''}")
     return ok
+
+
+def skip(section: str, why: str) -> None:
+    """A section that could not run, recorded rather than only printed.
+
+    Sections here are conditional on server state, and CI starts a fresh
+    server with no model — so /api/model/load is in EXPENSIVE and must not
+    fire, and the head-ranking and .mri round-trip sections quietly do
+    nothing. Measured: this file reports "18 passed, 0 failed" against a bare
+    server and "32 passed, 0 failed" once gpt2 is loaded and prompted, so 14
+    checks — including all five over the head-ranking panel — never ran, and
+    the exit code said nothing about it. Green now has to be read next to the
+    skip list.
+    """
+    SKIP.append(f"{section}: {why}")
+    print(f"  [SKIP] {section} — {why}")
 
 
 async def main() -> int:
@@ -253,7 +270,7 @@ async def main() -> int:
                 f"leaked {leaked} in: {shown[:90]}" if leaked else "checked live text",
             )
         else:
-            print("    (no enabled control in the features panel — skipped)")
+            skip("features panel refusals", "no enabled control on this server")
 
         print("\nthe model picker does not resize under you")
         # Its list arrives async. A content-sized sheet opened ~200px tall
@@ -354,7 +371,7 @@ async def main() -> int:
         # this feature can lie are about interpretation rather than arithmetic.
         rank_btn = page.locator("button", has_text="Rank heads")
         if await rank_btn.count() == 0:
-            print("    (no model loaded on this server — skipped)")
+            skip("head ranking", "no model loaded on this server")
         else:
             await rank_btn.first.click()
             try:
@@ -402,7 +419,7 @@ async def main() -> int:
             "async () => (await fetch('/api/session/export')).status === 200"
         )
         if not can_export:
-            print("  (no generation on this server — skipping the round trip)")
+            skip(".mri round trip", "no generation on this server")
         else:
             result = await page.evaluate(
                 """async () => {
@@ -488,9 +505,15 @@ async def main() -> int:
 
         await browser.close()
 
-    print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
+    print(f"\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} sections skipped")
     for f in FAIL:
         print(f"  FAILED: {f}")
+    # Printed last, and named, so a green run cannot be read as "the
+    # head-ranking panel was checked" when nothing on this server could have
+    # checked it. Load a model and prompt once before running this if you want
+    # those sections: gpt2 takes about 11 seconds and lights up 14 more.
+    for s in SKIP:
+        print(f"  NOT CHECKED: {s}")
     return 1 if FAIL else 0
 
 

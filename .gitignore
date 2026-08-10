@@ -67,4 +67,13 @@ modelmri-traces/
 # them adds a fresh dead copy of the bundle on every single build.
 modelmri/static/viewer/*
 !modelmri/static/viewer/.gitkeep
+
+# The demo build, which lands at the repo root because that is where
+# `vite build --mode demo` points its outDir. `dist/` above does NOT cover it:
+# a gitignore pattern matches whole path components, so `dist/` matches a
+# directory named exactly "dist" and says nothing about "demo-dist". It sat
+# untracked at 2.8 MB — the bundle plus a second copy of every baked demo
+# payload — one `git add -A` away from the history.
+demo-dist/
+
 tests/fixtures/parity.mri

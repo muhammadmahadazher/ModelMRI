@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -24,7 +25,16 @@ from typing import Any, Iterator
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 
-from . import ablate, capacity, devices, paths, ollama, progress, session
+from . import (
+    ablate,
+    attribute,
+    capacity,
+    devices,
+    paths,
+    ollama,
+    progress,
+    session,
+)
 from .saes import SAEHandle, SAEStatus
 
 
@@ -221,6 +231,74 @@ snapshot_download(repo, ignore_patterns=ignore)
 """
 
 
+def _user_span(tokenizer: Any, prompt: str, text: str) -> tuple[int, int] | None:
+    """Half-open token span of the user's own words inside the templated text.
+
+    `None` is not a fallback to "treat everything as typed" — it is the state
+    "we could not locate your words", and the caller has to say so. Getting it
+    wrong in the permissive direction is the expensive error. Measured here on
+    Qwen3-0.6B, bf16/cuda/eager, prompt "The capital of France is", attributing
+    at the last prompt token: of the tokens the panel ranks, the two largest are
+    the template's own 'assistant' at 2.02161 nats and '<|im_start|>' at
+    0.322664, while the five words the user typed score between 3.12788e-05 and
+    7.9083e-05 — 25,563x below the template's best. Labelling the scaffolding as
+    the user's writing does not merely add rows, it puts the whole top of a list
+    titled "your words" on text the user never wrote.
+
+    Two things this refuses rather than guesses. A slow tokenizer has no offset
+    mapping at all, so there is nothing to map through. And a prompt that occurs
+    more than once in the templated text is genuinely ambiguous: a chat template
+    contains the words "user", "assistant" and "model", so a prompt of exactly
+    one of those matches the scaffolding as well as the content, and `index`
+    would confidently return the first hit, which is the template's.
+
+    The tokens a fast tokenizer adds for itself report a zero-width `(0, 0)`
+    offset, and there is deliberately no separate rule for them: the overlap
+    test is half-open at both ends, so `b <= start` already excludes `(0, 0)`
+    from a span starting at character 0 — which is gpt2's span, and the case the
+    rule would have been written for. An explicit `b <= a: continue` was here
+    and was removed after a mutation test showed it could not change any
+    answer: it only ever fires on an index between two overlapping ones, and a
+    middle index moves neither end of a range.
+
+    Verified against all three, prompt "The capital of France is" through the
+    same chat template `generate_stream` applies: gpt2 (0, 5) over the whole
+    5-token sequence, Qwen3-0.6B (3, 8) of 13, gemma-3-270m-it (5, 10) of 15 —
+    each covering exactly ['The', ' capital', ' of', ' France', ' is'], and
+    gemma's two leading `<bos>` outside it.
+    """
+    if not getattr(tokenizer, "is_fast", False):
+        return None
+    if not prompt or text.count(prompt) != 1:
+        return None
+    start = text.index(prompt)
+    stop = start + len(prompt)
+
+    try:
+        offsets = tokenizer(
+            [text], return_offsets_mapping=True, add_special_tokens=True
+        )["offset_mapping"][0]
+    except Exception:
+        # An unknown span is a state this feature carries; a generation that
+        # died because the offsets could not be computed is not.
+        return None
+
+    lo = hi = None
+    for i, pair in enumerate(offsets):
+        a, b = int(pair[0]), int(pair[1])
+        # Half-open on both sides: a token ending exactly where the prompt
+        # begins does not overlap it, which is also what excludes the (0, 0)
+        # offsets of added specials from a span that starts at character 0.
+        if b <= start or a >= stop:
+            continue
+        if lo is None:
+            lo = i
+        hi = i + 1
+    if lo is None or hi is None:
+        return None
+    return (lo, hi)
+
+
 @dataclass
 class ModelStatus:
     loaded: bool
@@ -270,6 +348,13 @@ class ModelRuntime:
         self.last_ids_epoch = -1
         self.last_prompt: str = ""
         self.last_n_prompt_tokens: int = 0
+        # Where the user's own words sit inside the templated prompt, as a
+        # half-open token span. Additive and allowed to be absent: None means
+        # "could not be located", never "all of it". Token attribution shows the
+        # two groups apart because the template's tokens can outscore the user's
+        # by 25,563x (measured on Qwen3-0.6B, see `_user_span`), so a panel that
+        # cannot tell them apart has to say that rather than pick one.
+        self.last_user_span: tuple[int, int] | None = None
         # One entry per intervention: "live", "steered", "ablate:L.H".
         # Comparing two runs means holding two, and they must all be dropped
         # together — a stale "live" beside a fresh "steered" would render a
@@ -362,6 +447,7 @@ class ModelRuntime:
                 self._ollama_instruct = ollama.is_instruct(hf_id)
                 self.replay = None
                 self.last_ids = None
+                self.last_user_span = None
                 self._attn_variants.clear()
                 self._attn_tokens = None
                 self.sae = None
@@ -448,6 +534,7 @@ class ModelRuntime:
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.replay = None
             self.last_ids = None
+            self.last_user_span = None
             self._attn_variants.clear()
             self._attn_tokens = None
             self.sae = None
@@ -614,6 +701,17 @@ class ModelRuntime:
         # with no question attached.
         self.last_prompt = prompt
         self.last_n_prompt_tokens = int(inputs["input_ids"].shape[1])
+        # Derived from the same `text` that was actually tokenised above, so
+        # the indices refer to these ids and no others. A span that does not
+        # fit inside the prompt is a claim about a different tokenisation, and
+        # it is discarded rather than believed -- the same rule session.py
+        # applies to `n_prompt` arriving from a file.
+        span = _user_span(self.tokenizer, prompt, text)
+        if span is not None and not (
+            0 <= span[0] < span[1] <= self.last_n_prompt_tokens
+        ):
+            span = None
+        self.last_user_span = span
         self._attn_variants.clear()  # recomputed on demand
         self._attn_tokens = None
         self._feats = None
@@ -835,6 +933,27 @@ class ModelRuntime:
 
         return block.register_forward_pre_hook(_pre)
 
+    def _require_live_generation(self, nothing_yet: str) -> None:
+        """There is a generation, and it belongs to the model now loaded.
+
+        CALL THIS WITH `self._lock` HELD. That is the whole reason it exists:
+        both intervention methods used to take these two checks before
+        acquiring the lock, and `load` holds the same lock across the epoch
+        bump and the model swap. A load that lands in the window between the
+        check and the acquisition then hands the intervention one model's
+        token ids and another model's weights, and it returns a confident
+        ranking rather than the refusal the identical call gets one moment
+        later. Nothing downstream can notice that: the ids are the right
+        length, the KLs are finite, and the layer and head numbers exist in
+        both models.
+        """
+        if not self.loaded or self.last_ids is None:
+            raise RuntimeError(nothing_yet)
+        if self.last_ids_epoch != self.epoch:
+            raise RuntimeError(
+                "That generation was produced by a different model. Generate again."
+            )
+
     def ablate_heads(self, layer: int | None = None, baseline: str = "zero") -> dict:
         """Rank heads by how far removing one moves the next-token answer.
 
@@ -866,20 +985,16 @@ class ModelRuntime:
                 "Ollama serves text only — there is no forward pass to "
                 "intervene in. Load the model through HuggingFace."
             )
-        if not self.loaded or self.last_ids is None:
-            raise RuntimeError("Generate something first, then rank its heads.")
-        if self.last_ids_epoch != self.epoch:
-            raise RuntimeError(
-                "That generation was produced by a different model. Generate again."
-            )
-
-        cfg = self.model.config
-        n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
-        if layer is not None and not 0 <= layer < n_layers:
-            raise ValueError(f"layer must be in [0,{n_layers})")
-        layers = list(range(n_layers)) if layer is None else [layer]
-
         with self._lock:
+            self._require_live_generation(
+                "Generate something first, then rank its heads."
+            )
+            cfg = self.model.config
+            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            if layer is not None and not 0 <= layer < n_layers:
+                raise ValueError(f"layer must be in [0,{n_layers})")
+            layers = list(range(n_layers)) if layer is None else [layer]
+
             # Attribute at the last prompt token: its next-token distribution
             # is the model's answer to the question, before any of its own
             # output feeds back in.
@@ -899,6 +1014,175 @@ class ModelRuntime:
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
                 raise RuntimeError(str(err)) from err
+
+    def attribute_tokens(self, position: int | None = None) -> dict:
+        """Rank the prompt's own tokens by how far masking one moves the answer.
+
+        The companion question to `ablate_heads`: that one asks which part of
+        the machinery mattered, this one asks which part of the input did. The
+        measurement is `attribute.rank_tokens`, along with the reasons index 0
+        and the attribution position are excluded and why the scores do not add
+        up. Everything here is the part that needs the live tokenizer.
+
+        Cost is `tested tokens + 7` forward passes: six inside the ranking plus
+        one here, to read the model's own answer at `position`. Measured through
+        the endpoint on this machine: 10 on gpt2 with "The capital of France is"
+        (3 tested), 20 on gemma-3-270m-it (13 tested), 23 on Qwen3-0.6B
+        attributing at token 17 (16 tested). The count is the portable part. The
+        seconds are not, and on one RTX 4060 they did not even transfer between
+        those three: warm and back to back, 0.12-0.14 s, 0.84-0.92 s and
+        1.00-1.04 s, or roughly 13, 44 and 44 ms a pass. The first call after a
+        load pays CUDA warm-up on top — 0.40 s for the same gpt2 work. So
+        `passes` and `elapsed_s` both come back and the caller derives a rate on
+        its own machine rather than trusting one from mine.
+
+        `position` defaults to the last prompt token — the same expression
+        `ablate_heads` uses, and for the same reason: that distribution is the
+        model's answer to the question, before any of its own output feeds back
+        in.
+
+        **The scores move if you generated more, and the amount is not small.**
+        Nothing after `position` can reach it through a causal mask, so this
+        ought to be exactly invariant, and in bfloat16 it is not: the pass runs
+        over the whole retained sequence and a longer one reduces in a different
+        order. Measured on gemma-3-270m-it, same prompt, same position 14, same
+        13 candidates, only the generation length differing — '\\n' at index 11
+        scored 9.33529 after one generated token and 9.57509 after six, and
+        index 0 went 0.88465 -> 0.98639, an 11% move. Rows are comparable to
+        each other inside one response. They are not comparable across two
+        generations of different lengths, and no rounding hides that.
+        """
+        if self.replay is not None:
+            raise RuntimeError(
+                "This is a recording. Attributing tokens means masking one and "
+                "running the model again, and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise RuntimeError(
+                "Ollama serves text only — there is no forward pass to mask a "
+                "token out of. Load the model through HuggingFace."
+            )
+        with self._lock:
+            # Inside the lock, all of it. `load` holds this same lock across
+            # the epoch bump and the model swap, so a check taken outside it
+            # is a check against a state that can be gone by the time the
+            # first forward pass runs. Scripted with two toy models: the
+            # epoch check passed, the call blocked on the lock, `load` bumped
+            # the epoch 1 -> 2 and swapped the weights, and attribution then
+            # returned a full ranking of model A's token ids under model B —
+            # while the identical call one moment later refused. A ranking
+            # attributed to the wrong model is the one output here that
+            # nothing downstream can catch.
+            self._require_live_generation(
+                "Generate something first, then ask which of its tokens mattered."
+            )
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise ValueError(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+
+            ids = self.last_ids.unsqueeze(0).to(self.device)
+            # Deliberately not the wider detector this feature was first
+            # specified with, `all_special_ids | additional_special_tokens |
+            # ^<\|?.+\|?>$`. The loose regex is the problem: measured here, it
+            # claims 6581 ids on gemma-3-270m-it against 10 for
+            # `control_token_ids`, and among the extras are '<div>' 224, '<b>'
+            # 200, '<html>' 217, '<table>' 168 and '<li>' 223 — ordinary
+            # content in that vocabulary. The refusal below would then fire on
+            # a real answer and call it formatting, which is the one failure
+            # this whole check exists to prevent. The narrower set still
+            # catches Qwen3's '<think>' 151667, and only its chat-template arm
+            # does.
+            control = attribute.control_token_ids(self.tokenizer)
+            started = time.perf_counter()
+
+            # One pass of our own before the ranking, because the refusal below
+            # has to quote a probability that was measured rather than a
+            # constant carried over from another model on another day. This is
+            # the plain `model(ids)` call every other reader of this model
+            # makes; rank_tokens re-runs it and refuses if an explicit mask and
+            # position_ids move the answer at all, so the p quoted here and the
+            # `p_top_before` in the rows are the same number to within 1e-6.
+            with torch.no_grad():
+                answer = ablate.distribution(self.model(ids).logits[0, position])
+            top = int(answer.argmax())
+            if top in control:
+                raise RuntimeError(
+                    f"the model's next token here is "
+                    f"{self.tokenizer.decode([top])!r} at "
+                    f"p={float(answer[top]):.4f}, which is a formatting "
+                    "decision, not an answer — asking which of your words "
+                    "caused it would rank noise. Pick a token further along "
+                    "the strip, where the model is saying something."
+                )
+
+            span = self.last_user_span
+            n_prompt = int(self.last_n_prompt_tokens or 0)
+            try:
+                out = attribute.rank_tokens(
+                    self.model,
+                    ids,
+                    position=position,
+                    typed_span=span,
+                    # Without this every token past the prompt falls outside
+                    # `span` and comes back labelled "template" — the model's
+                    # own output, filed under a chat template, on models that
+                    # have none. Measured on Qwen3-0.6B at position 17: the top
+                    # row is index 15 'Okay' at 9.11195, the model's word.
+                    n_prompt=n_prompt,
+                    control_ids=control,
+                    decode=lambda t: self.tokenizer.decode([t]),
+                )
+            except attribute.AttributionError as err:
+                # Not a crash: a measurement this code cannot take honestly.
+                raise RuntimeError(str(err)) from err
+
+        # The ranking timed itself; this adds the answer-reading pass, so
+        # passes and elapsed_s still describe the same piece of work and a rate
+        # derived from them is right.
+        out["passes"] += 1
+        out["elapsed_s"] = round(time.perf_counter() - started, 2)
+        out["passes_note"] = (
+            f"{out['passes']} forward passes: one to read the model's own "
+            f"answer at this position, then a base, a repeat of it for the "
+            f"noise floor, a plain model(ids) that gates on agreeing with the "
+            f"base, one that reverses position_ids and gates on the answer "
+            f"MOVING, "
+            f"{out['n_tested']} masked tokens, index 0, one joint mask, "
+            f"and one check that masking really empties the column. The count "
+            f"transfers between machines; the seconds do not."
+        )
+        if span is None:
+            note = (
+                "Cannot locate your words inside the templated prompt; every "
+                "token below is shown in one group. That is an unknown, not a "
+                "claim that all of them are yours."
+            )
+        elif span == (0, self.last_n_prompt_tokens):
+            # gpt2's case: no chat template, so the prompt is the whole prompt.
+            # Saying "the rest is the template" here would invent one.
+            note = (
+                f"Tokens {span[0]}-{span[1] - 1} are the words you typed, and "
+                "that is the entire prompt — this model has no chat template "
+                f"wrapped around it. Anything from token {n_prompt} on is the "
+                "model's own output rather than yours, and is listed as that."
+            )
+        else:
+            note = (
+                f"Tokens {span[0]}-{span[1] - 1} are the words you typed; "
+                f"everything else below token {n_prompt} is the chat template "
+                f"and everything from {n_prompt} on is the model's own output. "
+                "Three lists rather than one because on Qwen3-0.6B the "
+                "template's 'assistant' scores 2.02161 nats here against "
+                "7.9083e-05 for the strongest word the user typed, so one "
+                "list would be a list about the template."
+            )
+        out["span_note"] = note
+        return out
 
     # ---------------- sessions (.mri) ----------------
 

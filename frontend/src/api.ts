@@ -230,6 +230,120 @@ export const rankHeads = (
     `/api/attention/ablate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
   ).then((r) => json<Ablation>(r));
 
+/** How far masking one token moves the answer at one position.
+ *
+ *  Same units as `HeadScore.kl` — both come from `kl_nats` in ablate.py, so a
+ *  head score and a token score on one screen mean the same thing. What they
+ *  are NOT is comparable in behaviour: `modelmri/attribute.py` measured the
+ *  singles over-stating one joint mask by 1.82x on gpt2 over the rows this
+ *  list shows, and under-stating it by 0.35x on gemma-3-270m-it over the typed
+ *  span. The panel prints both live numbers rather than a factor.
+ */
+export interface TokenScore {
+  index: number;
+  token: string;
+  kl: number;
+  p_top_before: number;
+  p_top_after: number;
+  flips_top: boolean;
+  /** Which list this row belongs in. The server decides: it is the only side
+   *  that knows where the chat template ends, where the user's own words
+   *  begin, and where the prompt stops.
+   *
+   *  Four values, and each of the three that are not `typed` exists because
+   *  collapsing it into another one made the panel state something nobody
+   *  measured. `generated` is the model's OWN output — folded into `template`
+   *  it put gpt2's own words under a heading reading "chat template scaffold",
+   *  on a model whose span_note says in the same breath that it has no chat
+   *  template. `unknown` is "the server could not locate your words" — folded
+   *  into `typed` it put the chat template under "what you typed". */
+  group: "typed" | "template" | "generated" | "unknown";
+}
+
+/** One run of the token ranking, exactly as the server reports it.
+ *
+ *  Every field the panel renders is here. Nothing about a result is computed
+ *  or worded on this side — the refusals, the coverage sentence, the mask
+ *  check and the "what this means" paragraph are all measured or written
+ *  where the measurement happened, because a caveat re-typed in the client is
+ *  a caveat that can drift away from the number it belongs to.
+ */
+export interface TokenAttribution {
+  baseline: string;
+  position: number;
+  target_token: string;
+  /** The same forward pass twice, nothing masked. Measured at exactly 0.0 on
+   *  gpt2, Qwen3-0.6B and gemma-3-270m-it; anything at or below it is
+   *  arithmetic rather than the model. */
+  noise_floor_kl: number;
+  passes: number;
+  elapsed_s: number;
+  /** What those passes were spent on, and the warning that goes with showing
+   *  a duration at all: the count transfers between machines, the seconds do
+   *  not. Rendered rather than summarised — the breakdown is the reason the
+   *  cost is what it is. */
+  passes_note: string;
+  ranked: TokenScore[];
+  /** Measured, reported, and deliberately outside the order — the score at
+   *  index 0 follows the POSITION rather than the token sitting in it. `note`
+   *  is the server's evidence for that, and it travels with the row. */
+  index0: TokenScore & { note: string };
+  n_tested: number;
+  n_candidates: number;
+  truncated: boolean;
+  /** Half-open index window that was actually tested. When `truncated`, the
+   *  candidates below `tested_span[0]` were asked nothing — and on the strip
+   *  they would otherwise be indistinguishable from tokens that were tested
+   *  and scored nothing. Measured on gpt2 with a 73-token prompt: 64 of 71
+   *  candidates tested, and indices 1..7 rendered with no mark at all. */
+  tested_span: [number, number];
+  /** Where the prompt ends. Rows at or past it are the model's own output,
+   *  which is a third thing from "your words" and "the chat template". */
+  n_prompt: number;
+  /** "N of M were tested; one not listed was not tested, not found
+   *  unimportant." Shown verbatim when the run was capped. */
+  coverage: string;
+  sum_of_singles: number;
+  joint_kl: number;
+  /** Did `attention_mask[0, j] = 0` actually empty column j at every layer?
+   *  Checked once, at one index, on the mechanism rather than on each row. */
+  mask_verified: boolean;
+  max_residual_weight: number | null;
+  mask_check: string;
+  means: string;
+  /** Half-open token span of the text the user actually typed, or `null` when
+   *  the server could not locate it.
+   *
+   *  `null` does NOT mean "all of it is yours". It means the panel has no
+   *  basis for splitting the list, and must therefore show one list with the
+   *  server's reason attached rather than a "what you typed" heading it cannot
+   *  justify. If a build ever drops this field the panel lands in exactly that
+   *  branch, which is the conservative failure and not a silent one.
+   */
+  typed_span: [number, number] | null;
+  /** The server's sentence about that span — why it is what it is, or why it
+   *  could not be found. Rendered as-is in BOTH cases: it is the only place
+   *  that can say "this model has no chat template wrapped around it, so the
+   *  scaffold list is empty because there is no scaffold" rather than leaving
+   *  an empty heading to be read as a missing measurement. */
+  span_note: string;
+}
+
+/** Rank the tokens before `position`, or before the server's own default when
+ *  no position is given.
+ *
+ *  The position is the whole claim. "Which words mattered" is meaningless
+ *  without "mattered to WHICH answer", so the parameter is optional only in
+ *  the sense that the server names its default in the response; it is never
+ *  absent from what gets rendered.
+ */
+export const attributeTokens = (position?: number) =>
+  fetch(
+    position === undefined
+      ? "/api/attention/attribute"
+      : `/api/attention/attribute?position=${position}`,
+  ).then((r) => json<TokenAttribution>(r));
+
 export const getSessionState = () =>
   fetch("/api/session/state").then((r) => json<SessionState>(r));
 

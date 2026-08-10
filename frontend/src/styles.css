@@ -1994,6 +1994,101 @@ code {
   .ranking { animation: none; }
 }
 
+/* ---------- token attribution, on the strip ----------
+   Three more marks on a chip that already carries three (`pin`, `gen`,
+   `gen-start`), so each one has to be distinguishable from the others rather
+   than merely visible on its own.
+
+   `attr` is the position the answer was read at — the whole claim of the
+   panel is "at THIS token", so it gets a ring rather than a tint, which is
+   the one treatment `pin` and `gen-start` do not already use.
+
+   `after-attr` is everything the causal mask puts beyond that position. Those
+   tokens were never candidates, and left plain they would sit next to scored
+   chips looking like scores of zero. Dimmed and dashed says "not asked",
+   which is a different statement from "asked, and the answer was nothing".
+
+   The score is a BAR on the left edge, not a background fill. A fill would
+   land underneath `pin`'s tinted background and beside `gen-start`'s rule,
+   and the three treatments would compose into an unreadable smear. Height
+   carries the value; the 3px floor is deliberate, so a token that was tested
+   and scored almost nothing still looks different from one that was never
+   tested at all — that chip renders no bar whatsoever.
+
+   The ramp is LINEAR IN NATS over a quantity that spans orders of magnitude,
+   so most bars sit on that floor: measured on a 73-token gpt2 prompt, 60 of
+   the 65 bars were under 5% of the tallest and 34 under 2%. That is a real
+   limit and the panel's caveat now says so rather than leaving the strip to
+   imply a resolution it does not have. A log or rank scale would separate
+   them and would also be a second, unlabelled scale on the same screen as the
+   lists' exact nats, so the strip stays ordinal and says which it is. */
+.tok.attr {
+  border-color: var(--color-attn);
+  color: var(--color-attn);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-attn) 24%, transparent);
+  font-weight: 600;
+}
+.tok.after-attr {
+  opacity: 0.45;
+  border-style: dashed;
+}
+/* A THIRD state, and it used to render as nothing at all. When the
+   64-candidate cap bites, the tokens before the tested window were candidates
+   the run had no budget for — measured on gpt2 with a 73-token prompt, 64 of
+   71 candidates tested and indices 1..7 left completely unmarked, sitting
+   beside scored chips and reading as scores of zero. Dashed like `after-attr`
+   because the statement is the same one ("not asked"), and left at full
+   opacity because unlike `after-attr` these are inside the causal cone and
+   could have been asked. */
+.tok.untested {
+  border-style: dashed;
+}
+.tok.scored { position: relative; }
+.tok.scored::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  bottom: -1px;
+  width: 3px;
+  border-radius: 2px;
+  /* --tok-score is set per chip from JS, so the var() carries a fallback: an
+     undefined custom property with no fallback voids the whole declaration
+     and the bar would simply not exist. */
+  height: calc(3px + (100% - 3px) * var(--tok-score, 0));
+  background: var(--color-attn);
+  opacity: calc(0.35 + 0.65 * var(--tok-score, 0));
+}
+
+/* ---------- token attribution, the two lists ----------
+   Two headed lists, never interleaved. On a chat-template model the scaffold
+   list outscores the typed list by four to five orders of magnitude, and that
+   is the panel working — but merged into one ranking it answers "the chat
+   template" every time and the user's own words fall off the bottom. */
+.attr-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  margin: 12px 0 4px;
+}
+.attr-tok {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-attn);
+}
+/* Index 0 sits above both lists and outside the order, so it is boxed rather
+   than listed — a row in a ranked list is read as a rank. */
+.attr-index0 {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 2px solid color-mix(in oklab, var(--color-attn) 55%, transparent);
+  background: color-mix(in oklab, var(--color-ink) 4%, transparent);
+  border-radius: 0 8px 8px 0;
+}
+.attr-index0 .hint { margin-top: 4px; }
+
 /* ---------- the size guard and the stop button ----------
    A download you cannot stop is a trap, and one that could never load is a
    trap with a long fuse. Both surfaces are deliberately plain: this is a

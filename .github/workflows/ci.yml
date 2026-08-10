@@ -140,6 +140,13 @@ jobs:
             sleep 2
           done
           status=0
+          # No model is loaded here on purpose (/api/model/load is in
+          # ui_check's own EXPENSIVE list — the point of the first section is
+          # that nothing loads until asked), so the sections that need one are
+          # skipped. They are printed as NOT CHECKED at the end of the run
+          # rather than passing silently: measured, that is 14 checks,
+          # including all five over the head-ranking panel. Read the summary,
+          # not just the exit code.
           uv run python tests/ui_check.py http://127.0.0.1:5900/ || status=$?
           # Stop the server before the job ends. A background process left
           # holding the environment open is its own bug, and under setup-uv v5

@@ -739,6 +739,45 @@ def create_app(
         except ValueError as err:
             return JSONResponse({"error": str(err)}, status_code=422)
 
+    @app.get("/api/attention/attribute")
+    async def attribute_tokens(position: int | None = None):
+        """Rank the prompt's own tokens by how far masking one moves the answer.
+
+        The input-side companion to `/api/attention/ablate`. `position`
+        defaults to the last prompt token, where the next-token distribution is
+        the model's answer to the question before any of its own output feeds
+        back in.
+
+        Cost is `tested tokens + 8` forward passes: seven inside the ranking
+        (a base, a repeat of it for the noise floor, a plain `model(ids)`
+        agreement check, one with reversed position_ids that gates on the
+        answer MOVING, index 0, one joint mask, one check that masking empties
+        the column) plus one to read the model's answer at `position`.
+        Measured through this endpoint: 11 on gpt2 with "The capital of France
+        is" (3 tested), 21 on gemma-3-270m-it (13 tested), 24 on Qwen3-0.6B at
+        token 17 (16 tested). Tested tokens are capped at 64 and `truncated`
+        says whether it bit. `passes_note` carries the same breakdown to the
+        caller.
+
+        `passes` and `elapsed_s` are both returned so a caller can derive a
+        rate on ITS machine. Seconds measured on mine do not transfer, and on
+        one RTX 4060 they do not transfer between models either: warm and
+        back to back, three runs each, those three took 0.14-0.15 s,
+        0.81-0.84 s and 1.00-1.03 s, or roughly 13, 39 and 42 ms a pass.
+
+        409 when there is nothing to measure — a recording is open, the model
+        is served by Ollama, nothing has been generated, the generation belongs
+        to a previous model, or the model's next token at `position` is a
+        control token rather than an answer. 422 when `position` is outside the
+        sequence.
+        """
+        try:
+            return await asyncio.to_thread(runtime.attribute_tokens, position)
+        except RuntimeError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except ValueError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
     # ---------------- sessions (.mri) ----------------
     #
     # A `.mri` is one analysis without the model: tokens, attention, the
