@@ -389,6 +389,27 @@ export async function exportSession(
   return { blob: await r.blob(), filename: match?.[1] || "session.mri" };
 }
 
+/** What the SAE worked out about the activations it is being fed.
+ *
+ *  Absent until the first `encode`, because it is measured against the model
+ *  the SAE is attached to rather than read from a config file. Every field is
+ *  the server's — including `usable` and the threshold behind it, so the panel
+ *  never decides for itself whether a reconstruction is good enough.
+ */
+export interface SAECalibration {
+  convention: string; // "raw" | "b_dec" | "centered" | "centered+b_dec"
+  center: boolean;
+  subtract_b_dec: boolean;
+  fvu: number; // fraction of variance unexplained
+  l0: number; // features firing per token
+  rel_err: number;
+  n_tokens: number;
+  declared_b_dec: boolean | null; // null = the config did not say
+  ranked: [string, number][]; // every convention tried, best first
+  usable: boolean;
+  unusable_at: number;
+}
+
 export interface SAEStatus {
   loaded: boolean;
   repo: string | null;
@@ -396,6 +417,7 @@ export interface SAEStatus {
   layer: number | null;
   d_in: number | null;
   d_sae: number | null;
+  calibration?: SAECalibration | null;
 }
 
 export interface FeaturesSummary {

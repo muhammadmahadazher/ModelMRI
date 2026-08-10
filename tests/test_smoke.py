@@ -67,6 +67,60 @@ def test_attribute_on_a_recording_is_409():
     assert "recording" in r.json()["error"]
 
 
+def test_the_logit_lens_refuses_a_recording():
+    """The one replay-sensitive route whose guard is not in runtime.py.
+
+    Every other one — attention_meta, attention_slice, compare, rank_heads,
+    attribute_tokens, export_session — is a ModelRuntime method and opens with
+    `if self.replay is not None`. The lens is computed in server.py from
+    modelmri.lens, so it never passed a runtime guard, and `model is None`
+    covered for it whenever a `.mri` was opened with nothing loaded.
+
+    It stops covering the moment a recording is opened while the reader's own
+    model is still resident: `model` and `last_ids` are both set, and the lens
+    reports the LIVE model's layers under a replay pill that says "recorded,
+    not live". A wrong answer wearing the right label is the failure this
+    project exists not to ship.
+    """
+    app = create_app()
+    runtime = app.state.runtime
+    runtime.replay = object()
+    # The state that used to hide it: a model IS loaded, so the `model is None`
+    # branch below would not have fired.
+    runtime.model = object()
+    runtime.last_ids = object()
+
+    r = TestClient(app).get("/api/lens")
+    assert r.status_code == 409
+    assert "recording" in r.json()["error"]
+
+
+def test_attention_meta_says_which_kind_of_nothing():
+    """ "No model loaded" and "no generation yet" are different instructions.
+
+    Both used to arrive as a bare {"available": False}, so the panel could not
+    tell the reader whether to pick a model or press the button in front of
+    them — there was nothing in the payload to tell them apart with.
+    """
+    app = create_app()
+    runtime = app.state.runtime
+
+    # `loaded` is derived from `model`, not settable — which is the point: the
+    # two states below differ only in whether a model is resident.
+    assert runtime.model is None
+    assert runtime.attention_meta() == {
+        "available": False,
+        "reason": "no model loaded",
+    }
+
+    runtime.model = object()  # loaded, but nothing generated yet
+    runtime.last_ids = None
+    meta = runtime.attention_meta()
+    assert meta["available"] is False
+    assert "generate" in meta["reason"].lower()
+    assert meta["reason"] != "no model loaded"
+
+
 class _OffsetTok:
     """Just enough tokenizer to exercise the offset mapping, no download."""
 

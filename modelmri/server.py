@@ -482,6 +482,29 @@ def create_app(
 
         The fallback for every model with no SAE, which is most of them.
         """
+        # Replay first, and this is the only replay-sensitive route in the tree
+        # whose guard does not live in runtime.py. Every other one —
+        # attention_meta, attention_slice, compare, rank_heads,
+        # attribute_tokens, export_session — opens with `if self.replay is not
+        # None` because it is a ModelRuntime method. The lens is computed here
+        # instead, from `modelmri.lens`, so it never passed a runtime guard and
+        # nobody noticed: `runtime.model is None` catches the common case of
+        # opening a `.mri` with nothing loaded, which looks like it is working.
+        #
+        # It stops looking like it is working the moment someone opens a
+        # recording while their own model is still loaded. Then `model` is not
+        # None, `last_ids` is not None, and the lens happily reports the LIVE
+        # model's layers inside a session every other panel is drawing from the
+        # recording — with the replay pill on screen saying "recorded, not
+        # live".
+        if runtime.replay is not None:
+            return JSONResponse(
+                {
+                    "error": "This is a recording. The logit lens means running "
+                    "the model, and a `.mri` does not carry one."
+                },
+                status_code=409,
+            )
         if runtime.backend == "ollama":
             return JSONResponse(
                 {

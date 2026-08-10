@@ -724,8 +724,21 @@ class ModelRuntime:
             return self.replay.attention_meta()
         if self.backend == "ollama":
             return {"available": False, "reason": "internals unavailable via Ollama"}
-        if not self.loaded or self.last_ids is None:
-            return {"available": False}
+        # Two states, not one. Every other branch here carries a `reason`; this
+        # one carried nothing, so "you have not loaded a model" and "you have a
+        # model but have not generated anything" arrived at the panel as the
+        # same empty answer — and the panel cannot tell them apart either,
+        # because there is nothing in the payload to tell them apart WITH.
+        #
+        # They want opposite things from the reader. One is "pick a model", the
+        # other is "press the button you are already looking at".
+        if not self.loaded:
+            return {"available": False, "reason": "no model loaded"}
+        if self.last_ids is None:
+            return {
+                "available": False,
+                "reason": "generate something first — attention is read off a real run",
+            }
         if self.last_ids_epoch != self.epoch:
             return {"available": False, "reason": "model changed since that generation"}
         cfg = self.model.config

@@ -29,6 +29,12 @@ interface Props {
 /** Where the default SAE reads. Overridden per registry entry. */
 const DEFAULT_HOOK = "blocks.8.hook_resid_pre";
 
+/** FVU spans five orders of magnitude between a working SAE and a wrong one
+ *  (0.0010 against 13579.24 on the default release), so one fixed number of
+ *  decimals is either noise or a row of zeroes. */
+const fmtFVU = (v: number) =>
+  v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(4);
+
 export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
   const scanRef = useScanOnData(epoch);
   const [sae, setSae] = useState<SAEStatus | null>(null);
@@ -224,6 +230,9 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
     );
   }
 
+  // Absent until the first encode, because it is measured rather than read.
+  const cal = sae.calibration ?? null;
+
   return (
     <div ref={scanRef} className="panel feat">
       <div className="sect">
@@ -240,7 +249,45 @@ export default function FeaturesPanel({ epoch, prompt, onSteering }: Props) {
         </span>
       </div>
 
-      {summary && (
+      {/* An SAE fed the wrong activation convention does not error. It returns
+          features, in the right shape, with plausible magnitudes, for a vector
+          it never saw — which is exactly what this panel used to plot. So the
+          reconstruction it achieved against THIS model is stated before any
+          feature is, and every number here is the server's: the panel does not
+          own the threshold that decides whether a measurement can be trusted. */}
+      {cal && (
+        <div className={`hint ${cal.usable ? "" : "err"}`}>
+          <b>Reconstruction {cal.usable ? "checked" : "failed"}.</b> Measured
+          against your model over {cal.n_tokens} tokens rather than read from
+          the SAE's config — which{" "}
+          {cal.declared_b_dec === null
+            ? "does not say"
+            : `declares b_dec ${cal.declared_b_dec}`}
+          . Best of four input conventions: activations{" "}
+          <b>{cal.center ? "centered" : "not centered"}</b> along d_model,{" "}
+          <b>b_dec {cal.subtract_b_dec ? "subtracted" : "left in"}</b>, leaving{" "}
+          <b>{fmtFVU(cal.fvu)}</b> of the variance unexplained with{" "}
+          <b>{cal.l0.toFixed(1)}</b> of {sae.d_sae?.toLocaleString()} features
+          firing per token.
+        </div>
+      )}
+
+      {cal && !cal.usable && (
+        <div className="resting-empty">
+          <b>Not plotting these features.</b> The best of the four conventions
+          still leaves an FVU of {fmtFVU(cal.fvu)}, and anything at or above{" "}
+          {cal.unusable_at} carries less of the activation than a constant
+          would. What comes out is not a decomposition of anything, so a chart
+          of it would be a picture of nothing — which is the failure this panel
+          is least able to show you and most likely to be believed about.
+          Tried, best first:{" "}
+          {cal.ranked.map(([name, fvu]) => `${name} ${fmtFVU(fvu)}`).join(" · ")}
+          . The logit lens below asks a different question of the same residual
+          stream and needs no SAE.
+        </div>
+      )}
+
+      {summary && (!cal || cal.usable) && (
         <div className="attn-scroll">
           <div className="attn-inner">
             <div className="tokens">
