@@ -8,6 +8,34 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **Token attribution** — `modelmri/attribute.py`, `GET
+  /api/attention/attribute`, and a panel beside the head ranking. It masks one
+  token out of every later position's attention, re-runs the model, and reports
+  how far the next-token distribution at one position moved, in nats of KL.
+  The input-side companion to head ablation, and built around what Phase 0
+  measured rather than what the plan assumed:
+    - **Index 0 is an attention sink and is reported outside the order.** On
+      gpt2 (bf16/cuda, eager, "The capital of France is", last prompt token) it
+      scores 4.86309, 2.79x the next candidate; prepending `<|endoftext|>` holds
+      index 0 at 4.76083 while the word that moved off it falls 10.5x, to
+      0.46107. The score follows the position, not the token.
+    - **The attribution position itself is excluded on geometry**, not on size.
+      Sparing the diagonal drops it to exactly 0.0 on gpt2 — but it is *not*
+      small in general: on Qwen3-0.6B the same position scores 6.24429 and is
+      the largest of all 13 candidates.
+    - **The chat template dominates.** On Qwen3-0.6B the template's own '\n'
+      and 'assistant' score 6.24429 and 2.02161 while every word the user typed
+      sits between 3.1e-05 and 7.9e-05, so rows are grouped as `typed`,
+      `template`, `generated` or `unknown` and never shown as one ranking.
+    - **The scores are not shares and do not add up**, and the direction is not
+      fixed: summing the rows shown over-states one joint mask by 1.82x on gpt2,
+      while summing only the typed span under-states it by 0.35x on
+      gemma-3-270m-it. `sum_of_singles` and `joint_kl` are both returned;
+      neither is a correction factor.
+  Refusals rather than guesses: an unbatched `[1, S]` only, a model whose
+  answer moves when handed an explicit all-ones mask, a model that does not
+  read the `position_ids` it is given, an attribution position whose next token
+  is a control token, and a position with nothing before it but the sink.
 - **A FAQ**, in the docs and in the README, answering what was previously only
   answerable by reading source: which models are actually verified, why
   attention needs eager attention, what a head-ranking KL does and does not
@@ -27,6 +55,42 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **Attribution accepted a model that ignores `position_ids`.** The agreement
+  check ran with an all-ones mask, under which `attention_mask.cumsum(-1) - 1`
+  equals `arange(S)` by construction — so a model that derives its own
+  positions from the mask agreed perfectly, and then every masked pass billed
+  the suffix's phase shift to the one masked token. Written as a toy model it
+  returned floor 0.0, `mask_verified` true and a full ranking. A pass with
+  deliberately reversed `position_ids` now gates on the answer *moving*
+  (measured: gpt2 2.166768, Qwen3-0.6B 0.011300, gemma-3-270m-it 4.616208
+  nats). Reversal rather than a shift, because RoPE is invariant to shifting
+  every position together: `arange + 1` moves Qwen3 by 5e-06.
+- **A model swap mid-request produced a ranking of the wrong model.** Both
+  `ablate_heads` and `attribute_tokens` took their epoch check *outside*
+  `self._lock`, and `load` holds that lock across the epoch bump and the model
+  swap. A load landing in the window returned scores computed from one model's
+  token ids under another model's weights, while the identical call one moment
+  later refused.
+- **The panel filed the model's own output under "chat template scaffold"** —
+  on gpt2, two lines below its own note saying gpt2 has no chat template.
+  Attributing at a generated token there put 11 of 15 rows, including the
+  highest-scoring token in the run, under that heading. `n_prompt` now reaches
+  the client and rows past the prompt are their own group.
+- **`typed_span=None` silently meant "all of it is yours".** `runtime._user_span`
+  returns `None` for *"we could not locate your words"* — a slow tokenizer, or a
+  prompt that occurs twice in the templated text — and rows came back labelled
+  `typed`. They are now `unknown`, and the panel shows one list with no heading
+  claiming authorship.
+- **A truncated run told you your words "were not candidates".** They were
+  candidates; the 64-token cap simply never reached them. Measured on gpt2 at
+  position 100 of a 125-token generation: typed span [0,5], all five
+  candidates, window starting at 36, zero tested. `tested_span` is now
+  returned, the sentence says "not asked", and the untested in-cone chips carry
+  their own mark on the strip instead of rendering blank beside scored ones.
+- **Nothing scrolled the attributed token into view.** On a 96-token generation
+  the ringed chip sat 4872px into a 965px window at `scrollLeft` 0, so the
+  strip opened showing 19 chips of which the only one with a bar was the sink —
+  under text pointing at it four times.
 - **A test that asserted a race.** `test_sizes_come_from_the_registry` compared
   the order eight *concurrent* registry lookups happened in against the curated
   order. Measured over 60 runs, the order it asserted occurred 0 times; the
@@ -46,6 +110,21 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 - PyPI metadata: 4 classifiers to 15, 6 keywords to 14, and the package page
   now links to the docs, the changelog, the issue tracker and the demo instead
   of the repository twice.
+- `ablate._distribution` and `ablate._kl` are now public as
+  `ablate.distribution` and `ablate.kl_nats`, imported by `attribute.py` rather
+  than copied. Two KLs in one package would drift into meaning two different
+  things, and a head score and a token score are read on the same screen.
+  `kl_nats` now documents what its 1e-12 floor on `q` costs: nothing at all on
+  ordinary rows, and 0.001672 nats on gpt2's index 0, where masking collapses
+  10483 of 50257 vocabulary entries below the floor.
+- `tests/e2e_check.py` no longer claims to exercise "EVERY feature": measured,
+  it called 22 of the 51 declared routes. The three attention interventions
+  (`ablate`, `diff`, `attribute`) were added, taking it to 25, and the
+  docstring now names what it still does not reach.
+- `tests/ui_check.py` reports skipped sections as `NOT CHECKED` in its summary.
+  CI starts a server with no model, so the head-ranking and `.mri` round-trip
+  sections quietly did nothing — 14 checks, including all five over the
+  head-ranking panel — and a green run read as if they had passed.
 
 ## [0.8.4] — 2026-08-10
 

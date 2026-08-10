@@ -33,6 +33,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "frontend" / "src"
 BUNDLE = ROOT / "frontend" / "public" / "demo"
+# What `npm run build:demo` writes, and what GitHub Pages publishes.
+DIST = ROOT / "demo-dist"
 
 # Endpoints a static demo genuinely cannot serve. They must still be HANDLED
 # — with a 501 that says what the call does and what would make it work —
@@ -44,6 +46,15 @@ EXEMPT = {
     "/api/session/close": "closes a replay the demo never enters",
     "/api/model/cancel": "there is no download to cancel",
     "/api/vla/dataset": "streams a dataset that is not in the bundle",
+    # Exempt on the OTHER route: not "handled with a 501", but never reachable,
+    # because the control that would call it does not exist in this build. See
+    # `token_ranking_is_not_offered` below for why that is the right shape of
+    # answer here and a 501 is not.
+    "/api/attention/attribute": (
+        "ranks tokens by masking them one at a time, which is dozens of "
+        "forward passes against a live model; the button is gated off in "
+        "demo and viewer builds instead"
+    ),
 }
 
 FAILURES: list[str] = []
@@ -116,6 +127,91 @@ def static_coverage() -> None:
     # would silently excuse a future path of the same name.
     stale = sorted(set(EXEMPT) - api_paths())
     check("no stale exemptions", not stale, f"still listed but never called: {stale}")
+
+
+def token_ranking_is_not_offered() -> None:
+    """The token-ranking control must be absent from the demo build.
+
+    Every other unanswerable endpoint here is handled with a 501 that says
+    what the call does and what would make it work, because "not available in
+    the demo" in red reads as a broken tool. Token attribution is the one
+    place that argument runs the other way. Its whole claim is a measurement —
+    "masking THIS token moves the answer at THIS position by THIS much" — and
+    a button that can only ever answer with a failure does not teach a visitor
+    that the page has no model behind it. It teaches them the measurement does
+    not work, which is the one impression this project cannot afford in the
+    one surface most people will ever touch.
+
+    So the control is gated off, and gating it is also what stops the call
+    from existing at all: with no button there is no unhandled path left to
+    fall through to demo.ts's catch-all and become a 409 under advice that
+    cannot help. This check is the thing that makes "just switch the button
+    on" fail here rather than ship. Someone who later bakes a real recorded
+    attribution into the bundle has to come and change this deliberately —
+    which is the point, because they will have to decide what a recorded
+    ranking at a fixed position is honestly claiming first.
+    """
+    print("\ndemo — is the token ranking correctly not offered?")
+    panel = (SRC / "AttentionPanel.tsx").read_text("utf-8")
+
+    at = panel.find('"Rank tokens"')
+    check(
+        "the panel still has a Rank tokens control to gate",
+        at >= 0,
+        "no 'Rank tokens' label found in AttentionPanel.tsx — if the control "
+        "was renamed, this check went blind and must be renamed with it",
+    )
+    # `check` here reports and returns None, unlike ui_check.py's, so it cannot
+    # be used as the condition of an early return — written that way, the two
+    # assertions below were skipped in silence and the section printed one
+    # cheerful PASS while checking nothing. Negative index instead: a missing
+    # label leaves the window empty and both checks fail loudly, which is the
+    # correct behaviour for a check that has gone blind.
+    at = max(at, 0)
+
+    # The guard has to sit between the enclosing JSX and the label, and the
+    # window is deliberately tight: measured at 250 characters, which is the
+    # button's four props. A wider window would start reaching back over the
+    # head-ranking controls above it and would pass on their `!replay`
+    # instead of this button's own gate.
+    guard = panel[max(0, at - 600) : at]
+    check(
+        "Rank tokens is gated on !replay && !DEMO && !VIEWER",
+        "!replay && !DEMO && !VIEWER" in guard,
+        "that exact guard is not in the 600 characters before the label. A "
+        "recording, the static demo and the .mri viewer each have no model, "
+        "so the control would render somewhere it can only fail",
+    )
+
+    # And the call itself: if some other path reaches the endpoint, the gate on
+    # the button is decoration.
+    calls = re.findall(r"attributeTokens\s*\(", panel)
+    check(
+        "attribution is requested from exactly one place",
+        len(calls) == 1,
+        f"{len(calls)} calls to attributeTokens — every one of them needs the "
+        f"same gate, and a second call site is how the gate stops being true",
+    )
+
+    # The gate above is the enforceable claim; this is the observed one. DEMO
+    # is `import.meta.env.VITE_DEMO === "1"`, which the demo build folds to a
+    # constant, so rollup drops the branch entirely: measured on this machine,
+    # the demo bundle contains neither the label nor the endpoint string while
+    # the normal app bundle contains both. Only asserted when a bundle is
+    # sitting there — `npm run build:demo` is what CI does before publishing,
+    # and a clean checkout has nothing to read.
+    built = sorted(DIST.glob("assets/*.js")) if DIST.is_dir() else []
+    if not built:
+        print(f"    (no demo bundle at {DIST.name}/ — run npm run build:demo)")
+        return
+    js = "\n".join(f.read_text("utf-8", errors="replace") for f in built)
+    leaked = [s for s in ("Rank tokens", "/api/attention/attribute") if s in js]
+    check(
+        "the built demo bundle carries neither the control nor its endpoint",
+        not leaked,
+        f"{leaked} survived into the published JavaScript, so the gate is a "
+        f"runtime one and the demo is shipping a control it cannot answer",
+    )
 
 
 def bundle_integrity() -> None:
@@ -424,6 +520,7 @@ def no_machine_leaks() -> None:
 def main() -> int:
     print("demo parity check")
     static_coverage()
+    token_ranking_is_not_offered()
     no_machine_leaks()
     bundle_integrity()
     print()

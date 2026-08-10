@@ -1,5 +1,162 @@
 # Working log
 
+## 2026-08-10 (attribution, after the adversaries) — the guard that could not fire
+
+Four adversarial passes over the shipped attribution feature returned sixteen
+findings. I reproduced every one before touching anything, and rejected one.
+
+**The one that mattered most was a refusal that could not refuse.** The module
+docstring promised to reject a model that ignores `position_ids` and derives
+them from `attention_mask.cumsum(-1) - 1` — the whole reason the file passes
+them explicitly. The check ran with an **all-ones mask**, under which the
+derived positions *equal* `arange(S)` by construction. So the failure it named
+was the one case it could never see. Written as a toy model whose logits are a
+pure function of the derived positions, with `input_ids` never read at all, it
+came back with `noise_floor_kl` 0.0, `mask_verified` True and a clean ranking
+of three tokens — every score the suffix's position shift and nothing else.
+
+The fix is one more pass, with `position_ids` reversed, gating on the answer
+**moving**. Reversal and not a shift: RoPE is invariant to moving every
+position together, so `arange + 1` moves gpt2 3.396605 nats (learned absolute
+embeddings) but Qwen3-0.6B only **5e-06** — inside the range Qwen3's own
+content tokens score in. Reversed: gpt2 2.166768, Qwen3-0.6B 0.011300,
+gemma-3-270m-it 4.616208. The smallest is 11,300x the tolerance.
+
+This is conservative in one direction on purpose. A model with *no* positional
+dependence at all is safe from the re-phasing, and is also indistinguishable
+from the mask-deriving one from outside, so it is refused too. That cost a test
+fixture rewrite: the toy `Listener` was a bag of visible keys with no phase to
+shift, which is exactly why it passed a check it should have failed.
+
+The same shape of bug sat next to it: `used_position_ids` asserted every pass
+got the same tensor, but nothing in the file ever supplied a different one, so
+the assertion could not fail. It is a real check now — exactly one stray is
+allowed, and it must be the probe.
+
+**A ranking of the wrong model, with nothing to notice it.** Both interventions
+took their epoch check *outside* `self._lock`, and `load` holds that lock
+across the epoch bump and the model swap. Scripted with two toy models: the
+check passed, the call blocked on the lock, the epoch went 1 → 2 and the
+weights swapped, and `attribute_tokens` returned scores — while the identical
+call one moment later refused. Nothing downstream can catch that: the ids are
+the right length and the KLs are finite.
+
+**Three UI findings were the same failure wearing different clothes: a caveat
+that enumerated reasons and left one out.** The panel told the reader a bar-less
+chip means "outside the causal cone or the position itself", while the
+64-candidate cap routinely leaves 30 in-cone candidates unmarked. It told a
+reader whose typed span fell outside the tested window that their words "were
+not candidates" — they were candidates; nothing asked them. And it filed the
+model's own output under "chat template scaffold" on gpt2, two lines below its
+own note saying gpt2 has no chat template: attributing at index 16 of a
+12-token generation, **11 of 15 rows** are the model's own, including the
+highest score in the run (index 10 ' Republic', 0.69132). All three are the
+same class of error — a closed list of reasons that is not closed — and the
+server now returns `tested_span` and `n_prompt` so the client can tell "not
+asked" from "asked, and nothing".
+
+**What I rejected.** One finding said the sink figure 4.86309 is "low in the
+third decimal" because `kl_nats` takes `log` of an already-computed softmax
+instead of `log_softmax`, attributing the 0.001673 gap to fp32 precision and
+explicitly ruling out the 1e-12 floor on the grounds that nothing underflowed
+to zero. The magnitude is right and the cause is not. Underflow to *zero* is
+not the floor's failure mode: at index 0, **10483 of 50257** vocabulary entries
+sit under 1e-12 without reaching zero, and the p-weighted cost of clamping
+exactly those is **0.001672** — the entire gap. Precision is not involved:
+the identical arithmetic in float64 gives 4.863086102936881 against float32's
+4.863085746765137. So 4.86309 is not an imprecise estimate, it is an exact
+report of a floored quantity, and the suggested fix (quote it as 4.8631) would
+have made the code *less* accurate about what it computes. Changing the
+estimator instead would silently move every KL in the package. What shipped is
+the measurement in `kl_nats`'s docstring: the floor costs nothing on ordinary
+rows and 0.001672 nats on the one row where the intervention collapses the
+tail — which is the row the panel highlights.
+
+Two of the adversaries' numbers did not reproduce here and I used my own:
+Qwen3's residual weight in masked column 0 is **0.077148**, not 0.052734, and
+the claim that 56 of 65 bars land within half a pixel of the strip's floor is a
+DOM measurement I replaced with one anybody can check from the payload — 60 of
+65 bars under 5% of the tallest, 34 under 2%, on a 73-token gpt2 prompt.
+
+## 2026-08-10 (token attribution) — Phase 0, including the parts that refuted the plan
+
+Before writing `modelmri/attribute.py` I measured the six things the design
+depended on. Conditions for everything below, and they are not optional
+context: prompt `"The capital of France is"`, **bfloat16 on cuda**,
+`attn_implementation="eager"` (matching `runtime.py`), one unbatched sequence,
+attributing at the **last prompt token**, chat template applied with
+`add_generation_prompt=True` where one exists. Masking is
+`attention_mask[0,i]=0` with `position_ids=arange(S)` passed explicitly, so
+removing a token does not re-phase RoPE for the suffix. KL is
+`ablate.kl_nats` on `ablate.distribution`, imported rather than reimplemented.
+
+**1. Noise floor: exactly 0.0**, on gpt2, Qwen3-0.6B and gemma-3-270m-it, and
+the logits are bit-identical (`torch.equal`) between `model(ids)` and
+`model(ids, attention_mask=ones, position_ids=arange)`. The explicit-argument
+path does not select a different kernel. No floor offset needed anywhere.
+
+**2. Index 0 is a sink, not content.** gpt2, no BOS (S=5, pos=4): index 0
+'The' **4.86309**, 3 ' France' 1.74563, 1 ' capital' 0.90210, 2 ' of' 0.86315,
+4 ' is' 0.06375. With `<|endoftext|>` prepended (S=6, pos=5): index 0
+**4.76083**, 4 ' France' 1.35811, 1 'The' 0.46107. The top score *stays at
+index 0* while the token sitting there changes completely (2.1% apart), and
+'The' itself falls **10.5x** when it moves to index 1. The score follows the
+position. Controlled against the obvious artifact — with a 2D mask, masking
+key 0 leaves query 0 with no keys at all — by re-running with a 4D mask that
+spares the diagonal: every off-diagonal score reproduced bit-for-bit
+(4.863085746765137 both ways).
+
+**3. Additivity: THE PLAN WAS REFUTED.** The plan expected the direction of
+the error to invert between models. It does not invert — over the typed span
+all three ratios are *below* 1: gpt2 0.9816, Qwen3-0.6B 0.9168,
+gemma-3-270m-it 0.3480. Singles sum to **less** than one joint mask in every
+case, by 2% up to 2.87x. What *does* invert is the choice of which tokens you
+sum: over the rows the panel actually shows, gpt2 goes to 1.82x and gemma to
+1.58x — same model, same prompt, same forward passes, opposite sign. So no
+correction factor exists and the panel quotes this run's own two numbers.
+This is also the *opposite* of head ablation in `ablate.py`, where gpt2 heads
+over-count 8x and gemma heads under-count; that docstring's framing must not
+be copy-pasted onto token scores.
+
+**4. Self-mask: near-no-op on gpt2 only, and that half of the argument is
+useless.** gpt2 0.06375 against a max of 4.86309 — 1.31%. But on Qwen3-0.6B
+the self position scores **6.24429 and is the LARGEST of all 13 candidates**
+(next: 'assistant' 2.02161), and on gemma 1.92183 against a max of 9.33529.
+"It is tiny anyway" is false. The rule stands on geometry instead: sparing the
+diagonal drops it to exactly 0.0, so what it measures is the mask's shape.
+
+**5. User-content span:** all three tokenizers are fast, the prompt is a
+literal substring in all three, spans gpt2 (0,5), Qwen3 (3,8), gemma (5,10).
+One gotcha: fast tokenizers hand back zero-width `(0,0)` offsets for added
+special tokens, which fall inside any span starting at char 0.
+
+**6. Control-token detector, and a false positive I nearly shipped.**
+`convert_tokens_to_ids(" the")` returns **50256** on gpt2 — the unk fallback,
+which *is* `<|endoftext|>`, which *is* in the control set — because GPT-2
+spells that token with U+0120, not a space. `encode()` gives 262, which
+correctly does not fire. Probe token ids taken from the sequence, never
+strings. Second: the wide regex `^<\|?.+\|?>$` claims **6573** ids beyond
+gemma's 8 declared specials and fires on `<div>`, `<b>`, `<html>` — ordinary
+content in that vocabulary. Only the pipe form shipped.
+
+**Three things that shaped the design, none of which blocked it.** (a) The
+chat template dominates every ranking — Qwen3's top three are the template's
+'\n' 6.24429, 'assistant' 2.02161 and '<|im_start|>' 0.32266 while every typed
+word sits at 3.1e-05 to 7.9e-05, four to five orders down; a list that does not
+separate them answers "the chat template" every time. (b) That Qwen3 content
+signal is **below the model's own numeric precision**: the entire content sum
+is 2.50e-04 nats while merely switching gpt2 from bf16 to fp32 moves a
+distribution by 1.88e-02. (c) gemma emits **two `<bos>` tokens** — its chat
+template writes one and `tokenizer()` adds another — and both score nonzero
+(0.83402, 0.78318).
+
+Also worth recording because a plan document had it wrong: the argmax at the
+default position on gpt2 is ' the' at **p=0.097824** in bf16. The plan's
+0.084592 is the *fp32* number, and KL(fp32 ‖ bf16) at that position is
+0.018762. Qwen3's `<think>` at p=0.999531 was right. gemma's argmax is 'The'
+at p=0.560747 and is *not* a control token, so "the answer is a control token"
+is model-specific and not a general case to design around.
+
 ## 2026-08-10 (later still) — the timing claim was wrong twice
 
 Yesterday's correction replaced three inconsistent timings with one measured
