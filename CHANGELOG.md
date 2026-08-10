@@ -6,6 +6,23 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-08-10
+
+**No functional change.** Identical code to 0.8.3; this release exists to
+exercise the release path.
+
+Every GitHub Action was upgraded to its current major in the preceding
+commit, but `release.yml` only runs on a tag — so the one workflow that
+builds the artifacts people install was the only one the upgrade had not been
+tested against. Two of its steps changed behaviour underneath it
+(`setup-node` v7 can now enable caching on its own; `setup-uv` v9 no longer
+prunes its cache), and the honest way to find out whether the release still
+builds a correct wheel is to cut one.
+
+The published artifacts are the ones CI built and attached to the GitHub
+release, not a local build — which is what makes this a test of the path
+rather than a test of my laptop.
+
 ## [0.8.3] — 2026-08-10
 
 ### Changed
