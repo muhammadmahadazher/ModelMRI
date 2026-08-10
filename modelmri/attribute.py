@@ -102,6 +102,7 @@ from typing import Any, Iterable
 import torch
 
 from modelmri.ablate import distribution, kl_nats
+from modelmri.errors import BadRequest
 
 # Masking, and nothing else. Named anyway, because ablate.py's lesson is that
 # an unlabelled importance number is the lie, and the caller has to be able to
@@ -223,26 +224,40 @@ def rank_tokens(
     ' Republic'. Groups are therefore four-valued — `generated` wins over the
     rest, because past the prompt nothing is template and nothing is typed.
     """
+    # THE FOUR ARGUMENT CHECKS, AND WHY TWO OF THEM ARE NOT AttributionError.
+    #
+    # AttributionError means "this measurement cannot be taken honestly" and
+    # runtime.py converts it to a Refusal — 409, "ModelMRI decided not to
+    # answer". That is right for the four checks further down, which are about
+    # what the model did. It is wrong for a caller who passed a bad argument,
+    # and `baseline` and `position` are both query parameters on
+    # /api/attention/attribute. errors.py names an unknown baseline as the type
+    # example of a BadRequest; it was answering 409 while the layer check on
+    # the sibling endpoint answered 422.
+    #
+    # The other two stay AttributionError-shaped but are NOT reachable from a
+    # request: runtime.py builds `ids` itself out of `last_ids`, and
+    # `max_candidates` comes from a module constant. A violation there is this
+    # package contradicting itself, so it is a plain RuntimeError and belongs
+    # on the 500 path with a traceback — see the note at `used_position_ids`.
     if baseline not in BASELINES:
-        raise AttributionError(
+        raise BadRequest(
             f"unknown baseline {baseline!r} — this measurement offers only "
             f"{', '.join(BASELINES)}. Substituting a neutral token instead of "
             "masking is three different experiments across gpt2, Qwen3 and "
             "gemma, and on gpt2 it reverses the ranking."
         )
     if ids.dim() != 2 or int(ids.shape[0]) != 1:
-        raise AttributionError(
+        raise RuntimeError(
             f"attribution needs one unbatched sequence shaped [1, S], got "
             f"{tuple(ids.shape)}. Batching changes the kernel and the noise "
             "floor measured for this path was measured unbatched."
         )
     seq = int(ids.shape[1])
     if not 0 <= position < seq:
-        raise AttributionError(
-            f"position {position} is outside a sequence of {seq} tokens."
-        )
+        raise BadRequest(f"position {position} is outside a sequence of {seq} tokens.")
     if max_candidates < 1:
-        raise AttributionError("max_candidates must be at least 1.")
+        raise RuntimeError("max_candidates must be at least 1.")
 
     control = {int(c) for c in control_ids}
     shape = tuple(ids.shape)
@@ -278,7 +293,14 @@ def rank_tokens(
         # instead would renumber every position after it, and the ranking
         # would be about the renumbering.
         if tuple(ids.shape) != shape:
-            raise AttributionError(
+            # A plain RuntimeError, deliberately, and one of two in this file.
+            # This is not a statement about the model or the request — it is
+            # this function checking its own bookkeeping, the "this should not
+            # happen" class, and a violation is a bug here. As an
+            # AttributionError it went through runtime.py's blanket wrap and
+            # reached the browser as 409 "ModelMRI decided not to answer",
+            # with no traceback logged anywhere. It is a 500 now, with one.
+            raise RuntimeError(
                 f"the input ids changed shape mid-run, {shape} -> "
                 f"{tuple(ids.shape)}; masking must preserve every index."
             )
@@ -465,9 +487,15 @@ def rank_tokens(
     # and it is counted rather than merely permitted: an identity test that
     # can only ever pass is not a check, and this one could not fire at all
     # until `forward` had a caller that overrode the tensor.
+    #
+    # A plain RuntimeError, like the shape check in `forward` and for the same
+    # reason: it is an assertion about this file's own instrumentation, not
+    # about the model. Nothing the reader can do with it, and everything the
+    # person fixing it needs is in the traceback — so it is a 500 with a log
+    # line rather than a 409 claiming a decision was made.
     strays = [p for p in used_position_ids if p is not position_ids]
     if len(strays) != 1 or strays[0] is not wrong_position_ids:
-        raise AttributionError(
+        raise RuntimeError(
             f"{len(strays)} passes were handed a position_ids other than the "
             "one arange(S) tensor, and exactly one may be — the reversed "
             "probe. Rebuilding it anywhere else puts the phase shift a masked "

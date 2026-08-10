@@ -12,6 +12,7 @@ attn_implementation="eager".
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -35,7 +36,12 @@ from . import (
     progress,
     session,
 )
+from .errors import BadRequest, Refusal
 from .saes import SAEHandle, SAEStatus
+
+# One logger for the package, so a failure that the API answers generically
+# still leaves a traceback in the terminal the user is already looking at.
+log = logging.getLogger("modelmri")
 
 
 def _require_causal_lm(hf_id: str) -> None:
@@ -60,7 +66,7 @@ def _require_causal_lm(hf_id: str) -> None:
         return  # unknown shape: don't block on a guess
 
     kind = archs[0]
-    raise ValueError(
+    raise BadRequest(
         f"{hf_id} is a {kind}, which is not a causal language model. The "
         "playground generates text; this repo cannot do that. Robot policies "
         "belong in the robot panel, and sparse autoencoders in the features "
@@ -91,7 +97,17 @@ def _hub_error_message(hf_id: str, err: Exception) -> str:
             f"Could not reach the HuggingFace Hub to fetch '{hf_id}'. "
             f"Check your connection, or pick a model already cached locally."
         )
-    return f"Could not load '{hf_id}': {text.splitlines()[0]}"
+    # The fallback deliberately does not paste the hub's own words. This
+    # string is published to the browser, and the first line of an OSError
+    # from huggingface_hub routinely carries the local cache path — which is
+    # the machine's, not the reader's. The three branches above are the
+    # failures this function can name; this one it cannot, so it says that
+    # and points at the terminal, where the caller logs the real exception.
+    return (
+        f"Could not load '{hf_id}', and this is not one of the failures "
+        f"ModelMRI knows how to explain. The full error is in the terminal "
+        f"running `modelmri serve`."
+    )
 
 
 def _tree_bytes(root) -> int:
@@ -188,8 +204,26 @@ def _clean_partials(hf_id: str) -> int:
                 freed += stub.stat().st_size
                 stub.unlink()
             except OSError:
+                # The blob is already gone (a previous sweep, or the download
+                # child still shutting down), or Windows refuses the unlink
+                # because the terminated child has not released the handle
+                # yet. Continuing is right: `freed` accumulates, so one stuck
+                # blob makes the "Removed N MB" the user reads an
+                # understatement rather than aborting the sweep and leaving
+                # the rest of the partials on disk.
                 pass
     except OSError:
+        # `rglob` itself, and it is NOT dead code even though it reads that
+        # way on a modern interpreter. On CPython 3.12+ the recursive walk
+        # swallows every OSError internally (3.13 via glob._GlobberBase,
+        # 3.12 via Path.walk with on_error=None), so nothing escapes. On
+        # 3.10/3.11 — and pyproject sets requires-python = ">=3.10" —
+        # _RecursiveWildcardSelector catches only PermissionError, so any
+        # other scandir failure on a SUBdirectory escapes: a Google Drive or
+        # OneDrive placeholder (WinError 1920), or a directory deleted
+        # mid-walk. Both are ordinary here. Cleanup after a cancelled
+        # download must not itself raise, so the count stays at whatever was
+        # removed before the walk stopped.
         pass
     return freed
 
@@ -420,19 +454,19 @@ class ModelRuntime:
         Blocking — call from a worker thread.
         """
         if source not in ("hf", "ollama"):
-            raise ValueError(f"unknown source {source!r} (use 'hf' or 'ollama')")
+            raise BadRequest(f"unknown source {source!r} (use 'hf' or 'ollama')")
 
         if source == "ollama":
             st = ollama.status()
             if not st["up"]:
-                raise RuntimeError(
+                raise Refusal(
                     f"Ollama is not running at {st.get('host') or ollama.default_host()}"
                     " — start it, or "
                     "install from ollama.com. Set OLLAMA_HOST if it listens "
                     "somewhere else."
                 )
             if hf_id not in st["models"]:
-                raise ValueError(
+                raise BadRequest(
                     f"'{hf_id}' is not installed in Ollama. Installed: "
                     f"{', '.join(st['models']) or 'none'} — run `ollama pull {hf_id}`"
                 )
@@ -475,8 +509,26 @@ class ModelRuntime:
                     self._prefetch_weights(hf_id)
                 except LoadCancelled:
                     raise
-                except Exception:
-                    pass
+                except Exception as err:  # noqa: BLE001 - see the comment
+                    # The child could not be started or could not be waited
+                    # on: no usable sys.executable, a box that refuses process
+                    # creation, a denied CREATE_NEW_PROCESS_GROUP. Falling
+                    # through is right — from_pretrained downloads the old
+                    # way and the only thing lost is the ability to Stop.
+                    #
+                    # Deliberately NOT narrowed. OSError is the honest guess
+                    # and it is a guess; this sits on the model-load critical
+                    # path, where one missed type turns a working slow
+                    # fallback into a failed load. Logged instead, because
+                    # the only other symptom is "Stop does not stop the
+                    # download", which nobody reports as a bug in here.
+                    log.warning(
+                        "prefetch child unusable for %s (%s: %s); the download "
+                        "will run in-process and Stop will not interrupt it",
+                        hf_id,
+                        type(err).__name__,
+                        err,
+                    )
                 if progress.TRACKER.cancelled.is_set():
                     raise LoadCancelled("Load stopped before the weights loaded.")
                 model = AutoModelForCausalLM.from_pretrained(
@@ -490,9 +542,15 @@ class ModelRuntime:
             except OSError as err:
                 # Gated repos, typos and private models all land here with a
                 # multi-screen traceback. Say what to actually do instead.
+                #
+                # Logged as well as answered: `_hub_error_message` names the
+                # three failures it recognises and refuses to paste the hub's
+                # own text for the fourth, so the terminal is the only place
+                # the real exception survives.
                 message = _hub_error_message(hf_id, err)
+                log.warning("hub load of %s failed", hf_id, exc_info=err)
                 progress.TRACKER.finish(error=message)
-                raise ValueError(message) from err
+                raise BadRequest(message) from err
             except BaseException as err:
                 progress.TRACKER.finish(error=f"{type(err).__name__}: {err}")
                 raise
@@ -523,7 +581,12 @@ class ModelRuntime:
                         f"{type(cpu_err).__name__} on CPU: not enough memory "
                         f"for this model"
                     )
-                    raise RuntimeError(
+                    # A Refusal, not a crash: both attempts are named, only
+                    # their exception CLASSES are interpolated (never their
+                    # text), and the sentence ends with what to do. "Out of
+                    # memory" is a capacity answer, and the tool is still
+                    # usable afterwards.
+                    raise Refusal(
                         f"'{hf_id}' does not fit: {type(err).__name__} on GPU, "
                         f"then {type(cpu_err).__name__} on CPU. Try a smaller model."
                     ) from cpu_err
@@ -603,7 +666,23 @@ class ModelRuntime:
             return root.transformer.h[layer]  # GPT-2 family
         if hasattr(root, "model") and hasattr(root.model, "layers"):
             return root.model.layers[layer]  # Llama/Qwen/Gemma family
-        raise RuntimeError(f"Don't know how to find block {layer} in {type(root)}")
+        # A refusal, not an internal error, and the same one lens.py gives for
+        # a missing final norm: this architecture is not one of the layouts
+        # ModelMRI knows how to walk. It is user-reachable — POST
+        # /api/sae/load and the attention panel both arrive here on an exotic
+        # model — so "something inside ModelMRI failed" would be false about a
+        # limitation ModelMRI knows it has.
+        #
+        # The message used to be `Don't know how to find block {layer} in
+        # {type(root)}`, which printed a Python class repr at a reader. Names
+        # the layouts instead, the way lens.py does.
+        raise Refusal(
+            f"could not find this model's decoder blocks, so there is no layer "
+            f"{layer} to read. Supported layouts: transformer.h (the GPT-2 "
+            f"family) and model.layers (Llama, Qwen, Gemma). If this "
+            f"architecture keeps its blocks somewhere else, open an issue "
+            f"with the model id and it becomes one line here."
+        )
 
     def generate_stream(
         self,
@@ -622,10 +701,23 @@ class ModelRuntime:
         than the token strip above it.
         """
         if not self.loaded:
-            raise RuntimeError("No model loaded. POST /api/model/load first.")
+            raise Refusal("No model loaded. POST /api/model/load first.")
         epoch = self.epoch
 
         if self.backend == "ollama":
+            # No translating wrap. There used to be an `except RuntimeError:
+            # raise Refusal(str(err))` here, justified by "ollama.py has not
+            # adopted Refusal yet" — and by the time it was read, ollama.py's
+            # only two raises were `_relayed` and `_unreachable`, both of
+            # which return a Refusal already. So the wrap was not translating
+            # anything; it was relabelling every RuntimeError from underneath
+            # as a deliberate no. Measured: an internal
+            # RuntimeError("CUDA out of memory ... <absolute path>") came back
+            # from /api/model/prompt as 409 with that path in the body, on the
+            # one handler whose own comment says that must not happen.
+            #
+            # ollama.py's Refusals propagate untouched; anything else reaches
+            # the 500 arm, which is where it belongs.
             yield from ollama.stream_generate(
                 self.hf_id,
                 prompt,
@@ -775,28 +867,40 @@ class ModelRuntime:
                 try:
                     a_layer, a_head = (int(x) for x in spec.split("."))
                 except ValueError as err:
-                    raise ValueError(
+                    raise BadRequest(
                         f"cannot read {variant!r} — expected ablate:LAYER.HEAD"
                     ) from err
                 block = self._block(a_layer)
                 n_heads = self.model.config.num_attention_heads
-                head_dim = ablate.head_geometry(block, n_heads)
-                if not 0 <= a_head < n_heads:
-                    raise ValueError(f"head must be in [0,{n_heads})")
-                handles.append(
-                    ablate.out_projection(block).register_forward_pre_hook(
-                        ablate._cut(a_head, head_dim, "zero")
+                # AblationError is a refusal — its own docstring says "we
+                # cannot take this measurement, and we say why rather than
+                # guess" — but it is still a plain RuntimeError, and this is
+                # the one path that reaches it with no wrap. `ablate_heads`
+                # and `attribute_tokens` both translate; this did not, and
+                # relied on the server catching RuntimeError. Once that arm
+                # became `except Refusal`, an unsupported block here would
+                # have turned into a 500. Delete the wrap when
+                # ablate.AblationError subclasses Refusal.
+                try:
+                    head_dim = ablate.head_geometry(block, n_heads)
+                    if not 0 <= a_head < n_heads:
+                        raise BadRequest(f"head must be in [0,{n_heads})")
+                    handles.append(
+                        ablate.out_projection(block).register_forward_pre_hook(
+                            ablate._cut(a_head, head_dim, "zero")
+                        )
                     )
-                )
+                except ablate.AblationError as err:
+                    raise Refusal(str(err)) from err
             elif variant == "steered":
                 if self._steer is None or self.sae is None:
-                    raise RuntimeError(
+                    raise Refusal(
                         "Nothing is being steered, so there is no steered run "
                         "to compare against. Set a feature and a scale first."
                     )
                 handles.append(self._steer_handle())
             elif variant != "live":
-                raise ValueError(f"unknown variant {variant!r}")
+                raise BadRequest(f"unknown variant {variant!r}")
 
             with torch.no_grad():
                 out = self.model(ids, output_attentions=True)
@@ -814,9 +918,9 @@ class ModelRuntime:
 
     def _ready_for_attention(self) -> None:
         if not self.loaded or self.last_ids is None:
-            raise RuntimeError("Generate something first, then inspect attention.")
+            raise Refusal("Generate something first, then inspect attention.")
         if self.last_ids_epoch != self.epoch:
-            raise RuntimeError(
+            raise Refusal(
                 "That generation was produced by a different model. Generate again."
             )
 
@@ -836,7 +940,7 @@ class ModelRuntime:
 
         n_layers, n_heads = len(captured), captured[0].shape[0]
         if not (0 <= layer < n_layers and 0 <= head < n_heads):
-            raise ValueError(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
+            raise BadRequest(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
 
         matrix = captured[layer][head].to(torch.float32)
         return {
@@ -869,7 +973,7 @@ class ModelRuntime:
         guaranteed.
         """
         if self.replay is not None:
-            raise RuntimeError(
+            raise Refusal(
                 "You are viewing a recording. Close it to compare two runs of "
                 "your own model."
             )
@@ -880,7 +984,7 @@ class ModelRuntime:
 
         n_layers, n_heads = len(left), left[0].shape[0]
         if not (0 <= layer < n_layers and 0 <= head < n_heads):
-            raise ValueError(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
+            raise BadRequest(f"layer must be in [0,{n_layers}), head in [0,{n_heads})")
 
         delta = left[layer][head].to(torch.float32) - right[layer][head].to(
             torch.float32
@@ -961,9 +1065,9 @@ class ModelRuntime:
         both models.
         """
         if not self.loaded or self.last_ids is None:
-            raise RuntimeError(nothing_yet)
+            raise Refusal(nothing_yet)
         if self.last_ids_epoch != self.epoch:
-            raise RuntimeError(
+            raise Refusal(
                 "That generation was produced by a different model. Generate again."
             )
 
@@ -989,12 +1093,12 @@ class ModelRuntime:
         that make the number honest.
         """
         if self.replay is not None:
-            raise RuntimeError(
+            raise Refusal(
                 "This is a recording. Ranking heads means running the model, "
                 "and a `.mri` does not carry one."
             )
         if self.backend == "ollama":
-            raise RuntimeError(
+            raise Refusal(
                 "Ollama serves text only — there is no forward pass to "
                 "intervene in. Load the model through HuggingFace."
             )
@@ -1005,7 +1109,7 @@ class ModelRuntime:
             cfg = self.model.config
             n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
             if layer is not None and not 0 <= layer < n_layers:
-                raise ValueError(f"layer must be in [0,{n_layers})")
+                raise BadRequest(f"layer must be in [0,{n_layers})")
             layers = list(range(n_layers)) if layer is None else [layer]
 
             # Attribute at the last prompt token: its next-token distribution
@@ -1026,7 +1130,7 @@ class ModelRuntime:
                 )
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
-                raise RuntimeError(str(err)) from err
+                raise Refusal(str(err)) from err
 
     def attribute_tokens(self, position: int | None = None) -> dict:
         """Rank the prompt's own tokens by how far masking one moves the answer.
@@ -1066,12 +1170,12 @@ class ModelRuntime:
         generations of different lengths, and no rounding hides that.
         """
         if self.replay is not None:
-            raise RuntimeError(
+            raise Refusal(
                 "This is a recording. Attributing tokens means masking one and "
                 "running the model again, and a `.mri` does not carry one."
             )
         if self.backend == "ollama":
-            raise RuntimeError(
+            raise Refusal(
                 "Ollama serves text only — there is no forward pass to mask a "
                 "token out of. Load the model through HuggingFace."
             )
@@ -1093,7 +1197,7 @@ class ModelRuntime:
             if position is None:
                 position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
             if not 0 <= position < size:
-                raise ValueError(
+                raise BadRequest(
                     f"position must be in [0,{size}) — that generation is "
                     f"{size} tokens long."
                 )
@@ -1124,7 +1228,7 @@ class ModelRuntime:
                 answer = ablate.distribution(self.model(ids).logits[0, position])
             top = int(answer.argmax())
             if top in control:
-                raise RuntimeError(
+                raise Refusal(
                     f"the model's next token here is "
                     f"{self.tokenizer.decode([top])!r} at "
                     f"p={float(answer[top]):.4f}, which is a formatting "
@@ -1152,7 +1256,7 @@ class ModelRuntime:
                 )
             except attribute.AttributionError as err:
                 # Not a crash: a measurement this code cannot take honestly.
-                raise RuntimeError(str(err)) from err
+                raise Refusal(str(err)) from err
 
         # The ranking timed itself; this adds the answer-reading pass, so
         # passes and elapsed_s still describe the same piece of work and a rate
@@ -1207,12 +1311,12 @@ class ModelRuntime:
     def export_session(self, layer: int = 0, head: int = 0, note: str = "") -> bytes:
         """Serialise the current analysis to a `.mri` someone else can open."""
         if self.replay is not None:
-            raise RuntimeError(
+            raise Refusal(
                 "You are viewing a shared session. Close it, then generate "
                 "something of your own to export."
             )
         if self.backend == "ollama":
-            raise RuntimeError(
+            raise Refusal(
                 "Ollama serves text only — there are no internals to export. "
                 "Load the model through HuggingFace to capture a session."
             )
@@ -1288,22 +1392,22 @@ class ModelRuntime:
     def load_sae(self, repo: str, hook: str) -> SAEStatus:
         """Load an SAE and validate it against the current model. Blocking."""
         if self.backend == "ollama":
-            raise RuntimeError(
+            raise Refusal(
                 "SAE features need model internals — unavailable via Ollama. "
                 "Load a HuggingFace model instead."
             )
         if not self.loaded:
-            raise RuntimeError("Load a model first.")
+            raise Refusal("Load a model first.")
         sae = SAEHandle.load(repo, hook)
         d_model = self.model.config.hidden_size
         if sae.d_in != d_model:
-            raise ValueError(
+            raise BadRequest(
                 f"SAE d_in={sae.d_in} does not match model hidden_size={d_model} "
                 f"({self.hf_id}). This SAE was trained on a different model."
             )
         n_layers = self.model.config.num_hidden_layers
         if not 0 <= sae.layer < n_layers:
-            raise ValueError(f"SAE layer {sae.layer} out of range [0,{n_layers})")
+            raise BadRequest(f"SAE layer {sae.layer} out of range [0,{n_layers})")
         self._block(sae.layer)  # raises early if architecture unsupported
         self.sae = sae
         self._feats = None
@@ -1313,11 +1417,11 @@ class ModelRuntime:
     def _compute_features(self) -> torch.Tensor:
         """[S, d_sae] feature activations for the last generation (cached)."""
         if self.sae is None:
-            raise RuntimeError("No SAE loaded. POST /api/sae/load first.")
+            raise Refusal("No SAE loaded. POST /api/sae/load first.")
         if self.last_ids is None:
-            raise RuntimeError("Generate something first.")
+            raise Refusal("Generate something first.")
         if self.last_ids_epoch != self.epoch:
-            raise RuntimeError(
+            raise Refusal(
                 "That generation was produced by a different model. Generate again."
             )
         if self._feats is None:
@@ -1351,7 +1455,7 @@ class ModelRuntime:
                 # A load completed during the forward pass -- seconds, on CPU
                 # for a 0.5B model. Caching this would file one model's
                 # features under another model's generation.
-                raise RuntimeError(
+                raise Refusal(
                     "The model changed while features were computing. Generate again."
                 )
             resid = captured[0][0].to("cpu")  # [S, d_in]
@@ -1379,7 +1483,7 @@ class ModelRuntime:
         """One feature's activation across the last generation's tokens."""
         feats = self._compute_features().float()
         if not 0 <= feature_id < feats.shape[1]:
-            raise ValueError(f"feature_id must be in [0,{feats.shape[1]})")
+            raise BadRequest(f"feature_id must be in [0,{feats.shape[1]})")
         col = feats[:, feature_id]
         return {
             "feature_id": feature_id,
@@ -1394,9 +1498,9 @@ class ModelRuntime:
             self._steer = None
         else:
             if self.sae is None:
-                raise RuntimeError("No SAE loaded.")
+                raise Refusal("No SAE loaded.")
             if not 0 <= feature_id < self.sae.d_sae:
-                raise ValueError(f"feature_id must be in [0,{self.sae.d_sae})")
+                raise BadRequest(f"feature_id must be in [0,{self.sae.d_sae})")
             self._steer = (feature_id, float(scale))
         return self.steering_status()
 

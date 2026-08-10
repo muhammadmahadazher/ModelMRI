@@ -72,7 +72,26 @@ def _xpu() -> Device | None:
             name = getattr(props, "name", name)
             total = getattr(props, "total_memory", None)
             vram = round(total / 1e9, 1) if total else None
-        except Exception:
+        except (AttributeError, AssertionError, RuntimeError):
+            # Asking a driver about a device it may not really have. Measured
+            # on this machine (torch 2.11.0+cu128, CUDA build, no Intel GPU):
+            # `get_device_properties(0)` raises AssertionError, "Torch not
+            # compiled with XPU enabled". That path is normally unreachable
+            # because `is_available()` above returns False first (verified: it
+            # returns False without raising, device_count() == 0). What
+            # actually arrives here is a machine that HAS an Intel GPU where
+            # `torch.xpu._lazy_init()` fails on a driver or level-zero problem
+            # (RuntimeError), or an older torch whose `torch.xpu` has no
+            # `get_device_properties` (AttributeError). Those two are read
+            # from torch's source, not observed — there is no Intel GPU here
+            # to observe them on, which is the reason all three types stay.
+            #
+            # Continuing is the point: an Intel GPU we cannot describe is
+            # still an Intel GPU, and the caller gets it with name="Intel GPU"
+            # and vram_gb=None rather than being dropped to CPU over a
+            # cosmetic label. Err generous with this tuple for the same
+            # reason — anything it misses hits the outer `except Exception`,
+            # which returns None and loses the GPU entirely.
             pass
         return Device(
             kind="xpu",

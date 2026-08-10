@@ -165,6 +165,13 @@ def _tree_bytes(root) -> int:
             try:
                 st = f.lstat()
             except OSError:
+                # A file that vanished between the walk and the lstat, or one
+                # this account cannot stat. Skipping just this entry is what
+                # keeps the walk going: without it the outer handler catches
+                # the same OSError and returns whatever had accumulated so
+                # far, so one unreadable file near the start would report a
+                # cache of gigabytes as almost empty. Either way the number
+                # can only be an undercount, and this is the smaller one.
                 continue
             # S_ISREG on the entry itself: a symlink contributes only its own
             # tiny inode, and the blob it points at is counted once, where it
@@ -310,6 +317,23 @@ def main() -> None:
             try:
                 reconfigure(encoding="utf-8", errors="backslashreplace")
             except (ValueError, OSError):
+                # This pair is exact, not defensive, and was checked by
+                # provoking each case on CPython 3.13.12: a closed underlying
+                # buffer gives ValueError("I/O operation on closed file."), a
+                # detached one ValueError("underlying buffer has been
+                # detached"), and a stream already read from gives
+                # io.UnsupportedOperation — which subclasses BOTH OSError and
+                # ValueError, so the tuple already had it. A bad codec would
+                # be LookupError, but the encoding here is the literal
+                # "utf-8", so there is no way to reach it. Streams that are
+                # not TextIOWrapper (io.StringIO under pytest's capture) have
+                # no `.reconfigure` at all and never get here — the getattr
+                # above stops them.
+                #
+                # Carrying on is right because this is the fallback, not the
+                # feature: a stream we cannot reconfigure is one nobody is
+                # reading, and refusing to start `modelmri` over the encoding
+                # of a closed stdout would be the actual failure.
                 pass
 
     parser = argparse.ArgumentParser(

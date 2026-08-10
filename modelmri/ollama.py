@@ -7,11 +7,14 @@ introspection is unavailable in Ollama mode (ModelMRI says so in the UI).
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
 import urllib.request
 from typing import Iterator
+
+from .errors import Refusal
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 
@@ -36,6 +39,43 @@ def default_host() -> str:
 
 
 REGISTRY = "https://registry.ollama.ai/v2"
+
+
+# WHY THE TWO FAILURES THIS MODULE RAISES ARE REFUSALS AND NOT 500s.
+#
+# Both mean "Ollama did not do it", and neither means ModelMRI broke. The
+# daemon is a separate process the user starts and stops; when it is down, or
+# when it answers with an error of its own, the honest answer is a 409 saying
+# so — a 500 reading "something inside ModelMRI failed" would blame this tool
+# for another program's state.
+#
+# `ollama: ` is the marker on relayed text: everything after that prefix is
+# Ollama's wording, not ours. It is the one place this project publishes a
+# sentence it did not write, and the prefix is what keeps that honest.
+
+
+def _relayed(message: str) -> Refusal:
+    """Ollama's own error, marked as Ollama's."""
+    return Refusal(f"ollama: {message}")
+
+
+def _unreachable(host: str, err: BaseException) -> Refusal:
+    """The daemon is not answering. Written once; raised from two streams.
+
+    `err.reason` when there is one rather than `err`: URLError's own str wraps
+    it in "<urlopen error ...>", which is machinery talking to itself. The
+    reason is the part a reader can act on — "Connection refused" means Ollama
+    is not running, a name-resolution failure means OLLAMA_HOST points
+    somewhere wrong — and against an http host it is an errno sentence, never
+    a path from this machine. Anything without a `.reason` (a bare
+    ConnectionResetError, a BadStatusLine) already reads as that errno
+    sentence, so its own str is used.
+    """
+    reason = getattr(err, "reason", None) or err
+    return Refusal(
+        f"ollama unreachable at {host}: {reason}. Start Ollama, or set "
+        f"OLLAMA_HOST if it listens somewhere else."
+    )
 
 
 def resolve(name: str, timeout: float = 10.0) -> dict:
@@ -291,7 +331,7 @@ def pull(name: str, host: str | None = None):
                     continue
                 msg = json.loads(raw)
                 if msg.get("error"):
-                    raise RuntimeError(f"ollama: {msg['error']}")
+                    raise _relayed(msg["error"])
                 total = msg.get("total") or 0
                 done = msg.get("completed") or 0
                 yield {
@@ -299,8 +339,36 @@ def pull(name: str, host: str | None = None):
                     "percent": round(100 * done / total, 1) if total else None,
                     "total_gb": round(total / 1e9, 2) if total else None,
                 }
-    except urllib.error.URLError as err:
-        raise RuntimeError(f"ollama unreachable at {host}: {err}") from err
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+        # WHAT A SEPARATE PROCESS DYING ACTUALLY RAISES, MEASURED.
+        #
+        # This caught URLError alone, which only covers the failure to
+        # *connect*. Once the connection is up, urllib wraps nothing: the
+        # daemon quitting mid-NDJSON, a proxy resetting, a body that stops
+        # short all come out raw. Driven against a local socket that behaves
+        # each way:
+        #
+        #   dies mid-stream    ConnectionAbortedError / ConnectionResetError
+        #   never replies      RemoteDisconnected
+        #   truncated body     IncompleteRead   (an HTTPException, not OSError)
+        #
+        # None of those were URLError, so none of them were a Refusal, so the
+        # reader was told "something inside ModelMRI failed" about another
+        # program's death — the exact mis-blame the split exists to prevent.
+        # OSError and HTTPException between them cover all of it.
+        raise _unreachable(host, err) from err
+    except json.JSONDecodeError as err:
+        # A 200 whose body is not NDJSON: a captive portal or a corporate
+        # proxy answering with HTML, or the daemon truncating a line as it
+        # goes down. Measured — a proxy injecting `<html>...` raised this from
+        # `json.loads(raw)`. It is a ValueError, so it was not caught above
+        # either, and it says nothing a reader can act on, which is why the
+        # sentence below is ours and `err` is not in it.
+        raise Refusal(
+            f"ollama answered at {host}, but not with the streaming JSON its "
+            f"API documents — something between here and the daemon is "
+            f"rewriting the response. Check OLLAMA_HOST and any proxy."
+        ) from err
 
 
 def stream_generate(
@@ -332,11 +400,39 @@ def stream_generate(
                     continue
                 msg = json.loads(raw)
                 if msg.get("error"):
-                    raise RuntimeError(f"ollama: {msg['error']}")
+                    raise _relayed(msg["error"])
                 piece = msg.get("response", "")
                 if piece:
                     yield piece
                 if msg.get("done"):
                     return
-    except urllib.error.URLError as err:
-        raise RuntimeError(f"ollama unreachable at {host}: {err}") from err
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+        # WHAT A SEPARATE PROCESS DYING ACTUALLY RAISES, MEASURED.
+        #
+        # This caught URLError alone, which only covers the failure to
+        # *connect*. Once the connection is up, urllib wraps nothing: the
+        # daemon quitting mid-NDJSON, a proxy resetting, a body that stops
+        # short all come out raw. Driven against a local socket that behaves
+        # each way:
+        #
+        #   dies mid-stream    ConnectionAbortedError / ConnectionResetError
+        #   never replies      RemoteDisconnected
+        #   truncated body     IncompleteRead   (an HTTPException, not OSError)
+        #
+        # None of those were URLError, so none of them were a Refusal, so the
+        # reader was told "something inside ModelMRI failed" about another
+        # program's death — the exact mis-blame the split exists to prevent.
+        # OSError and HTTPException between them cover all of it.
+        raise _unreachable(host, err) from err
+    except json.JSONDecodeError as err:
+        # A 200 whose body is not NDJSON: a captive portal or a corporate
+        # proxy answering with HTML, or the daemon truncating a line as it
+        # goes down. Measured — a proxy injecting `<html>...` raised this from
+        # `json.loads(raw)`. It is a ValueError, so it was not caught above
+        # either, and it says nothing a reader can act on, which is why the
+        # sentence below is ours and `err` is not in it.
+        raise Refusal(
+            f"ollama answered at {host}, but not with the streaming JSON its "
+            f"API documents — something between here and the daemon is "
+            f"rewriting the response. Check OLLAMA_HOST and any proxy."
+        ) from err

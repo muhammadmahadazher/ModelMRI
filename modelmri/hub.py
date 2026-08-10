@@ -19,7 +19,9 @@ Signing in unlocks gated models you have accepted the license for
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import os
 import stat
 import urllib.error
@@ -29,8 +31,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import paths
+from .errors import BadRequest, Refusal
 
 HUB_API = "https://huggingface.co/api"
+
+log = logging.getLogger("modelmri")
 
 
 def _config_path() -> Path:
@@ -70,31 +75,88 @@ class HubAuth:
         return asdict(self)
 
 
+def _cli_token_paths() -> list[Path]:
+    """Where `huggingface-cli login` may have left a token.
+
+    Built through `paths._home()` rather than `Path.home()`, because
+    `Path.home()` **raises** — RuntimeError, not OSError — where there is no
+    home directory to expand `~` against: a Linux container running as an
+    arbitrary UID with no passwd entry, a Windows service account with no
+    USERPROFILE. `paths._home()` is the package's one definition of that
+    failure and documents it; this list was the last place calling
+    `Path.home()` raw.
+
+    It mattered. On such a machine `_read_stored_token` raised straight
+    through `whoami`'s "Never raises" docstring — `whoami` calls it *outside*
+    its own try — and `/api/hub/auth`, which has no handler, answered 500 for
+    a panel whose honest answer is "signed out". Verified by clearing HOME,
+    USERPROFILE, HOMEDRIVE and HOMEPATH and calling it: RuntimeError,
+    "Could not determine home directory."
+    """
+    candidates = [paths.hf_home() / "token"]
+    home = paths._home()
+    if home is not None:
+        candidates.append(home / ".huggingface" / "token")
+    return candidates
+
+
 def _read_stored_token() -> tuple[str | None, str | None]:
-    """(token, source) — ours first, then the HF CLI's, then the env."""
+    """(token, source) — ours first, then the HF CLI's, then the env.
+
+    Never raises. Every caller reads an unreadable token as "not signed in",
+    and one of them (`whoami`) is on a route with no error handler at all.
+    """
     try:
         if _config_path().is_file():
             token = json.loads(_config_path().read_text(encoding="utf-8")).get("token")
             if token:
                 return token, "modelmri"
-    except Exception:
-        pass
+    except (OSError, ValueError, AttributeError, RecursionError) as err:
+        # The complete set for reading our own token file, and it can be
+        # complete because `_config_path()` cannot fail: `paths` swallows its
+        # own OSError and RuntimeError and returns a path either way. So what
+        # is left is PermissionError on the read (OSError); a file that is not
+        # UTF-8 (UnicodeDecodeError, a ValueError); truncated JSON
+        # (JSONDecodeError, also a ValueError); or JSON that parses to a list
+        # or a number, where `.get` is not a method (AttributeError); or a
+        # document nested thousands deep, where the recursive-descent decoder
+        # runs out of stack (RecursionError, which is a RuntimeError and was in
+        # none of the other three). That last one only needs a hand-edited or
+        # corrupted file to reach, but the docstring above says "Never raises"
+        # and `whoami` calls this OUTSIDE its own try, on the one route
+        # (/api/hub/auth) that has no handler — so "never" has to be true.
+        # Measured: `[` x 200000 in hub.json raised straight through before.
+        #
+        # Continuing is right — an unreadable token is not a token, and the
+        # environment and the CLI's own file below may still have one. But
+        # continuing *silently* is not: `_write_private`'s docstring records
+        # what this shrug cost, "the user was signed out with no message and
+        # no way to tell why". The message now exists, in the terminal, with
+        # the path to look at.
+        log.warning(
+            "could not read the stored HuggingFace token at %s (%s: %s); "
+            "treating this session as signed out",
+            _config_path(),
+            type(err).__name__,
+            err,
+        )
 
     for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
         if os.environ.get(var):
             return os.environ[var], "env"
 
     # whatever `huggingface-cli login` wrote
-    for path in (
-        paths.hf_home() / "token",
-        Path.home() / ".huggingface" / "token",
-    ):
+    for path in _cli_token_paths():
         try:
             if path.is_file():
                 token = path.read_text(encoding="utf-8").strip()
                 if token:
                     return token, "huggingface-cli"
-        except Exception:
+        except (OSError, ValueError):
+            # PermissionError on someone else's file, or a token file that is
+            # not UTF-8 (UnicodeDecodeError, a ValueError). Not logged, unlike
+            # our own file above: this one is the CLI's to own, we are only
+            # borrowing it, and the next candidate may still answer.
             continue
     return None, None
 
@@ -123,7 +185,20 @@ def whoami(tok: str | None = None) -> HubAuth:
             user=me.get("name") or me.get("fullname"),
             source=source,
         )
-    except Exception:
+    except Exception as err:  # noqa: BLE001 - the contract, see below
+        # Deliberately broad, and it stays broad. The contract is the first
+        # line of the docstring, and `/api/hub/auth` calls this with no
+        # handler at all — anything that escapes is an unhandled 500 on the
+        # account panel. Every failure means one thing to the caller: we could
+        # not confirm whose token this is, which is what signed_in=False says.
+        #
+        # Debug, not warning: the commonest arrival here is an HTTP 401 for a
+        # token the user just typed wrong, and `sign_in` turns that into a
+        # sentence of its own. A warning per rejected token would be noise
+        # about working code.
+        log.debug(
+            "whoami failed (%s: %s); reporting signed out", type(err).__name__, err
+        )
         return HubAuth(signed_in=False)
 
 
@@ -167,21 +242,49 @@ def _write_private(path: Path, text: str) -> None:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
+            # On the success path `os.replace` already moved the temp file and
+            # `missing_ok` covers that, so this only fires when the file is
+            # there and undeletable: on Windows a PermissionError (WinError 32)
+            # while an AV scanner or the search indexer still holds it open, or
+            # the read-only attribute; on POSIX EACCES on a config directory
+            # that turned read-only mid-write. Measured on this platform:
+            # unlinking a file another handle has open raises exactly that.
+            #
+            # Swallowing it is right — the write has already either succeeded
+            # or raised, and failing a sign-in over a leftover temp file would
+            # be the worse outcome. The leftover is not an exposure either: it
+            # was created 0600 through `os.open` on POSIX and inherits the
+            # profile ACL on Windows, the same protection as the real token
+            # file it was about to become.
             pass
-    try:  # no-op on Windows; the file already has the mode on POSIX
+    try:
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
+        # A no-op on Windows, where chmod only toggles the read-only
+        # attribute; on POSIX it re-asserts a mode `os.open` already set.
+        # It raises on filesystems with no permission model (an exFAT stick,
+        # some SMB and NFS mounts) and with EPERM when the file belongs to
+        # another uid.
+        #
+        # Swallowing is safe for one specific reason: this call cannot be the
+        # thing that makes the file private, because the file was *created*
+        # 0600 four lines up. A failure here leaves the correct mode in place.
         pass
 
 
 def sign_in(tok: str) -> HubAuth:
-    """Validate a token, then store it privately. Raises ValueError if bad."""
+    """Validate a token, then store it privately.
+
+    Raises `BadRequest` when the field is empty or the Hub rejects the token:
+    both are facts about the credential in the request, not decisions of ours,
+    and both reach the browser as 422 with the sentence below.
+    """
     tok = (tok or "").strip()
     if not tok:
-        raise ValueError("Paste a token from huggingface.co/settings/tokens")
+        raise BadRequest("Paste a token from huggingface.co/settings/tokens")
     auth = whoami(tok)
     if not auth.signed_in:
-        raise ValueError(
+        raise BadRequest(
             "HuggingFace rejected that token. Create a fresh one with 'read' "
             "access at huggingface.co/settings/tokens."
         )
@@ -191,10 +294,29 @@ def sign_in(tok: str) -> HubAuth:
 
 
 def sign_out() -> HubAuth:
+    path = _config_path()
     try:
-        _config_path().unlink(missing_ok=True)
-    except Exception:
-        pass
+        path.unlink(missing_ok=True)
+    except OSError as err:
+        # `missing_ok` already covers "there was nothing to delete", so what
+        # reaches here is a file that exists and will not go: PermissionError
+        # on Windows while something else holds it open or it carries the
+        # read-only attribute, EACCES on a config directory that turned
+        # read-only.
+        #
+        # Continuing is right, but the old silent `pass` made this half a lie.
+        # `whoami()` below re-reads the file we just failed to delete, so the
+        # answer is signed_in=True — which is *true*, and which is why we do
+        # not fake a sign-out we did not perform. What was missing is any
+        # account of why the button did nothing. It exists now, with the path
+        # to remove by hand.
+        log.warning(
+            "sign-out could not delete the token file at %s (%s: %s) — you are "
+            "still signed in; delete that file to sign out",
+            path,
+            type(err).__name__,
+            err,
+        )
     return whoami()  # a CLI/env token may still be active — report honestly
 
 
@@ -220,8 +342,39 @@ def search(query: str = "", limit: int = 24) -> list[dict]:
         params.append(("search", query.strip()))
     try:
         raw = _api("/models?" + urllib.parse.urlencode(params), tok)
-    except urllib.error.URLError as err:
-        raise RuntimeError(f"Could not reach the HuggingFace Hub: {err}") from err
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+        # Three, because "the Hub did not answer" arrives as at least four
+        # different exceptions and only one of them was originally caught.
+        # urllib wraps a failure to *connect* in URLError, but everything from
+        # `getresponse()` and the body read onwards comes out raw. Measured
+        # against local sockets that misbehave in the ways a captive portal,
+        # a corporate proxy or a flaky TLS terminator does:
+        #
+        #   accepts then stalls      TimeoutError        (an OSError)
+        #   accepts then closes      RemoteDisconnected  (an OSError AND a
+        #                                                 BadStatusLine)
+        #   malformed status line    BadStatusLine       (an HTTPException,
+        #                                                 NOT an OSError)
+        #   truncated body           IncompleteRead      (an HTTPException)
+        #
+        # OSError covers the first two and http.client.HTTPException the last
+        # two; URLError is listed first because it is the one this was written
+        # for and dropping it would read as an accident. All four mean the
+        # same thing to the reader, and all four used to be reported as
+        # "something inside ModelMRI failed".
+        #
+        # A refusal, not a failure: nothing here broke, and the sentence says
+        # what to do instead. It deliberately does not interpolate `err` —
+        # this string is published to the browser and `str(URLError)` is
+        # machinery talking to itself ("<urlopen error [Errno 11001]
+        # getaddrinfo failed>"). The real exception goes to the terminal,
+        # which a local-first tool can assume the reader has open.
+        log.warning("hub search failed", exc_info=err)
+        raise Refusal(
+            "Could not reach the HuggingFace Hub. Check your connection — the "
+            "full error is in the terminal running `modelmri serve`. Models "
+            "already downloaded still load: open the 'On this machine' tab."
+        ) from err
 
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
@@ -264,7 +417,18 @@ def _has_access(repo: str, tok: str | None) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
             return 200 <= r.status < 300
-    except Exception:
+    except Exception as err:  # noqa: BLE001 - see below
+        # Broad on purpose. This runs inside a thread pool over every gated
+        # row in the picker, and an exception here does not stay here — it
+        # comes back out of `pool.map` and takes the whole search down with
+        # it, so one odd repo id would empty a list of forty working ones.
+        #
+        # Not a swallowed bug: False *is* the answer being computed, and it is
+        # the pessimistic one. An auth-check that did not answer means we have
+        # not established access, and the row says "gated" rather than
+        # promising a download the loader would refuse — the exact failure the
+        # docstring above was written about.
+        log.debug("auth-check for %s failed (%s); treating as no access", repo, err)
         return False
 
 
@@ -338,7 +502,13 @@ def _param_hint(model: dict) -> str | None:
         if total >= 1e9:
             return f"{total / 1e9:.1f}B"
         return f"{total / 1e6:.0f}M"
-    except Exception:
+    except (AttributeError, TypeError):
+        # The Hub's metadata, shaped however it arrives. `.get` is not a method
+        # if `safetensors` decodes to a list (AttributeError), and both the
+        # comparison and the division fail if `total` arrives as a string
+        # (TypeError). Returning None is the honest answer and the caller
+        # already handles it: a row with no size label is fine, a picker that
+        # died on one malformed repo is not.
         return None
 
 
@@ -380,7 +550,30 @@ def _suggested_entry(repo: str, tok: str | None) -> dict:
         entry["updated"] = (info.get("lastModified") or "")[:10]
         entry["params"] = _param_hint(info)
         entry["size_gb"] = weight_bytes(info) / 1e9 or None
-    except Exception:
-        pass
+    except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):
+        # One Hub lookup plus the field reads after it, enumerated:
+        #   OSError      urllib's HTTPError and URLError, socket timeouts,
+        #                RemoteDisconnected and ssl.SSLError are all OSError
+        #                subclasses
+        #   http.client.HTTPException
+        #                a malformed status line (BadStatusLine) or a body
+        #                shorter than its Content-Length (IncompleteRead).
+        #                These are NOT OSErrors — measured, both escaped this
+        #                handler, and because `suggested()` runs it through
+        #                `pool.map` one bad response emptied all eight rows and
+        #                turned the view the picker opens on into a 500
+        #   ValueError   json.load raising JSONDecodeError or
+        #                UnicodeDecodeError when a captive portal or a
+        #                corporate proxy answers with HTML
+        #   AttributeError / TypeError
+        #                a body that decodes to the wrong shape — `.get` on a
+        #                list, `[:10]` on a number, `weight_bytes` doing
+        #                arithmetic on a string
+        #
+        # Not narrower than that, because the docstring above is a promise the
+        # caller leans on: `suggested()` maps this over eight repos, and one
+        # raise would empty the view the picker opens on. Offline you still
+        # get the eight names with no metadata, which is the entire point.
+        log.debug("no Hub metadata for %s; offering the name alone", repo)
     entry["usable"] = not entry["gated"]
     return entry

@@ -43,6 +43,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import paths
+from .errors import BadRequest, Refusal
 
 DEFAULT_VLA_REPO = "lerobot/smolvla_base"
 
@@ -89,7 +90,9 @@ def discover_vision_prefix(keys) -> tuple[str, int]:
             break
     if not counts:
         roots = sorted({k.split(".")[0] for k in keys})[:8]
-        raise RuntimeError(
+        # A Refusal: the checkpoint is fine, we just cannot find a tower in it,
+        # and the message is the report that lets someone tell us the name.
+        raise Refusal(
             "No vision tower found in this checkpoint. Looked for a tensor "
             f"path containing any of {', '.join(VISION_HINTS)}; the top-level "
             f"names present are {', '.join(roots)}. If this policy keeps its "
@@ -137,9 +140,15 @@ def _vision_config(policy_snap: Path, hf_home: str | Path | None):
         try:
             snap = _snapshot(str(named), hf_home)
         except FileNotFoundError as err:
-            raise RuntimeError(
+            # The published sentence names the repo and the command rather
+            # than pasting `err`, whose text carries the cache directory on
+            # this machine — a Refusal's message goes to the browser verbatim
+            # (see errors.py). `from err` keeps the directory on the traceback
+            # for whoever is debugging, which is where it belongs.
+            raise Refusal(
                 f"This policy's vision config comes from {named}, which is not "
-                f"in your HuggingFace cache. {err}"
+                f"in your HuggingFace cache. Download it with "
+                f"`huggingface-cli download {named}`."
             ) from err
         return AutoConfig.from_pretrained(str(snap)).vision_config
 
@@ -148,7 +157,7 @@ def _vision_config(policy_snap: Path, hf_home: str | Path | None):
         return cfg.vision_config
     if hasattr(cfg, "patch_size") and hasattr(cfg, "num_hidden_layers"):
         return cfg
-    raise RuntimeError(
+    raise Refusal(
         "This checkpoint does not say what its vision encoder is: no "
         "`vision_config` block, no `vlm_model_name`, and its own config is "
         "not a vision config."
@@ -192,8 +201,14 @@ def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
     base = hub_root(hf_home) / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []
     if not snaps:
-        raise FileNotFoundError(
-            f"{repo} is not cached under {base}. Download it first "
+        # Was a FileNotFoundError answered 409-with-its-own-text by server.py,
+        # an arm that could not tell this sentence from safetensors failing to
+        # open a file. Same words, a type that cannot be confused with a
+        # library's. The snapshot directory comes out with it: vla.py's house
+        # rule (see the model.safetensors refusal below) is that the repo id
+        # and the download command are the actionable part.
+        raise Refusal(
+            f"{repo} is not cached. Download it first "
             f"(huggingface-cli download {repo})."
         )
     return snaps[-1]
@@ -231,7 +246,14 @@ class VLAHandle:
         policy_snap = _snapshot(repo, hf_home)
         weights_file = policy_snap / "model.safetensors"
         if not weights_file.is_file():
-            raise RuntimeError(f"{repo} has no model.safetensors at {policy_snap}")
+            # Names the repo and the fix rather than the snapshot directory:
+            # this sentence is published at 409, and a Refusal does not put a
+            # path from this machine in front of the reader.
+            raise Refusal(
+                f"{repo} is cached but has no model.safetensors, so there are "
+                f"no weights here to load a vision tower from. Re-download it "
+                f"(huggingface-cli download {repo})."
+            )
 
         from . import devices
 
@@ -251,7 +273,7 @@ class VLAHandle:
         }
         missing, unexpected = model.load_state_dict(vision_state, strict=False)
         if missing:
-            raise RuntimeError(
+            raise Refusal(
                 f"Found {found} vision tensors under '{prefix}' in {repo}, but "
                 f"{len(missing)} the module needs are absent (e.g. "
                 f"{', '.join(missing[:3])}). That means this tower is a "
@@ -313,7 +335,7 @@ class VLAHandle:
         import torch
 
         if self.model is None:
-            raise RuntimeError("No VLA policy loaded. POST /api/vla/load first.")
+            raise Refusal("No VLA policy loaded. POST /api/vla/load first.")
 
         size = self.status_.image_size
         grid = self.status_.grid[0]
@@ -363,13 +385,15 @@ class VLAHandle:
     def attention(self, layer: int, head: int = -1) -> dict:
         """A [G][G] heatmap, normalised to [0,1]. head=-1 means mean over heads."""
         if not self._attn:
-            raise RuntimeError("Analyse a frame first (POST /api/vla/analyse).")
+            # Ordering refusal: nothing is wrong with the request, there is
+            # simply nothing measured yet to answer it from.
+            raise Refusal("Analyse a frame first (POST /api/vla/analyse).")
         n_layers = len(self._attn)
         if not 0 <= layer < n_layers:
-            raise ValueError(f"layer must be in [0,{n_layers})")
+            raise BadRequest(f"layer must be in [0,{n_layers})")
         n_heads = self.status_.n_heads
         if head < -1 or head >= n_heads:
-            raise ValueError(f"head must be -1 (mean) or in [0,{n_heads})")
+            raise BadRequest(f"head must be -1 (mean) or in [0,{n_heads})")
 
         m = self._attn[layer]
         m = m.mean(dim=0) if head < 0 else m[head]

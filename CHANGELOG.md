@@ -107,6 +107,80 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Changed
 
+- **Error text from libraries no longer reaches the browser.** ModelMRI now
+  distinguishes a refusal it wrote from a failure underneath it, and the two
+  get different answers. New `modelmri/errors.py`: `Refusal` (409, in its own
+  words) and `BadRequest` (422, in its own words). Everything else is a 500
+  carrying one sentence — "Something inside ModelMRI failed rather than
+  refusing. The full error is in the terminal running `modelmri serve`." — and
+  the traceback goes to the terminal instead of the response body.
+
+  What that changes, concretely. Before, a torch failure such as `RuntimeError:
+  CUDA out of memory. Tried to allocate 20.00 GiB (C:\Users\you\.cache\...)`
+  came back as **409 Conflict with that text**, absolute paths included. A full
+  GPU is not a conflict, and torch's message was not written for you. Measured
+  on these routes, all of which answered 409 or 422 with the raw text and now
+  answer 500 with the generic one: `/api/hub/models`, `/api/hub/signin`,
+  `/api/ollama/pull`, `/api/sae/load`, `/api/lens`, `/api/vla/load`,
+  `/api/vla/attention`, `/api/vla/analyse`, `/api/vla/frame`,
+  `/api/vla/episodes`, `/api/traces/import`, `/api/attention`,
+  `/api/session/open`, `/api/model/prompt`, `/api/custom/load`,
+  `/api/custom/run`, and the `/ws/generate` socket.
+
+  Deliberate refusals are unaffected and still arrive in full: "This is a
+  recording, and a `.mri` does not carry one", "ollama unreachable at
+  http://127.0.0.1:11434: Connection refused", "lerobot/pusht is not cached.
+  Looked in: ...", and a broken adapter still reports its own
+  `ModuleNotFoundError` at 422, because `custom.py` catches that at the call
+  into your file and can say whose code raised.
+
+- **Situations that now answer 500 rather than 409 or 422**, listed because the
+  status is what a script sees:
+    - Any exception from `hub.py`, `ollama.py`, `lens.py`, `saes.py`,
+      `traces.py`, `vla.py` or `vla_data.py` that is *not* one of that module's
+      own refusals. A transitional arm in `server.py` was answering all of them
+      409/422-with-text, and by the time it was audited seven of the eight
+      modules it named had been converted, so it was catching nothing but
+      breakage.
+    - A LeRobot dataset failing to open for a reason that is not "not cached" —
+      pyarrow failing on a parquet file, av failing on a container. The
+      handlers caught `FileNotFoundError` wholesale and published its path; the
+      module's own "not cached" sentences are `Refusal`s now and still answer
+      409. A missing `pyarrow` or `av` is still a 409, with an install line.
+    - A frame that cannot be decoded (`/api/vla/analyse`). It was a 409 there
+      and a 500 on `/api/vla/frame` — the same failure, two answers depending
+      on which panel you clicked. Both are 500 now, which is the side
+      `vla_data.py`'s own comment argues for.
+    - A failure inside `custom.py`'s own path resolution, tensor allocation or
+      hook installation on `/api/custom/load` and `/api/custom/run`. Those were
+      echoed at 422 as though your file had caused them.
+    - `attribute.py` detecting a fault in its own instrumentation. It was
+      reported as a 409 "ModelMRI decided not to answer".
+
+- **Situations that now answer differently in the other direction:**
+    - `GET /api/attention/ablate?baseline=<unknown>` and
+      `/api/attention/attribute?baseline=<unknown>` answer **422**, not 409.
+      They are malformed parameters, and the layer-index check on the same
+      endpoint has always answered 422.
+    - `GET /api/session/export` with a non-finite attention map answers **409**
+      with its explanation ("...the custom-model panel reports which layer
+      first goes non-finite") instead of a generic 500. It was the one route
+      serving `session.py` with no arm for `SessionError`, which is now a
+      `BadRequest`.
+    - Every route that had no error handling at all — 28 of 56, including
+      `/api/ollama`, `/api/models/discovered`, `/api/vla/datasets`,
+      `/api/custom/candidates`, `/api/paths` — now returns the same
+      `{"error": ...}` JSON as the rest, rather than a bare `text/plain`
+      "Internal Server Error".
+    - A Hub that does not answer is a 409 ("Could not reach the HuggingFace
+      Hub"), not a 500. It was caught only for a connection failure; a proxy
+      that closes the connection, sends a malformed status line, or truncates
+      the body raises something else entirely, and one bad response could empty
+      the model picker's opening view.
+    - Ollama dying mid-stream, or something between you and it rewriting the
+      response, is a 409 naming the host. Only a failure to connect was
+      recognised before.
+
 - PyPI metadata: 4 classifiers to 15, 6 keywords to 14, and the package page
   now links to the docs, the changelog, the issue tracker and the demo instead
   of the repository twice.

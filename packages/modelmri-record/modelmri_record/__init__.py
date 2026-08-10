@@ -31,6 +31,7 @@ import atexit
 import contextvars
 import json
 import os
+import sys
 import time
 import urllib.request
 import uuid
@@ -145,6 +146,16 @@ def trace(
         try:
             _live.remove(t)
         except ValueError:
+            # `list.remove` raises this and nothing else, and only when the
+            # trace is already gone. Unreachable by construction today: this
+            # is the only line in the package that removes from `_live`, and
+            # `_flush_live` iterates a copy. It stays as defence for a caller
+            # that reaches into `_live` itself, which the test suite does.
+            #
+            # Note `remove` compares by identity here — `_Trace` defines no
+            # `__eq__` — so it can never take out a different-but-equal trace.
+            # Continuing is right either way: `_deliver` runs next and is
+            # idempotent through `t.delivered`, so the trace is still sent.
             pass
         _deliver(t)
 
@@ -344,6 +355,27 @@ def _undelivered_dir() -> Path:
         return Path(tempfile.gettempdir()) / "modelmri-traces"
 
 
+def _complain(message: str) -> None:
+    """One line to stderr, or nothing at all. Never raises.
+
+    The whole package is built so that recording cannot take down the app it
+    is observing, which is why so much here is best-effort. Best-effort is not
+    the same as silent, though: a trace that vanished with no explanation is
+    indistinguishable from one that was never recorded. This is the one thing
+    a library in someone else's process can honestly do about that.
+
+    Guarded because the callers are shutdown paths: `sys.stderr` can be None
+    (pythonw.exe, a frozen GUI build) or already closed by the time an atexit
+    hook runs, and `print` raises in both cases.
+    """
+    try:
+        stream = sys.stderr
+        if stream is not None:
+            print(message, file=stream)
+    except Exception:
+        pass  # there is no third place to report to, and raising is worse
+
+
 def _deliver(t: _Trace) -> None:
     if t.delivered:
         return
@@ -362,6 +394,10 @@ def _deliver(t: _Trace) -> None:
         urllib.request.urlopen(req, timeout=3)
         return
     except Exception:
+        # Not narrowed to OSError: `endpoint` is caller-supplied, so a typo in
+        # the scheme is a ValueError from urllib rather than a network error.
+        # Nothing is swallowed here — the disk fallback below is the handling,
+        # and the file it writes is how the trace gets imported later.
         pass
     try:
         # Where an undeliverable trace lands. It used to be a bare
@@ -380,8 +416,14 @@ def _deliver(t: _Trace) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in t.name)[:60]
         (out / f"{safe}-{stamp}-{t.id}.json").write_text(json.dumps(doc, indent=1))
-    except Exception:
-        pass  # recording must never crash the host app
+    except Exception as err:
+        # Catches everything rather than the OSError family a write can be
+        # expected to raise, because recording must never crash the host app —
+        # that is the contract, and it outranks a tidy exception type here.
+        # But the server was unreachable and now the disk has refused too, so
+        # this trace is gone; saying so costs one line and is the difference
+        # between a lost run and a mystery.
+        _complain(f"modelmri-record: trace {t.name!r} could not be saved: {err}")
 
 
 # Traces still open when the process ends. Flushed by the atexit hook below.
@@ -393,8 +435,26 @@ def _flush_live() -> None:
     for t in list(_live):
         try:
             _deliver(t)
-        except Exception:
-            pass
+        except Exception as err:
+            # NOT narrowable, and that is the finding rather than a shrug.
+            # `_deliver` guards its own json.dumps, its POST and its disk
+            # write, so what can still escape it is the code before those
+            # guards: `redact_document` running a redactor the CALLER
+            # supplied (`trace(..., redact=my_func)`) — arbitrary code with
+            # arbitrary exceptions — plus interpreter-shutdown hazards, where
+            # module globals may already be torn down and an attribute lookup
+            # on `json` or `urllib` raises. KeyboardInterrupt is a
+            # BaseException and correctly still passes straight through.
+            #
+            # It must not raise: this runs from atexit, so raising would mean
+            # a recorder crashing the host application on its way out. It
+            # must not be silent either — this is the hook that exists for
+            # "the interpreter died mid-run", i.e. exactly the trace its owner
+            # most wanted, and it was dropping it without a word.
+            _complain(
+                f"modelmri-record: trace {t.name!r} was lost at shutdown: "
+                f"{type(err).__name__}: {err}"
+            )
 
 
 atexit.register(_flush_live)

@@ -18,6 +18,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from .errors import BadRequest
+
 VALID_KINDS = {"llm_call", "tool_call", "subagent", "mcp_call", "user_turn", "error"}
 
 _SCHEMA = """
@@ -64,12 +66,35 @@ class TraceStore:
          started_ms, duration_ms?, input?, output?, tokens_in?, tokens_out?,
          error?}, ...]}   (steps in chronological order)
         """
+        # Schema validation of a document somebody posted: BadRequest, 422.
+        # `/api/traces/import` takes a bare dict — there is no model between
+        # the wire and here — so these lines are the entire contract, and a
+        # hand-written or third-party document has nothing else to go on.
         steps = doc.get("steps", [])
         if not isinstance(steps, list) or not steps:
-            raise ValueError("trace document needs a non-empty 'steps' list")
-        for s in steps:
+            raise BadRequest("trace document needs a non-empty 'steps' list")
+        # Every check runs BEFORE the lock and the INSERTs below, and that
+        # ordering is load-bearing: a raise partway through the insert loop
+        # leaves this connection holding an open transaction with half a trace
+        # in it, which the next commit from anywhere would then write.
+        timings: list[tuple[int, int]] = []
+        for i, s in enumerate(steps):
+            # Measured: `steps: [1, 2]` used to reach `s.get` and die with
+            # AttributeError, which the server can only answer as a 500 —
+            # "something inside ModelMRI failed" about a document that is
+            # simply the wrong shape.
+            if not isinstance(s, dict):
+                raise BadRequest(
+                    f"step {i} is not an object with a 'kind' (got {type(s).__name__})"
+                )
             if s.get("kind") not in VALID_KINDS:
-                raise ValueError(f"invalid step kind: {s.get('kind')!r}")
+                # `sorted`, because VALID_KINDS is a set and an unordered list
+                # in an error message is a different sentence every run.
+                raise BadRequest(
+                    f"invalid step kind: {s.get('kind')!r} — "
+                    f"use one of {', '.join(sorted(VALID_KINDS))}"
+                )
+            timings.append((_ms(s, "started_ms", i), _ms(s, "duration_ms", i)))
 
         trace_id = str(doc.get("id") or uuid.uuid4().hex[:12])
         with self._lock:
@@ -94,8 +119,8 @@ class TraceStore:
                         s.get("parent_id"),
                         s["kind"],
                         str(s.get("name", "")),
-                        int(s.get("started_ms", 0)),
-                        int(s.get("duration_ms", 0)),
+                        timings[seq][0],
+                        timings[seq][1],
                         _clip(s.get("input", "")),
                         _clip(s.get("output", "")),
                         s.get("tokens_in"),
@@ -194,6 +219,24 @@ class TraceStore:
             "meta": json.loads(t[3]),
             "steps": steps,
         }
+
+
+def _ms(step: dict, field: str, index: int) -> int:
+    """One millisecond field as an int, or a BadRequest that names it.
+
+    Bare `int(...)` on a document somebody hand-wrote raises ValueError in
+    Python's own words — "invalid literal for int() with base 10: 'soon'" —
+    which names neither the field nor the step it was in, and `int(None)`
+    raises TypeError, which the server could only answer as a 500. Same 422,
+    a sentence the sender can act on.
+    """
+    raw = step.get(field, 0)
+    try:
+        return int(raw)
+    except (TypeError, ValueError) as err:
+        raise BadRequest(
+            f"step {index}: {field} must be a whole number of milliseconds, got {raw!r}"
+        ) from err
 
 
 def _clip(value: object, limit: int = 20_000) -> str:

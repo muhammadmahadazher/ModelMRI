@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 from dataclasses import asdict
@@ -17,12 +18,100 @@ from pydantic import BaseModel, Field
 from pathlib import Path
 
 from . import __version__
+from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore
 from .custom import AdapterError, CustomHandle
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
 from .vla import VLAHandle
+
+log = logging.getLogger("modelmri")
+
+# THE THREE ANSWERS, AND THE ORDER THEY ARE WRITTEN IN.
+#
+# Every handler below that can fail ends in the same three arms:
+#
+#     except Refusal as err:     409, str(err)   — we decided not to answer
+#     except BadRequest as err:  422, str(err)   — the request is wrong
+#     except Exception as err:   500, _INTERNAL  — something broke
+#
+# The point of the split is that the first two messages were written for a
+# reader and the third was not. Before it, a CUDA out-of-memory and "this is a
+# recording, and a .mri does not carry a model" were both 409s carrying the
+# exception's own text — so a full GPU was reported as a conflict, and torch's
+# text, which can name directories on this machine, went to the browser.
+#
+# Do not put `str(err)` on the 500 arm. That is the entire change.
+
+
+# Local-first: the person who opened this page also started the process, so
+# the honest place to send them is the terminal they already have. A message
+# that says only "internal error" would be true and useless.
+_INTERNAL = (
+    "Something inside ModelMRI failed rather than refusing. The full error "
+    "is in the terminal running `modelmri serve`."
+)
+
+
+# Reading a LeRobot dataset needs two optional packages, and "it is not
+# installed" is a sentence with a one-line fix — so it is a refusal rather than
+# a 500. The module name comes from `err.name`, a field ImportError publishes
+# for exactly this, and not from `str(err)`: the message is ours, the name is a
+# lookup key, and nothing else from the exception is republished.
+def _missing_reader_dep(err: ImportError) -> JSONResponse:
+    """409 for a missing pyarrow / av, with the real ImportError in the log."""
+    log.warning("LeRobot reader dependency missing", exc_info=err)
+    what = f" ({err.name} is missing)" if getattr(err, "name", None) else ""
+    return JSONResponse(
+        {
+            "error": "Reading a LeRobot dataset needs pyarrow for the metadata "
+            f"and av for the video{what}. Install them with "
+            "`pip install modelmri[vla]`."
+        },
+        status_code=409,
+    )
+
+
+def _internal(err: BaseException, where: str) -> JSONResponse:
+    """The 500 arm: generic to the browser, complete to the log.
+
+    Logging is not decoration here. The handlers this replaced returned the
+    exception's text, which at least meant the failure was visible somewhere;
+    dropping the text without recording it would trade a leak for an erasure,
+    and an erasure is the worse bug.
+    """
+    log.exception("unhandled error in %s", where, exc_info=err)
+    return JSONResponse({"error": _INTERNAL}, status_code=500)
+
+
+# WHERE `_unmigrated` WENT, BECAUSE IT WAS THE THING THIS PASS EXISTED TO KILL.
+#
+# There used to be a helper here that caught a bare RuntimeError or ValueError
+# on twelve routes and answered 409/422 with `str(err)`. Its justification was
+# that the modules behind those routes still raised plain exceptions for their
+# deliberate refusals, so relaying the text kept their answers working until
+# each one adopted Refusal.
+#
+# The justification stopped being true and nobody noticed. Counted at the time
+# it came out: hub.py 3 taxonomy raises and 0 plain, ollama.py 4 and 0,
+# lens.py 2 and 0, traces.py 4 and 0, vla.py 9 and 0, vla_data.py 9 and 1,
+# saes.py 2 and 1 — and both of those remaining plain raises carry a comment
+# in their own file saying they belong on the 500 path. So the arms were no
+# longer transitional. They were catch-alls, and what they actually caught was
+# breakage: measured, a torch-shaped `RuntimeError("CUDA out of memory ...
+# <absolute path>")` came back as 409 with that path in the body on
+# /api/hub/models, /api/ollama/pull, /api/vla/load, /api/vla/attention,
+# /api/vla/analyse, and 422 on /api/sae/load and /api/traces/import.
+#
+# It also logged at `log.debug`, and this logger has no handler and an
+# effective level of WARNING under what `modelmri serve` installs — so those
+# failures were leaked to the browser AND erased from the terminal at the same
+# time, which is both halves of the bug `_internal` was written to avoid.
+#
+# The one module that genuinely still raised a plain exception was session.py.
+# It now raises `SessionError(BadRequest)`, which was always the honest
+# classification, so it needs no arm either.
 
 
 class LoadRequest(BaseModel):
@@ -90,6 +179,33 @@ def create_app(
     trace_db: str | None = None, dataset_repo: str = "lerobot/pusht"
 ) -> FastAPI:
     app = FastAPI(title="ModelMRI", version=__version__)
+
+    # THE BACKSTOP, BECAUSE HALF THE ROUTES NEVER HAD AN ARM.
+    #
+    # Counted: 56 routes, 28 of them with no `except` at all. Several of those
+    # talk to a network daemon or walk a filesystem and will realistically
+    # fail — /api/ollama, /api/models/discovered, /api/vla/datasets,
+    # /api/custom/candidates, /api/paths. Starlette answered those with
+    # `text/plain` "Internal Server Error", so the reader got a bare string
+    # instead of the `{"error": ...}` every other route and the frontend's
+    # `explain()` expect, and was never pointed at the terminal.
+    #
+    # Nothing was leaked and nothing was erased — uvicorn logs the traceback —
+    # but a three-answer contract that covers half the surface is not a
+    # contract. One handler is the fix; 28 more copies of the three arms is
+    # not. Registering it does mean Starlette calls this instead of letting
+    # the exception reach uvicorn's own logger, which is why it goes through
+    # `_internal` and its `log.exception` rather than returning a bare
+    # response.
+    #
+    # It sits UNDER every per-route arm: those return normally, so nothing
+    # propagates this far unless a route has no arm for it. FastAPI's own
+    # HTTPException and RequestValidationError handlers are registered
+    # separately and still win.
+    @app.exception_handler(Exception)
+    async def unhandled(request: Request, err: Exception) -> JSONResponse:
+        return _internal(err, request.url.path)
+
     runtime = ModelRuntime()
     app.state.runtime = runtime
     app.state.vla = VLAHandle()
@@ -109,13 +225,32 @@ def create_app(
 
     # `modelmri open somebody.mri` hands the file over here, so the page is
     # already showing the analysis when the browser tab opens. Failing to
-    # read it is not fatal: the CLI already parsed and reported on it, so the
-    # server starting with nothing open beats the server not starting.
+    # read it is not fatal: the server starting with nothing open beats the
+    # server not starting.
+    #
+    # It was also silent, and the premise for that — "the CLI already parsed
+    # and reported on it" — holds for `modelmri open` and not for MODELMRI_OPEN
+    # set by hand. Then the tab opened empty with no message anywhere. One log
+    # line, because a shrug the reader cannot see is indistinguishable from a
+    # bug.
+    #
+    # The four types are the ones measured escaping this call, not a guess:
+    # read_bytes gives OSError (moved, unreadable) and ValueError ("embedded
+    # null byte" for a malformed variable); session.parse promises SessionError
+    # (a ValueError) but a document whose "meta" is a list escapes as
+    # TypeError("list object is not a mapping") and a deeply nested one as
+    # RecursionError. Those last two are a defect in session.parse's contract —
+    # when it holds them, this tuple shrinks to (OSError, ValueError).
     if pending := os.environ.get("MODELMRI_OPEN"):
         try:
             runtime.open_session(Path(pending).read_bytes())
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError, RecursionError) as err:
+            log.warning(
+                "MODELMRI_OPEN could not be opened (%s: %s); starting with no "
+                "session open",
+                type(err).__name__,
+                err,
+            )
 
     # Serve the built React app when present (frontend/ builds into static/app);
     # fall back to the legacy single-file playground otherwise.
@@ -144,6 +279,7 @@ def create_app(
 
     @app.post("/api/model/load")
     async def load_model(req: LoadRequest):
+        from .capacity import TooBig
         from .runtime import LoadCancelled
 
         try:
@@ -154,11 +290,23 @@ def create_app(
         except LoadCancelled as err:
             # Not a failure: the user asked. 200 with a plain answer, so the
             # UI does not paint a red error over something it did on purpose.
+            # Stays first: LoadCancelled is a RuntimeError, so it survives
+            # today only because nothing broader is written above it, and
+            # anyone who ever widens an arm here to RuntimeError turns Stop
+            # into a red 409.
             return JSONResponse({"cancelled": True, "message": str(err)})
-        except RuntimeError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except TooBig as err:
+            # capacity.py's own refusal, raised by _preflight before a byte
+            # moves. Still a plain ValueError there, and this arm answers the
+            # same 422 the pull path does — the two must not drift, which is
+            # why capacity.guard is shared between them in the first place.
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/model/load")
 
     @app.post("/api/model/cancel")
     def cancel_load() -> dict:
@@ -204,8 +352,12 @@ def create_app(
 
         try:
             return hub.sign_in(req.token).to_dict()
-        except ValueError as err:
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/hub/signin")
 
     @app.post("/api/hub/signout")
     def hub_signout() -> dict:
@@ -221,8 +373,12 @@ def create_app(
             if not q.strip():
                 return await asyncio.to_thread(hub.suggested)
             return await asyncio.to_thread(hub.search, q, limit)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/hub/models")
 
     @app.get("/api/ollama/resolve")
     async def ollama_resolve(name: str) -> dict:
@@ -334,8 +490,12 @@ def create_app(
 
         try:
             return await asyncio.to_thread(run)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/ollama/pull")
 
     @app.get("/api/models/local")
     def models_local() -> list[dict]:
@@ -388,14 +548,20 @@ def create_app(
 
         try:
             return {"generation": await asyncio.to_thread(run)}
-        except RuntimeError as err:
-            # Ollama quitting mid-session, a streamer timeout, CUDA OOM: all
-            # arrived here as a bare 500 with a traceback. Say what happened.
+        except Refusal as err:
+            # Ollama quitting mid-session, Ollama refusing the prompt, no
+            # model loaded. `runtime.generate_stream` translates ollama.py's
+            # plain RuntimeErrors into Refusals at the call, which is what
+            # lets this handler tell them apart from the next arm.
             return JSONResponse({"error": str(err)}, status_code=409)
-        except Exception as err:  # noqa: BLE001 - last line before a 500
-            return JSONResponse(
-                {"error": f"{type(err).__name__}: {err}"}, status_code=409
-            )
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            # CUDA out of memory, a streamer timeout, an architecture
+            # transformers cannot run eagerly. These were 409s carrying
+            # "{type}: {err}" — a full GPU reported as a conflict, in torch's
+            # words, which can name paths on this machine.
+            return _internal(err, "/api/model/prompt")
 
     @app.get("/api/attention/meta")
     def attention_meta() -> dict:
@@ -410,35 +576,45 @@ def create_app(
         try:
             status = await asyncio.to_thread(runtime.load_sae, req.repo, req.hook)
             return asdict(status)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/sae/load")
 
     @app.get("/api/features/summary")
     async def features_summary(top_k: int = 8):
         try:
             return await asyncio.to_thread(runtime.features_summary, top_k)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/features/summary")
 
     @app.get("/api/features/{feature_id}")
     async def feature_detail(feature_id: int):
         try:
             return await asyncio.to_thread(runtime.feature_detail, feature_id)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/features/{feature_id}")
 
     @app.post("/api/steer")
     def steer(req: SteerRequest):
         try:
             return runtime.set_steering(req.feature_id, req.scale)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/steer")
 
     @app.get("/api/steer")
     def steer_status() -> dict:
@@ -527,8 +703,12 @@ def create_app(
 
         try:
             return await asyncio.to_thread(run)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/lens")
 
     # ---------------------------------------------------------- custom models
     #
@@ -563,11 +743,35 @@ def create_app(
         try:
             status = await asyncio.to_thread(app.state.custom.load, req.path)
         except AdapterError as err:
+            # THE ONE EXEMPTION FROM THE GENERIC 500, AND IT IS EARNED WHERE
+            # IT IS TRUE RATHER THAN CLAIMED FOR A WHOLE HANDLER.
+            #
+            # `custom.load` imports and runs a Python file the user wrote and
+            # pointed at. Their adapter raising ModuleNotFoundError is a fact
+            # about their file, and answering "check the terminal" would hide
+            # the one line that fixes it while blaming us for their import.
+            # So that text is published — but it is published because
+            # custom.py caught it AT THE CALL INTO THEIR CODE and put it in an
+            # AdapterError: `_import_adapter` around `exec_module`,
+            # `load_from_adapter` around `load()` and `example_input()`,
+            # `inspect` around the forward pass. Each of those knows the code
+            # that raised was theirs.
+            #
+            # There used to be an `except Exception` below this arm doing the
+            # same echo for anything at all, and it could not know that.
+            # Measured: an OSError from custom.py's own path resolution came
+            # back as 422 `"OSError: [Errno 13] Permission denied: '<abs
+            # path>'"` with no log line — ModelMRI's failure, in ModelMRI's
+            # words, filed as the user's malformed request. Those reach
+            # `_internal` now.
+            #
+            # Pinned by
+            # test_smoke.py::test_custom_load_never_500s_on_a_users_broken_adapter,
+            # which asserts "ModuleNotFoundError" reaches the browser at 422 —
+            # still true, through AdapterError.
             return JSONResponse({"error": str(err)}, status_code=422)
-        except Exception as err:  # a user's own code ran; never 500 on it
-            return JSONResponse(
-                {"error": f"{type(err).__name__}: {err}"}, status_code=422
-            )
+        except Exception as err:
+            return _internal(err, "/api/custom/load")
         return status.to_dict()
 
     @app.post("/api/custom/run")
@@ -575,11 +779,15 @@ def create_app(
         try:
             return await asyncio.to_thread(app.state.custom.run, req.shape, req.seed)
         except AdapterError as err:
+            # Their forward pass raised, and `custom.inspect` says so by
+            # catching around the model call itself. See the note on
+            # custom_load for why the echo lives there and not here: `run`
+            # also allocates the example tensor and installs the hooks, and
+            # both of those are ModelMRI's — a CUDA OOM while building
+            # `torch.randn(*shape)` is not a fact about the user's file.
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
-            return JSONResponse(
-                {"error": f"{type(err).__name__}: {err}"}, status_code=422
-            )
+            return _internal(err, "/api/custom/run")
 
     @app.post("/api/custom/unload")
     def custom_unload() -> dict:
@@ -600,12 +808,12 @@ def create_app(
         try:
             status = await asyncio.to_thread(app.state.vla.load, req.repo)
             return status.to_dict()
-        except FileNotFoundError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except RuntimeError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/load")
 
     @app.get("/api/vla/datasets")
     async def vla_datasets() -> dict:
@@ -626,12 +834,29 @@ def create_app(
             reader = await asyncio.to_thread(
                 LeRobotV3Reader.discover, None, req.repo_id
             )
-        except FileNotFoundError as err:
+        except ImportError as err:
+            # ImportError ALONE, and the pairing with FileNotFoundError that
+            # used to be here is the point. vla.py and vla_data.py raise
+            # `Refusal` now for every "not cached" / "no videos under ..."
+            # sentence they wrote, so those are answered by the arm below in
+            # their own words. What `except FileNotFoundError` caught in
+            # addition was every OSError raised underneath — pyarrow opening a
+            # parquet file, av opening a container — and it published those at
+            # 409 with their absolute path in the body and no log line.
+            # Measured: a reader raising `FileNotFoundError(2, "No such file
+            # or directory", <abs path>)` leaked that path on all four of
+            # these routes. Those reach `_internal` now.
+            #
+            # ImportError stays because it means one specific thing — pyarrow
+            # or av is not installed — and the fix is one pip line, which is
+            # the reader's to run and not something in a traceback.
+            return _missing_reader_dep(err)
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
-            return JSONResponse(
-                {"error": f"{type(err).__name__}: {err}"}, status_code=409
-            )
+            return _internal(err, "/api/vla/dataset")
         app.state.vla_reader = reader
         app.state.vla_dataset = req.repo_id
         return await asyncio.to_thread(reader.summary)
@@ -640,18 +865,34 @@ def create_app(
     async def vla_episodes():
         try:
             return await asyncio.to_thread(lambda: _reader().summary())
-        except (FileNotFoundError, ImportError) as err:
+        except ImportError as err:
+            # See /api/vla/dataset: ImportError alone, because vla_data.py's
+            # own sentences are Refusals now and a library's OSError is not
+            # one of them.
+            return _missing_reader_dep(err)
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/episodes")
 
     @app.get("/api/vla/frame")
     async def vla_frame(episode: int = 0, t: int = 0):
         try:
             sample = await asyncio.to_thread(lambda: _reader().frame(episode, t))
             return asdict(sample)
-        except (FileNotFoundError, ImportError) as err:
+        except ImportError as err:
+            # See /api/vla/dataset: ImportError alone, because vla_data.py's
+            # own sentences are Refusals now and a library's OSError is not
+            # one of them.
+            return _missing_reader_dep(err)
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/frame")
 
     @app.post("/api/vla/analyse")
     async def vla_analyse(req: VLAAnalyseRequest):
@@ -661,10 +902,17 @@ def create_app(
 
         try:
             return await asyncio.to_thread(run)
-        except (FileNotFoundError, ImportError, RuntimeError) as err:
+        except ImportError as err:
+            # See /api/vla/dataset: ImportError alone, because vla_data.py's
+            # own sentences are Refusals now and a library's OSError is not
+            # one of them.
+            return _missing_reader_dep(err)
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/analyse")
 
     @app.get("/api/vla/attention/meta")
     def vla_attention_meta() -> dict:
@@ -674,18 +922,24 @@ def create_app(
     async def vla_attention(layer: int = 0, head: int = -1):
         try:
             return await asyncio.to_thread(app.state.vla.attention, layer, head)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/attention")
 
     @app.post("/api/traces/import")
     async def traces_import(doc: dict):
         try:
             trace_id = await asyncio.to_thread(traces.import_trace, doc)
             return {"id": trace_id}
-        except ValueError as err:
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/import")
 
     @app.get("/api/traces")
     def traces_list() -> list[dict]:
@@ -716,10 +970,12 @@ def create_app(
     async def attention(layer: int = 0, head: int = 0, variant: str = "live"):
         try:
             return await asyncio.to_thread(runtime.attention, layer, head, variant)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention")
 
     @app.get("/api/attention/diff")
     async def attention_diff(
@@ -733,10 +989,12 @@ def create_app(
         """
         try:
             return await asyncio.to_thread(runtime.attention_diff, layer, head, a, b)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/diff")
 
     @app.get("/api/attention/ablate")
     async def ablate_heads(
@@ -757,10 +1015,12 @@ def create_app(
         target = None if scope == "all" else (layer if layer is not None else 0)
         try:
             return await asyncio.to_thread(runtime.ablate_heads, target, baseline)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/ablate")
 
     @app.get("/api/attention/attribute")
     async def attribute_tokens(position: int | None = None):
@@ -796,10 +1056,12 @@ def create_app(
         """
         try:
             return await asyncio.to_thread(runtime.attribute_tokens, position)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/attribute")
 
     # ---------------- sessions (.mri) ----------------
     #
@@ -815,10 +1077,12 @@ def create_app(
     async def session_export(layer: int = 0, head: int = 0, note: str = ""):
         try:
             blob = await asyncio.to_thread(runtime.export_session, layer, head, note)
-        except RuntimeError as err:
+        except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
-        except ValueError as err:
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/session/export")
         name = (runtime.hf_id or "session").replace("/", "-")
         return Response(
             content=blob,
@@ -850,8 +1114,12 @@ def create_app(
             )
         try:
             return await asyncio.to_thread(runtime.open_session, data)
-        except ValueError as err:  # SessionError is one
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/session/open")
 
     @app.post("/api/session/close")
     def session_close() -> dict:
@@ -880,12 +1148,40 @@ def create_app(
                         )
                         for piece in pieces:
                             loop.call_soon_threadsafe(queue.put_nowait, piece)
-                    except BaseException as err:
-                        # Without this the generation dies in the worker thread,
-                        # the finally posts the sentinel, and the browser is told
-                        # "done" -- a CUDA OOM or an unsupported architecture
-                        # arrives as a successful empty answer.
-                        failure.append(f"{type(err).__name__}: {err}")
+                    except (Refusal, BadRequest) as err:
+                        # A stream that stops mid-sentence has to say why, and
+                        # for these two the why is a sentence somebody wrote:
+                        # Ollama went away, the model is a recording, the
+                        # prompt was rejected. Same words the REST handlers
+                        # publish at 409 and 422.
+                        failure.append(str(err))
+                    except Exception as err:
+                        # Everything else. This used to append
+                        # f"{type(err).__name__}: {err}", which on the busiest
+                        # error path in the app published exactly what the
+                        # module header forbids -- measured, a
+                        # RuntimeError("CUDA out of memory ... <absolute
+                        # path>") reached the browser verbatim.
+                        #
+                        # test_smoke.py::test_ws_reports_a_mid_stream_crash_as_an_error
+                        # asserted that literal text, on the argument that the
+                        # stream must say why it stopped. The argument is
+                        # right and the assertion was the wrong way to hold
+                        # it: "the model failed mid-generation" says why, and
+                        # the terminal has the rest. That test now asserts the
+                        # reason arrives and torch's text does not.
+                        #
+                        # `Exception`, not `BaseException`: catching
+                        # KeyboardInterrupt and SystemExit here rendered a
+                        # shutdown as a chat error message. They now end the
+                        # worker thread, and the `finally` below still posts
+                        # the sentinel so the socket does not hang.
+                        log.exception("generation failed mid-stream", exc_info=err)
+                        failure.append(
+                            "The model failed mid-generation rather than "
+                            "refusing. The full error is in the terminal "
+                            "running `modelmri serve`."
+                        )
                     finally:
                         loop.call_soon_threadsafe(queue.put_nowait, None)
 

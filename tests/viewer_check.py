@@ -121,11 +121,31 @@ HOSTILE = [
 ]
 
 
+# What the page says about itself after a probe. The file input is rendered
+# unconditionally by SessionBar, so it is the marker for "the viewer mounted";
+# `.panel.replay` only exists once a session is open.
+_STATE = """() => {
+  if (document.querySelector('.panel.replay')) return 'opened';
+  if (document.querySelector('input[type=file][accept=".mri"]')) return 'idle';
+  return 'absent';
+}"""
+
+
 async def hostile_side(port: int) -> dict:
-    """Load the viewer with each hostile `?f=` and watch what it requests."""
+    """Load the viewer with each hostile `?f=` and watch what it requests.
+
+    Returns escaped probes AND probes that never ran. The second list is the
+    point: this is a security check, and a probe whose navigation failed looks
+    exactly like a probe that loaded and was correctly blocked — no off-origin
+    request, no `.panel.replay`. Without it, a dead browser or a server that
+    never came up reports ten clean probes having tested nothing.
+    """
+    from playwright.async_api import Error as PlaywrightError
     from playwright.async_api import async_playwright
 
+    origin = f"http://127.0.0.1:{port}/"
     escaped: list[str] = []
+    vacuous: list[str] = []
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         page = await browser.new_page()
@@ -133,24 +153,37 @@ async def hostile_side(port: int) -> dict:
         page.on("request", lambda r: seen.append(r.url))
         for probe in HOSTILE:
             seen.clear()
-            url = f"http://127.0.0.1:{port}/?f={urllib.parse.quote(probe, safe='')}"
+            url = f"{origin}?f={urllib.parse.quote(probe, safe='')}"
+            failure = ""
             try:
                 await page.goto(url, wait_until="networkidle")
-            except Exception:
-                pass
+            except PlaywrightError as err:
+                # One class covers everything Playwright reports here: a
+                # navigation the browser aborted, and the `networkidle`
+                # timeout (TimeoutError subclasses Error). Neither is fatal to
+                # the sweep — the state check below decides whether this probe
+                # still tested anything — but neither is a pass on its own,
+                # so the reason is kept rather than dropped.
+                failure = str(err).splitlines()[0][:120]
             await page.wait_for_timeout(400)
             for requested in seen:
                 # Anything off this origin, or reaching above the served
                 # directory, means the guard let it through.
-                if not requested.startswith(f"http://127.0.0.1:{port}/"):
+                if not requested.startswith(origin):
                     escaped.append(f"{probe} -> {requested}")
-            opened = await page.evaluate(
-                "() => !!document.querySelector('.panel.replay')"
-            )
-            if opened:
+            try:
+                state = await page.evaluate(_STATE)
+            except PlaywrightError as err:
+                state = "absent"
+                failure = failure or str(err).splitlines()[0][:120]
+            if state == "opened":
                 escaped.append(f"{probe} -> opened a session")
+            elif state == "absent":
+                vacuous.append(
+                    f"{probe} -> viewer never loaded: {failure or 'no page'}"
+                )
         await browser.close()
-    return {"escaped": escaped, "probes": len(HOSTILE)}
+    return {"escaped": escaped, "vacuous": vacuous, "probes": len(HOSTILE)}
 
 
 async def browser_side(port: int) -> dict:
@@ -225,10 +258,10 @@ def main() -> int:
         return 1
 
     print(f"  fixture   {len(data) / 1024:.1f} KB, {expected['slices']} slices")
-    ok = True
+    cells_ok = True
     for key in ("slices", "cells", "checksum", "worst", "tokens"):
         same = got.get(key) == expected[key]
-        ok = ok and same
+        cells_ok = cells_ok and same
         shown = key if key != "tokens" else "tokens"
         mark = "PASS" if same else "FAIL"
         detail = (
@@ -243,21 +276,37 @@ def main() -> int:
             print(f"         python={expected[key]}  browser={got.get(key)}")
 
     print()
-    clean = not hostile["escaped"]
-    ok = ok and clean
-    print(
-        f"  [{'PASS' if clean else 'FAIL'}] ?f=       "
-        f"{hostile['probes']} hostile values, none escaped the origin"
-        if clean
-        else f"  [FAIL] ?f=       escaped: {hostile['escaped'][:4]}"
-    )
+    # A probe that did not run is not a probe that passed. Reported as its own
+    # failure line rather than folded into "escaped", because the two mean
+    # opposite things: one is a guard that leaked, the other is a guard nobody
+    # tested.
+    tested = hostile["probes"] - len(hostile["vacuous"])
+    clean = not hostile["escaped"] and not hostile["vacuous"]
+    ok = cells_ok and clean
+    if hostile["escaped"]:
+        print(f"  [FAIL] ?f=       escaped: {hostile['escaped'][:4]}")
+    if hostile["vacuous"]:
+        print(
+            f"  [FAIL] ?f=       {len(hostile['vacuous'])} probe(s) tested "
+            f"nothing: {hostile['vacuous'][:4]}"
+        )
+    if clean:
+        print(
+            f"  [PASS] ?f=       {tested} hostile values, all loaded the "
+            f"viewer, none escaped the origin"
+        )
 
     print()
-    print(
-        "the viewer and the tool agree on every cell"
-        if ok
-        else "THE VIEWER DISAGREES WITH THE TOOL"
-    )
+    # Two different failures, and the last line has to name the right one:
+    # "THE VIEWER DISAGREES WITH THE TOOL" about a run where every cell
+    # matched and the browser simply never started would send the next reader
+    # looking for a quantisation bug that is not there.
+    if ok:
+        print("the viewer and the tool agree on every cell")
+    elif not cells_ok:
+        print("THE VIEWER DISAGREES WITH THE TOOL")
+    else:
+        print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1
 
 

@@ -42,6 +42,8 @@ import torch
 from huggingface_hub import hf_hub_download
 from safetensors.torch import load_file
 
+from .errors import BadRequest
+
 DEFAULT_SAE_REPO = "jbloom/GPT2-Small-SAEs-Reformatted"
 DEFAULT_SAE_HOOK = "blocks.8.hook_resid_pre"
 
@@ -162,7 +164,7 @@ class SAEHandle:
     ) -> "SAEHandle":
         m = re.search(r"blocks\.(\d+)\.hook_(\w+)", hook)
         if not m:
-            raise ValueError(f"Cannot parse layer index from hook name: {hook!r}")
+            raise BadRequest(f"Cannot parse layer index from hook name: {hook!r}")
         layer = int(m.group(1))
         point = m.group(2)
         # The hook POINT was previously discarded, so every SAE was fed the
@@ -170,8 +172,13 @@ class SAEHandle:
         # wrong side of the block: it produces plausible-looking features that
         # describe activations the SAE was never trained on. Reject what we
         # cannot place rather than quietly using the wrong tensor.
+        #
+        # BadRequest rather than Refusal, and it is a close call: the sentence
+        # reads like a refusal ("we will not use the wrong tensor"), but what
+        # it rejects is a value in the request, and it names the two that work.
+        # 422 is also what this answered before the split, and no test pins it.
         if point not in ("resid_pre", "resid_post"):
-            raise ValueError(
+            raise BadRequest(
                 f"Unsupported hook point {point!r} in {hook!r}. ModelMRI reads the "
                 f"residual stream: use a hook_resid_pre or hook_resid_post SAE."
             )
@@ -244,6 +251,12 @@ class SAEHandle:
         every centered SAE for being correct.
         """
         x = x.float()
+        # Deliberately a plain ValueError and NOT a BadRequest: no request
+        # reaches this check. `calibrate` is called from `encode`, with a
+        # tensor this package built out of the model's own residual stream, so
+        # a wrong shape here is a ModelMRI bug and belongs on the 500 path with
+        # its traceback in the log — not in front of a user who cannot act on
+        # it. tests/test_saes.py calls it directly and expects ValueError.
         if x.ndim != 2 or x.shape[-1] != self.d_in:
             raise ValueError(
                 f"Calibration needs [S, {self.d_in}] activations, got {tuple(x.shape)}"
