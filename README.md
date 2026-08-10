@@ -88,12 +88,27 @@ It reports what it measured and nothing more. These are **not** each head's shar
 Load a sparse autoencoder and ModelMRI shows the human-interpretable features firing on every token. Click one, drag the slider, and run a deterministic A/B:
 
 ```
-prompt   The Eiffel Tower is located in the city of
-baseline  Paris, France.
-feature #974 @ -40   San Diego, and is located in the San Diego State University
+gpt2 · layer 8 · jbloom/GPT2-Small-SAEs-Reformatted · FVU 0.0010 · 60.5 features/token
+
+prompt                The Eiffel Tower is located in the city of
+baseline               Paris, France.
+feature #5856 @ -40    London's central London borough.
 ```
 
-Same prompt, greedy decoding, no prompt tricks. We reached into layer 8 and turned the concept down. Clearing the steer restores the baseline byte-for-byte.
+\#5856 is the **top-firing** feature on the final prompt token — activation
+35.55, the one the panel already has selected — so this example is reachable by
+following the instructions above rather than by knowing which number to type.
+Same prompt, greedy decoding, no prompt tricks. We reached into layer 8 and
+turned the concept down. Clearing the steer restores the baseline byte for byte.
+
+**The SAE checks itself before it shows you anything.** An SAE fed the wrong
+activation convention does not error — it returns features, in the right shape,
+with plausible magnitudes, for a vector it never saw. So ModelMRI measures which
+convention actually reconstructs (centered along `d_model` or not, `b_dec`
+subtracted from the input or not), reports the fraction of variance unexplained,
+and refuses to plot anything when no convention reconstructs. On the default SAE
+that is the difference between **60.5** features firing per token and **7,491**,
+and between an FVU of **0.0010** and **13,579**.
 
 ### 4. Find the step where your agent died
 
