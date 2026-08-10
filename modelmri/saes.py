@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from huggingface_hub import hf_hub_download
@@ -177,7 +178,10 @@ class SAEHandle:
 
         cfg_path = hf_hub_download(repo, f"{hook}/cfg.json")
         weights_path = hf_hub_download(repo, f"{hook}/sae_weights.safetensors")
-        cfg = json.loads(open(cfg_path, encoding="utf-8").read())
+        # read_text rather than open(...).read(): the latter leaves the handle
+        # to the garbage collector, which is fine on CPython and not guaranteed
+        # anywhere else.
+        cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
         tensors = load_file(weights_path)
 
         return cls(

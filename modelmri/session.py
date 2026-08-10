@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+import math
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -125,7 +126,12 @@ def _quantise(matrix: Any) -> tuple[str, float]:
     peak = 0.0
     for row in matrix:
         for v in row:
-            if v != v or v in (float("inf"), float("-inf")):
+            # `math.isfinite` rather than `v != v or v in (inf, -inf)`: same
+            # answer, one call, and it does not read as a typo. The NaN half of
+            # that idiom is correct but every reader has to stop and remember
+            # why, and a static analyser flags it as comparing a value to
+            # itself.
+            if not math.isfinite(v):
                 raise SessionError(
                     "this attention map contains non-finite values (nan or "
                     "inf), so there is nothing honest to export."
