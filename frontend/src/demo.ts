@@ -11,9 +11,49 @@
  *  `tests/demo_check.py` fails the build if either stops being true.
  */
 
+import { dequantise } from "./viewer";
+
 export const DEMO = import.meta.env.VITE_DEMO === "1";
 
 const cache = new Map<string, unknown>();
+
+/** Which recorded model is on screen.
+ *
+ *  The picker offers every model it discovers, so with one recording you
+ *  could select Qwen3-0.6B and the demo would keep replaying gpt2 underneath
+ *  — the page attributing one model's sentence to another, which is how a
+ *  visitor concludes Qwen3 thinks the Eiffel Tower is the tallest building in
+ *  the world. Either a scenario exists for what you picked, or the load is
+ *  refused by name.
+ */
+let active: string | null = null;
+
+interface Scenario {
+  id: string;
+  slug: string;
+  n_layers: number;
+  n_heads: number;
+  n_tokens: number;
+  generation: string;
+  n_params: number | null;
+  device: string | null;
+  dtype: string | null;
+}
+
+async function index(): Promise<{ default: string; scenarios: Scenario[] }> {
+  return await bundle("scenarios");
+}
+
+async function current(): Promise<Scenario> {
+  const idx = await index();
+  const want = active ?? idx.default;
+  return idx.scenarios.find((s) => s.id === want) ?? idx.scenarios[0];
+}
+
+/** The recorded run for whichever model is selected. */
+async function llm(): Promise<any> {
+  return await bundle(`llm-${(await current()).slug}`);
+}
 
 /** Mirrors the server's steering state so /api/model/prompt can answer with
  *  the baked steered output — without this the demo's A/B silently returns
@@ -35,7 +75,7 @@ async function bundle<T>(name: string): Promise<T> {
 
 /** The prompt this demo actually recorded. */
 export async function demoPrompt(): Promise<string> {
-  return (await bundle<any>("llm")).prompt;
+  return (await llm()).prompt;
 }
 
 /** The `.mri` of the demo's own run, as a Blob, for "Share this view". */
@@ -69,18 +109,18 @@ export async function demoFetch(
   const refuse = (status: number, error: string) => ({ status, payload: { error } });
 
   if (p === "/api/session") {
-    const llm = await bundle<any>("llm");
+    const s = await current();
     return ok({
       app: "modelmri",
       version: "demo",
       model: {
         loaded: true,
-        hf_id: llm.provenance?.model ?? "gpt2",
-        device: llm.provenance?.device ?? "cpu (recorded)",
-        dtype: llm.provenance?.dtype ?? "float32",
-        n_params: 124439808,
+        hf_id: s.id,
+        device: s.device ?? "recorded",
+        dtype: s.dtype ?? "bfloat16",
+        n_params: s.n_params,
       },
-      _demo: llm,
+      _demo: { ...(await llm()), scenarios: (await index()).scenarios.map((x) => x.id) },
     });
   }
   if (p === "/api/session/state") return ok((await bundle<any>("env")).session_state ?? {});
@@ -90,7 +130,56 @@ export async function demoFetch(
   // MODELMRI_MODELS_DIR", which is a confusing first impression of a feature
   // whose whole point is that it finds things for you.
   if (p === "/api/models/discovered") return ok(await bundle<any>("discovered"));
-  if (p === "/api/ollama") return ok({ up: false, models: [] });
+  // Live third-party lookups. A static page genuinely cannot do these — but
+  // "not available in the demo" in red reads as a broken tool, so each says
+  // what it is and what would make it work. The HuggingFace and Ollama tabs
+  // behave identically here, because they behave identically in the product.
+  if (p === "/api/hub/models") {
+    return refuse(
+      501,
+      `Searching HuggingFace is a live call to huggingface.co, and this page ` +
+        `is a static recording with no backend. Installed, this box searches ` +
+        `the real Hub and filters to what fits your GPU. The "On this machine" ` +
+        `tab beside it works here, because that data was recorded.`,
+    );
+  }
+  if (p === "/api/ollama/resolve" || p === "/api/ollama/size") {
+    return refuse(
+      501,
+      `This is a live lookup against the Ollama registry, which a static page ` +
+        `cannot make. Installed, ModelMRI reads your running Ollama and lists ` +
+        `what you have pulled.`,
+    );
+  }
+  if (p === "/api/ollama/pull") {
+    return refuse(
+      501,
+      `Pulling a model downloads gigabytes to an Ollama daemon, and there is ` +
+        `no daemon behind this page. Installed, this streams the pull with a ` +
+        `size guard in front of it.`,
+    );
+  }
+  if (p === "/api/hub/signin" || p === "/api/hub/signout") {
+    return refuse(
+      501,
+      `Signing in writes a token to your own config directory, which a web ` +
+        `page has no business doing and this one cannot. Installed, ` +
+        `ModelMRI reads the token you already gave \`huggingface-cli\`, or ` +
+        `you can paste one — it never leaves your machine.`,
+    );
+  }
+
+  // Ollama is genuinely not running behind a static page. Say which, rather
+  // than showing an "off" pill with no explanation.
+  if (p === "/api/ollama") {
+    return ok({
+      up: false,
+      models: [],
+      reason:
+        "No Ollama daemon behind this page — it is a static recording. " +
+        "Installed, this tab lists the models you have pulled.",
+    });
+  }
   if (p === "/api/accelerator") return ok((await bundle<any>("env")).accelerator ?? {});
   if (p === "/api/model/progress") return ok((await bundle<any>("env")).progress ?? {});
   if (p === "/api/paths") return ok((await bundle<any>("env")).paths ?? {});
@@ -99,14 +188,29 @@ export async function demoFetch(
   if (p === "/api/lens") return ok((await bundle<any>("env")).lens ?? {});
   if (p === "/api/vla/datasets") return ok((await bundle<any>("env")).vla_datasets ?? []);
 
+  // Switch scenarios if one was recorded for this model, and refuse by name
+  // if not. Answering "loaded" for a model the demo cannot replay is what put
+  // Qwen3-0.6B in the picker above gpt2's output.
   if (p === "/api/model/load") {
-    const llm = await bundle<any>("llm");
+    const idx = await index();
+    const want = (body as any)?.hf_id;
+    const match = idx.scenarios.find((s) => s.id === want);
+    if (!match) {
+      return refuse(
+        422,
+        `this demo has recordings for ${idx.scenarios.map((s) => s.id).join(" and ")}. ` +
+          `${want} is not one of them, and replaying another model's run under ` +
+          `its name would be a lie about which model said what. ` +
+          `Install ModelMRI to load it for real.`,
+      );
+    }
+    active = match.id;
     return ok({
       loaded: true,
-      hf_id: llm.provenance?.model ?? "gpt2",
-      device: llm.provenance?.device ?? "cpu (recorded)",
-      dtype: llm.provenance?.dtype ?? "float32",
-      n_params: 124439808,
+      hf_id: match.id,
+      device: match.device ?? "recorded",
+      dtype: match.dtype ?? "bfloat16",
+      n_params: match.n_params,
     });
   }
 
@@ -115,33 +219,38 @@ export async function demoFetch(
   // produced a confident sentence about the Eiffel Tower — and then attention
   // over the Eiffel Tower's tokens, under the words you had typed.
   if (p === "/api/model/prompt") {
-    const llm = await bundle<any>("llm");
+    const run = await llm();
     const asked = ((body as any)?.prompt ?? "").trim();
-    if (asked && asked !== llm.prompt.trim()) {
+    if (asked && asked !== run.prompt.trim()) {
       return refuse(
         422,
-        `This demo replays one recorded run, so it can only answer the prompt ` +
-          `it recorded: "${llm.prompt}". Install ModelMRI to point it at your ` +
+        `This demo replays recorded runs, so it can only answer the prompt it ` +
+          `recorded: "${run.prompt}". Install ModelMRI to point it at your ` +
           `own model and your own prompts — everything else on this page is ` +
           `the real tool.`,
       );
     }
-    const f = await bundle<any>("features");
-    return ok({ generation: steerActive ? f.steered : f.baseline });
+    // Steering was only ever recorded against gpt2's SAE, so it is the only
+    // scenario whose A/B has a steered side to show.
+    if (steerActive) {
+      const f = await bundle<any>("features");
+      return ok({ generation: f.steered });
+    }
+    return ok({ generation: run.generation });
   }
 
-  if (p === "/api/attention/meta") return ok((await bundle<any>("llm")).meta);
+  if (p === "/api/attention/meta") return ok((await llm()).meta);
 
   // Keyed on the PAIR. Reading only `layer` and falling back to the first
   // baked slice is what made the head selector a decoration: the dial read
   // `H 00/11` while the select read head 7, and the arcs were head 0's.
   if (p === "/api/attention") {
-    const llm = await bundle<any>("llm");
+    const run = await llm();
     const layer = Number(q.get("layer") ?? 0);
     const head = Number(q.get("head") ?? 0);
-    const slice = llm.attention[`${layer}.${head}`];
+    const slice = run.attention[`${layer}.${head}`];
     if (!slice) {
-      const have = Object.keys(llm.attention).length;
+      const have = Object.keys(run.attention).length;
       return refuse(
         422,
         `this demo does not contain layer ${layer} head ${head}. It has ` +
@@ -149,18 +258,27 @@ export async function demoFetch(
           `combination.`,
       );
     }
-    return ok(slice);
+    const tokens: string[] = run.tokens;
+    return ok({
+      layer,
+      head,
+      tokens,
+      // Decoded with the viewer's function, against the same uint8 encoding
+      // the .mri format uses — one decoder, so the two surfaces cannot
+      // disagree about what a byte meant.
+      matrix: dequantise(slice.q, slice.scale, tokens.length),
+    });
   }
 
   // Rank heads. The demo had no handler at all, so the button this project
   // leads with answered 409 under advice ("generate again") that could not
   // possibly work.
   if (p === "/api/attention/ablate") {
-    const llm = await bundle<any>("llm");
+    const run = await llm();
     const baseline = q.get("baseline") ?? "zero";
     const scope = q.get("scope") ?? "layer";
     const key = scope === "all" ? `all.${baseline}` : `${q.get("layer") ?? 0}.${baseline}`;
-    const ranking = (llm.ablate ?? {})[key];
+    const ranking = (run.ablate ?? {})[key];
     if (!ranking) {
       return refuse(422, `this demo has no ${baseline}-ablation ranking for ${key}.`);
     }
@@ -168,13 +286,13 @@ export async function demoFetch(
   }
 
   if (p === "/api/attention/diff") {
-    const llm = await bundle<any>("llm");
+    const run = await llm();
     const b = q.get("b") ?? "";
     const cut = /^ablate:(\d+)\.(\d+)$/.exec(b);
     const key = cut
       ? `${q.get("layer")}.${q.get("head")}.${cut[1]}.${cut[2]}`
       : `${q.get("layer")}.${q.get("head")}.${q.get("a")}.${b}`;
-    const d = (llm.diff ?? {})[key];
+    const d = (run.diff ?? {})[key];
     if (!d) {
       return refuse(
         422,

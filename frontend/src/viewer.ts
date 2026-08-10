@@ -135,8 +135,13 @@ export async function parse(data: ArrayBuffer): Promise<Doc> {
   return doc;
 }
 
-/** base64 uint8 -> [S,S] floats. The mirror of session._dequantise. */
-function dequantise(blob: string, scale: number, n: number): number[][] {
+/** base64 uint8 -> [S,S] floats. The mirror of session._dequantise.
+ *
+ *  Exported because the demo bundle stores attention the same way, for the
+ *  same reason: Qwen3-0.6B's 28 x 16 slices are 3.9 MB as raw JSON. One
+ *  decoder for both surfaces means they cannot disagree about what a byte
+ *  meant. */
+export function dequantise(blob: string, scale: number, n: number): number[][] {
   const binary = atob(blob);
   if (binary.length !== n * n) {
     throw new ViewerError(

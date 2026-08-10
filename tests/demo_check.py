@@ -23,7 +23,9 @@ endpoint, rather than the day a visitor clicks it.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -32,21 +34,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "frontend" / "src"
 BUNDLE = ROOT / "frontend" / "public" / "demo"
 
-# Endpoints a static demo is *right* not to answer, each for a stated reason.
-# Anything not here must be handled, so the list is the argument.
+# Endpoints a static demo genuinely cannot serve. They must still be HANDLED
+# — with a 501 that says what the call does and what would make it work —
+# because "not available in the demo" in red reads as a broken tool, which is
+# what a visitor saw on the HuggingFace tab.
 EXEMPT = {
-    # Mutating a machine the demo does not have.
-    "/api/hub/signin": "signing in writes a token to the user's config dir",
-    "/api/hub/signout": "same",
-    "/api/ollama/pull": "downloads gigabytes to a daemon that is not running",
-    "/api/model/cancel": "there is no download to cancel",
     # Reading a filesystem the browser cannot see.
     "/api/session/open": "opens a .mri from disk; the viewer build does this",
     "/api/session/close": "closes a replay the demo never enters",
-    # Live network lookups against third parties.
-    "/api/hub/models": "live HuggingFace search",
-    "/api/ollama/resolve": "live Ollama registry lookup",
-    "/api/ollama/size": "same",
+    "/api/model/cancel": "there is no download to cancel",
     "/api/vla/dataset": "streams a dataset that is not in the bundle",
 }
 
@@ -124,9 +120,50 @@ def static_coverage() -> None:
 
 def bundle_integrity() -> None:
     print("\nbundle — is the baked data what those handlers will look up?")
-    llm = json.loads((BUNDLE / "llm.json").read_text("utf-8"))
+    index = json.loads((BUNDLE / "scenarios.json").read_text("utf-8"))
+    scenarios = index["scenarios"]
+    check(
+        "more than one model is recorded",
+        len(scenarios) > 1,
+        f"only {[s['id'] for s in scenarios]} — one model answers 'does this "
+        f"work', not 'does this work on a real model'",
+        note=", ".join(s["id"] for s in scenarios),
+    )
+    check(
+        "the default scenario is one that exists",
+        any(s["id"] == index["default"] for s in scenarios),
+        f"default {index['default']!r} is not among {[s['id'] for s in scenarios]}",
+    )
+    for s in scenarios:
+        scenario_integrity(s)
+
+
+def scenario_integrity(scenario: dict) -> None:
+    print(f"\n  [{scenario['id']}]")
+    llm = json.loads((BUNDLE / f"llm-{scenario['slug']}.json").read_text("utf-8"))
     meta = llm["meta"]
-    n_layers, n_heads = meta["n_layers"], meta["n_heads"]
+
+    # The index is what the picker refuses against, so a shape stated there
+    # and contradicted in the bundle would refuse — or allow — the wrong thing.
+    check(
+        "the index agrees with the recording about its shape",
+        (meta["n_layers"], meta["n_heads"], meta["n_tokens"])
+        == (scenario["n_layers"], scenario["n_heads"], scenario["n_tokens"]),
+        f"index says {scenario['n_layers']}x{scenario['n_heads']}"
+        f"x{scenario['n_tokens']}, bundle says "
+        f"{meta['n_layers']}x{meta['n_heads']}x{meta['n_tokens']}",
+    )
+    _bundle_checks(llm, meta)
+
+
+def _decode(blob: str, scale: float, n: int) -> list[list[float]]:
+    """The mirror of viewer.ts's `dequantise`, which the demo now uses too."""
+    raw = base64.b64decode(blob)
+    return [[round(raw[r * n + c] * scale, 5) for c in range(n)] for r in range(n)]
+
+
+def _bundle_checks(llm: dict, meta: dict) -> None:
+    n_layers, n_heads, n = meta["n_layers"], meta["n_heads"], meta["n_tokens"]
 
     # The bug this file was written for: meta advertised 12x12 while three
     # slices existed, so the dial and the arcs disagreed 141 times out of 144.
@@ -141,41 +178,63 @@ def bundle_integrity() -> None:
         f"{len(expected - have)} of {len(expected)} missing" if expected - have else "",
     )
 
-    # Each slice must be square, the right size, and say which head it is —
-    # a slice mislabelled is a slice that renders under the wrong control.
+    check(
+        "the token list is stored once and matches the advertised length",
+        len(llm.get("tokens", [])) == n,
+        f"{len(llm.get('tokens', []))} tokens against a meta saying {n}",
+    )
+
+    # Each slice must decode to a square of the right size and say which head
+    # it is — a slice mislabelled renders under the wrong control, which is
+    # the whole class of bug this file exists for.
     bad = []
+    worst = 0.0
+    # What uint8 quantisation can cost a row sum, derived rather than guessed.
+    # Each cell is stored as round(v / scale), so it can be off by scale/2, and
+    # a row of n cells can accumulate n * scale/2. That bound grows with
+    # sequence length — which is why gpt2 (23 tokens) lands at 0.0196 and
+    # Qwen3-0.6B (31) at 0.0236 against the same encoder. Borrowing the live
+    # model's `< 0.02` here would have meant loosening a number until it
+    # passed; deriving it checks that the encoder behaves as the arithmetic
+    # says it must.
+    bound = 0.0
     for key, slice_ in attn.items():
         try:
             layer, head = (int(x) for x in key.split("."))
         except ValueError:
             # A pre-parity bundle keyed slices by layer alone, which is the
             # shape that made the head selector a no-op. Report it, do not
-            # crash on it — a traceback here reads as a broken check rather
-            # than a failing one.
+            # crash on it — a traceback reads as a broken check, not a
+            # failing one.
             bad.append(f"{key!r} is not a 'layer.head' key")
             continue
-        rows = slice_["matrix"]
         if slice_.get("layer") != layer or slice_.get("head") != head:
             bad.append(
                 f"{key} self-reports L{slice_.get('layer')}H{slice_.get('head')}"
             )
-        elif len(rows) != meta["n_tokens"] or any(
-            len(r) != meta["n_tokens"] for r in rows
-        ):
-            bad.append(f"{key} is not {meta['n_tokens']}x{meta['n_tokens']}")
+            continue
+        raw = base64.b64decode(slice_["q"])
+        if len(raw) != n * n:
+            bad.append(f"{key} decodes to {len(raw)} bytes, not {n}x{n}")
+            continue
+        # Rows are softmaxes. Quantisation costs a little; a wrong reduction
+        # costs a lot, and this is what tells them apart.
+        bound = max(bound, n * slice_["scale"] / 2)
+        for row in _decode(slice_["q"], slice_["scale"], n):
+            worst = max(worst, abs(sum(row) - 1.0))
     check(
-        "every slice is square, correctly sized and self-labelled",
+        "every slice decodes to a square of the right size, correctly labelled",
         not bad,
         "; ".join(bad[:3]),
     )
-
-    # Rows are softmaxes. Quantisation costs a little; a wrong reduction costs
-    # a lot, and this is what tells them apart.
-    worst = 0.0
-    for slice_ in attn.values():
-        for row in slice_["matrix"]:
-            worst = max(worst, abs(sum(row) - 1.0))
-    check(f"attention rows still sum to 1 (worst {worst:.4f})", worst < 0.02)
+    check(
+        "decoded rows sum to 1 within what the encoding can cost",
+        worst <= bound,
+        f"worst row sum is off by {worst:.4f}, beyond the {bound:.4f} that "
+        f"uint8 over {n} tokens can explain — that is a wrong reduction, not "
+        f"quantisation",
+        note=f"worst {worst:.4f}, quantisation allows {bound:.4f}",
+    )
 
     # The generation is the first thing a visitor reads. A loop variable in the
     # bake script once shadowed it and wrote the literal string "mean" there,
@@ -215,9 +274,68 @@ def bundle_integrity() -> None:
     )
 
 
+def no_machine_leaks() -> None:
+    """The demo is published. Nothing in it may identify the machine that
+    baked it.
+
+    This is not hypothetical. The bundle shipped
+    `{"signed_in": true, "user": "<username>"}` from `/api/hub/auth`, so every
+    visitor to the public site saw the baker's HuggingFace account and a
+    "sign out" link for it; and `/api/paths` shipped real directory paths,
+    because the scrub replaced the home directory only and a model cache on
+    another volume went out verbatim.
+
+    Scrubbing is a blocklist, and a blocklist is a promise to have thought of
+    everything. This is the check that does not require having thought of
+    everything: it reads what is actually about to be published.
+    """
+    print("\nprivacy — does the bundle describe the machine that baked it?")
+    home = str(Path.home())
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+
+    blob = "\n".join(
+        f.read_text("utf-8", errors="replace") for f in sorted(BUNDLE.glob("*.json"))
+    )
+
+    probes: list[tuple[str, str]] = [
+        ("the home directory", home.replace("\\", "/")),
+        ("the OS account name", user),
+    ]
+    hits = [
+        label
+        for label, needle in probes
+        if needle and len(needle) > 2 and needle.lower() in blob.lower()
+    ]
+
+    # Absolute paths of any shape, on any OS. `~/...` is fine — it names a
+    # location without naming a person.
+    for pattern, label in (
+        (r"[A-Za-z]:[\\/](?!$)", "a Windows drive path"),
+        (r'"/(?:home|Users)/[^"/]+', "a POSIX home path"),
+    ):
+        if re.search(pattern, blob):
+            hits.append(label)
+
+    check(
+        "no machine identifiers in the published bundle",
+        not hits,
+        f"found {', '.join(sorted(set(hits)))} — that reaches every visitor",
+    )
+
+    # And the specific one that shipped: a visitor is not signed in as anyone.
+    env = json.loads((BUNDLE / "env.json").read_text("utf-8"))
+    auth = env.get("hub_auth") or {}
+    check(
+        "the demo shows a signed-out session, not the baker's",
+        not auth.get("signed_in") and not auth.get("user"),
+        f"hub_auth says signed_in={auth.get('signed_in')} user={auth.get('user')!r}",
+    )
+
+
 def main() -> int:
     print("demo parity check")
     static_coverage()
+    no_machine_leaks()
     bundle_integrity()
     print()
     if FAILURES:

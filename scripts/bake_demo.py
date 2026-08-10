@@ -26,9 +26,22 @@ BASE = "http://127.0.0.1:5900"
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "frontend" / "public" / "demo"
 PROMPT = "The Eiffel Tower is located in the city of"
-DEMO_MODEL = "gpt2"
 VLA_EPISODE, VLA_FRAME = 3, 60
 VLA_LAYERS = [0, 3, 6, 9, 11]
+
+# Two recorded models, because one answers "does this work" and two answer
+# "does this work on a real model". gpt2 is the small, fast, famously wrong
+# one; Qwen3-0.6B is a current instruct model that thinks out loud, and its
+# 28 x 16 shape is where the whole-model sweep stops being instant.
+#
+# The picker offers every model it discovers, so a demo with one recording
+# lets you select Qwen3 and then keeps replaying gpt2 underneath — the page
+# attributing one model's sentence to another. Either the scenario exists or
+# the load is refused; there is no third honest option.
+SCENARIOS = [
+    {"id": "gpt2", "slug": "gpt2", "max_new_tokens": 12},
+    {"id": "Qwen/Qwen3-0.6B", "slug": "qwen3-0.6b", "max_new_tokens": 12},
+]
 
 # The LLM bundle bakes EVERY layer/head, not a sample. Three slices used to be
 # baked against a meta advertising 12 x 12, so 141 of 144 selections drew a
@@ -78,34 +91,51 @@ def write(name: str, payload: object) -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / name
     path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-    print(f"  {name:<22} {path.stat().st_size / 1024:7.1f} KB")
+    print(f"  {name:<26} {path.stat().st_size / 1024:7.1f} KB")
 
 
-def main() -> int:
-    try:
-        get("/api/session", timeout=5)
-    except urllib.error.URLError:
-        print("No server on :5900 - run `modelmri serve` first.")
-        return 1
+def bake_llm(scenario: dict) -> dict:
+    """One model's whole instrument: every slice, ranking and comparison.
 
-    print("baking demo bundle")
+    Attention is quantised exactly as the `.mri` format does — uint8 against
+    each matrix's own peak, base64 — and the browser decodes it with the same
+    function the viewer uses. As raw JSON, Qwen3-0.6B's 28 x 16 x 31 x 31 is
+    3.9 MB; the format that exists for precisely this problem takes it to a
+    fraction of that, at a worst measured error of 0.002.
+    """
+    from modelmri.session import _quantise
 
-    print("\nLLM: load + generate")
-    post("/api/model/load", {"hf_id": "gpt2"})
-    baseline = post(
+    hf_id, slug = scenario["id"], scenario["slug"]
+    print(f"\nLLM [{hf_id}]: load + generate")
+    post("/api/model/load", {"hf_id": hf_id, "confirm": True}, timeout=1800)
+    generation = post(
         "/api/model/prompt",
-        {"prompt": PROMPT, "max_new_tokens": 12, "temperature": 0},
+        {
+            "prompt": PROMPT,
+            "max_new_tokens": scenario["max_new_tokens"],
+            "temperature": 0,
+        },
     )["generation"]
 
     meta = get("/api/attention/meta")
-    n_layers, n_heads = meta["n_layers"], meta["n_heads"]
+    n_layers, n_heads, n_tokens = meta["n_layers"], meta["n_heads"], meta["n_tokens"]
 
     print(f"  attention: {n_layers} x {n_heads} = {n_layers * n_heads} slices")
-    attn = {
-        f"{layer}.{head}": get(f"/api/attention?layer={layer}&head={head}")
-        for layer in range(n_layers)
-        for head in range(n_heads)
-    }
+    attn: dict[str, dict] = {}
+    tokens: list[str] = []
+    for layer in range(n_layers):
+        for head in range(n_heads):
+            block = get(f"/api/attention?layer={layer}&head={head}")
+            tokens = tokens or block["tokens"]
+            blob, scale = _quantise(block["matrix"])
+            # Tokens are identical across every slice of one run, so storing
+            # them 448 times would cost more than the matrices do.
+            attn[f"{layer}.{head}"] = {
+                "layer": layer,
+                "head": head,
+                "q": blob,
+                "scale": scale,
+            }
 
     # Rank heads is the capability the README leads with, and the demo had no
     # handler for it at all — the button answered 409 under advice that could
@@ -114,8 +144,7 @@ def main() -> int:
     print(f"  rankings: {n_layers} layers x 2 baselines + 2 sweeps")
     # NOT `baseline` — that name already holds the generated text, and reusing
     # it here silently wrote the string "mean" into the demo's generation and
-    # into features.json. Caught by opening the built demo and reading what it
-    # said, which is the only place it was visible.
+    # into features.json. Caught by opening the built demo and reading it.
     ablate: dict[str, dict] = {}
     for cut in ("zero", "mean"):
         for layer in range(n_layers):
@@ -136,19 +165,19 @@ def main() -> int:
         at = min(layer + 1, n_layers - 1)
         head = rows[0]["head"]  # rank() selects the top head before compare()
         for row in rows:
-            key = f"{at}.{head}.{layer}.{row['head']}"
-            diff[key] = get(
+            diff[f"{at}.{head}.{layer}.{row['head']}"] = get(
                 f"/api/attention/diff?layer={at}&head={head}"
                 f"&a=live&b=ablate:{layer}.{row['head']}"
             )
 
     session = get("/api/session")
     write(
-        "llm.json",
+        f"llm-{slug}.json",
         {
             "prompt": PROMPT,
-            "generation": baseline,
+            "generation": generation,
             "meta": meta,
+            "tokens": tokens,
             "layers": list(range(n_layers)),
             "attention": attn,
             "ablate": ablate,
@@ -165,6 +194,43 @@ def main() -> int:
             },
         },
     )
+    return {
+        "id": hf_id,
+        "slug": slug,
+        "n_layers": n_layers,
+        "n_heads": n_heads,
+        "n_tokens": n_tokens,
+        "generation": generation,
+        "n_params": session["model"]["n_params"],
+        "device": session["model"]["device"],
+        "dtype": session["model"]["dtype"],
+    }
+
+
+def main() -> int:
+    try:
+        get("/api/session", timeout=5)
+    except urllib.error.URLError:
+        print("No server on :5900 - run `modelmri serve` first.")
+        return 1
+
+    print("baking demo bundle")
+
+    baked = [bake_llm(s) for s in SCENARIOS]
+    # The index the demo reads first: which recordings exist, so a load of
+    # anything else can be refused by name rather than silently ignored.
+    write("scenarios.json", {"default": SCENARIOS[0]["id"], "scenarios": baked})
+
+    # The features/steering bundle belongs to gpt2 — it is the only model here
+    # with a public SAE — so leave the server on it for the rest of the bake.
+    print(f"\nBack to {SCENARIOS[0]['id']} for the SAE bundle")
+    post(
+        "/api/model/load", {"hf_id": SCENARIOS[0]["id"], "confirm": True}, timeout=1800
+    )
+    baseline = post(
+        "/api/model/prompt",
+        {"prompt": PROMPT, "max_new_tokens": 12, "temperature": 0},
+    )["generation"]
 
     print("\nSAE: features + steering A/B")
     sae = post("/api/sae/load", {})
@@ -203,7 +269,6 @@ def main() -> int:
         ("sae_available", "/api/sae/available"),
         ("lens", "/api/lens?top_k=5"),
         ("session_state", "/api/session/state"),
-        ("hub_auth", "/api/hub/auth"),
         ("vla_datasets", "/api/vla/datasets"),
     ):
         try:
@@ -212,25 +277,42 @@ def main() -> int:
         except urllib.error.HTTPError as err:
             print(f"  {name:<16} skipped ({err.code})")
 
-    # `/api/paths` publishes this machine's directory layout. The shapes are
-    # real; the paths are generalised, exactly as the discovery bundle does.
-    try:
-        p = get("/api/paths")
-        home = str(Path.home()).replace("\\", "/")
-
-        def scrub(value: object) -> object:
-            if isinstance(value, str):
-                return value.replace("\\", "/").replace(home, "~")
-            if isinstance(value, dict):
-                return {k: scrub(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [scrub(v) for v in value]
-            return value
-
-        env["paths"] = scrub(p)
-        print("  paths            ok (generalised)")
-    except urllib.error.HTTPError as err:
-        print(f"  paths            skipped ({err.code})")
+    # NOTHING ABOUT THE BAKER'S MACHINE IS PUBLISHED.
+    #
+    # This block used to bake the two endpoints that describe *who and where*
+    # the baker is, and both leaked onto the public site:
+    #
+    #   /api/hub/auth  shipped `{"signed_in": true, "user": "<username>"}`, so
+    #                  every visitor saw the baker's HuggingFace account and a
+    #                  "sign out" link for it.
+    #   /api/paths     shipped real directory paths. The scrub replaced the
+    #                  home directory only, so a model cache on another volume
+    #                  went out verbatim.
+    #
+    # Scrubbing is the wrong shape for this: it is a blocklist, and a
+    # blocklist is a promise to have thought of everything. These are
+    # SYNTHESISED instead — the panels get the right shape and a visitor gets
+    # the truth about their own session, which is that nobody is signed in.
+    # tests/demo_check.py scans the whole bundle for machine identifiers so a
+    # future endpoint cannot reintroduce this quietly.
+    env["hub_auth"] = {"signed_in": False, "user": None, "source": None}
+    env["paths"] = {
+        "override": None,
+        "data": "<your data dir>",
+        "config": "<your config dir>",
+        "cache": "<your cache dir>",
+        "hf_home": "<your HuggingFace home>",
+        "hf_hub_cache": "<your HuggingFace hub cache>",
+        "trace_db": "<your data dir>/traces.sqlite",
+        "hub_token": "<your config dir>/hub.json",
+        "demo_note": (
+            "These are placeholders. Run `modelmri paths` and the panel shows "
+            "the real locations for your OS and account — they are resolved "
+            "per-platform, never hardcoded."
+        ),
+    }
+    print("  hub_auth         synthesised (signed out)")
+    print("  paths            synthesised (no machine paths published)")
 
     # A real .mri of the demo's own run, so "Share this view" produces a file
     # that actually opens in the viewer next door — the one hop the demo was
