@@ -36,14 +36,37 @@ from pathlib import Path
 APP = "ModelMRI"  # display-cased; lowercased on Linux by convention
 
 
+def _expand(raw: str) -> Path | None:
+    """`Path(raw).expanduser()`, or None when it cannot be resolved.
+
+    `expanduser` raises **RuntimeError** — not OSError — when a path contains
+    `~` and there is no home directory to expand it against. POSIX rarely gets
+    there because it falls back to the passwd database; Windows has nothing to
+    fall back on, so `HF_HOME=~/models` with no USERPROFILE raises instead of
+    returning something usable.
+
+    This lived as four separate try/excepts, in `_env_path`, in the models-dir
+    override, in `_hub_constant` and in `capacity.ollama_models_dir`. All four
+    caught `(OSError, ValueError)`; none caught RuntimeError — while `_home()`
+    directly below documents that exact failure and catches it. The
+    windows-latest CI job failed on the `_hub_constant` one; the other three
+    were the same bug waiting for a different environment variable to be set.
+    One definition, so a fifth caller cannot get it wrong again.
+
+    Every caller is resolving an optional override, so an unusable value means
+    "not configured" rather than "stop".
+    """
+    try:
+        return Path(raw).expanduser()
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
 def _env_path(name: str) -> Path | None:
     raw = os.environ.get(name)
     if not raw or not raw.strip():
         return None
-    try:
-        return Path(raw).expanduser()
-    except (OSError, ValueError):
-        return None
+    return _expand(raw)
 
 
 def _home() -> Path | None:
@@ -82,9 +105,8 @@ def models_dirs() -> list[Path]:
         part = part.strip()
         if not part:
             continue
-        try:
-            resolved = Path(os.path.expandvars(part)).expanduser()
-        except (OSError, ValueError):
+        resolved = _expand(os.path.expandvars(part))
+        if resolved is None:
             continue
         if resolved not in out:
             out.append(resolved)
@@ -215,10 +237,7 @@ def _hub_constant(name: str) -> Path | None:
         return None
     if not raw or not str(raw).strip():
         return None
-    try:
-        return Path(str(raw)).expanduser()
-    except (OSError, ValueError):
-        return None
+    return _expand(str(raw))
 
 
 def hf_hub_cache() -> Path:
