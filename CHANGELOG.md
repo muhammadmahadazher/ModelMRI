@@ -6,7 +6,51 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-08-10
+
+### Fixed
+
+- **Fifteen bugs an adversarial hunt found before this shipped.** Six
+  independent finders over everything changed since 0.8.1 raised 31
+  candidates; 16 went through refutation and 15 survived, three of them
+  blockers. Most were in code written in the preceding two days and already
+  called verified.
+
+  * **The demo's refusal of an unrecorded prompt rendered as the word
+    `undefined`.** The DEMO branch of `streamGenerate` destructured
+    `{generation}` off a 422 body without checking the status, streamed
+    `String(undefined)` into the output panel as the model's answer, and then
+    refreshed every panel below as though a real generation had happened —
+    exactly what the refusal existed to prevent.
+  * **Features, SAE and steering were not scenario-aware**, so selecting
+    Qwen3-0.6B showed a 768-dim GPT-2 SAE against a 1024-dim model, gpt2's
+    tokens under Qwen3's output, and an A/B pairing one model's baseline
+    against the other's steered text.
+  * **`modelmri uninstall` reported partial deletion as total failure and
+    exited 0.** `rmtree` stops at the first entry it cannot remove, having
+    already deleted everything before it.
+
+  Also: the `--models` flag did nothing when the size probe returned 0; the
+  cache size shown before deleting counted symlinked blobs two or three
+  times; `cache_dir()` nests inside `data_dir()` on Windows and the dedupe
+  could not see it; Ollama's `fits` verdict was a constant; every Ollama
+  model was reported instruction-tuned, including its base tags; the
+  base-model caveat rendered inverted on the demo and under failed
+  generations; "what changes?" refused the mean baseline and whole-model
+  sweeps; and the robot panel served the nearest baked frame and layer under
+  controls naming the ones you asked for.
+
 ### Added
+
+- **`n_prompt` in the `.mri` format.** Additive and bounds-checked on parse —
+  a value outside the file's own token list is discarded rather than
+  believed, and 0 means unknown rather than "all prompt". Files written
+  before it still open. Without it a shared analysis opened on the empty
+  canvas the resting state was added to remove.
+- **`instruct` is tri-state.** `None` means unknown, which is not `False` —
+  `False` is the positive claim "this is a base model", which the UI states
+  in those words. Read from Ollama's own `/api/show` template for Ollama
+  models rather than assumed.
 
 - **The hosted demo runs the whole tool, and CI keeps it that way.** It is the
   only ModelMRI most visitors will ever touch, and it was the least verified
