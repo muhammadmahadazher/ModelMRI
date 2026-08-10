@@ -19,6 +19,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from modelmri import attribute  # noqa: E402
+from modelmri.errors import BadRequest  # noqa: E402
 
 PROMPT = "The capital of France is"
 
@@ -377,14 +378,32 @@ def test_an_unknown_baseline_is_refused_by_name():
     Qwen3 has a pad and no unk or bos, gemma has a real <pad>. Three
     experiments under one word, and on gpt2 the substitute is a document
     boundary, which reverses the ranking."""
-    with pytest.raises(attribute.AttributionError, match="unknown baseline"):
+    with pytest.raises(BadRequest, match="unknown baseline"):
         run(baseline="substitute")
 
 
 def test_a_batch_is_refused_because_the_floor_was_measured_unbatched():
+    """A plain RuntimeError and NOT an AttributionError, deliberately.
+
+    An AttributionError means "this measurement cannot be taken honestly" and
+    reaches the browser as 409 in its own words. Nothing can send a batched
+    `ids` through the API — runtime.py builds the tensor itself out of
+    `last_ids` — so a [2, 6] arriving here is this package contradicting
+    itself, which is the class the design puts on the 500 path with a
+    traceback. The message stays; only who it is addressed to changes.
+    """
     model = listener()
-    with pytest.raises(attribute.AttributionError, match="unbatched"):
+    with pytest.raises(RuntimeError, match="unbatched") as err:
         attribute.rank_tokens(model, torch.zeros(2, 6, dtype=torch.long), position=4)
+    assert not isinstance(err.value, attribute.AttributionError)
+
+
+def test_a_position_outside_the_sequence_is_a_bad_request():
+    """The other half of the split: `?position=` IS a request parameter, so
+    it is a 422 about the call rather than a 409 about the measurement."""
+    model = listener()
+    with pytest.raises(BadRequest, match="outside a sequence"):
+        attribute.rank_tokens(model, torch.zeros(1, 6, dtype=torch.long), position=99)
 
 
 # ------------------------------------------------- control tokens

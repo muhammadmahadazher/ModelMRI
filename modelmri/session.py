@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .errors import BadRequest, Refusal
+
 FORMAT = "modelmri-session"
 FORMAT_VERSION = 1
 
@@ -72,8 +74,24 @@ def _inflate(data: bytes) -> bytes:
     return raw
 
 
-class SessionError(ValueError):
-    """The file is not a session we can open, and we say why."""
+class SessionError(BadRequest):
+    """The file is not a session we can open, and we say why.
+
+    A `BadRequest`, so it answers 422 in its own words on all three routes
+    that serve this module. It used to be a plain `ValueError`, which meant
+    `/api/attention` and `/api/session/open` answered it through a
+    transitional arm in server.py and `/api/session/export` — which never got
+    that arm — answered it as a generic 500. The same sentence, written for
+    the same reader, came back three different ways depending on which button
+    was pressed. `BadRequest` is a `ValueError`, so every `except ValueError`
+    that was catching this still catches it.
+
+    422 and not 409 because every one of these is a fact about the bytes the
+    caller sent: too big, truncated, not gzip, a format version from the
+    future, a slice the file does not contain. The one check that is NOT about
+    the file — an attention map full of nan, on the way OUT — raises `Refusal`
+    instead, and says so where it is raised.
+    """
 
 
 def _boundary(doc: dict, n_tokens: int) -> int:
@@ -112,7 +130,14 @@ def _quantise(matrix: Any) -> tuple[str, float]:
         # entirely blank heat map with nothing on screen saying the numbers
         # were never there. Refuse instead.
         if m.numel() and not bool(torch.isfinite(m).all()):
-            raise SessionError(
+            # A Refusal and not a SessionError, alone among the raises in this
+            # file. Every other one is a complaint about bytes the caller sent
+            # and answers 422; this one is on the way OUT, and the request that
+            # triggered it — GET /api/session/export?layer=0&head=0 — is
+            # perfectly well formed. There is no parameter to correct. What is
+            # wrong is the state of the numbers, and the sentence says what to
+            # do about that instead, so it is a 409.
+            raise Refusal(
                 "this attention map contains non-finite values (nan or inf), "
                 "so there is nothing honest to export. That usually means the "
                 "model produced nan during the forward pass — the custom-model "
@@ -132,7 +157,10 @@ def _quantise(matrix: Any) -> tuple[str, float]:
             # why, and a static analyser flags it as comparing a value to
             # itself.
             if not math.isfinite(v):
-                raise SessionError(
+                # The portable path's half of the check above, and a Refusal
+                # for the same reason: the export cannot be taken, the request
+                # asking for it was fine.
+                raise Refusal(
                     "this attention map contains non-finite values (nan or "
                     "inf), so there is nothing honest to export."
                 )

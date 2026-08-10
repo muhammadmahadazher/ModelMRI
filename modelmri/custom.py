@@ -29,6 +29,7 @@ you configured, and nothing is ever fetched from the network. See SECURITY.md.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import re
 import sys
 import threading
@@ -36,6 +37,10 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from .errors import BadRequest
+
+log = logging.getLogger("modelmri")
 
 # Saturation is distance from an activation's REAL bounds, so the bounds have
 # to be written down. Measuring against the tensor's own max instead rescales
@@ -121,8 +126,20 @@ class CustomStatus:
         return asdict(self)
 
 
-class AdapterError(ValueError):
-    """Something about the file or its contents is wrong, and we say what."""
+class AdapterError(BadRequest):
+    """Something about the file or its contents is wrong, and we say what.
+
+    A `BadRequest`, and therefore still a ValueError, so every handler that
+    caught it before catches it unchanged. The classification is the point:
+    each of these is a fact about the path in the request or the file it names
+    — not a Python module, no `load()`, a state_dict where a model was
+    expected — which is 422 with the sentence, exactly what `/api/custom/load`
+    and `/api/custom/run` answer today.
+
+    What it is NOT is the exception raised *by* the adapter. That one is the
+    user's own code failing, and server.py deliberately names its class rather
+    than hiding it behind the generic 500 — see the note there.
+    """
 
 
 # ---------------------------------------------------------------- path safety
@@ -143,6 +160,13 @@ def allowed_roots() -> list[Path]:
         try:
             out.append(r.resolve(strict=False))
         except OSError:
+            # `strict=False` already tolerates a path that does not exist, so
+            # what is left is a path that cannot be resolved at all: a symlink
+            # loop (ELOOP), a disconnected network drive, a name the
+            # filesystem rejects. Dropping it is the safe direction for a
+            # *security* boundary — a root that is not in this list is one
+            # that `resolve_under_roots` will refuse to load from, so a
+            # failure here narrows what may be imported and never widens it.
             continue
     return out
 
@@ -159,6 +183,11 @@ def resolve_under_roots(path: str | Path) -> Path:
         try:
             p.relative_to(root)
         except ValueError:
+            # Not an error being swallowed — this IS the test. `relative_to`
+            # raises ValueError precisely when `p` is not under `root`, which
+            # is the question being asked, so a raise here means "try the next
+            # root" and falling out of the loop means "under none of them",
+            # which the `else` below turns into a refusal.
             continue
         break
     else:
@@ -204,6 +233,19 @@ def _import_adapter(path: Path):
             try:
                 sys.path.remove(parent)
             except ValueError:
+                # Already the narrowest type there is: `list.remove` raises
+                # ValueError and nothing else, and only when the value is
+                # absent. It can be absent because `exec_module` two lines up
+                # ran the adapter's top level — the user's code, which is free
+                # to rebind or clean `sys.path` on its way past.
+                #
+                # Continuing is right in the strongest sense: the entry we
+                # added is gone, which is the state this `finally` exists to
+                # reach. What it does NOT cover is the mirror case — an
+                # adapter that appended the same directory itself, because
+                # `.remove` deletes only the first equal entry and leaves the
+                # duplicate behind. That is a leak in `sys.path`, not a crash,
+                # and it belongs to the file that put it there.
                 pass
     return module
 
@@ -252,6 +294,11 @@ def load_from_adapter(path: Path):
         try:
             labels = [str(x) for x in labels]
         except TypeError:
+            # LABELS is whatever the adapter author assigned. TypeError is the
+            # one thing this can raise — a non-iterable — and None is the
+            # value the caller already means by "this model has no label
+            # names", so the axis is simply unlabelled rather than the load
+            # failing over a cosmetic attribute.
             labels = None
 
     return model, example, labels
@@ -263,8 +310,26 @@ def load_torchscript(path: Path):
 
     try:
         return torch.jit.load(str(path), map_location="cpu")
-    except Exception:
-        pass
+    except Exception as err:  # noqa: BLE001 - a probe, not a load; see below
+        # Deliberately broad: the question this try asks is "is this file
+        # TorchScript", and every way of answering no is a no. torch raises
+        # RuntimeError for most of them (a zip with no `constants.pkl`, a
+        # plain pickle, a text file) but the set is not enumerable and not
+        # stable across torch versions, and a type this missed would replace
+        # a diagnosis with a traceback.
+        #
+        # Logged, though, because swallowing it is only free when the answer
+        # really is "not TorchScript". A file that IS TorchScript and failed
+        # for some other reason — a truncated archive, a version mismatch —
+        # falls through to the checkpoint reader below and gets described by
+        # *that* error instead, which is the wrong one. This line is where
+        # the right one survives.
+        log.debug(
+            "%s did not load as TorchScript (%s: %s)",
+            path.name,
+            type(err).__name__,
+            err,
+        )
 
     # Not TorchScript. Say precisely what it is instead of "load failed".
     try:
@@ -717,6 +782,13 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
             try:
                 head = path.read_text(encoding="utf-8", errors="replace")[:4096]
             except OSError:
+                # PermissionError, a file removed since the glob, a cloud
+                # placeholder that will not materialise. `errors="replace"`
+                # already rules out a decode failure, so nothing but OSError
+                # gets here. Skipping is right and cannot mislead: this is a
+                # convenience list of candidates, and a file missing from it
+                # can still be loaded by typing its path — which is the only
+                # way anything gets loaded here anyway.
                 continue
             # Module level only. A substring search for "def load(" matches
             # every `def load(self, ...)` method in the world, which offered
@@ -753,6 +825,10 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                 try:
                     size = path.stat().st_size
                 except OSError:
+                    # Same shrug as `find_adapters` above, and the same reason
+                    # it is safe — a candidate list, not a capability. Skipping
+                    # rather than listing it with a made-up size, because the
+                    # size is the only thing this row adds over the filename.
                     continue
                 out.append(
                     {

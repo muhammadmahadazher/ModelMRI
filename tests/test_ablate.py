@@ -14,6 +14,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from modelmri import ablate  # noqa: E402
+from modelmri.errors import BadRequest  # noqa: E402
 
 
 class FakeProj(torch.nn.Linear):
@@ -215,9 +216,20 @@ def test_the_answer_names_its_baseline():
     assert _tiny_run("mean")["baseline"] == "mean"
 
 
-def test_an_unknown_baseline_is_refused():
-    with pytest.raises(ablate.AblationError, match="unknown baseline"):
+def test_an_unknown_baseline_is_a_bad_request_not_an_ablation_error():
+    """`?baseline=vibes` is a malformed call, not a measurement we declined.
+
+    It was an AblationError, and runtime.py converts every AblationError into
+    a Refusal — so this answered 409 "ModelMRI decided not to answer" while
+    `?layer=99` on the same endpoint answered 422. The other three raises in
+    ablate.py describe an architecture the cut cannot be made in, where there
+    is no parameter to correct; this one is a parameter to correct.
+    BadRequest is still a ValueError, and AblationError is a RuntimeError, so
+    the two cannot be confused by any existing handler.
+    """
+    with pytest.raises(BadRequest, match="unknown baseline"):
         _tiny_run("vibes")
+    assert not isinstance(BadRequest(""), ablate.AblationError)
 
 
 def test_the_answer_carries_a_measured_noise_floor():

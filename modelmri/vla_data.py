@@ -25,6 +25,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import BadRequest, Refusal
+
 DEFAULT_DATASET = "lerobot/pusht"
 
 
@@ -85,7 +87,20 @@ def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) ->
     base = next((b for b in tried if b.is_dir()), None)
     if base is None:
         where = "\n  ".join(str(t) for t in tried)
-        raise FileNotFoundError(
+        # A Refusal, not a FileNotFoundError, and the six in this file changed
+        # together. The distinction is not cosmetic: the /api/vla/* handlers
+        # answered `except FileNotFoundError` with 409 and the exception's own
+        # text, and that arm cannot tell this sentence apart from pyarrow
+        # failing to open a parquet file or av failing to open a container —
+        # so a library's errno message was published as though someone here
+        # had written it for the reader. Measured: a reader raising
+        # `FileNotFoundError(2, "No such file or directory", <abs path>)` came
+        # back as 409 with that path in the body, on all four routes.
+        #
+        # The directories in this message are deliberate and are the answer
+        # (see errors.py): they are the places that were searched, and the
+        # reader is the person who has to put the dataset in one of them.
+        raise Refusal(
             f"{repo_id} is not cached. Looked in:\n  {where}\nDownload it with "
             f"lerobot, or point HF_LEROBOT_HOME / HF_HUB_CACHE at the cache "
             f"that has it."
@@ -94,11 +109,11 @@ def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) ->
     # PushT's ref is literally "v3.0" — never assume "main" exists.
     candidates = sorted(refs.glob("*")) if refs.is_dir() else []
     if not candidates:
-        raise FileNotFoundError(f"No snapshot ref under {refs}")
+        raise Refusal(f"No snapshot ref under {refs}")
     digest = candidates[-1].read_text(encoding="utf-8").strip()
     snap = base / "snapshots" / digest
     if not snap.is_dir():
-        raise FileNotFoundError(f"Snapshot {digest} missing under {base / 'snapshots'}")
+        raise Refusal(f"Snapshot {digest} missing under {base / 'snapshots'}")
     return snap
 
 
@@ -141,7 +156,7 @@ class LeRobotV3Reader:
 
             files = sorted((self.snapshot / "meta" / "episodes").rglob("*.parquet"))
             if not files:
-                raise FileNotFoundError(f"No episode metadata under {self.snapshot}")
+                raise Refusal(f"No episode metadata under {self.snapshot}")
             table = pq.read_table(files[0]).to_pydict()
             out: list[EpisodeInfo] = []
             n = len(table["episode_index"])
@@ -174,7 +189,7 @@ class LeRobotV3Reader:
 
             files = sorted((self.snapshot / "data").rglob("*.parquet"))
             if not files:
-                raise FileNotFoundError(f"No frame data under {self.snapshot}")
+                raise Refusal(f"No frame data under {self.snapshot}")
             self._frames = pq.read_table(files[0]).to_pydict()
         return self._frames
 
@@ -199,7 +214,7 @@ class LeRobotV3Reader:
     def _video_file(self) -> Path:
         vids = sorted((self.snapshot / "videos").rglob("*.mp4"))
         if not vids:
-            raise FileNotFoundError(f"No videos under {self.snapshot}")
+            raise Refusal(f"No videos under {self.snapshot}")
         return vids[0]
 
     def _decode(self, timestamp: float):
@@ -221,6 +236,17 @@ class LeRobotV3Reader:
             if frame.pts is not None and frame.pts >= target:
                 break
         if best is None:
+            # Deliberately a plain RuntimeError, and the only raise in this
+            # file that is not a BadRequest: PyAV yielded nothing at all for
+            # this file — a truncated video, a codec this build cannot decode,
+            # a container that failed to seek. That is something breaking
+            # underneath, not a decision anyone made, so it belongs on the 500
+            # path with its traceback in the terminal.
+            #
+            # Note it is NOT the out-of-range case: seeking past the end still
+            # decodes frames and returns the last one (measured on
+            # lerobot/pusht), which is a different problem and not this
+            # branch's to report.
             raise RuntimeError(f"Could not decode a frame at t={timestamp:.3f}s")
         return best.to_ndarray(format="rgb24")
 
@@ -228,9 +254,9 @@ class LeRobotV3Reader:
         eps = self.episodes()
         match = next((e for e in eps if e.index == episode), None)
         if match is None:
-            raise ValueError(f"episode {episode} not in [0,{len(eps)})")
+            raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
         if not 0 <= t < match.length:
-            raise ValueError(f"t must be in [0,{match.length}) for episode {episode}")
+            raise BadRequest(f"t must be in [0,{match.length}) for episode {episode}")
 
         with self._lock:
             rows = self._frame_table()
@@ -259,7 +285,7 @@ class LeRobotV3Reader:
         eps = self.episodes()
         match = next((e for e in eps if e.index == episode), None)
         if match is None:
-            raise ValueError(f"episode {episode} not found")
+            raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
         with self._lock:
             return self._decode(match.from_ts + t / self.fps)
 
@@ -309,24 +335,48 @@ def cached_datasets(hf_home: str | Path | None = None) -> list[dict]:
             refs = (
                 sorted((entry / "refs").glob("*")) if (entry / "refs").is_dir() else []
             )
+            # Per file, not one `sum(...)` over a generator. As one expression
+            # a single unreadable blob aborted the whole sum and left `size`
+            # at 0 — so the picker advertised "0.0 GB" for a dataset that may
+            # be 40 GB, which is a fabricated number in the one field whose
+            # job is telling you how big a thing is before you open it. One
+            # bad blob now costs its own bytes and nothing else.
+            #
+            # OSError is the expected failure and continuing is right: a blob
+            # removed mid-scan (FileNotFoundError), a permission the walk does
+            # not have, or — this is the common one on a synced drive — an
+            # unmaterialised OneDrive/Google Drive placeholder, which raises
+            # WinError 1920 rather than being quietly skipped by is_file().
             size = 0
+            unreadable = 0
             try:
-                size = sum(
-                    f.stat().st_size
-                    for f in (entry / "blobs").rglob("*")
-                    if f.is_file()
-                )
+                for f in (entry / "blobs").rglob("*"):
+                    try:
+                        if f.is_file():
+                            size += f.stat().st_size
+                    except OSError:
+                        unreadable += 1
             except OSError:
-                pass
+                # rglob's own directory walk, which can raise on Python 3.10
+                # and 3.11 (this project supports both) where the pathlib
+                # selector re-raises anything that is not PermissionError.
+                unreadable += 1
+            note = "" if refs else "no snapshot ref — the download is incomplete"
+            if unreadable:
+                # Said out loud rather than folded into the number: the size
+                # below is now a lower bound, and a reader who is deciding
+                # whether they have room for this needs to know that.
+                note = (
+                    f"{note + '; ' if note else ''}{unreadable} file(s) could not "
+                    f"be read, so this size is a lower bound"
+                ).strip()
             out.append(
                 {
                     "repo_id": repo,
                     "ref": refs[-1].name if refs else None,
                     "size_gb": round(size / 1e9, 2),
                     "usable": bool(refs),
-                    "note": ""
-                    if refs
-                    else "no snapshot ref — the download is incomplete",
+                    "note": note,
                 }
             )
     return out

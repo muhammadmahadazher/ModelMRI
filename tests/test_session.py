@@ -14,6 +14,7 @@ import json
 import pytest
 
 from modelmri import session
+from modelmri.errors import Refusal
 
 
 def _matrix(n: int, *, seed: int = 0) -> list[list[float]]:
@@ -316,14 +317,14 @@ def test_non_finite_attention_is_refused_rather_than_exported_as_zeros():
     NaN, and every cell quantised to 0 — a plausible blank heat map with
     nothing saying the numbers were never there."""
     nan = float("nan")
-    with pytest.raises(session.SessionError, match="non-finite"):
+    with pytest.raises(Refusal, match="non-finite"):
         _build(attention={(0, 0): [[1.0, 0.0], [nan, 0.5]]}, tokens=["a", "b"])
 
 
 def test_non_finite_attention_is_refused_on_the_tensor_path_too():
     torch = pytest.importorskip("torch")
     bad = torch.tensor([[1.0, 0.0], [float("inf"), 0.5]])
-    with pytest.raises(session.SessionError, match="non-finite"):
+    with pytest.raises(Refusal, match="non-finite"):
         _build(attention={(0, 0): bad}, tokens=["a", "b"])
 
 

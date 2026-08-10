@@ -373,13 +373,27 @@ def test_hub_signin_never_writes_the_token_into_the_repo(tmp_path, monkeypatch):
 
 
 def test_ollama_pull_when_daemon_is_down(monkeypatch):
+    """A daemon that is not there is a 409 in ollama.py's own words.
+
+    No stub for `pull`. It used to be monkeypatched with a plain
+    `RuntimeError("ollama unreachable...")`, which was the shape of the
+    transitional arm in server.py rather than the shape of anything ollama.py
+    raises — the real module raises `Refusal` from `_unreachable`. When that
+    arm came out the test failed, and it was the stub that was wrong. This
+    points the client at a port nothing is listening on and lets the real code
+    path produce the real exception.
+    """
+    import socket
+
     from modelmri import ollama
 
-    def boom(name, host=ollama.DEFAULT_HOST):
-        raise RuntimeError("ollama unreachable at 127.0.0.1:11434")
-        yield  # pragma: no cover - generator signature
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    dead = probe.getsockname()[1]
+    probe.close()  # nothing is listening there now
 
-    monkeypatch.setattr(ollama, "pull", boom)
+    monkeypatch.setenv("OLLAMA_HOST", f"http://127.0.0.1:{dead}")
+    monkeypatch.setattr(ollama, "manifest_size", lambda *_a, **_k: 0)
     r = client().post("/api/ollama/pull", json={"name": "qwen3:0.6b"})
     assert r.status_code == 409
     assert "unreachable" in r.json()["error"]
@@ -631,14 +645,29 @@ def test_ws_without_a_model_is_an_error_not_a_silent_done():
 def test_ws_reports_a_mid_stream_crash_as_an_error(monkeypatch):
     """A generation that raises used to reach the browser as {"type":"done"} —
     an empty answer that read as "the model had nothing to say". CUDA OOM and
-    unsupported architectures both land here."""
+    unsupported architectures both land here.
+
+    THIS ASSERTION CHANGED, AND THE ARGUMENT IT HELD DID NOT.
+
+    It used to require the literal string "CUDA out of memory" in the message,
+    on the reasoning that a stream which stops mid-sentence has to say why.
+    That reasoning is right. Requiring torch's own words for it was not: the
+    message was `f"{type(err).__name__}: {err}"`, so the busiest error path in
+    the app published exactly what the module header of server.py forbids —
+    measured, a `RuntimeError("CUDA out of memory ... <absolute path>")`
+    arrived in the browser with that path in it.
+
+    So the test now holds the argument directly. The stream says why it
+    stopped, it points at the terminal, and torch's text is not in it.
+    """
     from modelmri.server import create_app
 
     app = create_app()
+    secret = r"C:\\Users\\somebody\\.cache\\huggingface\\blobs\\9f3c1a"
 
     def boom(*_a, **_k):
         yield "The"
-        raise RuntimeError("CUDA out of memory")
+        raise RuntimeError(f"CUDA out of memory. Tried to allocate 20 GiB at {secret}")
 
     monkeypatch.setattr(app.state.runtime, "generate_stream", boom)
     monkeypatch.setattr(type(app.state.runtime), "loaded", property(lambda self: True))
@@ -648,7 +677,40 @@ def test_ws_reports_a_mid_stream_crash_as_an_error(monkeypatch):
         assert ws.receive_json() == {"type": "token", "text": "The"}
         final = ws.receive_json()
     assert final["type"] == "error", f"crash surfaced as {final!r}"
-    assert "CUDA out of memory" in final["message"]
+    # It says why it stopped, and where the rest of the answer is.
+    assert "failed mid-generation" in final["message"]
+    assert "modelmri serve" in final["message"]
+    # And it does not say it in torch's words.
+    assert "CUDA out of memory" not in final["message"]
+    assert secret not in final["message"]
+    assert "RuntimeError" not in final["message"]
+
+
+def test_ws_still_sends_a_refusal_in_its_own_words(monkeypatch):
+    """The other side of the arm above: a deliberate no is not generic.
+
+    Ollama quitting mid-session, a recording with no model behind it — those
+    messages were written for the reader, and blanketing them into "something
+    failed" would lose the one sentence that says what to do. Same split as
+    the REST handlers, on the same socket.
+    """
+    from modelmri.errors import Refusal
+    from modelmri.server import create_app
+
+    app = create_app()
+    words = "ollama unreachable at http://127.0.0.1:11434: Connection refused."
+
+    def refuse(*_a, **_k):
+        raise Refusal(words)
+        yield  # pragma: no cover - generator signature
+
+    monkeypatch.setattr(app.state.runtime, "generate_stream", refuse)
+    monkeypatch.setattr(type(app.state.runtime), "loaded", property(lambda self: True))
+
+    with TestClient(app).websocket_connect("/ws/generate") as ws:
+        ws.send_text(json.dumps({"prompt": "hi"}))
+        final = ws.receive_json()
+    assert final == {"type": "error", "message": words}
 
 
 def test_discovery_finds_all_three_shapes(tmp_path):
@@ -793,12 +855,23 @@ def test_vla_load_missing_cache_is_409(monkeypatch, tmp_path):
 
 
 def test_vla_snapshot_path_requires_a_ref(tmp_path):
+    """A Refusal now, not a FileNotFoundError, and that is the whole point.
+
+    The /api/vla/* handlers caught FileNotFoundError and answered 409 with the
+    exception's text, which could not tell this sentence from pyarrow or av
+    failing to open a file — measured, a library's `FileNotFoundError(2, ...,
+    <abs path>)` was published as a refusal on four routes. These messages are
+    Refusals so they cannot be confused with a library's, and the arms above
+    them narrowed to ImportError.
+    """
+    from modelmri.errors import Refusal
     from modelmri.vla_data import snapshot_path
 
     base = tmp_path / "lerobot" / "hub" / "datasets--lerobot--pusht"
     (base / "refs").mkdir(parents=True)
-    with pytest.raises(FileNotFoundError, match="No snapshot ref"):
+    with pytest.raises(Refusal, match="No snapshot ref") as err:
         snapshot_path(tmp_path)
+    assert not isinstance(err.value, OSError)
 
 
 def test_vla_snapshot_path_reads_non_main_ref(tmp_path):

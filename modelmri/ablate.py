@@ -60,6 +60,8 @@ from typing import Any
 
 import torch
 
+from .errors import BadRequest
+
 # Baselines we know how to justify. "zero" removes the head's contribution;
 # "mean" replaces it with its own average over positions, which asks the
 # softer question "does this head's *variation* matter".
@@ -186,8 +188,20 @@ def rank_heads(
     next-token distribution we attribute; `decode` turns a token id into a
     string for the readout.
     """
+    # A BadRequest and not an AblationError, alone among the raises in this
+    # file. The other three describe an architecture this code cannot read —
+    # nothing is wrong with the call, and there is no parameter to change. This
+    # one is `?baseline=banana` in a URL, which errors.py names as the type
+    # example of a BadRequest ("a bad layer index, an unknown baseline name").
+    #
+    # It mattered because runtime.py converts AblationError to Refusal without
+    # judging it: measured, `/api/attention/ablate?baseline=banana` answered
+    # 409 while `?layer=99` three lines away in the same handler answered 422 —
+    # two malformed query parameters on one endpoint, two different statuses.
+    # BadRequest is a ValueError, so it passes the AblationError wrap untouched
+    # and lands on the handler's 422.
     if baseline not in BASELINES:
-        raise AblationError(
+        raise BadRequest(
             f"unknown baseline {baseline!r} — use one of {', '.join(BASELINES)}"
         )
 

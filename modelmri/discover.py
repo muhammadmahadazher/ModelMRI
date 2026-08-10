@@ -73,7 +73,16 @@ def _size_of(paths: list[Path]) -> float:
         try:
             total += p.stat().st_size
         except OSError:
-            pass
+            # A file that vanished between the scandir and the stat
+            # (FileNotFoundError), an unmaterialised Google Drive or OneDrive
+            # placeholder (WinError 1920 — the module docstring says this walks
+            # synced drives), a broken symlink, EACCES.
+            #
+            # What makes continuing safe is that `total` accumulates: one
+            # unreadable file makes the answer an undercount, not a zero. A
+            # zero is the outcome that would matter, because this number is
+            # the picker's only warning about what a click is going to cost.
+            continue
     return round(total / 1e9, 2)
 
 
@@ -100,7 +109,9 @@ _KIND_BY_MODEL_TYPE = {
 }
 
 
-def _describe(config: dict | None, repo: str) -> tuple[bool, str]:
+def _describe(
+    config: dict | None, repo: str, unreadable: bool = False
+) -> tuple[bool, str]:
     """Can the playground load this, and if not, what is it?"""
     low = repo.lower()
     for token, note in _ELSEWHERE.items():
@@ -108,6 +119,17 @@ def _describe(config: dict | None, repo: str) -> tuple[bool, str]:
             return False, note
 
     if config is None:
+        # "not a transformers model" is a claim about the repo, and we are
+        # only entitled to it when we actually looked. A config we could not
+        # READ — no permission, a cloud placeholder that never materialised, a
+        # cache entry being rewritten underneath the scan — used to reach this
+        # same sentence, so the picker told people their model was not a model
+        # because their sync client had not finished.
+        if unreadable:
+            return False, (
+                "could not read its config.json, so ModelMRI cannot say what "
+                "this is — check permissions, or let a synced folder finish"
+            )
         return False, "not a transformers model (no config.json)"
 
     archs = config.get("architectures") or []
@@ -124,10 +146,18 @@ def _describe(config: dict | None, repo: str) -> tuple[bool, str]:
     return False, "no architecture in config.json — not a transformers model"
 
 
-def _read_config(directory: Path) -> dict | None:
-    """config.json from a model dir or the newest snapshot of a cache entry."""
+def _read_config(directory: Path) -> tuple[dict | None, bool]:
+    """(config, unreadable) — from a model dir or a cache entry's newest snapshot.
+
+    Two ways to come back with no config, and they are not the same fact:
+    this directory has none, or it has one we could not open. `_describe`
+    turns the first into a statement about what the repo *is*, so the second
+    has to be distinguishable or that statement gets made about a repo nobody
+    ever managed to look inside.
+    """
     import json
 
+    unreadable = False
     candidates = [directory / "config.json"]
     snapshots = directory / "snapshots"
     if snapshots.is_dir():
@@ -137,14 +167,31 @@ def _read_config(directory: Path) -> dict | None:
             ):
                 candidates.append(snap / "config.json")
         except OSError:
-            pass
+            # `iterdir` raises FileNotFoundError, PermissionError or
+            # NotADirectoryError when a HuggingFace cache entry is written or
+            # removed while we are walking it; the `stat` sort key raises
+            # FileNotFoundError for a snapshot deleted mid-sort.
+            #
+            # Carrying on with only `directory/config.json` is right — there
+            # may be one — but a cache entry usually keeps its config inside a
+            # snapshot, so the likely outcome is finding nothing. That is
+            # precisely why it has to be recorded as "could not read" instead
+            # of being reported as "has none".
+            unreadable = True
     for path in candidates:
         try:
             if path.is_file():
-                return json.loads(path.read_text(encoding="utf-8"))
+                return json.loads(path.read_text(encoding="utf-8")), unreadable
         except (OSError, ValueError):
+            # The file is there and we still have nothing: PermissionError or
+            # a placeholder that will not materialise (OSError), or bytes that
+            # are not JSON (ValueError, via JSONDecodeError and
+            # UnicodeDecodeError). Try the next snapshot, an older one may be
+            # intact — but a config did exist here, so "no config.json" is now
+            # the wrong thing to say about this directory.
+            unreadable = True
             continue
-    return None
+    return None, unreadable
 
 
 def _looks_like_model_dir(entries: list[os.DirEntry]) -> bool:
@@ -186,6 +233,12 @@ def has_weights(repo_dir: Path) -> bool:
                 if sub == "blobs" and path.stat().st_size > 1_000_000:
                     return True
         except OSError:
+            # The subdirectory is missing or unwalkable, or a blob vanished
+            # between the walk and the stat. Answering False for it is the
+            # cautious direction and the one this function exists for: an
+            # entry we cannot confirm holds weights is not offered as "already
+            # on this machine", so the worst case is a model you have being
+            # left out rather than a 1.5 TB download you thought you had.
             continue
     return False
 
@@ -200,7 +253,8 @@ def _hf_cache_entry(root: Path, name: str) -> Found:
         _size_of([p for p in (d / "blobs").rglob("*") if p.is_file()]),
         _size_of([p for p in (d / "snapshots").rglob("*") if p.is_file()]),
     )
-    loadable, note = _describe(_read_config(d), repo)
+    config, unreadable = _read_config(d)
+    loadable, note = _describe(config, repo, unreadable)
     return Found(
         id=repo,
         name=repo,
@@ -250,7 +304,8 @@ def scan(root: str | Path, budget_s: float = BUDGET_S) -> tuple[list[Found], boo
             files = [Path(e.path) for e in entries if e.is_file()]
             if str(d) not in seen:
                 seen.add(str(d))
-                loadable, note = _describe(_read_config(d), d.name)
+                config, unreadable = _read_config(d)
+                loadable, note = _describe(config, d.name, unreadable)
                 out.append(
                     Found(
                         id=str(d),
@@ -311,6 +366,12 @@ def roots() -> list[Path]:
         try:
             rp = p.resolve()
         except OSError:
+            # A configured root that cannot be resolved — a disconnected
+            # network drive, an unmounted volume, a symlink loop. Dropping it
+            # is right: it is one of several roots and the rest still get
+            # walked. It is also not hidden — `discover()` reports the roots
+            # this function returned, under "roots", so a directory dropped
+            # here is never counted as one that was searched.
             continue
         # Drop a root that is inside one we are already scanning.
         if rp.is_dir() and not any(rp == o or o in rp.parents for o in out):

@@ -22,6 +22,8 @@ not a measurement of what layer N "believes".
 
 from __future__ import annotations
 
+from .errors import Refusal
+
 
 def _final_norm(model):
     """The norm applied before the unembedding, whatever this family calls it.
@@ -37,7 +39,10 @@ def _final_norm(model):
             found = getattr(holder, name, None)
             if found is not None and callable(found):
                 return found
-    raise RuntimeError(
+    # A Refusal, not a crash: this architecture is one we cannot read, and the
+    # message says which layouts we can. Nothing is broken here — the lens is
+    # simply not a measurement this model supports.
+    raise Refusal(
         "could not find this model's final norm, so a logit lens would be "
         "reading the residual stream through the wrong transform. Supported "
         "layouts: model.norm, transformer.ln_f, final_layer_norm."
@@ -50,7 +55,9 @@ def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
 
     head = model.get_output_embeddings()
     if head is None:
-        raise RuntimeError("this model has no output embedding to project through")
+        # Same family as _final_norm's refusal: a limitation of this
+        # architecture that ModelMRI knows about, not something breaking.
+        raise Refusal("this model has no output embedding to project through")
     norm = _final_norm(model)
 
     device = next(model.parameters()).device
