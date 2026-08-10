@@ -34,7 +34,22 @@ GROUPS: list[tuple[str, tuple[str, ...]]] = [
     ("Agents", ("/api/traces",)),
 ]
 
-HEADER = """# HTTP API
+# This page is generated, so its meta description has to be generated too —
+# adding one by hand to docs/reference/api.md makes `--check` fail, which is
+# exactly what happened. Quoted, because the text contains a colon and an
+# unquoted YAML scalar containing ": " is not a valid mapping; mkdocs does not
+# report that, it just silently falls back to the site-wide description.
+DESCRIPTION = (
+    "The ModelMRI HTTP API reference: load models, stream generation over a "
+    "websocket, fetch attention matrices, load sparse autoencoders, steer "
+    "features, and import agent traces."
+)
+
+HEADER = f"""---
+description: "{DESCRIPTION}"
+---
+
+# HTTP API
 
 Everything the UI does goes through this API, so anything you can see you
 can script. Generated from the app's own OpenAPI schema by

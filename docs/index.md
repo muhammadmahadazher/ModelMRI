@@ -1,7 +1,19 @@
+---
+description: "ModelMRI is an open-source, local-first tool for inspecting AI models: attention maps, causal attention-head ranking, sparse-autoencoder features, steering, and a flight recorder for agent runs."
+---
+
 # ModelMRI
 
 **See inside the model.** Attention, concepts and steering for any local model — plus a
 flight recorder for your agents. One `pip install`, everything on your machine.
+
+ModelMRI is an open-source, local-first interpretability and debugging tool for
+transformer language models, vision-language models, robot policies and LLM
+agents. It renders per-layer, per-head attention from a live forward pass, ranks
+attention heads by causal ablation scored with KL divergence, decomposes the
+residual stream with sparse autoencoders, steers generation along a feature
+direction, maps activations inside any custom `nn.Module`, and records agent runs
+as an inspectable timeline. Nothing is uploaded and no account is required.
 
 ```bash
 pip install modelmri

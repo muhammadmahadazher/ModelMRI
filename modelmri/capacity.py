@@ -66,12 +66,14 @@ def ollama_models_dir() -> Path:
     Not the same volume as the HuggingFace cache in general, so the disk
     check has to be told which one it is talking about.
     """
-    if raw := (os.environ.get("OLLAMA_MODELS") or "").strip():
-        try:
-            return Path(raw).expanduser()
-        except (OSError, ValueError):
-            pass
     from . import paths
+
+    if raw := (os.environ.get("OLLAMA_MODELS") or "").strip():
+        # paths._expand, not a local try/except: this caught (OSError,
+        # ValueError) and missed the RuntimeError that `~` with no home
+        # raises on Windows. See its docstring.
+        if resolved := paths._expand(raw):
+            return resolved
 
     home = paths._home()
     return (home / ".ollama" / "models") if home else Path(".ollama") / "models"

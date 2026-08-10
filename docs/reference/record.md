@@ -1,3 +1,7 @@
+---
+description: "API reference for modelmri-record, a dependency-free Python library for tracing agent runs: trace(), step(), credential redaction and automatic instrumentation."
+---
+
 # modelmri-record
 
 ```bash

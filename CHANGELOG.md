@@ -6,6 +6,47 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A FAQ**, in the docs and in the README, answering what was previously only
+  answerable by reading source: which models are actually verified, why
+  attention needs eager attention, what a head-ranking KL does and does not
+  mean, why an SAE may not exist for your model, where files are stored, and
+  how ModelMRI differs from BertViz, TransformerLens, nnsight, Neuronpedia,
+  SAELens, Langfuse, Phoenix and LangSmith. The comparison says plainly that
+  each of those does its own job better.
+- **A cross-platform CI matrix.** The README claimed Windows, macOS and Linux
+  and `pyproject` claimed Python 3.10–3.13, while everything was tested on
+  ubuntu-latest and one developer's laptop. Four jobs now span all three
+  operating systems and all four Python versions.
+- **Crawler-facing metadata**: `robots.txt`, `sitemap.xml` and an `llms.txt`
+  summary, plus a description, canonical URL, Open Graph tags,
+  schema.org `SoftwareApplication` data and a `<noscript>` fallback on the
+  demo page — which, being a React app, previously showed a crawler nothing
+  but the word "ModelMRI".
+
+### Fixed
+
+- **A test that asserted a race.** `test_sizes_come_from_the_registry` compared
+  the order eight *concurrent* registry lookups happened in against the curated
+  order. Measured over 60 runs, the order it asserted occurred 0 times; the
+  test had been passing on scheduling luck. It now checks the two properties
+  that hold: every name is resolved exactly once, and `pool.map` returns the
+  rows in curated order — which is the order the user reads down.
+- **Ten docs pages sharing one meta description.** Per-page `description` front
+  matter was added, then five of the ten silently fell back to the site default
+  because an unquoted YAML scalar containing `": "` is not a valid mapping.
+  `mkdocs build --strict` reported nothing; the only way to see it was to read
+  the generated HTML.
+- `tomllib` is 3.11+, so the version-drift test could not run on the 3.10 CI
+  cell at all. The dev group now backfills `tomli` there.
+
+### Changed
+
+- PyPI metadata: 4 classifiers to 15, 6 keywords to 14, and the package page
+  now links to the docs, the changelog, the issue tracker and the demo instead
+  of the repository twice.
+
 ## [0.8.4] — 2026-08-10
 
 **No functional change.** Identical code to 0.8.3; this release exists to

@@ -1,3 +1,7 @@
+---
+description: "Browse sparse-autoencoder features over a language model's residual stream, then steer generation by clamping a feature direction and run a deterministic A/B against the baseline."
+---
+
 # Features and steering
 
 Attention shows you where information moved. Features show you *what* the model

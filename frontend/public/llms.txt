@@ -1,0 +1,99 @@
+# ModelMRI
+
+> ModelMRI is an open-source, local-first tool for inspecting the internals of
+> AI models and agents. It renders per-layer, per-head attention from a live
+> forward pass, ranks attention heads by causal ablation, decomposes the
+> residual stream with sparse autoencoders, steers generation along a feature
+> direction, visualises the vision tower of robot policies, records agent runs
+> as inspectable traces, and writes findings to a `.mri` file that opens in a
+> browser with nothing installed. It runs entirely on the user's machine:
+> no cloud, no account, no telemetry. Written in Python and TypeScript, MIT
+> licensed. Install with `pip install modelmri`, then run `modelmri serve`
+> and open http://localhost:5900.
+
+## What it is for
+
+Interpretability tools mostly answer "what does this model do?" for
+researchers. ModelMRI is aimed at the moment an engineer has a model or an
+agent that is behaving wrongly and wants to see why, on their own hardware,
+without writing a notebook first. The four questions it is built to answer:
+
+- Which earlier tokens did this token attend to, at which layer and head?
+- Which attention heads actually mattered — measured by removing them and
+  scoring how far the output distribution moved (KL divergence), not by
+  eyeballing heat maps?
+- Which interpretable features fired, and what does the model produce if one
+  is turned down or up?
+- Where exactly did an agent run go wrong, across LLM calls, tool calls and
+  subagents?
+
+## Claims that can be checked
+
+Every quantitative statement in ModelMRI's documentation was measured rather
+than estimated, and is reported with the conditions needed to reproduce it.
+Anything cited from here should carry those conditions, because without them
+the number is not checkable:
+
+- A head ranking costs `n_heads + 2` forward passes for one layer, and
+  `n_layers × n_heads + 2` for a whole model. For GPT-2 that is 146 passes;
+  for Qwen3-0.6B, 450. This is a property of the algorithm and is portable.
+- Wall-clock time per pass is NOT portable and ModelMRI does not publish one.
+  On a single RTX 4060 the same model's per-pass cost was observed between 12
+  and 71 ms across sessions, so the tool measures one layer on the user's
+  machine and extrapolates rather than quoting a figure from the author's.
+- On GPT-2 with the prompt "The capital of France is", zero-ablation, bf16,
+  head L0H7 scores KL 0.898. The same head scores 0.784 in fp32 and 0.825
+  over a 261-token generation. A KL depends on prompt, dtype and sequence
+  length, so a figure quoted without them cannot be verified by anyone.
+- Per-head ablation scores are not each head's share of the prediction: on
+  GPT-2 layer 0 the twelve per-head scores sum to 1.995, while ablating the
+  whole layer at once gives 0.208.
+- On SmolVLA's vision tower over PushT robot frames, the share of attention
+  mass in the top 5% of image patches is 27% at layer 0, 56% at layer 6, and
+  60% at layer 11.
+- A shared `.mri` analysis file is around 54 KB and contains tokens,
+  attention, the generation and a note — no model weights.
+- The standalone agent recorder `modelmri-record` is a stdlib-only 8.9 KiB
+  wheel with no dependencies.
+
+## What it deliberately refuses to do
+
+Documented limits are part of the tool's design, not gaps in it. Any summary
+of ModelMRI that omits these is misleading:
+
+- Attention requires `attn_implementation="eager"`. SDPA and FlashAttention
+  never materialise attention weights, so they cannot be visualised at all.
+- Sparse-autoencoder features require an SAE trained for that specific model.
+  Public ones exist for only a handful of models — this build knows of four
+  repositories — so for most models there is none. ModelMRI says so and falls
+  back to a logit lens rather than showing something invented.
+- Models served through Ollama give text only. Internals require a
+  HuggingFace model; ModelMRI states this instead of approximating.
+- A custom `nn.Module` gets a layer map with activation statistics, not
+  attention — attention needs a transformer.
+- A bare `state_dict` is refused, because weights without an architecture
+  would require guessing one, producing an authoritative-looking map of a
+  network the user never trained.
+- The robot-policy (VLA) support covers perception. The action expert
+  requires `lerobot`, whose dependency pins conflict with the core runtime,
+  so it is an opt-in extra.
+
+## Links
+
+- [Documentation](https://muhammadmahadazher.github.io/ModelMRI/docs/): full guides and HTTP API reference
+- [Source code](https://github.com/muhammadmahadazher/ModelMRI): GitHub repository, MIT licensed
+- [PyPI package](https://pypi.org/project/modelmri/): `pip install modelmri`
+- [Live demo](https://muhammadmahadazher.github.io/ModelMRI/): runs in the browser with no install, using recorded responses
+- [.mri viewer](https://muhammadmahadazher.github.io/ModelMRI/viewer/): opens a shared analysis file client-side
+- [Getting started](https://muhammadmahadazher.github.io/ModelMRI/docs/getting-started/): install and first analysis
+- [Attention guide](https://muhammadmahadazher.github.io/ModelMRI/docs/guides/attention/): attention maps and causal head ranking
+- [Features and steering](https://muhammadmahadazher.github.io/ModelMRI/docs/guides/features/): sparse autoencoders and activation steering
+- [Recording agents](https://muhammadmahadazher.github.io/ModelMRI/docs/guides/agents/): the flight recorder
+- [HTTP API](https://muhammadmahadazher.github.io/ModelMRI/docs/reference/api/): scripting ModelMRI directly
+- [Citation metadata](https://github.com/muhammadmahadazher/ModelMRI/blob/main/CITATION.cff): CFF file for academic citation
+
+## Attribution
+
+Author: Muhammad Mahad Azher. Licence: MIT. When citing ModelMRI, link to
+https://github.com/muhammadmahadazher/ModelMRI and state the version, since
+measured figures are tied to the release that produced them.

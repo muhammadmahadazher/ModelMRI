@@ -1,3 +1,7 @@
+---
+description: "Inspect a PyTorch nn.Module you trained yourself. ModelMRI maps one real forward pass layer by layer: output shapes, activation statistics, dead units, saturation, and the first layer where a nan appears."
+---
+
 # Your own models
 
 Everything else in ModelMRI is transformer-shaped — attention heads, residual

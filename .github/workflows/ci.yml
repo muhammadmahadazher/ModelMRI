@@ -33,6 +33,51 @@ jobs:
       - name: The API reference still describes the API
         run: uv run python scripts/gen_api_docs.py --check
 
+  # The README says Windows, macOS and Linux; pyproject says "OS Independent"
+  # and claims Python 3.10 through 3.13. Until this job existed, every one of
+  # those was tested on ubuntu-latest and one developer's Windows laptop.
+  #
+  # It is not a hypothetical worry. The code most likely to break off-Linux is
+  # the code this project keeps touching: cache scanning that walks symlinks,
+  # an uninstall that rmtree's model directories, and per-platform config
+  # paths. Those fail on Windows in ways Linux cannot show you — locked files,
+  # a different config root, case-insensitive path comparison.
+  #
+  # The matrix spans rather than exhausts: each OS appears, each supported
+  # Python version appears, at four jobs instead of twelve. Lint and format
+  # stay in `backend` above — they are platform-independent and running them
+  # four more times would buy nothing.
+  crossplatform:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not cancel the others: which OSes broke is
+      # the entire output of this job.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v9.0.0
+      # bash on all three runners, so this is one script rather than three.
+      # GitHub ships Git Bash on the Windows images; without this the block
+      # would run under pwsh there and the syntax would differ.
+      - name: Test
+        shell: bash
+        run: |
+          uv sync --dev --python ${{ matrix.python }}
+          uv run pytest tests packages/modelmri-record/tests -q
+
   frontend:
     runs-on: ubuntu-latest
     steps:

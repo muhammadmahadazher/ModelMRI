@@ -1,3 +1,7 @@
+---
+description: "Record LLM calls, tool calls and subagents from your own code with modelmri-record, then read the agent run as a timeline of blocks instead of scrolling flattened logs."
+---
+
 # Recording agents
 
 An agent run is a tree — the model calls a tool, the tool returns, a subagent

@@ -44,11 +44,32 @@ def test_import_survives_an_unresolvable_home():
 
     A module-level `Path.home()` fires before MODELMRI_HOME can be read, so
     the documented escape hatch for exactly this situation never gets a turn.
+
+    The HuggingFace variables are stripped as well, and that is the whole
+    difference between this test finding the bug and not. With HF_HOME set,
+    `hf_home()` returns at its first branch and never reaches
+    `_hub_constant` — the function that actually raised. A developer with
+    HF_HOME exported saw this pass; windows-latest, which has none, saw it
+    fail. The test was measuring the machine's environment, not the code.
+
+    Windows is where it bites: `os.path.expanduser` does not raise, it hands
+    back "~/.cache" unexpanded, and `Path.expanduser()` then raises
+    RuntimeError with no passwd database to fall back on.
     """
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("HOME", "USERPROFILE", "HOMEPATH", "HOMEDRIVE")
+        if k
+        not in (
+            "HOME",
+            "USERPROFILE",
+            "HOMEPATH",
+            "HOMEDRIVE",
+            "HF_HOME",
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "XDG_CACHE_HOME",
+        )
     }
     env["MODELMRI_HOME"] = str(Path(__file__).parent)
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])

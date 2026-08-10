@@ -19,7 +19,17 @@
 
 Load any local model — LLM, VLM, or robot policy — and see inside it while it runs: what it attended to, which concepts fired, what happens when you turn one off, and exactly where your agent went wrong.
 
-Local-first. No cloud, no account, no telemetry. MIT.
+**ModelMRI is an open-source, local-first interpretability and debugging tool
+for transformer language models, vision-language models, robot policies and
+LLM agents.** It visualizes per-layer, per-head attention weights from a live
+forward pass, ranks attention heads by causal ablation scored with KL
+divergence, decomposes the residual stream with sparse autoencoders, steers
+generation along a feature direction, maps activations in any custom
+`nn.Module`, and records agent runs as an inspectable timeline. It runs on
+your own machine — no cloud, no account, no telemetry — and writes findings
+to a `.mri` file a colleague can open in a browser with nothing installed.
+
+Python 3.10+, Windows / macOS / Linux, MIT licensed.
 
 <p align="center">
   <img src="docs/media/attention.gif" alt="Hovering tokens; attention arcs follow the cursor across the strip" width="800">
@@ -227,6 +237,110 @@ The UI is a client of a plain HTTP API — script against it directly.
 - **SAE features need an SAE that exists.** They are trained per model, and public ones exist for only a handful — this build knows of four repositories — so there is none for most of what you will load, and no amount of code makes one appear. ModelMRI offers the one that matches your model, says plainly when there is none, and falls back to a logit lens, which needs nothing but the model.
 - **Custom models get a layer map, not attention.** Attention and SAE features need a transformer; for an arbitrary `nn.Module` ModelMRI shows shapes, activation statistics and pathologies. Loading an adapter runs your Python — see [SECURITY.md](SECURITY.md).
 - **VLA mode is the perception half.** SmolVLA's vision tower is real and loaded from the real checkpoint; the action expert needs `lerobot`, whose torch/numpy pins conflict with the core runtime, so it lives behind an opt-in extra rather than degrading everyone's install.
+
+## How it compares
+
+The parts of ModelMRI are not new. Attention visualization, causal ablation,
+sparse autoencoders and agent tracing all have good tools already, and most of
+them do their one thing better than ModelMRI does. What is unusual here is the
+combination — model internals and agent traces, in one GUI, on your hardware,
+with no notebook in between.
+
+| | what it is | where ModelMRI differs |
+|---|---|---|
+| [BertViz](https://github.com/jessevig/bertviz) | attention visualization in a notebook | ModelMRI is a standalone app, and ranks heads by ablating them rather than only drawing them |
+| [TransformerLens](https://github.com/TransformerLensOrg/TransformerLens) | a mechanistic-interpretability library: hooks, caching, patching | TransformerLens is more capable and more precise; you write Python. ModelMRI is a UI for the common questions, with no code |
+| [nnsight](https://github.com/ndif-team/nnsight) | library access to internals, including remote large models | nnsight reaches models too big for your GPU; ModelMRI only runs what fits on your machine |
+| [Neuronpedia](https://www.neuronpedia.org/) | hosted browser for SAE features | Neuronpedia has far richer feature data for the models it covers; ModelMRI runs an SAE against *your* prompt, locally, and steers with it |
+| [SAELens](https://github.com/jbloomAus/SAELens) | training and analysing sparse autoencoders | ModelMRI consumes SAEs, it does not train them |
+| [Langfuse](https://langfuse.com/) · [Phoenix](https://github.com/Arize-ai/phoenix) · [LangSmith](https://www.langsmith.com/) | LLM application observability — traces, prompts, cost | These are production observability platforms and much stronger at it. ModelMRI records a run so you can open it next to the model's internals |
+
+Use TransformerLens if you are doing research and want precision. Use Langfuse
+or Phoenix if you are running an agent in production and need dashboards,
+retention and alerting. Reach for ModelMRI when you have a model on your
+machine that is doing something you do not understand, and you want to look at
+it now.
+
+## Questions people ask
+
+### What is ModelMRI?
+
+An open-source, local-first tool for inspecting what a model is doing
+internally while it runs: attention per layer and head, which heads carry the
+prediction, which interpretable features fire, what changes when you turn one
+off — plus a recorder that makes an agent run inspectable step by step.
+`pip install modelmri && modelmri serve`, then open `http://localhost:5900`.
+
+### Does it work with GPT-4, Claude, or Gemini?
+
+Not for internals, and no tool can — closed API models do not expose attention
+weights or activations to anyone outside the provider. ModelMRI needs weights
+it can run, so internals mean a local HuggingFace model.
+
+The **agent recorder is a different matter**: it wraps whatever your agent
+calls, including hosted APIs, so you can record and inspect a run driven
+entirely by Claude or GPT-4. `modelmri.record.instrument_anthropic()` does it
+in one line.
+
+### Do I need a GPU?
+
+No. CPU works — a 0.5B model streams in a couple of seconds. NVIDIA, AMD,
+Intel and Apple silicon are detected automatically when present, and if torch
+was installed as a CPU-only build the badge says so and prints the command to
+fix it.
+
+### Which models work?
+
+Any causal LM transformers can load with eager attention, from the HuggingFace
+cache you already have, a plain folder on disk, or a search-and-download in
+the app. The ones with a recorded end-to-end result are **GPT-2, Qwen3-0.6B,
+Qwen2.5-0.5B-Instruct, SmolLM2-360M-Instruct and Gemma-3-270m-it** — the
+[verified table](https://muhammadmahadazher.github.io/ModelMRI/docs/#verified-not-asserted)
+lists what each one actually measured. Others should work and are not claimed
+to have been checked: Llama-3.2-1B is deliberately absent because the
+`meta-llama` repos are gated and returned 403 for the account used, and an
+untested model in a list headed "supported" is just a guess in bold. Ollama
+models work for text generation; internals need a HuggingFace model, and
+ModelMRI tells you that instead of quietly showing you nothing. Non-transformer
+models you trained yourself get a layer map with activation statistics.
+
+### Is any of my data sent anywhere?
+
+No. There is no cloud, no account and no telemetry. Models are downloaded from
+HuggingFace if you ask for one you don't have; beyond that, nothing leaves the
+machine. A `.mri` file you choose to share contains tokens, attention and your
+note — never weights — and the browser viewer reads it client-side without
+uploading it.
+
+### What is a `.mri` file?
+
+One ~54 KB file holding the tokens, the attention matrix, the generation and a
+note you wrote. It exists so you can send a colleague the *finding* without
+sending them 8 GB of weights or asking them to install anything — they open it
+at [the viewer](https://muhammadmahadazher.github.io/ModelMRI/viewer/) in a
+browser. `modelmri open file.mri` does the same locally in about 0.3s, with no
+torch and no GPU.
+
+### How is this different from TransformerLens or BertViz?
+
+BertViz draws attention; ModelMRI also measures which heads matter by removing
+them. TransformerLens is a library you write code against and is more precise
+and more flexible than this; ModelMRI is a UI for the questions people ask
+most, and adds SAE steering, agent traces and robot policies in the same
+window. See [How it compares](#how-it-compares).
+
+### Is it production-ready?
+
+No, and the package says so — it is classified alpha. It is a debugging and
+research tool, not infrastructure. The measurements it reports are tested, but
+the API surface still moves between minor versions; see the
+[changelog](CHANGELOG.md).
+
+### How do I cite it?
+
+[CITATION.cff](CITATION.cff) is in the repository root — GitHub's "Cite this
+repository" button reads it. Please include the version, because the measured
+figures in this README belong to the release that produced them.
 
 ## Contributing
 
