@@ -159,6 +159,17 @@ export default function App() {
         <span>MIT ©2026</span>
         <StoragePanel />
         <span className="spacer" />
+        {/* The panels can only get better if the gap between what you wanted
+            and what you saw reaches me, and nobody files an issue for "I
+            expected this to show something else". A named, low-ceremony
+            destination asks for exactly that. */}
+        <a
+          href="https://github.com/muhammadmahadazher/ModelMRI/discussions/new?category=ideas"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          what would you want this to show?
+        </a>
         <a href="https://github.com/muhammadmahadazher/ModelMRI">
           github.com/muhammadmahadazher/ModelMRI
         </a>

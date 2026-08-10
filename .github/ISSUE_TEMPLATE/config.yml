@@ -1,5 +1,14 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Tell me what you want it to do
+    url: https://github.com/muhammadmahadazher/ModelMRI/discussions/new?category=ideas
+    about: >-
+      Half-formed ideas welcome. What did you expect a panel to show you that it
+      did not? What would make you use this on a real problem? No template, no
+      reproduction steps.
+  - name: Ask a question
+    url: https://github.com/muhammadmahadazher/ModelMRI/discussions/new?category=q-a
+    about: Stuck on something that is not a bug. Nothing is too basic to ask.
   - name: Documentation
     url: https://muhammadmahadazher.github.io/ModelMRI/docs/
     about: Guides for each panel, the HTTP API reference, and troubleshooting.

@@ -151,6 +151,102 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
         httpd.server_close()
 
 
+def _tree_bytes(root) -> int:
+    try:
+        return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def uninstall(*, yes: bool = False, models: bool = False) -> int:
+    """Remove everything ModelMRI has written, after showing what that is.
+
+    Leaving a trail nobody can find is the same discourtesy as a bad install.
+    Every location is resolved by `paths`, per-platform and per-account, so
+    this deletes *your* directories on *your* OS — there is no list of
+    guessed paths here to go stale.
+
+    Two things it deliberately will not do without being asked:
+
+    * The HuggingFace cache is shared. `transformers`, `datasets` and every
+      other tool on the machine read the same directory, so deleting it as
+      part of removing one app would take other people's downloads with it.
+      `--models` opts in, and the size is shown either way.
+    * It cannot remove the installed package while running from inside it, so
+      it prints the `pip uninstall` line rather than pretending.
+    """
+    from pathlib import Path
+
+    from . import paths
+
+    print(f"ModelMRI {__version__} — what is on this machine\n")
+
+    targets: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for label, path in (
+        ("data", paths.data_dir()),
+        ("config", paths.config_dir()),
+        ("cache", paths.cache_dir()),
+        ("legacy", paths.legacy_root()),
+    ):
+        if path is None:
+            continue
+        resolved = Path(path)
+        # cache_dir() lives under data_dir() on some platforms; deleting the
+        # parent first would make the child look like a phantom failure.
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        targets.append((label, resolved))
+
+    if not targets:
+        print("  nothing to remove — ModelMRI has not written anything here.")
+    for label, path in targets:
+        print(f"  {label:<8} {path}  ({_tree_bytes(path) / 1e6:.1f} MB)")
+
+    hub = paths.hf_hub_cache()
+    hub_bytes = _tree_bytes(hub) if hub.exists() else 0
+    if hub_bytes:
+        print(f"\n  models   {hub} ({hub_bytes / 1e9:.2f} GB)")
+        print(
+            "           SHARED with transformers, datasets and anything else "
+            "using\n           the HuggingFace cache."
+            + (" Deleting it, as asked." if models else " Left alone.")
+        )
+    if models and hub_bytes:
+        targets.append(("models", hub))
+
+    if not targets:
+        return 0
+
+    if not yes:
+        print()
+        try:
+            reply = input("Delete the above? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("nothing deleted.")
+            return 1
+
+    import shutil
+
+    freed = 0
+    for label, path in targets:
+        size = _tree_bytes(path)
+        try:
+            shutil.rmtree(path)
+            freed += size
+            print(f"  removed {label:<8} {path}")
+        except OSError as err:
+            print(f"  could NOT remove {path}: {err}", file=sys.stderr)
+
+    print(f"\nfreed {freed / 1e6:.1f} MB")
+    print("\nThe package itself is still installed. To remove it:")
+    print("  pip uninstall modelmri modelmri-record")
+    return 0
+
+
 def main() -> None:
     # Windows consoles hand Python a cp1252 stdout, which cannot encode a path
     # containing (say) a Cyrillic or CJK username. Printing where things live
@@ -189,6 +285,18 @@ def main() -> None:
     )
 
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
+
+    remove = sub.add_parser(
+        "uninstall", help="Remove everything ModelMRI has written to this machine"
+    )
+    remove.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
+    remove.add_argument(
+        "--models",
+        action="store_true",
+        help="also delete the HuggingFace model cache (shared with other tools)",
+    )
 
     args = parser.parse_args()
     if args.command == "serve":
@@ -238,6 +346,8 @@ def main() -> None:
             target, host=args.host, port=args.port, browser=not args.no_browser
         )
         return
+    elif args.command == "uninstall":
+        raise SystemExit(uninstall(yes=args.yes, models=args.models))
     elif args.command == "where":
         from . import paths
 
