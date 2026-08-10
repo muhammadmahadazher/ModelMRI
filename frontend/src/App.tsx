@@ -77,13 +77,21 @@ export default function App() {
         <ThemeToggle />
         {accel && (
           <span
-            className={`pill accel ${accel.kind !== "cpu" ? "gpu" : ""}`}
+            className={`pill accel ${accel.kind !== "cpu" && accel.kind !== "recorded" ? "gpu" : ""}`}
             title={accel.reason}
           >
             <i className="accel-dot" />
-            {accel.kind === "cpu"
-              ? "CPU"
-              : `${accel.name}${accel.vram_gb ? ` · ${accel.vram_gb} GB` : ""}`}
+            {/* "recorded" is not a device. The hosted demo has no accelerator
+                to report — it is a static recording being read in a browser —
+                and the baked bundle used to answer this with the GPU of the
+                laptop that produced it, so a phone was told it was running
+                CUDA on an RTX 4060. A device the page cannot see is not a
+                device it may name. */}
+            {accel.kind === "recorded"
+              ? "recorded"
+              : accel.kind === "cpu"
+                ? "CPU"
+                : `${accel.name}${accel.vram_gb ? ` · ${accel.vram_gb} GB` : ""}`}
           </span>
         )}
         <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>

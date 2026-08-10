@@ -68,6 +68,23 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     name: string;
     message: string;
   } | null>(null);
+  // Switching tabs clears the error and the size-guard warning.
+  //
+  // There is one `err` for the whole sheet, so without this the message from
+  // the tab you just left stays on screen under the tab you just opened. On
+  // the hosted demo that was plainly wrong rather than merely untidy: search
+  // HuggingFace, get "searching HuggingFace is a live call … this page is a
+  // static recording", switch to Ollama, and that same HuggingFace sentence
+  // sat under the Ollama tab as if it were Ollama's own explanation. Both
+  // tabs do refuse here, and they refuse for different reasons — the whole
+  // point of writing separate messages was that a visitor could tell which
+  // limitation they had hit.
+  const openTab = (next: "local" | "hf" | "ollama") => {
+    setErr("");
+    setPullWarning(null);
+    setTab(next);
+  };
+
   // Ollama's "search": a name, resolved against the registry.
   const [ollamaName, setOllamaName] = useState("");
   // Curated Ollama picks, sized live. Fetched only when that tab is opened —
@@ -245,16 +262,16 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
           <div className="seg">
             <button
               className={tab === "local" ? "on" : ""}
-              onClick={() => setTab("local")}
+              onClick={() => openTab("local")}
             >
               On this machine{disco ? ` · ${disco.models.length}` : ""}
             </button>
-            <button className={tab === "hf" ? "on" : ""} onClick={() => setTab("hf")}>
+            <button className={tab === "hf" ? "on" : ""} onClick={() => openTab("hf")}>
               HuggingFace
             </button>
             <button
               className={tab === "ollama" ? "on" : ""}
-              onClick={() => setTab("ollama")}
+              onClick={() => openTab("ollama")}
             >
               Ollama {ollama?.up ? `· ${ollama.installed?.length ?? 0}` : "· off"}
             </button>

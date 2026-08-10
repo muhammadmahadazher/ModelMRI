@@ -345,6 +345,81 @@ def no_machine_leaks() -> None:
         f"hub_auth says signed_in={auth.get('signed_in')} user={auth.get('user')!r}",
     )
 
+    # The second one that shipped, and the reason the scan above did not catch
+    # it: "NVIDIA GeForce RTX 4060 Laptop GPU" contains no path, no username
+    # and no drive letter. A blocklist of identifier *shapes* cannot find a
+    # device name, so this asserts the positive form instead — the demo names
+    # no device at all, because there is no device behind a static page. A
+    # visitor on a phone was being told it was running CUDA on 8.6 GB of VRAM.
+    accel = env.get("accelerator") or {}
+    check(
+        "the demo names no accelerator, because it has none",
+        accel.get("kind") == "recorded"
+        and not accel.get("name")
+        and not accel.get("vram_gb")
+        and not accel.get("torch_device"),
+        f"accelerator says kind={accel.get('kind')!r} name={accel.get('name')!r} "
+        f"vram_gb={accel.get('vram_gb')!r} — that is the baking machine's GPU, "
+        f"published to every visitor",
+    )
+
+    # The third: `/api/models/discovered` was published verbatim, so the "On
+    # this machine" tab listed one person's entire HuggingFace cache — 17
+    # repositories, annotated "cached, loads offline" — to strangers whose
+    # machine has none of it. The demo may only offer what it can actually
+    # replay, which is exactly the recorded scenarios.
+    scenarios = {
+        s["id"]
+        for s in json.loads((BUNDLE / "scenarios.json").read_text("utf-8"))["scenarios"]
+    }
+    disco = json.loads((BUNDLE / "discovered.json").read_text("utf-8"))
+    listed = {m.get("id") for m in disco.get("models") or []}
+    check(
+        "the model list is the demo's own recordings, not a machine's cache",
+        listed == scenarios and not disco.get("roots"),
+        f"discovered lists {sorted(listed - scenarios)} which no scenario can "
+        f"replay, roots={disco.get('roots')!r}",
+    )
+
+    # The status pill renders `${hf_id} · ${device}`, so a baked "cuda:0" told
+    # a visitor on a phone that their model was running on CUDA. Six of these
+    # were published across five payloads. `demo.ts` already falls back to
+    # "recorded" when the field is null, so the only requirement is that the
+    # data stop asserting a device.
+    devices = []
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "device" and isinstance(v, str):
+                    devices.append(f"{where}:{v}")
+                else:
+                    walk(v, where)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, where)
+
+    for path in sorted(BUNDLE.glob("*.json")):
+        walk(json.loads(path.read_text("utf-8")), path.name)
+    check(
+        "no payload names a torch device",
+        not devices,
+        f"{sorted(set(devices))} — that is the baking machine's device, and the "
+        f"status pill prints it next to the model name",
+    )
+
+    # Every model row must be replayable. A picker entry that cannot load is
+    # worse here than a shorter list, because the demo's whole claim is that
+    # everything on screen is real.
+    unloadable = [
+        m.get("id") for m in disco.get("models") or [] if not m.get("loadable")
+    ]
+    check(
+        "every model the demo offers can be opened",
+        not unloadable,
+        f"{unloadable} are listed but not loadable",
+    )
+
 
 def main() -> int:
     print("demo parity check")
