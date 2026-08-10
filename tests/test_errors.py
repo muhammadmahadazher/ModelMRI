@@ -190,10 +190,31 @@ def app_where(patch, monkeypatch):
     globals (`modelmri.hub.suggested`, `modelmri.ollama.pull`), and a plain
     setattr leaves them broken for every later test in the session. It did,
     and six unrelated tests failed before this took the fixture.
+
+    The stub reader below is what makes this test say the same thing on every
+    machine. `/api/vla/analyse` reads a frame before it calls the function
+    under test, and `_reader()` needs both the `vla-lite` extra and a cached
+    LeRobot dataset. On a developer box that has them the route reaches the
+    patched function and answers 500, which is the thing being asserted; in CI
+    it has neither, so an honest Refusal fires first and the route answers 409
+    — passing locally and failing in CI, for a reason that has nothing to do
+    with error handling. `_reader` short-circuits on `app.state.vla_reader`
+    (server.py:629), so pre-seeding it puts every machine on the path the test
+    is actually about.
     """
     import importlib
 
     app = create_app()
+
+    class _StubReader:
+        """Enough reader to get past the frame fetch. The frame is handed
+        straight to the patched function, which raises, so its contents are
+        never read."""
+
+        def raw_frame(self, episode, t):
+            return object()
+
+    app.state.vla_reader = _StubReader()
     module, attr = patch
     if module == "state":
         target, attr = attr.split(".", 1)
