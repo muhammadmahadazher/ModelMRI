@@ -9,7 +9,6 @@ start somewhere nobody had looked.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -54,9 +53,15 @@ def test_no_home_still_yields_absolute_paths(monkeypatch):
     where` answered "where is my stuff" with a relative path.
     """
     paths = _reimport_paths(monkeypatch)
-    assert os.path.expanduser("~") == "~", (
-        "this test is meaningless unless the home really is unresolvable"
-    )
+    # The real condition is `Path.home()` raising — a container with no passwd
+    # entry, a Windows service account. Clearing the variables is enough to
+    # produce it on Windows, but NOT on POSIX: `os.path.expanduser` falls back
+    # to the passwd database there, so it returned "/Users/runner" and this
+    # test passed for the wrong reason on macOS and Linux. Forcing `_home` is
+    # the only way to reach the same code path on all three platforms — which
+    # is the whole point of a portability test.
+    monkeypatch.setattr(paths, "_home", lambda: None)
+    assert paths._no_home().is_absolute(), "the fallback itself must be absolute"
     for name in ("data_dir", "config_dir", "cache_dir", "hf_hub_cache", "hf_home"):
         fn = getattr(paths, name, None)
         if fn is None:
