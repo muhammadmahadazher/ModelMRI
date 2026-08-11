@@ -65,6 +65,29 @@ no torch. See [sharing what you found](guides/attention.md#sharing-what-you-foun
 
 ## Hardware
 
+Run `modelmri doctor` before anything else — it is the shortest answer to "will
+this work on my machine", and it measures rather than assumes:
+
+```
+  os          Windows 11 (AMD64)
+  cpu         24 logical cores        ram   16.9 GB
+  disk        191.6 GB free
+  torch       2.11.0+cu128 (cuda 12.8)
+  accelerator NVIDIA GeForce RTX 4060 Laptop GPU (cuda)   vram 8.6 GB
+  precision   bfloat16
+
+  Models up to roughly 3.2B parameters should fit.
+```
+
+There is no check during `pip install`, and that is deliberate rather than an
+omission: a wheel is an archive and pip does not execute code from one. A
+first-run check is also the better question to answer, because opening a shared
+`.mri` needs neither torch nor a GPU while loading a 7B model needs both.
+
+`MODELMRI_DEVICE=cpu` forces the CPU on any backend, which is the remedy when a
+measurement needs float32 and the accelerator has chosen otherwise.
+
+
 ModelMRI detects your accelerator and says which one it picked and why. The
 badge in the top bar is not decoration — if it says CPU when you expected a
 GPU, that is the tool telling you something.

@@ -159,6 +159,41 @@ def main() -> int:
             made.append("attention.gif")
         made.append("attention.png")
 
+        # ------------------------------------------- 1b. patching
+        # The grid is the headline of this release and the README had no
+        # picture of it. Recorded rather than stilled because the thing worth
+        # showing is the press: rows settling in as each block is pulled, then
+        # the three tabs disagreeing about where the fact lives.
+        ctx, pg = page(record=True)
+        t0 = time.monotonic()
+        patch = pg.locator(".panel.patch")
+        if patch.count():
+            patch.scroll_into_view_if_needed()
+            pg.wait_for_timeout(400)
+            start_at = time.monotonic() - t0
+            pg.locator(".panel.patch button", has_text="Trace it").click()
+            # The trace is hundreds of forward passes; wait for the grid, not
+            # for a fixed number of seconds, or a slower machine records a
+            # spinner.
+            pg.wait_for_selector(".patch-grid td", timeout=180_000)
+            pg.wait_for_timeout(1200)
+            patch.screenshot(path=str(out / "patching.png"))
+            for label in ("attention", "MLP", "residual stream"):
+                tab = pg.locator(".patch-tabs button", has_text=label)
+                if tab.count():
+                    tab.first.click()
+                    pg.wait_for_timeout(900)
+            video = pg.video.path() if pg.video else None
+            ctx.close()
+            if video and encode_gif(
+                Path(video), out / "patching.gif", start=start_at, dur=9.0
+            ):
+                made.append("patching.gif")
+            made.append("patching.png")
+        else:
+            ctx.close()
+            print("  patching panel not mounted — load a model first", file=sys.stderr)
+
         # ---------------------------------------------------- 2. hero
         ctx, pg = page(record=False)
         pg.wait_for_timeout(1500)
