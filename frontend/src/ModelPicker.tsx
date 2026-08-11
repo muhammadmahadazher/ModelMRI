@@ -257,23 +257,8 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     };
   }, [open]);
 
-  if (!open) return null;
-
-  async function doSignIn() {
-    setBusy("auth");
-    setErr("");
-    try {
-      setAuth(await hubSignIn(tokenInput.trim()));
-      setTokenInput("");
-      setShowSignIn(false);
-    } catch (e) {
-      setErr(errorText(e));
-    } finally {
-      setBusy("");
-    }
-  }
-
-  // Polled while the sheet is OPEN, not while this tab happens to be the one
+  // ABOVE `if (!open) return null` — see below. Polled while the sheet is
+  // OPEN, not while this tab happens to be the one
   // that started a pull. A download lives on the server: reload the page or
   // open a second tab and the bytes keep arriving, so a bar that only exists
   // in the tab that clicked is a bar that vanishes exactly when somebody
@@ -298,6 +283,30 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       window.clearInterval(id);
     };
   }, [open]);
+
+  // EVERY hook above this line, without exception. This early return is
+  // why: a hook placed below it does not run when the sheet is closed, so
+  // opening the sheet renders MORE hooks than the previous render did and
+  // React tears the tree down (#310) rather than showing it. Symptom is a
+  // picker that never appears, which reads like a dead button rather than
+  // like a crash. tests/ui_check.py waits for `.sheet` and is what caught
+  // it; it has now caught it twice, in two different components.
+  if (!open) return null;
+
+  async function doSignIn() {
+    setBusy("auth");
+    setErr("");
+    try {
+      setAuth(await hubSignIn(tokenInput.trim()));
+      setTokenInput("");
+      setShowSignIn(false);
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
 
   async function doPull(name: string, confirm = false) {
     setBusy(`pull:${name}`);
