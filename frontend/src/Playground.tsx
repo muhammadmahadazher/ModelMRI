@@ -11,6 +11,7 @@ import {
 } from "./api";
 import AttentionPanel from "./AttentionPanel";
 import FeaturesPanel from "./FeaturesPanel";
+import PatchPanel from "./PatchPanel";
 import ModelPicker from "./ModelPicker";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
@@ -410,6 +411,10 @@ export default function Playground({ model, onModelChange, replay }: Props) {
       {/* Features need the model's activations, which a `.mri` does not carry
           — it is an observation, not a checkpoint. Mounting the panel anyway
           would offer a control that can only ever answer "no model loaded". */}
+      {/* Patching needs no generation — it runs its own two prompts — but it
+          does need a live HuggingFace model to re-run, which is exactly what a
+          recording is not. */}
+      {introspectable && !replay && <PatchPanel epoch={epoch} />}
       {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel
           epoch={epoch}

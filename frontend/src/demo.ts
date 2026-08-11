@@ -378,6 +378,20 @@ export async function demoFetch(
         : { active: false },
     );
   }
+  // Patching re-runs the model hundreds of times with an activation replaced.
+  // There is no model here to re-run, and unlike the other panels there is no
+  // honest recording of it either: the answer depends on the two prompts the
+  // reader types, so a baked grid would be a fabricated measurement wearing
+  // the reader's own words. It refuses, and says why.
+  if (p === "/api/patch") {
+    return refuse(
+      409,
+      "Patching moves an activation from one live run into another, so it " +
+        "needs a model on your machine to re-run — this page has recordings, " +
+        "not weights. `pip install modelmri` and the panel works against any " +
+        "model you load.",
+    );
+  }
   if (p === "/api/traces") return ok((await bundle<any>("traces")).list);
   if (p.startsWith("/api/traces/")) return ok((await bundle<any>("traces")).trace);
 

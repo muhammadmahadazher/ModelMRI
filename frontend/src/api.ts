@@ -1297,3 +1297,49 @@ export interface PathInfo {
 }
 
 export const getPaths = () => fetch("/api/paths").then((r) => json<PathInfo>(r));
+
+/** Activation patching: two prompts, one grid. See modelmri/patch.py.
+ *
+ *  The score is signed and is NOT a KL, unlike every other ranking here —
+ *  patching has a direction, and 5 of 132 sites on the reference pair moved
+ *  the answer further from the clean run rather than toward it.
+ */
+export interface PatchSide {
+  prompt: string;
+  tokens: string[];
+  answer: { id: number; text: string; p: number };
+}
+
+export interface PatchSite {
+  layer: number;
+  position: number;
+  recovery: number;
+  control_max: number;
+  control_min: number;
+  control_draws: number;
+  shifted_position: number;
+  clears_control: boolean;
+  clears_position: boolean;
+}
+
+export interface PatchTrace {
+  clean: PatchSide;
+  corrupt: PatchSide;
+  gap: number;
+  n_layers: number;
+  n_positions: number;
+  grid: number[][];
+  sites: PatchSite[];
+  controlled: number;
+  dtype: string;
+  passes: number;
+  seconds: number;
+  notes: string[];
+}
+
+export const patchTrace = (clean: string, corrupt: string) =>
+  fetch("/api/patch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clean, corrupt }),
+  }).then((r) => json<PatchTrace>(r));
