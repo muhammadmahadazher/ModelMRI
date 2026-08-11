@@ -1,5 +1,111 @@
 # Working log
 
+## 2026-08-11 (feature ablation, after the adversaries) — the tick that was green 38 times wrongly
+
+Three adversarial passes over the new feature ranking returned thirteen
+findings. I reproduced every one on gpt2/float32/CPU before touching anything,
+and rejected the framing of one.
+
+**Phase 0 said the intervention was the one defensible choice, and it is — but
+Phase 0 did not check what the intervention does to the SAE's own reading of
+the stream, and neither did the shipped code.** The mechanism check re-encoded
+the edited stream, found feature 5856's activation was exactly 0.0 of 35.546,
+returned `removal_verified: true`, and said in a comment that this "asks
+whether the intervention does what its name says, which is a property of the
+edit and the SAE, not of each feature." Run on all 43 candidates instead of
+one, it fails on **38**, with residual shares from 10.11% (#23035) to 60.26%
+(#5926). Worse, the five that pass do not pass cleanly: 5856's pre-activation
+goes 35.546 → −2.331, a drop of 37.877 against an activation of 35.546, so
+"removed" means "removed 6.6% too much and relu clamped it". The cause is one
+line of arithmetic nobody had looked at: `W_enc[:,f] · W_dec[f]` over the SAE's
+24,576 features has mean 0.8387, min −0.3819, max 1.3072. Encoder and decoder
+directions are not dual, so subtracting a feature's decoder direction does not
+zero its encoder reading, and the amount left over is a property of the
+feature, not of the edit.
+
+The right split turned out to be free. The claim that IS a property of the edit
+— "the stream the model received is `x − act·W_dec[f]` and nothing else" —
+costs the one forward pass the old check already spent, and measures 0.0
+deviation in float32. The claim that is per feature costs **no** forward pass
+at all: the tensor the model receives at a resid_pre hook IS the tensor written
+in, so re-encoding the cast copy answers the same question, and it agreed with
+the through-the-model version to 3.6e-06 across all 43 rows. One column of
+`W_enc` instead of all 24,576 makes it 768 multiply-adds a row. So the honest
+version is cheaper than the dishonest one was.
+
+**The second docstring sentence was worse than the first.** "Nothing else in
+the stream moves — not the reconstruction error, not the d_model mean, not the
+other features." Nothing else in the STREAM moves; the SAE's decomposition of
+the result is not the old decomposition minus one row. Removing 5856 moves 44
+other features by more than 1e-6, drives **33 of the other 42 firing features
+to exactly zero**, starts 2 silent ones, and moves 42.4943 of activation
+outside the target against the 35.546 it removed inside it — 119.55%. `||err||`
+at that token goes 21.3036 → 31.8553. The d_model mean goes 0.0786990 →
+0.1690938, which is correct and intended (`mu` is held at the value the
+decomposition was taken with) but is not "does not move".
+
+**The one I partly rejected.** An adversary showed that five random Gaussian
+directions at the top feature's norm score 0.0666–0.1093 nats, and concluded
+that "41 of the 43 rows sit under the pedestal" — the ranking is a ranking of
+edit magnitude. The measurement reproduces exactly; the comparison does not
+hold. Those 41 rows have *smaller edits*, and a pedestal scales with the norm
+of the edit. Measured properly — one control per row, at that row's own norm,
+at that row's own tokens — **34 of 43 rows clear their own control**, not 2.
+The finding underneath is still real and is now shipped: a score is partly the
+size of the edit, the top row clears by ~4x rather than by everything, and nine
+rows do not clear at all, two of which (#22852, #1288) are in the bar chart's
+plotted top-8. That costs a second forward pass per row, so the cost went from
+`n + 6` to `2n + 6`: 92 passes / 10.09 s at position scope, 518 / 49.44 s at
+prompt scope, on this CPU.
+
+**A baseline measured somewhere the edits do not land.** `residual_kl`
+substituted the SAE's reconstruction at the attributed token only, regardless
+of scope. At `scope="prompt"` the edits land at all eleven tokens, where the
+same substitution costs 0.221217 rather than 0.077530 — 2.85x. Against the
+small one, 2 of 43 features clear; against the right one, 1 of 256. The panel
+was crediting feature 11149 with clearing the SAE's own error when it does not.
+
+**And a caveat that inflated itself by squaring one side.** "aggregate FVU
+0.0012 — but at this token the SAE fails to model 20.4% of the stream's norm."
+FVU is a squared-error fraction and `residual_share` is a norm fraction. The
+calibration already carried `rel_err` = 0.029397, the directly comparable
+number, and did not use it. The real discrepancy is 7x, not 200x; the sentence
+made it three orders of magnitude.
+
+**Three panel bugs with one shape: the client reading the response as if it
+were the run.** `rankFeatures` sent no `top_k`, the server trimmed 256 scored
+rows to 64, and everything downstream treated absence-from-`ranked` as
+never-tested. #18994, scored 0.00031514 at causal rank 72, got a chip reading
+"not tested" and a tooltip reading "not asked, not found unimportant" — the
+precise inversion of the invariant the code comment above it claimed to be
+enforcing. The tail count read "54 more were tested and scored lower" directly
+above the server's "256 of 494 firing features were tested". The server had
+already built `n_scored`, `n_returned`, `rows_note`, `n_below_resolution` and
+`n_negative_kl` for exactly this, and not one of the five existed in the
+TypeScript interface.
+
+**The refusal that was invisible until after the click.** ModelMRI selects
+bfloat16 for every NVIDIA GPU, `rank_features` refuses anything but float32,
+and the panel gated the button on DEMO/VIEWER only. So on the machine this
+project is developed on, the default configuration renders a button, quotes a
+cost badge of 67 passes, and answers 409. `/api/session` already carries
+`model.dtype`; the panel takes it as a prop now and prints the runtime's own
+sentence in place of the control. The panel's own comment two lines above the
+gate ("a button that only ever fails … teaches them the measurement does not
+work") was the argument for doing it.
+
+**Contradicting Phase 0, plainly.** Phase 0's record says the choice was
+between (a)/(c) and (b), and that (a) is safe because "removing act*W_dec[f]
+from the centered stream and from the raw stream are the same subtraction."
+That reason is false: `act*W_dec[5856]` has d_model mean −0.0903948, whose
+`|mean|·sqrt(768)` = 2.5051 is 7.05% of the edit's norm, so centering strips
+part of it. The conclusion survives for a different reason — (c) re-adds the
+ORIGINAL per-token mean, so both edits equal `x − act·W_dec[f]` — and the wrong
+reason is what made the removal check's framing look safe in the first place.
+Phase 0 also did not measure the encoder/decoder duality, the same-norm
+control, or the scope of the reconstruction baseline, which are three of the
+four things this pass changed.
+
 ## 2026-08-10 (attribution, after the adversaries) — the guard that could not fire
 
 Four adversarial passes over the shipped attribution feature returned sixteen

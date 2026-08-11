@@ -255,3 +255,35 @@ def test_the_shipped_sae_declares_nothing_and_wants_both():
         f"centered+b_dec {by_name['centered+b_dec']} did not beat raw {by_name['raw']}"
     )
     assert cal.center is True
+
+
+def test_encode_feature_is_encode_restricted_to_one_column():
+    """One column of W_enc, not all 24,576 — and the same number.
+
+    `feature_ablate` asks this once per scored row, to report how much of a
+    feature the SAE's encoder still reads after that feature's contribution has
+    been subtracted from the stream. A full `encode` per row would turn a free
+    check into 19 million multiply-adds a row; this is 768. If the two ever
+    disagreed, the per-row honesty column would be measuring something other
+    than the activations the ranking was taken from.
+    """
+    sae = synthetic_sae()
+    torch.manual_seed(11)
+    x = torch.randn(6, sae.d_in) * 4.0 + 2.0
+    full = sae.encode(x)
+    for f in (0, 1, sae.d_sae - 1):
+        assert torch.allclose(sae.encode_feature(x, f), full[:, f], atol=1e-6)
+
+
+def test_encode_feature_refuses_to_calibrate_from_one_feature():
+    """A convention chosen on one column is a convention chosen on nothing.
+
+    `calibrate` compares four input conventions by how much of the stream comes
+    back; a single feature's activation cannot make that comparison. Refusing
+    is the difference between "you called these in the wrong order" and a
+    silently wrong convention on every row that follows.
+    """
+    sae = synthetic_sae()
+    assert sae.calibration is None
+    with pytest.raises(ValueError, match="needs a calibration"):
+        sae.encode_feature(torch.zeros(2, sae.d_in), 0)

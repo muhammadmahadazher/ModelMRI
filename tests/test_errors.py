@@ -149,6 +149,12 @@ def test_the_500_logs_the_traceback_rather_than_discarding_it(caplog):
         ("attention_diff", "/api/attention/diff"),
         ("ablate_heads", "/api/attention/ablate"),
         ("attribute_tokens", "/api/attention/attribute"),
+        # The third ranking, added with the route rather than after it. It is
+        # the one most likely to raise something that is not a Refusal — a CUDA
+        # OOM in the middle of 518 forward passes — and its handler in
+        # server.py has a `except Exception` arm that has to stay a logged 500
+        # rather than drift back to a 409 carrying torch's own words.
+        ("rank_features", "/api/features/ablate"),
         ("export_session", "/api/session/export"),
         ("set_steering", "/api/steer"),
     ],

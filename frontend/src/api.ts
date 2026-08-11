@@ -1,4 +1,5 @@
 import { DEMO, demoSessionFile } from "./demo";
+import { VIEWER } from "./viewer";
 
 export interface ModelStatus {
   loaded: boolean;
@@ -448,6 +449,259 @@ export const getFeaturesSummary = (topK = 8) =>
 
 export const getFeatureDetail = (id: number) =>
   fetch(`/api/features/${id}`).then((r) => json<FeatureDetail>(r));
+
+// ------------------------------------------- readouts shared between panels
+//
+// Two rules that belong to the measurement rather than to a panel, kept in one
+// place so a second panel cannot quietly adopt a different one. AttentionPanel
+// still carries its own copies of both — it is owned elsewhere right now — and
+// these are byte-for-byte the same rule, deliberately, so switching that file
+// over is a deletion rather than a decision. If they ever disagree, THIS is
+// the one that was written next to the endpoint contract.
+
+/** "11s" / "2m 17s" — a wait the user can decide about. */
+export const humanSeconds = (s: number) =>
+  s < 90
+    ? `${Math.max(1, Math.round(s))}s`
+    : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+
+/** Seconds per forward pass, kept as the FASTEST rate seen rather than the
+ *  latest.
+ *
+ *  The first ranking after a load pays for CUDA warm-up and runs several times
+ *  slower — measured on an RTX 4060, Qwen3-0.6B's first layer took 3.05 s and
+ *  the next two 0.80 and 0.78. Since a cost estimate only appears once there
+ *  is a measurement, a latest-rate estimator quotes its worst possible number
+ *  (46.8% over on that run). Warm-up only ever inflates, so the minimum is the
+ *  honest estimator; once warm the extrapolation held to within 2.5% across
+ *  repeats on both models.
+ */
+export const fastestRate = (
+  prev: number | null,
+  elapsed_s: number,
+  passes: number,
+): number | null => {
+  if (passes <= 0 || !(elapsed_s > 0)) return prev;
+  const rate = elapsed_s / passes;
+  return prev === null ? rate : Math.min(prev, rate);
+};
+
+/** A KL small enough that fixed decimals would print it as zero.
+ *
+ *  Not cosmetic. Feature scores span from 0.4174529 down to -3e-08 on the one
+ *  prompt this was measured on, and five decimal places render most of that
+ *  list as 0.00000 — a measured value displayed as nothing. Whether a number
+ *  that small MEANS anything is what `below_resolution` is for.
+ */
+export const fmtKL = (kl: number) =>
+  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
+
+// ------------------------------------------------------- feature ablation
+
+/** One feature's causal effect, exactly as `modelmri/feature_ablate.py`
+ *  reports it. Nothing here is recomputed on this side.
+ */
+export interface FeatureScore {
+  feature_id: number;
+  /** Peak activation over the positions that were edited — re-encoded in
+   *  float32 by the ablation, NOT read from the float16 cache the bar chart
+   *  plots. Measured on gpt2: fp16 rounding moved the top feature's KL by
+   *  0.09%, with a max activation error of 0.0916, so the two numbers can
+   *  differ in the first decimal and neither is wrong. */
+  activation: number;
+  /** Every token index the feature was removed at. One entry at
+   *  `scope="position"`. At `scope="prompt"` this is the field that lets the
+   *  panel show a feature which fires nowhere near the token being attributed
+   *  and still reaches the answer through attention — measured on gpt2, 4 of
+   *  the causal top-8 across the prompt fire only at earlier tokens. */
+  positions: number[];
+  kl: number;
+  /** What a RANDOM direction of the same norm, subtracted at the same tokens,
+   *  cost. It is not zero and it is not small: at the top feature's norm of
+   *  35.5 on gpt2, five draws spanned 0.0666-0.1093 nats against that
+   *  feature's own 0.4175. A row below its own control has a score that is the
+   *  size of its edit rather than the identity of its feature. */
+  control_kl: number;
+  /** `kl > control_kl`. Measured on gpt2 at the attributed token, 34 of 43
+   *  rows clear it — and two that do not, #22852 and #1288, sit 5th and 6th in
+   *  the bar chart above. */
+  clears_control: boolean;
+  /** Share of this feature's original activation the SAE's ENCODER still
+   *  reports after the feature's own contribution was subtracted, at the worst
+   *  of the edited positions. Not a failure of the edit — the stream moves by
+   *  exactly one rank-1 term, which `removal_verified` checks — but a property
+   *  of this SAE: W_enc[:,f] and W_dec[f] are not dual, so the encoder reads
+   *  other features' contributions through f's direction. Measured on gpt2
+   *  blocks.8.hook_resid_pre it runs 0% to 60.3%, above 1% on 38 of 43 rows. */
+  encoder_residual: number;
+  p_top_before: number;
+  p_top_after: number;
+  flips_top: boolean;
+  /** The server's verdict against `resolution_kl`, and never recomputed here
+   *  against `noise_floor_kl`. The floor is exactly 0.0 on this path and two
+   *  measured scores came back NEGATIVE (-1e-08, -3e-08) — float32 summation
+   *  over 50257 vocabulary entries — so a client greying out "at or below the
+   *  floor" would grey out nothing. Measured: 2 of 43 scores are at or below
+   *  the floor, 8 of 43 are below the resolution. */
+  below_resolution: boolean;
+}
+
+/** One run of the feature ranking, exactly as the server reports it.
+ *
+ *  Every caveat rendered by the panel is either a field here or is computed
+ *  from two fields here. Nothing is remembered: the additivity direction in
+ *  particular is READ OFF THIS RUN, because features miss in the opposite
+ *  direction from heads — the head panel's singles over-count 8x on gpt2 layer
+ *  0 while these under-count 3.2x — and a remembered direction would be
+ *  exactly backwards.
+ */
+export interface FeatureAblation {
+  /** Which edit was made, named rather than assumed. "Removing a feature" is
+   *  three different experiments in the literature and two of them are
+   *  measurably indefensible on this SAE. */
+  intervention: string;
+  scope: "position" | "prompt";
+  position: number;
+  target_token: string;
+  hook: string;
+  layer: number;
+  /** The edit hook installed with the stream written back UNCHANGED. Measured
+   *  at exactly 0.0 over four repeats. */
+  noise_floor_kl: number;
+  /** The same forward pass again with no hook at all. */
+  replay_kl: number;
+  /** The number a score has to clear to be a measurement rather than
+   *  arithmetic. A different number from the floor, and the one to grey out
+   *  on. */
+  resolution_kl: number;
+  passes: number;
+  elapsed_s: number;
+  ranked: FeatureScore[];
+  n_tested: number;
+  /** How many rows were SCORED, which is not how many came back. `top_k` trims
+   *  the response; a row it drops was tested and measured. Confusing the two
+   *  is how the panel came to label a scored feature "not tested" — the exact
+   *  inversion of what `truncated` means. */
+  n_scored: number;
+  /** How many rows are in `ranked`. When this equals `n_scored`, a feature
+   *  absent from `ranked` really was never tested; when it is smaller, absence
+   *  proves nothing. */
+  n_returned: number;
+  /** How many scored rows fell below `resolution_kl`, and how many came back
+   *  NEGATIVE — which a KL cannot be, and which is the evidence that the line
+   *  to grey out on is the resolution and not the floor. Both counted in THIS
+   *  run rather than remembered. */
+  n_below_resolution: number;
+  n_negative_kl: number;
+  /** The server's own sentence about the trim, which says the thing the panel
+   *  needs and must not paraphrase: "A row left out here WAS tested and
+   *  scored, which is not what `truncated` means." */
+  rows_note: string;
+  n_candidates: number;
+  truncated: boolean;
+  /** "N of M firing features were tested … one not listed was NOT TESTED, not
+   *  found unimportant." Shown verbatim when the run was capped. */
+  coverage: string;
+  sum_of_singles: number;
+  joint_kl: number;
+  /** The SAE's calibrated input convention, and the aggregate FVU that goes
+   *  with it. `fvu` is an aggregate over every token and is dominated by
+   *  token 0; it is NOT this position's accuracy, which is what
+   *  `residual_share` and `residual_kl` are for. */
+  convention: string;
+  fvu: number;
+  /** The aggregate reconstruction error as a NORM fraction — the same units as
+   *  `residual_share`, and the only one of the two aggregates that can be put
+   *  beside it. `fvu` is a squared-error fraction: pairing 0.000984 with
+   *  0.2036 states a 200x gap where the like-for-like one (0.0294 against
+   *  0.2036) is 7x. */
+  rel_err: number;
+  /** The WORST share of a token's norm the SAE fails to model, over the window
+   *  these edits actually landed in. At position scope that is the attributed
+   *  token (0.2036 on gpt2); at prompt scope it is the worst of eleven tokens
+   *  (0.4253, at token 3). Null when the stream has no norm there. */
+  residual_share: number | null;
+  /** The same quantity at the attributed token alone, kept beside the
+   *  scope-matched one rather than replaced by it. */
+  residual_share_at_position: number | null;
+  /** [first, last] token index the reconstruction baseline was substituted
+   *  over — the same window the edits use. */
+  residual_window: [number, number];
+  /** What that gap costs in the same units as every score above: substituting
+   *  the reconstruction over `residual_window` with NO feature removed.
+   *  Measured 0.07753 at position scope and 0.221217 at prompt scope, 2.85x
+   *  more, and only 1 of 256 prompt-scope scores clears the second. */
+  residual_kl: number;
+  residual_means: string;
+  /** Did the EDIT land — is the stream the model received exactly
+   *  `x - activation x W_dec[f]`? Measured deviation 0.0 in float32. This is a
+   *  property of the edit and the dtype, and it is all this flag now claims:
+   *  whether the SAE still READS the feature afterwards is per row, in
+   *  `encoder_residual`, and fails on 38 of 43 rows. */
+  removal_verified: boolean;
+  edit_deviation: number;
+  removal_check: string;
+  /** How many scored rows the SAE's encoder still reads above 1% of their
+   *  original activation, and the worst of them. */
+  n_encoder_residual: number;
+  encoder_residual_max: number;
+  /** How many scored rows score above their own same-norm random control. */
+  n_clearing_control: number;
+  control_means: string;
+  means: string;
+}
+
+/** Rank the SAE's features by how far removing one moves the answer.
+ *
+ *  `position` is the whole claim and is never optional here: the panel always
+ *  knows which token it is asking about, because the user clicked it. `scope`
+ *  chooses between the features firing AT that token and every feature firing
+ *  at or before it — two different questions with two different answers, so
+ *  the response echoes back which one it answered.
+ *
+ *  The DEMO/VIEWER refusal is a second lock on a door the panel already keeps
+ *  shut. It matters because of how demo.ts is written: `/api/features/ablate`
+ *  falls inside its `p.startsWith("/api/features/")` handler, which would
+ *  answer 200 with the single-feature DETAIL payload. A fabricated ranking
+ *  rendered as a measurement is the one failure this project cannot ship, and
+ *  it would pass demo_check's static coverage check, which only asks whether
+ *  *some* handler matches the path.
+ */
+export const rankFeatures = (
+  position: number,
+  scope: "position" | "prompt" = "position",
+) => {
+  // ASK FOR EVERY SCORED ROW, and the reason is not size. The panel annotates
+  // the bar chart with each plotted feature's score, so a feature that was
+  // measured but trimmed out of the response is indistinguishable there from
+  // one that was never tested — and the panel said "not tested" about it,
+  // which is the exact inversion of what `truncated` means. Measured: at
+  // prompt scope the server scored 256 rows and the default top_k=64 returned
+  // 64, so #18994, scored 0.00031514 at causal rank 72, was labelled untested.
+  //
+  // The cap is MAX_CANDIDATES = 256 server-side, so this asks for more rows
+  // than can exist and the response is never trimmed. The panel still checks
+  // `n_returned === n_scored` before using the words "not tested", because a
+  // number in a URL is not a guarantee.
+  if (DEMO || VIEWER) {
+    return Promise.reject(
+      new ApiError(
+        409,
+        JSON.stringify({
+          error:
+            "Ranking features by causal effect runs a forward pass per firing " +
+            "feature against a live model, and there is no model behind this " +
+            "page. Install ModelMRI (`pip install modelmri`) to run it on your " +
+            "own model — the control is not offered here rather than offered " +
+            "and broken.",
+        }),
+      ),
+    );
+  }
+  return fetch(
+    `/api/features/ablate?position=${position}&scope=${scope}&top_k=1024`,
+  ).then((r) => json<FeatureAblation>(r));
+};
 
 export const setSteer = (feature_id: number | null, scale = 0) =>
   fetch("/api/steer", {

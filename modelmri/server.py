@@ -594,6 +594,95 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/features/summary")
 
+    # BEFORE `/api/features/{feature_id}`, AND THAT IS LOAD-BEARING.
+    #
+    # Starlette matches routes in registration order and `{feature_id}` has no
+    # converter in the path, so its regex accepts any single segment. Declared
+    # after it, this route is unreachable: `/api/features/ablate` matches the
+    # detail route, FastAPI tries to parse "ablate" as an int, and the endpoint
+    # answers 422 "Input should be a valid integer" for a request that was
+    # perfectly well formed. Grouping it with the other ablate routes further
+    # down reads better and does not work. The two refusal tests in
+    # test_smoke.py pin this by asserting 409, which a shadowed route cannot
+    # return.
+    @app.get("/api/features/ablate")
+    async def ablate_features(
+        position: int | None = None, scope: str = "position", top_k: int = 64
+    ):
+        """Rank SAE features by how far removing one moves the next-token answer.
+
+        The features panel ranks by activation, which is what fired rather than
+        what mattered. This is the same question `/api/attention/ablate` asks of
+        heads and `/api/attention/attribute` asks of the prompt's tokens, and
+        the answers differ: measured on gpt2 at blocks.8.hook_resid_pre with
+        "The Eiffel Tower is located in the city of", the top-8 by activation
+        and the top-8 by ablation KL at the attributed token share 6 of 8, and
+        at `scope=prompt` they share 0 of 8.
+
+        `scope=position` (default) tries the features firing at `position` —
+        43 candidates on that prompt, 92 passes. `scope=prompt` tries each
+        feature wherever it fires at or before it — 494 candidates, capped at
+        256 tested, 518 passes — and it is the one that finds features the
+        panel cannot show: measured here its top-8 is [5856, 11149, 19941,
+        1066, 2194, 7703, 20110, 2319], and 19941, 1066, 7703, 20110 and 2319
+        fire only at tokens 1, 4, {2,3}, 3 and 2.
+
+        Two passes per tested feature, not one: every row is paired with a
+        random direction of the same norm at the same tokens (`control_kl`),
+        because a score is partly the size of the edit that produced it.
+
+        Measured on gpt2 float32 on this CPU: 10.09 s at position scope,
+        49.44 s at prompt scope.
+
+        `top_k` trims the returned rows only. A row it drops was tested and
+        scored; `truncated: true` means something else and worse — a candidate
+        that was never measured. `sum_of_singles` and `joint_kl` cover every
+        scored row either way.
+
+        `passes` and `elapsed_s` are both returned so a caller can derive a
+        rate on ITS machine, the same contract the other two ranking routes
+        carry. Seconds measured here do not transfer.
+
+        Read `residual_means` before quoting a score. The baseline follows the
+        scope, because the edits do: substituting the SAE's reconstruction with
+        no feature removed costs 0.0775 nats at the attributed token alone and
+        0.2212 over the eleven tokens a prompt-scope ranking edits. Only 2 of
+        43 scores clear the first and 1 of 256 clears the second.
+
+        Read `removal_check` too. The edit lands exactly — the stream the model
+        received differs from the intended one by 0.0 in float32 — but that is
+        not the same as the feature having left the SAE's reading of the
+        stream, which is per row in `encoder_residual` and fails on 38 of 43
+        rows here because encoder and decoder directions are not dual.
+
+        **float32 only, and on a GPU that means it refuses.** ModelMRI loads
+        bfloat16 on an NVIDIA GPU, and in bfloat16 an edit with no causal
+        effect scores 0.028 nats here while the noise floor still reads 0.0 —
+        the ranking below its top rows is rounding error. `runtime.rank_features`
+        carries the measurement and the refusal says how to get float32.
+
+        409 when there is nothing to measure or nothing that would mean
+        anything: a recording is open, the model is served by Ollama, nothing
+        has been generated, the generation belongs to a previous model, no SAE
+        is loaded, the model is not float32, or the SAE does not reconstruct
+        the stream it is attached to. 422 when `position`, `scope` or `top_k`
+        is outside what this can answer.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.rank_features, position, scope, top_k
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            # A full GPU is not a conflict. `rank_features` translates only
+            # FeatureAblationError, so a torch OOM during 262 forward passes —
+            # the realistic failure on this route — arrives here and is logged
+            # rather than published in torch's own words.
+            return _internal(err, "/api/features/ablate")
+
     @app.get("/api/features/{feature_id}")
     async def feature_detail(feature_id: int):
         try:

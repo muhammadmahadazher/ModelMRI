@@ -4,6 +4,137 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The features panel can now say which features actually changed the
+  answer.** It ranked by raw activation, which is what fired, not what
+  mattered — the same gap `ablate.py` closed for heads and `attribute.py`
+  closed for prompt tokens. `GET /api/features/ablate` removes one feature's
+  contribution from the residual stream, runs the model again, and reports how
+  far the next-token distribution moved, in the same KL nats every other
+  ranking in the tool uses.
+
+  Measured on gpt2 `blocks.8.hook_resid_pre` (SAE
+  jbloom/GPT2-Small-SAEs-Reformatted, calibrated `centered+b_dec`), prompt "The
+  Eiffel Tower is located in the city of", attributing at token 10 where the
+  top token is " Paris" at p=0.06378: the top-8 by activation and the top-8 by
+  causal effect share **6 of 8** at that token, and **3 of 8** when each
+  feature is removed everywhere it fires across the prompt — because four of
+  that ranking's top eight fire only at earlier tokens and reach the answer
+  through attention, which the bar chart cannot show at all.
+
+  The scores do not add up, and they miss in the opposite direction from heads:
+  the 43 singles sum to 0.66446 while one joint ablation removing all 43 gives
+  2.135221, so they **under**-count by 3.2x, where head ablation on gpt2 layer
+  0 over-counts 8x. The panel reads the direction off each run rather than
+  remembering one.
+
+  It refuses in float32-only. In bfloat16 — which ModelMRI selects for every
+  NVIDIA GPU — an edit whose true effect is 4.9e-07 nats reads 0.02836 and
+  outranks a feature with 100x its activation, while writing the stream back
+  unchanged is still bit-exact and still scores 0.0, so the noise floor cannot
+  catch it. The panel now shows that refusal **instead of** the button rather
+  than behind it.
+
+### Fixed — in the ranking, before it shipped
+
+Three adversarial passes over the above. Every number below was re-measured
+here before anything was changed.
+
+- **The mechanism check was reporting a property 38 rows out of 43
+  contradicted.** It re-encoded the edited stream, found the top feature's
+  activation was exactly 0.0 of 35.546, and returned `removal_verified: true`
+  with a note saying this is "a property of the edit and the SAE, not of each
+  feature". Run on every candidate instead of one, it fails on **38 of 43**,
+  with the SAE's encoder still reading 10.1% to 60.3% of the original
+  activation — and the five that pass do so because relu clamped an
+  *overshoot* (feature 5856's pre-activation goes 35.546 to −2.331 for an
+  activation of 35.546), not because the removal was clean. The cause is that
+  encoder and decoder directions are not dual: `W_enc[:,f] · W_dec[f]` has mean
+  0.8387 over d_sae, from −0.3819 to 1.3072.
+
+  `removal_verified` now makes exactly one claim, and it is the one that *is* a
+  property of the edit: the stream the model received differs from
+  `x − activation × W_dec[f]` by at most `edit_deviation`, measured 0.0 in
+  float32. What the SAE still reads afterwards is per row, in
+  `encoder_residual`, and costs no forward pass — the re-encode of the cast
+  stream agrees with one taken through the model to 3.6e-06.
+
+- **A score was partly the size of the edit, and nothing said so.** A random
+  Gaussian direction of the top feature's norm (35.5), subtracted at the same
+  token, costs 0.0666–0.1093 nats over five draws against that feature's own
+  0.417461. Every scored row is now paired with its own same-norm control
+  (`control_kl`, `clears_control`), which is the second forward pass per row
+  and why the cost is now `2 × tested + 6`. Measured: **34 of 43** rows clear
+  their own control, and two that do not — #22852 and #1288 — are 5th and 6th
+  in the bar chart the panel plots.
+
+- **The reconstruction baseline was measured at one token while the edits
+  landed at eleven.** At `scope=prompt` the ranking edits every token where a
+  tested feature fires, but the "what the decomposition gets wrong" line was
+  substituted at the attributed token alone: 0.077530 nats, against 0.221217
+  over the window actually edited — 2.85x. Against the first, 2 of 43 features
+  clear; against the second, 1 of 256, so a feature was shown as clearing the
+  SAE's own error when it did not. The baseline now follows the scope, and
+  `residual_share` reports the worst per-position share over that window
+  (0.4253 at token 3, against 0.2036 at the attributed one), with
+  `residual_share_at_position` kept beside it.
+
+- **The reconstruction caveat compared a squared fraction with a norm
+  fraction.** "aggregate FVU 0.0012 — but at this token the SAE fails to model
+  20.4% of the stream's norm" put 0.000984 next to 0.203571 under a "but",
+  which reads as three orders of magnitude. Like for like it is **7x**: the
+  calibration's `rel_err` (0.029397) is the aggregate in the same units, and it
+  is now the one the sentence quotes and the one the calibration banner shows.
+
+- **The panel called features "not tested" that it had tested and scored.** At
+  `scope=prompt` the client sent no `top_k`, so the server trimmed 256 scored
+  rows to 64 while `n_tested` stayed 256, and every plotted feature below
+  causal rank 64 got a chip reading "not tested" with a tooltip saying it was
+  "not asked, not found unimportant" — the exact inversion of the truth.
+  Measured: #18994 scored 0.00031514 at causal rank 72 and was labelled
+  untested. The client now requests every scored row, the server's `n_scored`,
+  `n_returned` and `rows_note` reach the UI, and the "not tested" wording is
+  gated on the response actually carrying every row it scored. The tail count
+  under the leaderboard is counted off `n_scored` too — it read "54 more were
+  tested and scored lower" a few pixels above the server's own "256 of 494
+  firing features were tested".
+
+- **Two docstring claims that were false.** The edit does not leave the rest of
+  the decomposition alone: removing feature 5856 drives 33 of the other 42
+  firing features to exactly zero, starts 2 silent ones, moves 42.4943 of
+  activation outside the target against the 35.546 it removed inside it, and
+  grows the unmodelled remainder at that token from 21.3036 to 31.8553. And
+  subtracting in the raw and the centered space are not the same subtraction —
+  `activation × W_dec[f]` has a non-zero d_model mean (−0.0904 for 5856, 7.05%
+  of the edit's norm). The conclusion the second one supported is still right,
+  for the other reason: holding `mu` at the value the decomposition was taken
+  with is what makes this edit identical to "zero the feature, decode, re-add
+  the error".
+
+- **`Reconstruction checked.`** `usable` is `fvu < 1.0`, which only rules out
+  an SAE carrying less than a constant vector would — an SAE at FVU 0.85 gets
+  the same word as one at 0.001. Verified by scaling a real SAE's decoder until
+  it landed under the gate: FVU 0.8482, `usable` true, a fully plotted bar
+  chart, and a ranking whose top score (0.00569) is 163x smaller than its own
+  reconstruction error's cost (0.9289). The banner now says
+  "Reconstruction **measured**", prints the norm fraction beside the variance
+  fraction (86.3% for that SAE), and the ranking leads with a red line when not
+  one of its scores clears the SAE's own error.
+
+- **`/api/features/ablate` was missing from the error-taxonomy regression
+  list**, so nothing would have noticed the 500 arm being widened back to a 409
+  carrying torch's own words. Added. `tests/demo_check.py` counted the route as
+  "covered" because it falls inside demo.ts's `/api/features/` prefix handler,
+  which answers 200 with a *single feature's detail payload* — a fabricated
+  ranking rendered as a measurement, and the one failure this project cannot
+  ship. It is now exempted with that reason and pinned by a build-artifact
+  check, alongside the token-ranking one. The per-row KL annotation is hoisted
+  behind the same folded constants as the control it belongs to, which drops
+  1,753 bytes of unreachable JavaScript from the demo bundle.
+
 ## [0.9.0] — 2026-08-10
 
 The release where several things that were already on screen turned out not to

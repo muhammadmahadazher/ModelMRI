@@ -31,6 +31,7 @@ from . import (
     attribute,
     capacity,
     devices,
+    feature_ablate,
     paths,
     ollama,
     progress,
@@ -1299,6 +1300,231 @@ class ModelRuntime:
                 "list would be a list about the template."
             )
         out["span_note"] = note
+        return out
+
+    def rank_features(
+        self,
+        position: int | None = None,
+        scope: str = "position",
+        top_k: int = 64,
+    ) -> dict:
+        """Rank SAE features by how far removing one moves the answer.
+
+        The third member of the family. `ablate_heads` asks which piece of the
+        machinery mattered, `attribute_tokens` asks which piece of the input
+        did, and this asks which piece of the SAE's decomposition did — the
+        question the features panel appears to answer today and does not: it
+        ranks by raw activation, and activation is what fired, not what
+        mattered. The measurement, the one defensible intervention and every
+        reason the numbers are shaped the way they are live in
+        `feature_ablate`; everything here is the part that needs the live
+        model, the live SAE and the lock.
+
+        `scope="position"` (the default) puts on trial the features firing at
+        the attributed token; `scope="prompt"` removes each feature wherever it
+        fires at or before it, which is a different and larger question —
+        measured on gpt2 at blocks.8.hook_resid_pre, 4 of that ranking's top-8
+        fire ONLY at earlier tokens and reach the prediction through attention,
+        so the current panel cannot show them at all.
+
+        `top_k` trims the ROWS IN THE RESPONSE and nothing else. A row it drops
+        was tested and scored; `truncated` in the payload means something
+        different and worse — a candidate never measured. `sum_of_singles` and
+        `joint_kl` stay over every scored row, so trimming the response cannot
+        move them.
+
+        `position` defaults to the last prompt token, the same expression
+        `ablate_heads` and `attribute_tokens` use and for the same reason: that
+        distribution is the model's answer to the question, before any of its
+        own output feeds back in.
+
+        Cost is `2 x features tested + 6` forward passes. Two per row, not one:
+        the feature's own edit and a random direction of the same norm at the
+        same tokens, because part of a score is the SIZE of the edit — a
+        Gaussian direction at the top feature's norm costs about 0.09 nats
+        against that feature's own 0.417, and 9 of the 43 rows on the reference
+        prompt do not clear their own control. Measured through this module on
+        this machine, gpt2 in float32 on CPU — which the dtype gate below makes
+        the only configuration this answers in — "The Eiffel Tower is located
+        in the city of" attributed at position 10: 92 passes and 10.09 s at
+        position scope (43 candidates), 518 passes and 49.44 s at prompt scope
+        (494 candidates, 256 tested). The pass count is the portable part; the
+        seconds are this CPU's. `passes` and `elapsed_s` both come back so a
+        caller derives a rate on its own machine, the same contract the other
+        two rankings carry.
+
+        **It refuses anything but float32, and that is the one refusal here
+        that is not obvious.** `feature_ablate` checks its floor by writing the
+        stream back unchanged, which is bit-exact in every dtype and scores 0.0
+        in every dtype — so nothing inside the measurement can notice that in
+        bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats on its
+        own. Measured on gpt2 here, an edit whose true effect is 4.9e-07 nats
+        reads 0.02836 in bfloat16 and outranks a feature with 100x its
+        activation. The long version, with the numbers and with what float16
+        does differently, is on the check itself.
+
+        The other refusals are split across two files on purpose. A recording,
+        Ollama, nothing generated yet, a generation from a previous model, no
+        SAE and the dtype are all states this object can see, so they are
+        refused here. That the SAE does not reconstruct the stream it is
+        attached to is only knowable after encoding real activations, so
+        `feature_ablate` refuses it, in one message quoting the FVU it
+        measured — duplicating that check here would put the same sentence in
+        two places and let them drift.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Ranking features means subtracting one "
+                "from the residual stream and running the model again, and a "
+                "`.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no residual stream to "
+                "subtract a feature's direction from. Load the model through "
+                "HuggingFace."
+            )
+        with self._lock:
+            # Inside the lock, all of it, for the reason `_require_live_generation`
+            # gives at length: `load` holds this same lock across the epoch bump
+            # and the model swap, so a check taken outside it is a check against
+            # a state that can be gone before the first forward pass runs. This
+            # path is worse than the other two if it slips, not better — the
+            # ranking would be one model's features under another model's
+            # weights, and the SAE below is validated against the model that was
+            # loaded when it was loaded.
+            self._require_live_generation(
+                "Generate something first, then ask which of its features mattered."
+            )
+            if self.sae is None:
+                raise Refusal(
+                    "No SAE loaded, so there are no features to remove. POST "
+                    "/api/sae/load first — this ranks the same decomposition "
+                    "the features panel plots, by causal effect instead of by "
+                    "activation."
+                )
+            # THE DTYPE GATE, AND IT IS NOT PEDANTRY — MEASURED ON THIS BOX.
+            #
+            # `feature_ablate` verifies its floor by writing the captured
+            # stream back UNCHANGED, which is bit-exact in every dtype and
+            # scores 0.0 in every dtype. That check cannot see the failure
+            # below, which is why this one exists.
+            #
+            # Same ids, same SAE, same hook, same position; only the model's
+            # dtype differs. gpt2, cuda, eager, jbloom/GPT2-Small-SAEs-Reformatted
+            # @ blocks.8.hook_resid_pre calibrated centered+b_dec, "The Eiffel
+            # Tower is located in the city of Paris", position 10:
+            #
+            #   feature 9420  activation 0.0003  fp32 -3e-08   bf16 0.00593
+            #   feature 16664 activation 0.0131  fp32 -1e-08   bf16 0.01170
+            #   feature 3841  activation 0.051   fp32  4.9e-07 bf16 0.02836
+            #
+            # Those are edits with no causal effect at all — fp32 puts them at
+            # the resolution, where they belong — reading in bfloat16 as some
+            # of the LARGER scores in the table. 3841 outranks feature 21062,
+            # whose activation is 5.49 and whose real effect is 0.0044. The
+            # pedestal is the model's own arithmetic: a 1-ulp change to the
+            # stream propagates through the remaining blocks in bfloat16 and
+            # comes out worth ~0.01-0.03 nats, so it is added to every edit and
+            # subtracted from none. Top-8 agreement between the two dtypes is
+            # 3 of 8; the singles sum to 0.66446 in fp32 against 1.38186 in
+            # bf16, which inverts the payload's own sentence about how they add
+            # up (bf16: 1.38 against a joint 2.11, and at prompt scope 5.29
+            # against 5.59, i.e. it looks additive when it is not); and the
+            # candidate set itself moves, 43 features firing in fp32 against 44
+            # in bf16 and 42 in fp16.
+            #
+            # float16 is better and still not admissible: its top-8 matched
+            # fp32's exactly, but its pedestal is ~2e-4 (3841 reads 0.00040
+            # against 4.9e-07) and roughly thirty of the 43 real scores are
+            # below that, so the tail is still ordered by rounding. What would
+            # make either dtype work is a resolution MEASURED per dtype the way
+            # the float32 one was, replacing feature_ablate.RESOLUTION_KL —
+            # measuring it on one model and one prompt, as here, is not that.
+            #
+            # A Refusal, not a BadRequest: the request is fine, and what makes
+            # the measurement impossible is which model is resident.
+            dtype = next(self.model.parameters()).dtype
+            if dtype != torch.float32:
+                name = str(dtype).removeprefix("torch.")
+                raise Refusal(
+                    f"this model is loaded in {name}, and a feature ranking "
+                    f"taken in {name} is a ranking of rounding error below its "
+                    "top two or three rows. Measured here on gpt2 at "
+                    "blocks.8.hook_resid_pre, the same 43 features scored in "
+                    "both dtypes: feature 3841, activation 0.051, moves the "
+                    "answer 4.9e-07 nats in float32 and 0.02836 in bfloat16 — "
+                    "an edit with no causal effect reading as one of the "
+                    "larger scores in the table, above a feature with 100x its "
+                    "activation. Writing the stream back unchanged is still "
+                    "bit-exact and still scores 0.0, so the noise floor cannot "
+                    "catch this. It works in float32, which ModelMRI selects "
+                    "for CPU and never for a GPU: start the server with the "
+                    "GPU hidden (PowerShell `$env:CUDA_VISIBLE_DEVICES=''`, "
+                    "or `CUDA_VISIBLE_DEVICES= modelmri serve`) and load the "
+                    "model again — verified on this machine to select "
+                    "cpu/float32."
+                )
+
+            if top_k < 1:
+                raise BadRequest(f"top_k must be at least 1, got {top_k}.")
+
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise BadRequest(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+
+            try:
+                out = feature_ablate.rank_features(
+                    self.model,
+                    self._block(self.sae.layer),
+                    self.last_ids.unsqueeze(0).to(self.device),
+                    self.sae,
+                    position=position,
+                    scope=scope,
+                    decode=lambda t: self.tokenizer.decode([t]),
+                )
+            except feature_ablate.FeatureAblationError as err:
+                # Not a crash: a measurement this code cannot take honestly —
+                # an SAE that does not reconstruct, an edit that does not land
+                # where the capture came from, a position where nothing fires.
+                # `except Exception` here would swallow a CUDA out-of-memory
+                # into a 409, which is the bug errors.py exists to stop.
+                raise Refusal(str(err)) from err
+
+        # Outside the lock: arithmetic on a dict, and no model touched.
+        ranked = out["ranked"]
+        n_scored = len(ranked)
+        n_below = sum(1 for row in ranked if row["below_resolution"])
+        # Counted in THIS run rather than quoted from the reference one. A KL
+        # cannot be negative, so each of these is float32 summation over the
+        # vocabulary showing itself, and it is the evidence for why the line a
+        # panel greys out on is `resolution_kl` and not `noise_floor_kl` —
+        # measured through this endpoint on gpt2/CPU/float32, the floor is
+        # exactly 0.0 while 4 of 43 rows came back below it.
+        n_negative = sum(1 for row in ranked if row["kl"] < 0)
+        out["ranked"] = ranked[:top_k]
+        out["n_returned"] = len(out["ranked"])
+        out["n_scored"] = n_scored
+        out["n_below_resolution"] = n_below
+        out["n_negative_kl"] = n_negative
+        out["rows_note"] = (
+            f"{len(out['ranked'])} of {n_scored} scored rows are in this "
+            f"response, the highest-scoring ones. A row left out here WAS "
+            f"tested and scored, which is not what `truncated` means — that is "
+            f"a candidate never measured at all. sum_of_singles and joint_kl "
+            f"are over all {n_scored} scored rows and do not move when this "
+            f"list is trimmed. {n_below} of {n_scored} scored below "
+            f"resolution_kl ({out['resolution_kl']:g} nats), where the number "
+            f"is arithmetic rather than a measurement, and {n_negative} came "
+            f"back NEGATIVE, which a KL cannot be — that is float32 summation "
+            f"over the vocabulary, and it is why the line to grey out on is "
+            f"the resolution and not noise_floor_kl."
+        )
         return out
 
     # ---------------- sessions (.mri) ----------------
