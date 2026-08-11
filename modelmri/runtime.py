@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -77,6 +78,11 @@ def _require_causal_lm(hf_id: str) -> None:
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 
+# How long a second load request waits for the first to let go. Long enough
+# that a double-clicked button still serialises, short enough that a load
+# which has stopped returning cannot silently swallow every request after it.
+LOAD_QUEUE_WAIT_S = 2.0
+
 
 def _hub_error_message(hf_id: str, err: Exception) -> str:
     """Turn a HuggingFace hub failure into one actionable sentence."""
@@ -111,13 +117,6 @@ def _hub_error_message(hf_id: str, err: Exception) -> str:
     )
 
 
-def _tree_bytes(root) -> int:
-    try:
-        return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
-    except OSError:
-        return 0
-
-
 def local_hf_models() -> list[dict]:
     """Models already in the HuggingFace cache (offline-usable)."""
 
@@ -127,11 +126,14 @@ def local_hf_models() -> list[dict]:
         return out
     for d in sorted(hub.glob("models--*")):
         parts = d.name.removeprefix("models--").split("--")
-        # max, not sum -- exactly the trap progress.py documents. On Windows
-        # (and anywhere symlinks are unavailable) snapshots/ holds full copies
-        # of the blobs, so adding the two trees reports every model at roughly
-        # double its real size, and the picker then sorts by that.
-        size = max(_tree_bytes(d / "blobs"), _tree_bytes(d / "snapshots"))
+        # One counting rule, shared with the load meter, so the picker and the
+        # progress bar cannot disagree about how big the same model is. It
+        # takes the max of blobs/ and snapshots/ rather than the sum, and
+        # ignores the subfolder copies of the weights that repos ship for
+        # other runtimes -- both traps are documented in progress.py, and the
+        # second one had this listing reporting Llama-3.2-1B at 4.96 GB
+        # against the 2.48 GB it actually occupies.
+        size = progress._bytes_on_disk("/".join(parts))
         out.append({"id": "/".join(parts), "size_gb": round(size / 1e9, 2)})
     return out
 
@@ -441,6 +443,47 @@ class ModelRuntime:
             instruct=bool(getattr(self.tokenizer, "chat_template", None)),
         )
 
+    def _in_flight(self) -> str:
+        """A sentence describing the load already running, or "" if none is.
+
+        Reads the progress tracker rather than the lock, because the lock can
+        only answer "held" and the useful answer is *what* is holding it and
+        for how long.
+        """
+        snap = progress.TRACKER.snapshot()
+        if not snap.active:
+            return ""
+        return (
+            f"'{snap.hf_id}' has been loading for {snap.elapsed_s:.0f}s "
+            f"({snap.stage}: {snap.detail})"
+        )
+
+    @contextmanager
+    def _load_slot(self, hf_id: str) -> Iterator[None]:
+        """The load lock, with a ceiling on how long a caller waits for it.
+
+        A load holds this for as long as it takes, and one that stops
+        returning held it forever: the next request blocked in `with
+        self._lock` with no timeout, no message and no way out. That is what
+        "no model is actually loading" looks like from the outside -- and
+        because the browser labelled the meter with the model it had just
+        picked rather than the one the server was loading, the wedged load's
+        byte counts appeared under the queued model's name.
+
+        Refusing is the honest answer: one model is loading at a time by
+        design, so a second request is a 409, not a queue slot.
+        """
+        if not self._lock.acquire(timeout=LOAD_QUEUE_WAIT_S):
+            busy = self._in_flight() or "another load is running"
+            raise Refusal(
+                f"Cannot load '{hf_id}' yet: {busy}. Stop it first, or wait "
+                f"for it to finish."
+            )
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def load(
         self,
         hf_id: str = DEFAULT_MODEL,
@@ -490,7 +533,7 @@ class ModelRuntime:
                 self._steer = None
             return self.status()
 
-        with self._lock:
+        with self._load_slot(hf_id):
             dtype = devices.torch_dtype(self.accel)
             progress.TRACKER.start(hf_id)
             try:
