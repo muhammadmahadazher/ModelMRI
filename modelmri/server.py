@@ -934,6 +934,30 @@ def create_app(
         # 0.0.0.0 this would be remote code execution with two requests. The
         # person at the keyboard may move the boundary; a stranger on the
         # network may not.
+        # And a page in YOUR browser is not you either. Loopback alone does not
+        # settle it: a tab open on some other site can POST to localhost, and
+        # the request arrives from 127.0.0.1 like any other. A JSON body
+        # already forces a preflight that fails without CORS headers — there
+        # are none — but relying on that is relying on a side effect. An Origin
+        # from anywhere else is refused explicitly, which is a defence you can
+        # read rather than one you have to derive.
+        origin = request.headers.get("origin") or ""
+        if origin:
+            from urllib.parse import urlparse
+
+            host = (urlparse(origin).hostname or "").lower()
+            if host not in ("127.0.0.1", "::1", "localhost"):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "That request came from another site. Choosing a "
+                            "folder to scan is something only this machine's "
+                            "own page may do."
+                        )
+                    },
+                    status_code=403,
+                )
+
         client = (request.client.host if request.client else "") or ""
         if client not in ("127.0.0.1", "::1", "localhost"):
             return JSONResponse(

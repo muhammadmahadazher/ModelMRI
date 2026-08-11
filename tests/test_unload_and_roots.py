@@ -165,3 +165,31 @@ def test_the_root_of_a_filesystem_is_refused():
     r = c.post("/api/custom/scan", json={"path": str(root)})
     assert r.status_code == 422, r.text
     assert "root of a filesystem" in r.json()["error"]
+
+
+def test_a_page_on_another_site_may_not_widen_the_boundary(tmp_path):
+    """Loopback alone does not settle it: a tab open on some other site can
+    POST to localhost and the request arrives from 127.0.0.1 like any other.
+
+    A JSON body already forces a preflight that fails without CORS headers —
+    there are none — but relying on that is relying on a side effect."""
+    elsewhere = tmp_path / "over-here"
+    elsewhere.mkdir()
+
+    c = _local_client()
+    r = c.post(
+        "/api/custom/scan",
+        json={"path": str(elsewhere)},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert r.status_code == 403, r.text
+    assert "another site" in r.json()["error"]
+    assert elsewhere.resolve() not in custom.allowed_roots()
+
+    # The page ModelMRI actually serves is fine.
+    ok = c.post(
+        "/api/custom/scan",
+        json={"path": str(elsewhere)},
+        headers={"Origin": "http://localhost:5900"},
+    )
+    assert ok.status_code == 200, ok.text
