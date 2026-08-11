@@ -585,6 +585,9 @@ main > * {
   margin-left: 8px;
   font-size: 11px;
   text-decoration: underline;
+  /* `all: unset` drops it; the focus ring follows the element's own shape, so
+     the radius has to be here rather than on the ring. */
+  border-radius: var(--r-chip);
   /* opacity: 0.75 composited the already mid-tone green down to 3.32:1,
      under the 4.5:1 AA floor for 11px text -- and this is the only control
      for signing out. Full opacity keeps it at 5.35:1. */
@@ -923,6 +926,9 @@ button.green:disabled {
   font: 500 13px var(--font-sans);
   color: var(--color-mute);
   padding: 8px 14px;
+  /* Same reason as .linkish: unset removed it, and the ring copies the
+     element rather than the other way round. */
+  border-radius: var(--r-ctrl);
   transition: background-color var(--dur-micro) var(--ease-hover),
     border-color var(--dur-micro) var(--ease-hover),
     color var(--dur-micro) var(--ease-hover);
@@ -2452,9 +2458,16 @@ button.ghost.sm.stop:hover:not(:disabled) {
 :focus-visible:focus-visible {
   outline: 3px solid var(--acc);
   outline-offset: 2px;
-  /* `all: unset` also drops the radius, which left square rings on round
-     controls. Inheriting it keeps the ring concentric with the shape. */
-  border-radius: inherit;
+  /* NO border-radius here. `inherit` was meant to read "keep the shape you
+     already have" and does not: it takes the PARENT's radius. Every control
+     in a plain flex row therefore had its own radius overwritten with 0, and
+     the ring came out as a hard rectangle around a rounded button -- the
+     model picker being the obvious one.
+     `outline` has followed the element's own border-radius since Chrome 94 /
+     Firefox 88 / Safari 16.4, so the correct value here is none at all. The
+     real problem the old comment was aiming at is that `all: unset` drops the
+     radius, and that belongs in the rules that unset it -- all nine now set
+     their own. */
 }
 
 /* Pointer users should not see it; keyboard users must. */

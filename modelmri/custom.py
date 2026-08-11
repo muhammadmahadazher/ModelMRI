@@ -227,7 +227,7 @@ def resolve_under_roots(path: str | Path) -> Path:
     try:
         p = Path(path).expanduser().resolve(strict=False)
     except OSError as err:
-        raise AdapterError(f"cannot resolve {path!r}: {err}") from err
+        raise AdapterError(f"cannot resolve {path!r} ({type(err).__name__})") from err
 
     roots = allowed_roots()
     for root in roots:
@@ -277,7 +277,8 @@ def _import_adapter(path: Path):
     except Exception as err:
         sys.modules.pop(mod_name, None)
         raise AdapterError(
-            f"{path.name} raised while being imported: {type(err).__name__}: {err}"
+            f"{path.name} raised while being imported: {type(err).__name__} "
+            "— the full error is in the terminal"
         ) from err
     finally:
         if added:
@@ -320,7 +321,8 @@ def load_from_adapter(path: Path):
         model = loader()
     except Exception as err:
         raise AdapterError(
-            f"{path.name}: load() raised {type(err).__name__}: {err}"
+            f"{path.name}: load() raised {type(err).__name__} — the full error is "
+            "in the terminal"
         ) from err
 
     if not isinstance(model, torch.nn.Module):
@@ -337,7 +339,8 @@ def load_from_adapter(path: Path):
             example = maker()
         except Exception as err:
             raise AdapterError(
-                f"{path.name}: example_input() raised {type(err).__name__}: {err}"
+                f"{path.name}: example_input() raised {type(err).__name__} — the "
+                "full error is in the terminal"
             ) from err
 
     labels = getattr(module, "LABELS", None)
@@ -386,10 +389,18 @@ def load_torchscript(path: Path):
     try:
         obj = torch.load(str(path), map_location="cpu", weights_only=True)
     except Exception as err:
+        # The class, not the text. An AdapterError is relayed to the browser
+        # in its own words, and torch's text here is not the project's:
+        # measured, a PytorchStreamReader failure pasted both the caller's
+        # absolute weights path and a site-packages serialization.py frame
+        # into the body. The class still says which KIND of unreadable it is,
+        # which is what the sentence needs; the rest is in the terminal.
+        log.warning("reading %s as a checkpoint failed", path.name, exc_info=err)
         raise AdapterError(
             f"{path.name} is neither TorchScript nor a readable checkpoint "
-            f"({type(err).__name__}: {err}). If it needs pickle to load, it can "
-            "execute arbitrary code — load it yourself in an adapter instead."
+            f"({type(err).__name__} — the full error is in the terminal). If "
+            "it needs pickle to load, it can execute arbitrary code — load it "
+            "yourself in an adapter instead."
         ) from err
 
     kind = type(obj).__name__
@@ -592,7 +603,7 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
             output = model(*example) if isinstance(example, tuple) else model(example)
     except Exception as err:
         raise AdapterError(
-            f"the forward pass raised {type(err).__name__}: {err}. "
+            f"the forward pass raised {type(err).__name__}. "
             "Most often the input shape is wrong — check the shape field, or "
             "add example_input() to your adapter so ModelMRI never has to guess."
         ) from err

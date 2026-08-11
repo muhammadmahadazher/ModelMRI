@@ -466,7 +466,13 @@ def rank_tokens(
                 forward(masked(probe), output_attentions=True), "attentions", None
             )
         except Exception as err:  # a failed check is a reported check
-            attentions, why = None, f"{type(err).__name__}: {err}"
+            # Reported, but by CLASS. `why` is published to the caller, and
+            # what lands here is whatever torch or the model raised -- a
+            # flash-attn-only architecture gives 'RuntimeError: eager
+            # attention is not implemented ... File "<site-packages>/torch/
+            # nn/modules/module.py", line 1518', measured, with the frame.
+            # Which kind of failure it was is the reportable part.
+            attentions, why = None, f"{type(err).__name__} (see the terminal)"
         if attentions:
             residual: float | None = max(
                 float(a[0, :, :, probe].max()) for a in attentions

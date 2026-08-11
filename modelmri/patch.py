@@ -312,7 +312,12 @@ def trace(
         try:
             caches[component] = cache_for(component)
         except PatchError as err:
-            skipped.append(f"{component}: {err}")
+            # A PatchError is this project's own class and carries an
+            # authored sentence, so the text is fine here -- but these notes
+            # travel: they go into the response AND, since sessions carry a
+            # patch trace, into a `.mri` somebody forwards. Stated so the next
+            # edit does not swap in a library exception without noticing.
+            skipped.append(f"{component}: {err}")  # leak-ok: PatchError is authored
             continue
         grids[component] = [
             [
