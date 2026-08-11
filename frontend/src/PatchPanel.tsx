@@ -15,6 +15,19 @@ import { errorText, patchTrace, PatchTrace } from "./api";
  *  those the same colour as a site that did nothing.
  */
 
+const LABEL: Record<string, string> = {
+  resid: "residual stream",
+  attn: "attention",
+  mlp: "MLP",
+};
+
+/** What each grid is actually claiming, in the reader's terms. */
+const BLURB: Record<string, string> = {
+  resid: "where the answer is, at the input to each block",
+  attn: "what attention moved in — usually late, at the last token",
+  mlp: "what the MLP wrote — usually early, at the subject",
+};
+
 const CLEAN_DEFAULT = "The Eiffel Tower is located in the city of";
 const CORRUPT_DEFAULT = "The Colosseum is located in the city of";
 
@@ -37,6 +50,10 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [hover, setHover] = useState<{ l: number; p: number } | null>(null);
+  // Which grid is on screen. Three are computed in one call because the
+  // comparison IS the finding — the residual grid says where, the two
+  // sublayer grids say through what, and they do not agree.
+  const [comp, setComp] = useState("resid");
 
   async function run() {
     setBusy(true);
@@ -55,9 +72,17 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
   }
 
   const controlled = new Map(
-    (data?.sites ?? []).map((s) => [`${s.layer}:${s.position}`, s]),
+    (data?.sites ?? [])
+      .filter((s) => s.component === comp)
+      .map((s) => [`${s.layer}:${s.position}`, s]),
   );
   const hovered = hover ? controlled.get(`${hover.l}:${hover.p}`) : undefined;
+  // `?.` on grids, not just on data. A built bundle can be older or newer
+  // than the server it is served by — during this feature it was, and
+  // `data.grids[comp]` on a response that still carried the old single `grid`
+  // threw during render, which in React unmounts the whole tree: every panel
+  // on the page went blank because one of them read a missing key.
+  const grid = data?.grids?.[comp] ?? [];
 
   return (
     <div className="panel patch" key={epoch}>
@@ -99,7 +124,15 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
 
       {err && <div className="hint err">{err}</div>}
 
-      {data && (
+      {data && !data.grids && (
+        <div className="hint err">
+          The server answered in a shape this page does not know — it is
+          probably running a different version of ModelMRI than the one that
+          built this bundle. Restart `modelmri serve`.
+        </div>
+      )}
+
+      {data && data.grids && (
         <>
           <div className="patch-answers meta">
             <span>
@@ -113,6 +146,22 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
             <span>
               {data.passes} passes · {data.seconds}s · {data.dtype}
             </span>
+          </div>
+
+          <div className="patch-tabs">
+            {data.components.map((c) => (
+              <button
+                key={c}
+                className={`pill sm ${c === comp ? "on" : ""}`}
+                onClick={() => {
+                  setComp(c);
+                  setHover(null);
+                }}
+              >
+                {LABEL[c] ?? c}
+              </button>
+            ))}
+            <span className="meta">{BLURB[comp]}</span>
           </div>
 
           <div className="patch-grid-wrap">
@@ -130,7 +179,7 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
               <tbody>
                 {/* Deepest layer at the top, so the grid reads the way the
                     model runs down the page. */}
-                {[...data.grid].reverse().map((row, ri) => {
+                {[...grid].reverse().map((row, ri) => {
                   const li = data.n_layers - 1 - ri;
                   return (
                     <tr key={li}>

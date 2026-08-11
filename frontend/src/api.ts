@@ -1311,6 +1311,7 @@ export interface PatchSide {
 }
 
 export interface PatchSite {
+  component: string;
   layer: number;
   position: number;
   recovery: number;
@@ -1328,7 +1329,12 @@ export interface PatchTrace {
   gap: number;
   n_layers: number;
   n_positions: number;
-  grid: number[][];
+  components: string[];
+  /** One grid per component. `resid` says where; `attn` and `mlp` say through
+   *  what, and on the reference pair they disagree — MLP peaks at +0.365 on a
+   *  subject token in layer 0, attention at +0.232 on the last token in
+   *  layer 9. */
+  grids: Record<string, number[][]>;
   sites: PatchSite[];
   controlled: number;
   dtype: string;

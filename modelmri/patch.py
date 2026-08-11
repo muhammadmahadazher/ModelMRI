@@ -80,8 +80,67 @@ MAX_CONTROLLED = 24
 MIN_GAP = 0.5
 
 
+# What gets replaced. The residual stream answers WHERE; the two sublayers
+# answer THROUGH WHAT, and they do not agree, which is the reason to run all
+# three. Measured on the reference pair: the MLP grid peaks at +0.365 on the
+# SUBJECT token in layer 0, the attention grid at +0.232 on the LAST token in
+# layer 9. Early MLP writes the fact, late attention moves it to where the
+# prediction is made -- and the residual grid, which is their sum, shows only
+# the destination.
+COMPONENTS = ("resid", "attn", "mlp")
+
+
 class PatchError(RuntimeError):
     """The two prompts cannot be compared. Always says which one to change."""
+
+
+def _sublayer(block: torch.nn.Module, kind: str) -> torch.nn.Module:
+    """The attention or MLP submodule of a decoder block.
+
+    Two spellings, because the two families this tool supports disagree:
+    GPT-2 calls it `attn`, Llama/Qwen/Gemma call it `self_attn`. Both call the
+    MLP `mlp`. Refuses rather than guessing, for the same reason
+    `ModelRuntime._block` does.
+    """
+    if kind == "mlp" and hasattr(block, "mlp"):
+        return block.mlp
+    if kind == "attn":
+        for name in ("attn", "self_attn"):
+            if hasattr(block, name):
+                return getattr(block, name)
+    raise PatchError(
+        f"This model's blocks expose no '{kind}' submodule, so there is "
+        f"nothing to patch there. Known spellings: attn (GPT-2) and self_attn "
+        f"(Llama, Qwen, Gemma), plus mlp for both. Ask for component='resid', "
+        f"which reads the residual stream and works on any layout."
+    )
+
+
+def _capture_out(module: torch.nn.Module, layer: int, sink: dict):
+    """Read a sublayer's OUTPUT. Attention returns a tuple; the MLP does not."""
+
+    def post(module, args, output):
+        y = output[0] if isinstance(output, tuple) else output
+        sink[layer] = y.detach().clone()
+
+    return module.register_forward_hook(post)
+
+
+def _splice_out(module: torch.nn.Module, pos: int, vec: torch.Tensor):
+    """Replace one position of a sublayer's output.
+
+    Rebuilds the tuple rather than mutating it: attention returns the present
+    key/value cache alongside the hidden states on several versions, and
+    dropping the tail would silently change what the rest of the block sees.
+    """
+
+    def post(module, args, output):
+        is_tuple = isinstance(output, tuple)
+        y = (output[0] if is_tuple else output).clone()
+        y[:, pos, :] = vec
+        return (y,) + output[1:] if is_tuple else y
+
+    return module.register_forward_hook(post)
 
 
 def _tokens(tokenizer: Any, ids: torch.Tensor) -> list[str]:
@@ -199,23 +258,40 @@ def trace(
             f"differ more clearly."
         )
 
-    # The clean run, cached once. Every patch below reads from this.
-    cache: dict[int, torch.Tensor] = {}
-    handles = [_capture(b_, i, cache) for i, b_ in enumerate(blocks)]
-    try:
-        with torch.no_grad():
-            model(clean_ids)
-    finally:
-        for h in handles:
-            h.remove()
-
     n_layers = len(blocks)
     passes = 2  # the two baselines above
     t0 = time.perf_counter()
 
-    def run_patched(layer: int, pos: int, vec: torch.Tensor) -> float:
+    def cache_for(component: str) -> dict[int, torch.Tensor]:
+        """The clean run's activations at one component, cached once."""
+        got: dict[int, torch.Tensor] = {}
+        if component == "resid":
+            handles = [_capture(b_, i, got) for i, b_ in enumerate(blocks)]
+        else:
+            handles = [
+                _capture_out(_sublayer(b_, component), i, got)
+                for i, b_ in enumerate(blocks)
+            ]
+        try:
+            with torch.no_grad():
+                model(clean_ids)
+        finally:
+            for h in handles:
+                h.remove()
+        return got
+
+    def run_patched(component: str, layer: int, pos: int, vec: torch.Tensor) -> float:
         nonlocal passes
-        h = _splice(blocks[layer], pos, vec)
+        target = (
+            blocks[layer]
+            if component == "resid"
+            else _sublayer(blocks[layer], component)
+        )
+        h = (
+            _splice(target, pos, vec)
+            if component == "resid"
+            else _splice_out(target, pos, vec)
+        )
         try:
             with torch.no_grad():
                 out = model(corrupt_ids).logits[0, -1].float()
@@ -224,35 +300,57 @@ def trace(
         passes += 1
         return (gap_of(out) - ld_corrupt) / gap
 
-    grid = [
-        [run_patched(li, pi, cache[li][:, pi, :]) for pi in range(n_pos)]
-        for li in range(n_layers)
-    ]
+    caches: dict[str, dict[int, torch.Tensor]] = {}
+    grids: dict[str, list[list[float]]] = {}
+    for component in COMPONENTS:
+        caches[component] = cache_for(component)
+        grids[component] = [
+            [
+                run_patched(component, li, pi, caches[component][li][:, pi, :])
+                for pi in range(n_pos)
+            ]
+            for li in range(n_layers)
+        ]
 
-    # Controls on the strongest sites only. Every cell is scored; only the
-    # candidates worth believing are tested against chance, because the
-    # controls cost draws+1 passes each and the grid is already n*m.
-    ranked = sorted(
-        ((grid[li][pi], li, pi) for li in range(n_layers) for pi in range(n_pos)),
-        reverse=True,
-    )
+    # Controls on the strongest sites, PER COMPONENT rather than pooled.
+    #
+    # Pooling them was the first cut and it was wrong: the residual stream
+    # carries both sublayers plus what was already there, so its scores are
+    # systematically larger and a shared ranking is not a comparison between
+    # equals. Measured, a pooled top-24 came back 20 resid, 2 mlp, 2 attn —
+    # so the two grids that answer "through what" got almost no verdicts, and
+    # the MLP's own peak was one of only two rows it was allowed.
+    per_component = max(1, max_controlled // len(COMPONENTS))
+    ranked = [
+        (score, c, li, pi)
+        for c in COMPONENTS
+        for score, li, pi in sorted(
+            (
+                (grids[c][li][pi], li, pi)
+                for li in range(n_layers)
+                for pi in range(n_pos)
+            ),
+            key=lambda z: -z[0],
+        )[:per_component]
+    ]
     gen = torch.Generator().manual_seed(CONTROL_SEED)
     sites: list[dict] = []
-    for score, li, pi in ranked[:max_controlled]:
-        real = cache[li][:, pi, :]
+    for score, component, li, pi in ranked:
+        real = caches[component][li][:, pi, :]
         norm = real.norm()
         control = []
         for _ in range(draws):
             r = torch.randn(real.shape, generator=gen).to(real.device, real.dtype)
-            control.append(run_patched(li, pi, r / r.norm() * norm))
+            control.append(run_patched(component, li, pi, r / r.norm() * norm))
         # A second, different question: is it THIS position, or would any
         # activation from this layer do? Cheap (one pass) and it separates a
         # site that carries the fact from a layer that is simply influential.
         alt = (pi + 1) % n_pos
-        shifted = run_patched(li, pi, cache[li][:, alt, :])
+        shifted = run_patched(component, li, pi, caches[component][li][:, alt, :])
         worst = max(control)
         sites.append(
             {
+                "component": component,
                 "layer": li,
                 "position": pi,
                 "recovery": round(score, 6),
@@ -285,7 +383,10 @@ def trace(
         "gap": round(gap, 6),
         "n_layers": n_layers,
         "n_positions": n_pos,
-        "grid": [[round(v, 6) for v in row] for row in grid],
+        "components": list(COMPONENTS),
+        "grids": {
+            c: [[round(v, 6) for v in row] for row in grids[c]] for c in COMPONENTS
+        },
         "sites": sites,
         "controlled": len(sites),
         "dtype": dtype,
@@ -302,6 +403,15 @@ def trace(
             "Layer 0's input is the embedding, so patching all of its "
             "positions at once restores the prompt itself and scores 1.0 by "
             "construction.",
+            "The residual grid says where; the two sublayer grids say through "
+            "what, and they disagree. On the reference pair the MLP grid peaks "
+            "at +0.365 on a SUBJECT token in layer 0 and the attention grid at "
+            "+0.232 on the LAST token in layer 9 — early MLP writing the fact, "
+            "late attention moving it to where the prediction is made.",
+            "A sublayer's output at an earlier position cannot reach the "
+            "prediction from the final layer, so the last rows of the attn and "
+            "mlp grids are exactly 0 everywhere but the last column. That is "
+            "the geometry, not a measurement.",
             f"Scores depend on the dtype the model is loaded in: the reference "
             f"tokens themselves change. These were measured in {dtype} against "
             f"{tokenizer.decode([a])!r} and {tokenizer.decode([b])!r}. On the "

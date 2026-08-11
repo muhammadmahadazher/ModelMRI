@@ -2387,3 +2387,4 @@ input[type="range"]:focus-visible { outline: none; }
 .patch-read { margin-top: 8px; min-height: 2.6em; }
 .patch-notes { margin: 8px 0 0; padding-left: 18px; }
 .patch-notes li { margin-bottom: 3px; }
+.patch-tabs { display: flex; gap: 6px; align-items: center; margin: 10px 0 6px; flex-wrap: wrap; }
