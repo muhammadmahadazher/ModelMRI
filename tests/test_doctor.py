@@ -5,6 +5,7 @@ written to degrade rather than guess, and these tests are about the degrading.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from modelmri import doctor
 
@@ -89,9 +90,16 @@ def test_the_startup_line_stays_one_line():
 
 def test_blockers_decide_the_exit_code(monkeypatch, capsys):
     """`modelmri doctor` is scriptable, so the exit code has to mean something."""
-    monkeypatch.setattr(doctor, "check", lambda: doctor.Report(blockers=["nope"]))
+
+    def blocked():
+        return doctor.Report(blockers=["nope"])
+
+    def clean():
+        return doctor.Report()
+
+    monkeypatch.setattr(doctor, "check", blocked)
     assert doctor.write_to() == 1
-    monkeypatch.setattr(doctor, "check", lambda: doctor.Report())
+    monkeypatch.setattr(doctor, "check", clean)
     assert doctor.write_to() == 0
     assert "No blockers found" in capsys.readouterr().out
 
@@ -101,7 +109,7 @@ def test_ram_is_read_without_a_third_party_dependency():
     already a 2.5 GB torch install, and the recorder beside it is stdlib-only
     on purpose."""
     source = (doctor.__file__ or "").replace(".pyc", ".py")
-    text = open(source, encoding="utf-8").read()
+    text = Path(source).read_text(encoding="utf-8")
     assert "psutil" not in text
     # All three branches have to be present, or one platform silently reports
     # "could not measure" forever.

@@ -13,12 +13,15 @@ PostgreSQL, not the local tool.)
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
 from pathlib import Path
 
 from .errors import BadRequest
+
+log = logging.getLogger("modelmri")
 
 VALID_KINDS = {"llm_call", "tool_call", "subagent", "mcp_call", "user_turn", "error"}
 
@@ -63,8 +66,18 @@ class TraceStore:
         # the reader may not be using. The rollback journal works everywhere.
         try:
             self._db.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as err:
+            # Not silent: a reader whose traces feel slow deserves to be able
+            # to find out that WAL was declined and why. Recorded rather than
+            # swallowed, and not raised, because the rollback journal is a
+            # working database and losing the whole server over a journal mode
+            # is the bug this guard exists to prevent.
+            log.info(
+                "WAL journal unavailable at %s (%s); using the rollback "
+                "journal, which is slower and works on network filesystems",
+                path,
+                err,
+            )
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(_SCHEMA)
 

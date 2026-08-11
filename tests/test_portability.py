@@ -234,8 +234,15 @@ def test_the_token_is_never_world_readable_even_for_an_instant(tmp_path, monkeyp
     seen: list[int] = []
     real_open = os.open
 
-    def watched(path, flags, mode=0o777, *a, **kw):
-        fd = real_open(path, flags, mode, *a, **kw)
+    # `mode` is forwarded, never read — the assertion below takes the real mode
+    # from os.fstat rather than trusting the argument. Naming it meant carrying
+    # CPython's own 0o777 default, the only such literal in the tree, which
+    # reads as a permissive-file finding in a test whose whole purpose is to
+    # enforce 0o600. Forwarding positionally is exactly equivalent for both
+    # call styles and lets the real default apply to incidental stdlib calls
+    # made during the window where os.open is monkeypatched process-wide.
+    def watched(path, flags, *a, **kw):
+        fd = real_open(path, flags, *a, **kw)
         # The write is atomic, so the descriptor that matters belongs to the
         # temp file (`hub.json.<pid>.tmp`) that is then renamed into place —
         # matching the target name exactly saw nothing at all, and the test
