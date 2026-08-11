@@ -49,6 +49,36 @@ from .saes import SAEHandle, SAEStatus
 log = logging.getLogger("modelmri")
 
 
+def _load_failed(err: BaseException) -> str:
+    """What the progress meter is allowed to say when a load breaks.
+
+    The exception's CLASS, never its message. The progress snapshot is served
+    verbatim by /api/model/progress -- `Snapshot.to_dict` is `asdict(self)` --
+    and the load meter polls it once a second, so anything written here is a
+    response body. Pasting the exception's text there put a torch message,
+    with an absolute path and a site-packages frame in it, into a 200: past
+    the 500 arm that returns a fixed sentence precisely to stop that, because
+    the leak was not on the route anybody had hardened.
+
+    Measured before the fix, from `POST /api/model/load` failing and the very
+    next `GET /api/model/progress`:
+
+        "error": "RuntimeError: CUDA out of memory. Tried to allocate 2.00
+                  GiB. Loading C:/Users/<name>/.../model.safetensors
+                  ... site-packages/torch/nn/modules/module.py, line 1518"
+
+    The class name is kept because it is genuinely useful and carries nothing
+    about the machine. Callers log the real exception, since dropping the text
+    without recording it would trade a leak for an erasure, and an erasure is
+    the worse bug -- the same rule `_internal` in server.py follows, and the
+    one the float32-on-CPU arm below already states in its own comment.
+    """
+    return (
+        f"{type(err).__name__} — the load failed. The full error is in the "
+        "terminal running `modelmri serve`."
+    )
+
+
 def _require_causal_lm(hf_id: str) -> None:
     """Refuse a repo the playground cannot run, and say what it is.
 
@@ -674,7 +704,11 @@ class ModelRuntime:
                 progress.TRACKER.finish(error=message)
                 raise BadRequest(message) from err
             except BaseException as err:
-                progress.TRACKER.finish(error=f"{type(err).__name__}: {err}")
+                # The OSError arm above is careful to publish only an authored
+                # sentence. This one pasted the exception's own text into the
+                # same snapshot, which is the browser-facing one.
+                log.exception("load of %s failed", hf_id, exc_info=err)
+                progress.TRACKER.finish(error=_load_failed(err))
                 raise
             progress.TRACKER.stage("device", f"moving to {self.accel.name}")
             try:
@@ -682,11 +716,23 @@ class ModelRuntime:
             except Exception as err:
                 # Out of VRAM, or a driver that says yes then fails: keep the
                 # tool usable instead of dying on the user's first click.
+                #
+                # Two sinks here and BOTH are served verbatim: the snapshot by
+                # /api/model/progress, and `accel.reason` by /api/accelerator
+                # -- devices.py calls that field "shown in the UI" and means
+                # it. So the class, never the text, in either.
+                log.warning(
+                    "moving %s onto %s failed", hf_id, self.device, exc_info=err
+                )
                 if self.accel.kind == "cpu":
-                    progress.TRACKER.finish(error=str(err))
+                    progress.TRACKER.finish(error=_load_failed(err))
                     raise
+                rejected = self.accel.name
                 self.accel = devices.detect(prefer="cpu")
-                self.accel.reason = f"fell back to CPU: {type(err).__name__}: {err}"
+                self.accel.reason = (
+                    f"fell back to CPU: {rejected} rejected this model "
+                    f"({type(err).__name__})"
+                )
                 self.device = self.accel.torch_device
                 progress.TRACKER.stage("device", "GPU rejected the model, using CPU")
                 try:
