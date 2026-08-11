@@ -331,9 +331,8 @@ def test_an_uncompressed_session_still_opens():
 
 
 def _mri(doc: dict) -> bytes:
-    import gzip
-    import json
-
+    # Both are already imported at the top of this file. The local copies were
+    # shadowing them to no purpose.
     return gzip.compress(json.dumps(doc).encode("utf-8"))
 
 

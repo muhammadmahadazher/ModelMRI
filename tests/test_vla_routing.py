@@ -231,9 +231,17 @@ def test_frames_read_their_own_episodes_rows(tmp_path):
 def test_a_real_dataset_gives_distinct_episodes_if_one_is_cached():
     """The measurement that started this. Skipped where pusht is not cached —
     the synthetic tests above carry the regression."""
+    # `r` is bound on both paths rather than only on the happy one. It is
+    # true that pytest.skip raises, so the original could not actually reach
+    # the line below unbound -- but "this is unreachable because a function
+    # three imports away raises" is a fact no reader and no analyser can see
+    # from here, and it is the same shape as a real use-before-assignment.
+    r = None
     try:
         r = LeRobotV3Reader.discover()
-    except Exception:
+    except Exception as err:
+        pytest.skip(f"no LeRobot dataset cached ({type(err).__name__})")
+    if r is None:
         pytest.skip("no LeRobot dataset cached")
     eps = r.episodes()
     if len(eps) < 21:

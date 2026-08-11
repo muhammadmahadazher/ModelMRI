@@ -219,19 +219,23 @@ def test_inspect_says_so_when_the_file_is_missing(tmp_path):
     assert "no such file" in done.stderr
 
 
+# Named, and a single literal. Four adjacent strings inside a LIST is the one
+# place implicit concatenation is genuinely dangerous: drop a comma anywhere in
+# such a list and the two neighbours silently fuse into one argument, which is
+# a different command with no syntax error to show for it.
+PROBE = """
+import sys
+from modelmri.cli import inspect_session
+HEAVY = ("torch", "transformers", "fastapi", "uvicorn", "numpy")
+print(",".join(sorted(m for m in HEAVY if m in sys.modules)))
+"""
+
+
 def test_inspect_does_not_import_torch():
     """Same rule as `open`, and the same reason: 26 seconds of imports to read
     a 54 KB file reads as a hang, and somebody pressed ctrl-c."""
     done = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys\n"
-            "from modelmri.cli import inspect_session\n"
-            "heavy = sorted(m for m in ('torch', 'transformers', 'fastapi', "
-            "'uvicorn', 'numpy') if m in sys.modules)\n"
-            "print(','.join(heavy))",
-        ],
+        [sys.executable, "-c", PROBE],
         capture_output=True,
         text=True,
         timeout=180,
