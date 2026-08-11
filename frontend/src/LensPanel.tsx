@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 import { errorText, getLens, LensRow } from "./api";
 
 /** Logit lens — the answer for every model that has no sparse autoencoder.
@@ -55,13 +55,17 @@ export default function LensPanel({ epoch }: { epoch: number }) {
 
       {rows && (
         <>
-          <div className="lens-table" role="table" aria-label="logit lens">
+          {/* Rows settle in order, so the eye reads the stack the way the
+              model runs it. No scan here: this panel is mounted inside the
+              features panel, which already flashes on arrival, and two
+              flashes for one piece of news is noise. */}
+          <div className="lens-table stagger" role="table" aria-label="logit lens">
             <div className="lens-row head" role="row">
               <span>layer</span>
               <span>entropy</span>
               <span>would say</span>
             </div>
-            {rows.map((r) => {
+            {rows.map((r, ri) => {
               const agrees = r.tokens[0] === final;
               return (
                 <div
@@ -70,6 +74,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                   }`}
                   key={r.layer}
                   role="row"
+                  style={{ "--i": ri } as CSSProperties}
                 >
                   <span className="l-name">
                     {r.layer === 0 ? "embed" : `L ${String(r.layer).padStart(2, "0")}`}
