@@ -14,6 +14,7 @@ creeps back in through one convenient top-level import.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -73,8 +74,23 @@ def test_the_viewer_bundle_is_self_contained():
     reference to an external host would simply fail in the page."""
     index = (BUNDLE / "index.html").read_text(encoding="utf-8")
     assert "assets/" in index
-    for bad in ("http://", "https://"):
-        assert bad not in index, f"index.html reaches out to {bad}"
+    # What this test means is "nothing here FETCHES from another host", which
+    # is not the same as "the string https:// does not appear". Two kinds of
+    # external reference are fine and both are present deliberately:
+    #
+    #   <link rel="canonical">  metadata for search engines; never requested
+    #   <a href="...">          the source, docs and PyPI links in the footer;
+    #                           a reader clicks them, the page does not load them
+    #
+    # A script, a stylesheet, an image, a font or a preconnect from another
+    # host is still forbidden — those are what would leave the offline viewer
+    # broken with nothing on screen saying why. Checked by attribute rather
+    # than by line, so a new fetching tag cannot slip in beside an exempt one.
+    fetchers = re.findall(
+        r'(?:src|href)\s*=\s*"(https?://[^"]*)"',
+        re.sub(r'<a\b[^>]*>|<link[^>]*rel="canonical"[^>]*>', "", index),
+    )
+    assert not fetchers, f"the offline viewer fetches from another host: {fetchers}"
     assert list(BUNDLE.glob("assets/*.js")), "no bundle emitted"
 
 

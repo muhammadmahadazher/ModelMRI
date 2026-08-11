@@ -387,7 +387,11 @@ def main() -> None:
     if args.command == "doctor":
         from . import doctor as _doctor
 
-        return _doctor.write_to()
+        # SystemExit, not a bare return of an int: `main` is annotated -> None
+        # and every other exit code in this file is raised, not returned. A
+        # function that returns None on most paths and 1 on one is a function
+        # whose caller has to know which.
+        raise SystemExit(_doctor.write_to())
 
     if args.command == "serve":
         import uvicorn

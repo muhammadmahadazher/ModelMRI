@@ -125,7 +125,20 @@ export async function parse(data: ArrayBuffer): Promise<Doc> {
       "this is not a ModelMRI session file (no 'modelmri-session' marker)",
     );
   }
-  if (typeof doc.format_version !== "number" || doc.format_version > FORMAT_VERSION) {
+  // Split, matching session.py. The single check interpolated the value before
+  // establishing it was a number, so a hand-made `.mri` could put arbitrary
+  // text into the message — and this copy runs in the RECIPIENT'S browser on a
+  // file a stranger forwarded, which is the worse half of the same bug. It
+  // also drifted in shape: Python printed a repr where `${}` prints
+  // "[object Object]", and viewer_check compares only numbers, so nothing
+  // would have caught the two implementations disagreeing here.
+  if (typeof doc.format_version !== "number") {
+    throw new ViewerError(
+      "this session does not say which format version it is, so it is " +
+        "damaged or it is not a .mri",
+    );
+  }
+  if (doc.format_version > FORMAT_VERSION) {
     throw new ViewerError(
       `this session is format version ${doc.format_version}, and this viewer ` +
         `reads up to ${FORMAT_VERSION}. Open it with a newer ModelMRI.`,

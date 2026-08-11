@@ -309,7 +309,16 @@ def parse(data: bytes) -> Session:
     try:
         raw = _inflate(data) if data[:2] == b"\x1f\x8b" else data
     except (OSError, EOFError, zlib.error) as err:
-        raise SessionError(f"could not decompress the file: {err}") from err
+        # NOT `{err}`. errors.py forbids interpolating a caught exception's
+        # text into a published message, and this is the one function whose
+        # docstring says it takes bytes a stranger sent you. zlib's own strings
+        # are harmless C literals today, but OSError carries its `filename`
+        # when set — the exact shape that leaked absolute paths to the browser
+        # before, rebuilt one arm over. `from err` keeps the cause for the log.
+        raise SessionError(
+            "this file starts like a gzip but could not be decompressed — it "
+            "is damaged, or it is not a .mri"
+        ) from err
 
     try:
         doc: Any = json.loads(raw.decode("utf-8"))
@@ -327,7 +336,20 @@ def parse(data: bytes) -> Session:
             "this is not a ModelMRI session file (no 'modelmri-session' marker)"
         )
     version = doc.get("format_version")
-    if not isinstance(version, int) or version > FORMAT_VERSION:
+    # Split, because the old single check interpolated the value BEFORE
+    # establishing it was a number. Measured on a hand-made file: a
+    # `format_version` of "<img src=x onerror=alert(1)>ATTACKER" came back
+    # verbatim in the 422 body, and a dict came back as a Python repr. Not an
+    # XSS — the body is JSON and React renders it as a text node — but it is
+    # attacker-supplied content reflected by the one function documented as
+    # taking bytes a stranger sent, and `n_layers`/`n_heads` and `_boundary`
+    # in this same file already refuse a non-int without echoing it.
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise SessionError(
+            "this session does not say which format version it is, so it is "
+            "damaged or it is not a .mri"
+        )
+    if version > FORMAT_VERSION:
         raise SessionError(
             f"this session is format version {version}, and this ModelMRI "
             f"reads up to {FORMAT_VERSION}. Upgrade with `pip install -U modelmri`."
@@ -377,9 +399,21 @@ def parse(data: bytes) -> Session:
             raise SessionError(f"the session's {key} is not a sensible number")
         counts[key] = value
 
+    # `meta` is spread below, and `**` on anything that is not a mapping raises
+    # a bare TypeError — measured, a `.mri` carrying `"meta": "hi"` gave
+    # `TypeError: 'str' object is not a mapping`, which is not a BadRequest, so
+    # it fell past the 409 and 422 arms to the generic 500. Every other
+    # untrusted field in this function is type-checked; this one was spread.
+    meta = doc.get("meta")
+    if meta is not None and not isinstance(meta, dict):
+        raise SessionError(
+            "this session's metadata is not a set of fields, so the file is "
+            "damaged or it is not a .mri"
+        )
+
     return Session(
         meta={
-            **(doc.get("meta") or {}),
+            **(meta or {}),
             "created_at": doc.get("created_at"),
             "modelmri": doc.get("modelmri"),
         },

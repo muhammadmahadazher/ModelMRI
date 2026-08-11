@@ -332,3 +332,74 @@ def test_an_uncompressed_session_still_opens():
     """Some transports gunzip on the way through; do not punish the user."""
     raw = gzip.decompress(_build())
     assert session.parse(raw).tokens == ["The", " cat", " sat"]
+
+
+def _mri(doc: dict) -> bytes:
+    import gzip
+    import json
+
+    return gzip.compress(json.dumps(doc).encode("utf-8"))
+
+
+def test_a_hand_made_session_cannot_put_its_own_text_in_the_error():
+    """`parse` takes bytes a stranger sent, and the version check interpolated
+    the value BEFORE establishing it was a number.
+
+    Measured before the fix: a `.mri` carrying
+    `"format_version": "<img src=x onerror=alert(1)>ATTACKER"` came back with
+    that string verbatim in the 422 body, and a dict came back as a Python
+    repr. Not an XSS — the body is JSON and React renders it as a text node —
+    but it is attacker-supplied content reflected by the one function whose
+    docstring says it takes bytes a stranger sent you.
+    """
+    from modelmri.session import SessionError, parse
+
+    for hostile in (
+        "<img src=x onerror=alert(1)>ATTACKER",
+        {"a": [1, 2]},
+        ["x"],
+        None,
+        True,  # bool is an int subclass, and would otherwise pass isinstance
+        1.5,
+    ):
+        with pytest.raises(SessionError) as err:
+            parse(_mri({"format": "modelmri-session", "format_version": hostile}))
+        message = str(err.value)
+        assert "ATTACKER" not in message, message
+        assert "{" not in message and "[" not in message, message
+        assert "does not say which format version" in message, message
+
+
+def test_a_damaged_gzip_does_not_republish_zlibs_own_words():
+    """errors.py forbids interpolating a caught exception's text into a
+    published message. This one did: `could not decompress the file: Error -3
+    while decompressing data: unknown compression method`. zlib's strings are
+    harmless C literals, but OSError carries its `filename` when set — the
+    exact shape that leaked absolute paths to the browser before."""
+    from modelmri.session import SessionError, parse
+
+    with pytest.raises(SessionError) as err:
+        parse(b"\x1f\x8b" + b"\x00" * 40)
+    message = str(err.value)
+    assert "Error -3" not in message and "zlib" not in message.lower(), message
+    assert "could not be decompressed" in message, message
+
+
+def test_malformed_metadata_is_a_refusal_rather_than_a_500():
+    """`meta` was spread with `**` and never type-checked, so a `.mri` carrying
+    `"meta": "hi"` raised a bare `TypeError: 'str' object is not a mapping` —
+    not a BadRequest, so it fell past the 409 and 422 arms to the generic 500.
+    Every other untrusted field in that function is checked."""
+    from modelmri.session import SessionError, parse
+
+    for hostile in ("hi", ["a"], 7):
+        with pytest.raises(SessionError):
+            parse(
+                _mri(
+                    {
+                        "format": "modelmri-session",
+                        "format_version": 1,
+                        "meta": hostile,
+                    }
+                )
+            )
