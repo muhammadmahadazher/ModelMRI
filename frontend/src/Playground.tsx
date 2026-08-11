@@ -21,6 +21,8 @@ interface Props {
   onModelChange: () => Promise<void>;
   /** A shared `.mri` is open: the attention below is a recording. */
   replay?: boolean;
+  /** The recorded patching trace that `.mri` carries, if it carries one. */
+  sessionPatch?: { available: boolean; clean: string; corrupt: string };
 }
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
@@ -30,7 +32,12 @@ const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
 // meant the UI could not honestly name them.
 const DECODE = { max_new_tokens: 256, temperature: 0.7 };
 
-export default function Playground({ model, onModelChange, replay }: Props) {
+export default function Playground({
+  model,
+  onModelChange,
+  replay,
+  sessionPatch,
+}: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -425,7 +432,13 @@ export default function Playground({ model, onModelChange, replay }: Props) {
       {/* Patching needs no generation — it runs its own two prompts — but it
           does need a live HuggingFace model to re-run, which is exactly what a
           recording is not. */}
+      {/* On a live model, whenever there is something to trace. On a
+          recording, only when the file actually carries a trace — a panel
+          whose one button can only apologise is worse than no panel. */}
       {introspectable && !replay && <PatchPanel epoch={epoch} />}
+      {replay && sessionPatch?.available && (
+        <PatchPanel epoch={epoch} recorded={sessionPatch} />
+      )}
       {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel
           epoch={epoch}

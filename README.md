@@ -216,6 +216,36 @@ Locally it's the same page, served from the package by the standard library:
 modelmri open gpt2.mri     # ~0.3s — no torch, no model, no GPU
 ```
 
+If you were sent several and want to know which is which, `inspect` prints one without opening anything:
+
+```bash
+modelmri inspect gpt2.mri
+```
+
+```
+gpt2.mri — 41.8 KB
+  model         gpt2
+  size          124M parameters
+  ran on        cuda · float32
+  recorded      2026-08-11T17:55:27+00:00 by ModelMRI 0.9.0
+  note          the head that carries the city
+
+  tokens        11 (10 prompt)
+  shape         12 layers x 12 heads
+  attention     144 maps
+                every layer and head
+  patching      attn, mlp, resid
+    clean       The Eiffel Tower is located in the city of
+    corrupt     The Colosseum is located in the city of
+
+  prompt        The Eiffel Tower is located in the city of
+  answer         Paris
+```
+
+`--json` gives the same summary as a document, with the prompt and generation untruncated. Both take the same ~0.2s as `open`: a `.mri` is gzipped JSON, so nothing here needs torch.
+
+A recording carries the **activation-patching trace** too, when one was run — so the causal finding travels with the file, not just the attention. Open a `.mri` that has one and the patching panel draws it, marked as recorded rather than measured on your machine. A recording that carries none says so instead of offering a button that can only refuse: patching means running the model again with an activation replaced, and a `.mri` holds activations rather than weights.
+
 Every panel reads a recording through the same calls it uses for a live model, so the arcs, the layer/head dials and the token strip all behave normally. The status pill says `replay` and the footer says *recorded, not live*, so it can never be mistaken for your own run.
 
 The browser viewer and the Python tool are checked cell-for-cell against the same file on every change ([tests/viewer_check.py](tests/viewer_check.py)) — a viewer that renders a *slightly* different matrix would be worse than no viewer, because nothing on screen would say so.

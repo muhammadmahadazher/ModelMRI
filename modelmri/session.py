@@ -94,6 +94,92 @@ class SessionError(BadRequest):
     """
 
 
+MAX_PATCH_CELLS = 2_000_000
+
+
+def _patch(doc: dict) -> dict:
+    """The patching section of an untrusted file, or nothing.
+
+    Held to the same standard as `attention`: a `.mri` is meant to be
+    forwarded, so this runs on bytes a stranger sent. The grids reach the
+    viewer as nested loop bounds and their values reach a colour scale, so a
+    ragged grid, a string where a number belongs, or a 40,000 x 40,000 claim
+    are all things that have to stop here rather than in whoever's browser
+    opened the file.
+
+    Absent is fine and common -- most sessions have no patch trace. MALFORMED
+    is not: it is refused rather than dropped, because a damaged file
+    presented as an intact one without that section is the failure this
+    module exists to avoid.
+    """
+    raw = doc.get("patch")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's patching section is not a set of fields")
+
+    grids = raw.get("grids")
+    if not isinstance(grids, dict):
+        raise SessionError("this session's patching grids are missing or malformed")
+
+    cells = 0
+    clean: dict[str, list[list[float]]] = {}
+    for name, grid in grids.items():
+        if not isinstance(name, str) or not isinstance(grid, list):
+            raise SessionError("this session's patching grids are malformed")
+        width = None
+        rows: list[list[float]] = []
+        for row in grid:
+            if not isinstance(row, list) or len(row) > MAX_DIM:
+                raise SessionError(f"the {name!r} patching grid is not a grid")
+            # Rectangular, because the viewer indexes it as one. A ragged grid
+            # renders as a table with holes and no error.
+            if width is None:
+                width = len(row)
+            elif len(row) != width:
+                raise SessionError(
+                    f"the {name!r} patching grid has rows of different lengths, "
+                    "so the file is damaged"
+                )
+            out: list[float] = []
+            for v in row:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    raise SessionError(
+                        f"the {name!r} patching grid holds something that is "
+                        "not a number"
+                    )
+                # NaN and infinity survive JSON round-trips through most
+                # writers and colour-scale to nothing visible.
+                if not math.isfinite(v):
+                    raise SessionError(
+                        f"the {name!r} patching grid holds a value that is not "
+                        "finite, so it cannot be drawn"
+                    )
+                out.append(float(v))
+            rows.append(out)
+            cells += len(out)
+            if cells > MAX_PATCH_CELLS:
+                raise SessionError(
+                    f"this session's patching grids hold more than "
+                    f"{MAX_PATCH_CELLS:,} cells — more than ModelMRI will render"
+                )
+        if len(rows) > MAX_DIM:
+            raise SessionError(f"the {name!r} patching grid has too many layers")
+        clean[name] = rows
+
+    sites = raw.get("sites")
+    notes = raw.get("notes")
+    return {
+        "grids": clean,
+        "sites": sites if isinstance(sites, list) else [],
+        "notes": [n for n in (notes or []) if isinstance(n, str)]
+        if isinstance(notes, list)
+        else [],
+        "clean": raw.get("clean") if isinstance(raw.get("clean"), str) else "",
+        "corrupt": raw.get("corrupt") if isinstance(raw.get("corrupt"), str) else "",
+    }
+
+
 def _boundary(doc: dict, n_tokens: int) -> int:
     """Where the prompt ends, from an untrusted file.
 
@@ -201,6 +287,14 @@ class Session:
     # Where the prompt ends. Additive: a file written before this carries 0,
     # which every reader must treat as "unknown" and not as "all prompt".
     n_prompt: int = 0
+    # An activation-patching trace, when one was run. A `.mri` carried the
+    # attention and the logit lens and nothing else, so the one result in this
+    # tool that is CAUSAL rather than correlational -- "the answer is decided
+    # at layer 15, position 4" -- was the one result you could not send to
+    # anybody. Optional and additive: a file written before this has no
+    # `patch` key, and an older reader ignores the key rather than failing on
+    # it, which is why the format version does not move.
+    patch: dict = field(default_factory=dict)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -212,6 +306,9 @@ class Session:
             "n_tokens": len(self.tokens),
             "replay": True,
         }
+
+    def has_patch(self) -> bool:
+        return bool(self.patch.get("grids"))
 
     def attention_slice(self, layer: int, head: int) -> dict:
         key = f"{layer}:{head}"
@@ -250,6 +347,7 @@ def build(
     lens: list[dict] | None = None,
     note: str = "",
     scope: str = "",
+    patch: dict | None = None,
 ) -> bytes:
     """Serialise one analysis into a gzipped `.mri`."""
     from . import __version__
@@ -289,6 +387,10 @@ def build(
         "attention": blocks,
         "lens": lens or [],
     }
+    # Only when there is one. An empty key would make every file claim a
+    # patching section and every reader render an empty one.
+    if patch and patch.get("grids"):
+        doc["patch"] = patch
     return gzip.compress(json.dumps(doc, separators=(",", ":")).encode("utf-8"), 6)
 
 
@@ -425,4 +527,5 @@ def parse(data: bytes) -> Session:
         n_prompt=_boundary(doc, len(tokens)),
         n_layers=counts["n_layers"],
         n_heads=counts["n_heads"],
+        patch=_patch(doc),
     )

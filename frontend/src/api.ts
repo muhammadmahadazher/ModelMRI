@@ -57,6 +57,11 @@ export interface SessionState {
   generation?: string;
   n_tokens?: number;
   n_slices?: number;
+  /** A recorded activation-patching trace, when the file carries one. A `.mri`
+   *  used to hold attention and the logit lens only, so the one finding in
+   *  this tool that is causal rather than correlational was the one you could
+   *  not send anybody. */
+  patch?: { available: boolean; clean: string; corrupt: string };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -1331,6 +1336,8 @@ export interface PatchSite {
 }
 
 export interface PatchTrace {
+  /** True when this came out of a `.mri` rather than off a live model. */
+  recorded?: boolean;
   clean: PatchSide;
   corrupt: PatchSide;
   gap: number;

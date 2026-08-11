@@ -9,6 +9,109 @@ import sys
 from . import __version__
 
 
+def inspect_session(path, *, as_json: bool = False) -> int:
+    """Describe a `.mri` on the terminal. Returns the exit code.
+
+    Same discipline as `open`: no torch, no transformers, no server. A `.mri`
+    is gzipped JSON and everything below comes from the standard library plus
+    session.py, so this stays instant on a cold cache — the reason `open` was
+    rewritten in the first place was that 26 seconds of imports to read a
+    54 KB file reads as a hang, and somebody pressed ctrl-c.
+    """
+    import json
+    from pathlib import Path
+
+    from . import session
+
+    target = Path(path).expanduser()
+    if not target.is_file():
+        print(f"modelmri: no such file: {target}", file=sys.stderr)
+        return 2
+    try:
+        parsed = session.parse(target.read_bytes())
+    except session.SessionError as err:
+        print(f"modelmri: {err}", file=sys.stderr)
+        return 2
+
+    meta = parsed.meta
+    slices = sorted(
+        (int(k.split(":")[0]), int(k.split(":")[1]))
+        for k in parsed.attention
+        if k.count(":") == 1 and all(part.isdigit() for part in k.split(":"))
+    )
+    summary = {
+        "file": target.name,
+        "bytes": target.stat().st_size,
+        "model": meta.get("model") or "unknown",
+        "device": meta.get("device"),
+        "dtype": meta.get("dtype"),
+        "n_params": meta.get("n_params"),
+        "created_at": meta.get("created_at"),
+        "modelmri": meta.get("modelmri"),
+        "note": (meta.get("note") or "").strip(),
+        "scope": meta.get("scope") or "",
+        "precision": meta.get("precision") or "",
+        "n_tokens": len(parsed.tokens),
+        "n_prompt": parsed.n_prompt,
+        "n_layers": parsed.n_layers,
+        "n_heads": parsed.n_heads,
+        "attention_maps": len(parsed.attention),
+        "layers_present": sorted({li for li, _ in slices}),
+        "heads_present": sorted({hi for _, hi in slices}),
+        "lens_rows": len(parsed.lens),
+        "patch": {
+            "present": parsed.has_patch(),
+            "components": sorted(parsed.patch.get("grids", {})),
+            "clean": parsed.patch.get("clean", ""),
+            "corrupt": parsed.patch.get("corrupt", ""),
+        },
+        "prompt": parsed.prompt,
+        "generation": parsed.generation,
+    }
+    if as_json:
+        print(json.dumps(summary, indent=2))
+        return 0
+
+    def line(k: str, v) -> None:
+        print(f"  {k:<14}{v}")
+
+    print(f"{target.name} — {summary['bytes'] / 1024:.1f} KB")
+    line("model", summary["model"])
+    if summary["n_params"]:
+        line("size", f"{summary['n_params'] / 1e6:,.0f}M parameters")
+    if summary["device"] or summary["dtype"]:
+        line("ran on", f"{summary['device'] or '?'} · {summary['dtype'] or '?'}")
+    line("recorded", f"{summary['created_at']} by ModelMRI {summary['modelmri']}")
+    if summary["note"]:
+        line("note", summary["note"])
+    print()
+    line("tokens", f"{summary['n_tokens']} ({summary['n_prompt']} prompt)")
+    line("shape", f"{summary['n_layers']} layers x {summary['n_heads']} heads")
+    line("attention", f"{summary['attention_maps']} maps")
+    if summary["scope"]:
+        line("", summary["scope"])
+    if summary["lens_rows"]:
+        line("logit lens", f"{summary['lens_rows']} rows")
+    if summary["patch"]["present"]:
+        line("patching", ", ".join(summary["patch"]["components"]))
+        line("  clean", summary["patch"]["clean"])
+        line("  corrupt", summary["patch"]["corrupt"])
+    print()
+    # Truncated on purpose: `inspect` is triage, and a 4,000-token prompt
+    # scrolling past is the opposite of it. `--json` gives the whole thing.
+    line("prompt", _clip(summary["prompt"]))
+    line("answer", _clip(summary["generation"]))
+    if summary["precision"]:
+        print()
+        line("precision", summary["precision"])
+    return 0
+
+
+def _clip(text: str, width: int = 62) -> str:
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
+
+
 def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
     """Serve the bundled `.mri` viewer, using only the standard library.
 
@@ -359,6 +462,20 @@ def main() -> None:
         "--no-browser", action="store_true", help="just serve it, don't open a tab"
     )
 
+    # `open` starts a viewer; this one prints and exits. Someone triaging an
+    # issue with six attached `.mri` files wants to know which is which
+    # without opening six browser tabs, and a `.mri` is JSON under a gzip
+    # header, so answering that needs no browser, no model and no torch.
+    reader = sub.add_parser(
+        "inspect", help="Print what a .mri contains, without opening anything"
+    )
+    reader.add_argument("file", help="the .mri to describe")
+    reader.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the summary as JSON instead of text",
+    )
+
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
 
     # `pip install` cannot run this for you: a wheel is an archive and pip does
@@ -449,6 +566,8 @@ def main() -> None:
             target, host=args.host, port=args.port, browser=not args.no_browser
         )
         return
+    elif args.command == "inspect":
+        raise SystemExit(inspect_session(args.file, as_json=args.json))
     elif args.command == "uninstall":
         raise SystemExit(uninstall(yes=args.yes, models=args.models))
     elif args.command == "where":

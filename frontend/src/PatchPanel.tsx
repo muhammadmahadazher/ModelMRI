@@ -44,9 +44,19 @@ function cell(v: number): string {
     : `color-mix(in oklab, var(--crimson-500) ${a * 100}%, transparent)`;
 }
 
-export default function PatchPanel({ epoch }: { epoch: number }) {
-  const [clean, setClean] = useState(CLEAN_DEFAULT);
-  const [corrupt, setCorrupt] = useState(CORRUPT_DEFAULT);
+export default function PatchPanel({
+  epoch,
+  recorded,
+}: {
+  epoch: number;
+  /** Set when a `.mri` is open and carries a trace: the prompts it was
+   *  measured on, so the panel shows the recording's own pair rather than
+   *  the defaults and offers to draw it instead of a button that can only
+   *  refuse. */
+  recorded?: { clean: string; corrupt: string };
+}) {
+  const [clean, setClean] = useState(recorded?.clean || CLEAN_DEFAULT);
+  const [corrupt, setCorrupt] = useState(recorded?.corrupt || CORRUPT_DEFAULT);
   const [data, setData] = useState<PatchTrace | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -131,7 +141,7 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
 
       <div className="row" style={{ marginBottom: 10 }}>
         <button className="cta" onClick={() => void run()} disabled={busy}>
-          {busy ? "Patching every site…" : "Trace it"}
+          {busy ? "Patching every site…" : recorded ? "Show the recorded trace" : "Trace it"}
         </button>
         <span className="meta">
           the two prompts have to split into the same number of tokens

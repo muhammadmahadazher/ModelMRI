@@ -37,7 +37,8 @@ If someone sent you a `.mri` and you just want to look at it, there is nothing
 to configure and no model to download:
 
 ```bash
-modelmri open their-analysis.mri
+modelmri open their-analysis.mri     # opens the viewer
+modelmri inspect their-analysis.mri  # prints what it holds, and exits
 ```
 
 That validates the file and opens it in about a third of a second — it serves

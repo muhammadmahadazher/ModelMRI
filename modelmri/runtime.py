@@ -380,6 +380,7 @@ class ModelRuntime:
         # interpreted by another model's weights -- which does not crash, it
         # just quietly reports numbers about nothing.
         self.epoch = 0
+        self._last_patch: dict = {}
         # Base vs instruction-tuned for an Ollama model, from Ollama itself.
         # None until asked, and None again on any HF load.
         self._ollama_instruct: bool | None = None
@@ -790,11 +791,21 @@ class ModelRuntime:
         """
         with self._lock:
             if self.replay is not None:
+                # A recording that CARRIES a trace can serve it. The refusal
+                # below is still right for one that does not -- patching means
+                # running the model again with an activation replaced, and a
+                # `.mri` holds activations rather than weights -- but refusing
+                # a file that already holds the answer was the format failing
+                # to be worth sending.
+                recorded = self.replay.patch
+                if recorded.get("grids"):
+                    return {**recorded, "recorded": True}
                 raise Refusal(
-                    "This is a recording, not a live model. Patching means "
-                    "running the model again with an activation replaced, and "
-                    "a `.mri` holds activations rather than weights — there is "
-                    "nothing here to re-run."
+                    "This is a recording, and it does not carry a patching "
+                    "trace. Patching means running the model again with an "
+                    "activation replaced, and a `.mri` holds activations "
+                    "rather than weights — there is nothing here to re-run. "
+                    "Whoever exported it can run the trace and share it again."
                 )
             if self.backend == "ollama":
                 raise Refusal(
@@ -811,7 +822,7 @@ class ModelRuntime:
             n_layers = int(self.model.config.num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
-                return patch.trace(
+                result = patch.trace(
                     self.model,
                     self.tokenizer,
                     blocks,
@@ -819,6 +830,17 @@ class ModelRuntime:
                     corrupt,
                     device=self.device,
                 )
+                # Kept so a `.mri` can carry it. Tagged with the epoch, which
+                # moves on every load, unload and generation: a trace measured
+                # against a different model or a different run must not ride
+                # along with an export and be read as belonging to it.
+                self._last_patch = {
+                    **result,
+                    "clean": clean,
+                    "corrupt": corrupt,
+                    "epoch": self.epoch,
+                }
+                return result
             except patch.PatchError as err:
                 # A pair this measurement cannot be taken on, not a failure of
                 # the code. Every one of these names what to change.
@@ -1779,7 +1801,25 @@ class ModelRuntime:
             n_heads=n_heads,
             note=note,
             scope=scope,
+            # The causal result, when one was measured against THIS run. A
+            # `.mri` carried attention and the logit lens, so the one finding
+            # in this tool that is causal rather than correlational was the
+            # one you could not send anybody.
+            patch=self._patch_for_export(),
         )
+
+    def _patch_for_export(self) -> dict:
+        """The last patch trace, if it belongs to the state being exported.
+
+        The epoch moves on every load, unload and generation. Without that
+        check a trace measured on an earlier prompt -- or on a model since
+        swapped out -- would be written into the file beside a different
+        run's tokens, and nothing downstream could tell.
+        """
+        last = self._last_patch
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k != "epoch"}
 
     def open_session(self, data: bytes) -> dict:
         """Open a `.mri`. Replaces any session already open; leaves the model."""
@@ -1803,6 +1843,13 @@ class ModelRuntime:
             "n_tokens": len(self.replay.tokens),
             "n_slices": len(self.replay.attention),
             "slices": sorted(self.replay.attention),
+            # So the panel can offer the recorded trace instead of a button
+            # that can only refuse.
+            "patch": {
+                "available": self.replay.has_patch(),
+                "clean": self.replay.patch.get("clean", ""),
+                "corrupt": self.replay.patch.get("corrupt", ""),
+            },
         }
 
     # ---------------- SAE features ----------------

@@ -135,5 +135,23 @@ curl -s localhost:5900/api/patch -H 'Content-Type: application/json' \
 
 `422` when the pair cannot be compared — different token lengths, the same
 answer, or a gap too small to divide by. Each refusal names what to change.
-`409` when there is no live HuggingFace model to re-run: patching needs weights,
-so it is not available for a `.mri` recording or an Ollama-served model.
+`409` when there is nothing to re-run and nothing recorded: patching needs
+weights, so it is not available for an Ollama-served model.
+
+## Sharing a trace
+
+A trace travels in the `.mri`. Export a session after running one and the grids
+go with it, along with the pair they were measured on — a grid without its
+prompts is unreadable. Whoever opens the file sees the patching panel draw the
+recorded trace, marked as recorded rather than measured on their machine, and
+`modelmri inspect file.mri` names the components it holds without opening
+anything.
+
+The trace is tagged with the run it belongs to, so a trace measured before a
+different generation, or against a model since swapped out, is left out of the
+export rather than written in beside another run's tokens.
+
+A recording that carries no trace still refuses, and says so in those words:
+patching means running the model again with an activation replaced, and a
+`.mri` holds activations rather than weights. There is nothing in the file to
+re-run — but the person who exported it can run the trace and share it again.
