@@ -158,11 +158,19 @@ export interface LoadProgress {
   bytes_done: number;
   bytes_total: number;
   elapsed_s: number;
+  /** Seconds left at the average rate so far. `null` means the server does
+   *  not have enough signal to say — which is a real answer, not zero. */
+  eta_s: number | null;
   error: string | null;
 }
 
 export const getLoadProgress = () =>
   fetch("/api/model/progress").then((r) => json<LoadProgress>(r));
+
+/** A download in flight, which is NOT the same slot as a model load — the
+ *  picker can be pulling one model while the page behind it loads another. */
+export const getPullProgress = () =>
+  fetch("/api/pull/progress").then((r) => json<LoadProgress>(r));
 
 export const getAttentionMeta = () =>
   fetch("/api/attention/meta").then((r) => json<AttentionMeta>(r));

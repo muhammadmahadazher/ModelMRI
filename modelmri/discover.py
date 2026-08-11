@@ -358,7 +358,15 @@ def roots() -> list[Path]:
     # `models--*` children of whatever it is handed, and `HF_HUB_CACHE=D:\hf`
     # made the parent `D:\` — a whole-drive walk that burned the six-second
     # budget before reaching the models it was sent to find.
-    for candidate in (paths.hf_home(), paths.hf_hub_cache()):
+    # ...plus anywhere models were downloaded BEFORE ModelMRI took over the
+    # download location. Redirecting new downloads must not hide the old ones:
+    # somebody with 50 GB already cached should not open the picker and find
+    # it empty. Search-only — nothing is ever written to these.
+    for candidate in (
+        paths.hf_home(),
+        paths.hf_hub_cache(),
+        *paths.inherited_roots(),
+    ):
         if candidate not in found:
             found.append(candidate)
     out: list[Path] = []

@@ -277,8 +277,8 @@ def _import_adapter(path: Path):
     except Exception as err:
         sys.modules.pop(mod_name, None)
         raise AdapterError(
-            f"{path.name} raised while being imported: {type(err).__name__} "
-            "— the full error is in the terminal"
+            f"{path.name} raised while being imported: "
+            f"{type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
         ) from err
     finally:
         if added:
@@ -321,8 +321,7 @@ def load_from_adapter(path: Path):
         model = loader()
     except Exception as err:
         raise AdapterError(
-            f"{path.name}: load() raised {type(err).__name__} — the full error is "
-            "in the terminal"
+            f"{path.name}: load() raised {type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
         ) from err
 
     if not isinstance(model, torch.nn.Module):
@@ -339,8 +338,7 @@ def load_from_adapter(path: Path):
             example = maker()
         except Exception as err:
             raise AdapterError(
-                f"{path.name}: example_input() raised {type(err).__name__} — the "
-                "full error is in the terminal"
+                f"{path.name}: example_input() raised {type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
             ) from err
 
     labels = getattr(module, "LABELS", None)
@@ -358,6 +356,21 @@ def load_from_adapter(path: Path):
     return model, example, labels
 
 
+# WHOSE EXCEPTION IT IS, WHICH IS THE ONLY QUESTION THAT MATTERS HERE.
+#
+# Four messages in this file relay a caught exception's text, and they are
+# marked `leak-ok`. Every one of them is the READER'S OWN code failing: their
+# adapter module failing to import, their `load()` raising, their
+# `example_input()` raising, their model's forward pass raising. That text was
+# written by them or by the library they chose to call, it is on their machine,
+# and it is the entire content of "why did my adapter not work" — suppressing
+# it would leave them with a class name and no way forward.
+#
+# The messages that do NOT relay text are the ones where ModelMRI made the
+# call: `torch.load` on a checkpoint the reader only pointed at, and path
+# resolution. There the exception is a library talking about this machine to
+# somebody who was not asking about this machine, and it carried an absolute
+# weights path plus a site-packages frame into the browser. Measured.
 def load_torchscript(path: Path):
     """Load a TorchScript archive, or explain why a plain checkpoint can't be."""
     import torch
@@ -603,7 +616,7 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
             output = model(*example) if isinstance(example, tuple) else model(example)
     except Exception as err:
         raise AdapterError(
-            f"the forward pass raised {type(err).__name__}. "
+            f"the forward pass raised {type(err).__name__}: {err}. "  # leak-ok: the reader's own model
             "Most often the input shape is wrong — check the shape field, or "
             "add example_input() to your adapter so ModelMRI never has to guess."
         ) from err

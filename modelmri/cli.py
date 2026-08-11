@@ -409,6 +409,13 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
 
 
 def main() -> None:
+    # BEFORE anything else. huggingface_hub computes its cache constants at
+    # import time, so this has to win that race -- every reader inside
+    # ModelMRI re-reads the environment at call time and will follow.
+    from . import paths as _paths
+
+    _paths.adopt_models_home()
+
     # Windows consoles hand Python a cp1252 stdout, which cannot encode a path
     # containing (say) a Cyrillic or CJK username. Printing where things live
     # would then die with a UnicodeEncodeError -- the command that exists to
@@ -587,6 +594,7 @@ def main() -> None:
         print()
         print("  Override any of it:")
         print("    MODELMRI_HOME        all of the above under one directory")
+        print("    MODELMRI_MODELS_HOME where downloaded models go")
         print("    MODELMRI_MODELS_DIR  extra places to look for your models")
         print("    MODELMRI_TRACE_DIR   where undelivered traces are written")
         print("    HF_HOME/HF_HUB_CACHE where models download (HuggingFace's)")

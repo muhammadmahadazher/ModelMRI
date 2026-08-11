@@ -365,10 +365,17 @@ def pull(name: str, host: str | None = None):
                     raise _relayed(msg["error"])
                 total = msg.get("total") or 0
                 done = msg.get("completed") or 0
+                # The RAW counts as well as the friendly ones. The route
+                # publishes these to the progress tracker, and a percentage
+                # cannot be turned back into "3.1 of 9.6 GB, four minutes
+                # left" -- which is the thing somebody staring at a ten
+                # minute download actually wants.
                 yield {
                     "status": msg.get("status", ""),
                     "percent": round(100 * done / total, 1) if total else None,
                     "total_gb": round(total / 1e9, 2) if total else None,
+                    "bytes_done": done,
+                    "bytes_total": total,
                 }
     except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
         # WHAT A SEPARATE PROCESS DYING ACTUALLY RAISES, MEASURED.

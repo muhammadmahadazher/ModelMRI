@@ -2589,3 +2589,44 @@ input[type="range"]:focus-visible { outline: none; }
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+
+/* ---------- a pull, while it is happening ----------
+   The picker is a sheet, and a sheet covers the load meter on the page behind
+   it — so the one place you can start a nine gigabyte download was the one
+   place you could not watch it. Same shapes as .loadbar, at sheet scale. */
+.pull-progress {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin: 8px 0 2px;
+  animation: staggerIn var(--dur-small) var(--ease-out-soft) both;
+}
+.pull-track {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--ink) 12%, transparent);
+  overflow: hidden;
+}
+.pull-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--acc);
+  transition: width var(--dur-medium) var(--ease-out-soft);
+}
+/* No total yet — the daemon reports the manifest before it reports bytes.
+   A bar that sits at zero reads as stalled; one that moves reads as working,
+   and says nothing it does not know. */
+.pull-track.indeterminate .pull-fill {
+  width: 34%;
+  animation: pullSweep 1150ms var(--ease-standard) infinite;
+}
+@keyframes pullSweep {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(330%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pull-track.indeterminate .pull-fill { animation: none; width: 100%; opacity: 0.35; }
+  .pull-progress { animation: none; }
+}

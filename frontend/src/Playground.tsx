@@ -535,8 +535,13 @@ function LoadBar({
         <span className="mid loadbar-id">{loading}</span>
         <span className="spacer" />
         <span className="meta">
-          {pct !== null && `${gb(done)} / ${gb(total)} · `}
+          {pct !== null && `${gb(done)} / ${gb(total)} · ${gb(total - done)} left · `}
           {(p?.elapsed_s ?? 0).toFixed(0)}s
+          {/* Only when the server is willing to estimate. It withholds the
+              number until there is enough history to divide by, because a
+              countdown that opens with "4 hours" and settles at "40 seconds"
+              is one the reader learns to ignore. */}
+          {p?.eta_s != null && ` · ~${remaining(p.eta_s)} left`}
         </span>
         {/* The whole reason this component was revisited. A minutes-long
             download with no way out is a trap, and this one could run for
@@ -558,3 +563,13 @@ function LoadBar({
 
 const gb = (n: number) =>
   n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
+
+/** A duration somebody can act on. Seconds under a minute, then minutes, then
+ *  hours and minutes — "312 minutes" is a number you have to do arithmetic on
+ *  before it means anything. */
+export function remaining(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+}
