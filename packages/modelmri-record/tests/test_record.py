@@ -72,10 +72,16 @@ def test_nesting_records_parentage(offline):
 
 
 def test_an_exception_is_recorded_and_still_raised(offline):
-    with pytest.raises(ValueError):
+    # The raising body is a function so that nothing follows a `raise` inside
+    # a `with` — the analysis does not model pytest.raises swallowing it, and
+    # reads the assertions below as dead code. Same test, no dead-code warning.
+    def boom():
         with rec.trace("boom"):
             rec.step("tool_call", name="thing")
             raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        boom()
     doc = written(offline)
     assert doc["steps"][-1]["kind"] == "error"
     assert "kaboom" in doc["steps"][-1]["output"]

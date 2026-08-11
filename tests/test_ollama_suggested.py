@@ -126,7 +126,7 @@ def test_a_base_ollama_tag_is_not_called_instruction_tuned(monkeypatch):
         @contextmanager
         def _open(_req, timeout=None):
             class R:
-                def read(self_inner):
+                def read(self):
                     return _json.dumps({"template": template}).encode()
 
             yield R()
