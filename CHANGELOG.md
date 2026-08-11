@@ -6,6 +6,42 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Activation patching: where in the model the answer gets decided.** Every
+  other ranking here removes something from one prompt. `POST /api/patch`
+  takes *two* prompts that differ in one fact, moves an activation from the run
+  that knows the answer into the run that does not, at every (layer, position),
+  and reports the share of the gap between the two answers that comes back.
+  Ablation says "this mattered"; this says "the fact is here".
+
+  Measured on gpt2 float32 with "The Eiffel Tower is located in the city of"
+  against "The Colosseum is located in the city of": the shared first token
+  scores exactly 0.000 at every layer, the subject tokens carry 0.2-0.44 in
+  early-middle layers, and the final token climbs from 0.005 to **0.844** by
+  layer 11 — the information moving to where the prediction is made. 350
+  forward passes in 9.66 s for a 12x11 grid.
+
+  **The score is signed, so it is not KL** — the one ranking in this tool that
+  does not report nats. Patching has a direction and a patch can push the
+  answer further away: 5 of 132 sites did, worst -0.157, and an unsigned metric
+  cannot tell those from a site that recovered nothing. The two also disagree
+  about the ranking, overlapping on 5 of 8.
+
+  **Controls are eight draws, not one.** At a single site the same-norm random
+  draws ran from -2.038 to +0.616 against a real recovery of +0.427, so the
+  gate moves from 76 of 132 sites on one draw to 20 on all eight. Of the 8
+  highest-recovery sites, 3 clear both controls and 5 do not — including +0.435
+  at layer 3. Each site also gets a shifted-position control, which asks
+  whether it is that position or merely that layer.
+
+  **Most casually-written pairs are refused, and both failures are invisible
+  without being told.** The two prompts must tokenize to the same length (2 of
+  8 natural minimal pairs did not) and must predict different tokens (2 of 3
+  did not, making the denominator exactly 0.000000). Both refusals name what to
+  change and print both tokenizations.
+
+
 ### Changed
 
 - **The lint gate is written down instead of inherited.** There was no

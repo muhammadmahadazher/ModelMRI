@@ -1,0 +1,159 @@
+"""Activation patching: the refusals, and the arithmetic underneath them.
+
+No model download. The refusals are the part most likely to rot, because they
+guard failures that are invisible when they happen — two prompts of different
+token lengths both run fine on their own, and a pair that predicts the same
+token divides by exactly zero.
+"""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from modelmri import patch
+
+
+class _Tok:
+    """Whitespace tokenizer. Enough to exercise alignment and decoding."""
+
+    def __init__(self, vocab: list[str] | None = None) -> None:
+        self.vocab = vocab or []
+
+    def __call__(self, text: str, return_tensors=None):
+        words = text.split()
+        for w in words:
+            if w not in self.vocab:
+                self.vocab.append(w)
+        ids = torch.tensor([[self.vocab.index(w) for w in words]])
+        return type("Enc", (), {"input_ids": ids})()
+
+    def decode(self, ids) -> str:
+        return "".join(self.vocab[int(i)] for i in ids)
+
+
+class _Block(torch.nn.Module):
+    def forward(self, x):
+        return x
+
+
+class _Model(torch.nn.Module):
+    """A model whose answer depends on exactly one position, so the grid has a
+    known right answer rather than one we read off the thing under test."""
+
+    def __init__(self, n_layers: int = 3, d: int = 4, vocab: int = 6) -> None:
+        super().__init__()
+        self.blocks = torch.nn.ModuleList(_Block() for _ in range(n_layers))
+        self.embed = torch.nn.Embedding(vocab, d)
+        self.head = torch.nn.Linear(d, vocab)
+
+    def forward(self, ids):
+        x = self.embed(ids)
+        for b in self.blocks:
+            x = b(x)
+        return type("Out", (), {"logits": self.head(x)})()
+
+
+def _fixture():
+    torch.manual_seed(0)
+    model = _Model()
+    return model, _Tok(), list(model.blocks)
+
+
+def test_two_prompts_of_different_lengths_are_refused_with_both_tokenizations():
+    """The failure this guards is silent: both prompts run fine alone, and
+    position 3 of one simply is not position 3 of the other. Measured on real
+    pairs, 2 of 8 natural minimal pairs tokenize to different lengths."""
+    model, tok, blocks = _fixture()
+    with pytest.raises(patch.PatchError) as err:
+        patch.trace(model, tok, blocks, "a b c", "a b c d", device="cpu")
+    msg = str(err.value)
+    assert "different lengths" in msg
+    assert "3" in msg and "4" in msg
+    # The reader has to be able to see WHICH token split differently, or the
+    # message is just a complaint.
+    assert "'a'" in msg or '"a"' in msg or "a" in msg
+    assert "same number of pieces" in msg
+
+
+def test_a_pair_that_agrees_is_refused_rather_than_divided_by():
+    """Recovery divides by the gap between the two answers. Two of three
+    casually-written pairs produced the same next token, making that gap
+    exactly 0.000000."""
+    model, tok, blocks = _fixture()
+
+    # Same answer by construction: the head ignores position, so two prompts
+    # of equal length over the same vocab give the same argmax.
+    class _Flat(_Model):
+        def forward(self, ids):
+            out = super().forward(ids)
+            out.logits[:] = 0.0
+            out.logits[..., 2] = 1.0
+            return out
+
+    flat = _Flat()
+    with pytest.raises(patch.PatchError) as err:
+        patch.trace(flat, tok, list(flat.blocks), "a b", "c d", device="cpu")
+    assert "same next token" in str(err.value)
+
+
+def test_identical_prompts_say_what_to_change():
+    model, tok, blocks = _fixture()
+    with pytest.raises(patch.PatchError) as err:
+        patch.trace(model, tok, blocks, "a b c", "a b c", device="cpu")
+    assert "identical" in str(err.value)
+    assert "Change one fact" in str(err.value)
+
+
+def test_an_empty_prompt_is_refused():
+    model, tok, blocks = _fixture()
+    with pytest.raises(patch.PatchError):
+        patch.trace(model, tok, blocks, "   ", "a b", device="cpu")
+
+
+def test_a_near_zero_gap_is_refused_before_it_becomes_a_percentage():
+    """A gap of 0.3158 logits — measured on "The doctor said he" against "The
+    nurse said she" — makes a movement of 0.1 read as 32% recovered. The
+    fraction is only meaningful when there is something to divide by."""
+    assert patch.MIN_GAP > 0.3158, (
+        "the floor has to sit above the smallest real gap measured, or the "
+        "refusal never fires on the case that motivated it"
+    )
+
+
+def test_the_splice_does_not_write_into_the_cache():
+    """`_splice` clones. Writing in place would corrupt the clean cache for
+    every later patch, and that failure does not raise — it makes each site's
+    score depend on the order the sites were visited."""
+    block = _Block()
+    incoming = torch.zeros(1, 3, 4)
+    handle = patch._splice(block, 1, torch.full((1, 4), 5.0))
+    try:
+        out = block(incoming)  # through __call__, so the pre-hook actually runs
+    finally:
+        handle.remove()
+    assert torch.equal(incoming, torch.zeros(1, 3, 4)), "the input was mutated"
+    assert torch.equal(out[:, 1, :], torch.full((1, 4), 5.0))
+    assert torch.equal(out[:, 0, :], torch.zeros(1, 4))
+
+
+def test_the_control_is_more_than_one_draw():
+    """One draw is a sample, not a property. Measured over 8 draws at a single
+    site the control ran from -2.038 to +0.616 against a real recovery of
+    +0.427, and the gate moves from 76 of 132 sites on one draw to 20 on
+    eight."""
+    assert patch.CONTROL_DRAWS > 1
+
+
+def test_capture_reads_the_block_input():
+    block = _Block()
+    sink: dict = {}
+    handle = patch._capture(block, 7, sink)
+    x = torch.arange(12, dtype=torch.float32).reshape(1, 3, 4)
+    try:
+        block(x)
+    finally:
+        handle.remove()
+    assert 7 in sink and torch.equal(sink[7], x)
+    # A clone, not a view: the cache has to survive the tensor being reused.
+    assert sink[7].data_ptr() != x.data_ptr()

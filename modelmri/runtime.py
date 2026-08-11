@@ -35,6 +35,7 @@ from . import (
     devices,
     feature_ablate,
     ollama,
+    patch,
     paths,
     progress,
     session,
@@ -703,6 +704,50 @@ class ModelRuntime:
         finally:
             if proc.poll() is None:  # an exception on our side, not the child's
                 proc.terminate()
+
+    def patch_trace(self, clean: str, corrupt: str) -> dict:
+        """Causal trace between two prompts. See patch.py for what it measures.
+
+        Holds the lock for the whole trace because it hangs hooks on every
+        block and runs the model hundreds of times: a generation interleaved
+        with that would read a spliced residual stream and report it as the
+        model's own behaviour.
+        """
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording, not a live model. Patching means "
+                    "running the model again with an activation replaced, and "
+                    "a `.mri` holds activations rather than weights — there is "
+                    "nothing here to re-run."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text, not activations, so there is no "
+                    "residual stream to move between two runs. Load this model "
+                    "through HuggingFace to trace it."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            # The config's count, not a guess: `_block` raises a Refusal for
+            # an architecture it cannot walk, and asking it for layer 0 first
+            # turns "unsupported layout" into that message rather than into an
+            # IndexError from a range built on the wrong number.
+            n_layers = int(self.model.config.num_hidden_layers)
+            blocks = [self._block(i) for i in range(n_layers)]
+            try:
+                return patch.trace(
+                    self.model,
+                    self.tokenizer,
+                    blocks,
+                    clean,
+                    corrupt,
+                    device=self.device,
+                )
+            except patch.PatchError as err:
+                # A pair this measurement cannot be taken on, not a failure of
+                # the code. Every one of these names what to change.
+                raise BadRequest(str(err)) from err
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""
