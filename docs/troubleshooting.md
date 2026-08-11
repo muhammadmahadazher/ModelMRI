@@ -7,6 +7,25 @@ description: "Fixes for real ModelMRI problems: stalled HuggingFace downloads, C
 Most of these are things that actually happened during development, with what
 the tool now does about them.
 
+## Start here: what can this machine actually run?
+
+```bash
+modelmri doctor
+```
+
+It measures the machine rather than guessing: OS and architecture, logical
+cores, RAM, free disk where models are cached, the torch build, the accelerator
+it found with its VRAM and precision, and roughly how many billion parameters
+fit. It exits non-zero when something would stop a load, so you can chain off
+it in a script.
+
+A figure it cannot determine reads `could not measure` rather than being
+substituted with a default — an invented RAM number reads exactly as
+confidently as a real one, and every sentence built on it would inherit that.
+
+Most of the sections below have a line in that report. If the answer surprises
+you, it is the first thing to paste into an issue.
+
 ## A load sits there for minutes
 
 Normal for a cold model — the weights are downloading. The progress bar shows

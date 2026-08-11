@@ -83,7 +83,38 @@ Both sides are forward passes over the **same token sequence**, never two genera
 
 It reports what it measured and nothing more. These are **not** each head's share of the prediction — on gpt2 layer 0 the twelve per-head scores sum to 1.995 while ablating the whole layer gives 0.208 — and the ranking depends on what a removed head is replaced with, so the baseline is named on screen and both are offered. `head_dim` is read from the model rather than computed as `hidden_size // n_heads`, which is wrong by 2× on Qwen3 and would rank half-heads confidently.
 
-### 3. Find a concept and turn it off
+### 3. Ask where in the model the answer is decided
+
+Ablation says *what mattered*. It cannot say *where the thing is*. **Patching** takes two prompts that differ in one fact, moves an activation from the run that knows the answer into the run that does not, at every (layer, position), and reports how much of the difference comes back.
+
+<p align="center">
+  <img src="docs/media/patching.gif" alt="The patching grid filling in row by row, then three tabs — residual stream, attention, MLP — each showing a different map of the same prompt" width="800">
+</p>
+
+<p align="center"><em>Blue recovered the clean answer, red pushed it further away. Ringed cells were tested against chance.</em></p>
+
+```
+clean    "The Eiffel Tower is located in the city of"   ->  " Paris"
+corrupt  "The Colosseum is located in the city of"      ->  " Rome"
+```
+
+Three grids, because *where* and *through what* are different questions — and they disagree. Measured on the same pair across three architectures:
+
+| model | residual | attention | MLP |
+|---|---|---|---|
+| `gpt2` | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
+| `Qwen2.5-0.5B-Instruct` | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
+| `gemma-3-270m-it` | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
+
+The MLP peak sits on a **subject** token in an early layer in all three — `um`, `os` and `osseum` are all pieces of "Colosseum" — while the attention peak sits on the **last** token, late. Early MLP writes the fact; late attention carries it to where the prediction is made. The residual grid contains both and shows only the destination.
+
+The score is **signed**, and it is the one ranking here that is not a KL: a patch can push the answer further away, and 5 of 132 sites did. It is also not capped at 1.0 — a single site can overshoot, and `gemma-3-270m-it` reads 1.010.
+
+Each of the strongest sites is run again against **eight** same-norm random draws at the same site, not one, because one is a coin flip: at a single site the draws ran from −2.038 to +0.616 against a real recovery of +0.427.
+
+Most casually-written pairs are refused, and both failures are invisible unless you are told — the prompts must tokenize to the same length (2 of 8 natural minimal pairs did not) and must predict different tokens (2 of 3 did not, making the denominator exactly 0). Both refusals print what to change.
+
+### 4. Find a concept and turn it off
 
 Load a sparse autoencoder and ModelMRI shows the human-interpretable features firing on every token. Click one, drag the slider, and run a deterministic A/B:
 
@@ -110,7 +141,7 @@ and refuses to plot anything when no convention reconstructs. On the default SAE
 that is the difference between **60.5** features firing per token and **7,491**,
 and between an FVU of **0.0010** and **13,579**.
 
-### 4. Find the step where your agent died
+### 5. Find the step where your agent died
 
 Two lines of `modelmri.record` around any agent run gives you a timeline: LLM calls, tool calls, subagents, each as a block. The failure glows. Click it for the exact input, output, tokens, and error.
 
@@ -125,7 +156,7 @@ with trace("fix-failing-tests"):
 
 Or instrument automatically: `modelmri.record.instrument_anthropic()`.
 
-### 5. Look inside a robot policy
+### 6. Look inside a robot policy
 
 This is the part nobody else ships. ModelMRI loads the **vision tower of the real SmolVLA checkpoint** and runs actual robot-camera frames through it, painting each image patch's attention back onto the frame. Scrub an episode, run the policy, drag the layer slider.
 
@@ -139,7 +170,7 @@ Measured on PushT frames — share of attention mass in the top 5% of patches:
 
 Early layers look everywhere; deep layers lock on. No robot hardware required — it reads public LeRobot datasets straight from disk.
 
-### 6. Debug a model you trained yourself
+### 7. Debug a model you trained yourself
 
 Everything above is transformer-shaped. This isn't. Point ModelMRI at your own `nn.Module` — an MLP, a small CNN, whatever you're training — and get a layer-by-layer map of one real forward pass.
 
@@ -163,7 +194,7 @@ Dead units, saturated activations, and **the first layer where a `nan` appears**
 
 A `state_dict` alone is refused, with the reason: it's weights without an architecture, and guessing one would produce a map that looks authoritative and describes a network you never trained.
 
-### 7. Send someone the finding, not the model
+### 8. Send someone the finding, not the model
 
 You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
 
@@ -197,8 +228,28 @@ The browser viewer and the Python tool are checked cell-for-cell against the sam
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
 pip install modelmri-record       # just the agent recorder — stdlib only, an 8.9 KiB wheel
+modelmri doctor                   # what this machine can and cannot run, measured
 modelmri serve
 ```
+
+**Will it run here?** `modelmri doctor` measures your machine and says so — OS,
+cores, RAM, free disk, the torch build, the accelerator it found and its
+precision, and roughly how large a model fits. It exits non-zero when something
+would stop a load, so it is scriptable. `modelmri serve` prints the one-line
+version at startup.
+
+```
+  accelerator NVIDIA GeForce RTX 4060 Laptop GPU (cuda)   vram 8.6 GB   bfloat16
+  Models up to roughly 3.2B parameters should fit.
+```
+
+Every figure is read off the machine at the moment you ask, and a number that
+cannot be determined says "could not measure" rather than being invented. Note
+this is a *first-run* check rather than an install-time one, deliberately: a
+wheel is an archive and pip does not execute code from it, so there is nowhere
+honest to put a check during `pip install`. It is also the better place for it,
+because the same machine can be perfectly able to open a shared `.mri` and
+unable to load a 7B model — and those are different questions.
 
 From source:
 
