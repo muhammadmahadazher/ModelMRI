@@ -2352,3 +2352,38 @@ textarea:focus:not(:focus-visible) { outline: none; }
 /* The range thumb draws its own ring; a box ring around the whole track
    points at the wrong thing. */
 input[type="range"]:focus-visible { outline: none; }
+
+/* ── Patching ───────────────────────────────────────────────────────────
+   The grid is a DIVERGING scale, unlike every other heatmap in here, because
+   recovery is signed: a patch can push the answer further from the clean run
+   than doing nothing would, and 5 of 132 sites on the reference pair did. A
+   one-sided ramp would paint those the same as a site that did nothing.
+
+   Both halves name a token this stylesheet actually defines. The first cut
+   used `var(--accent)`, which does not exist here, so `color-mix` fell back to
+   nothing and every RECOVERED cell computed to rgba(0,0,0,0) — the whole
+   positive half of a diverging scale, invisible, while the negative half
+   rendered because it happened to carry a literal fallback. */
+.h-patch { color: var(--color-cobalt); }
+.patch-inputs { display: grid; gap: 8px; margin-bottom: 10px; }
+.patch-inputs label { display: grid; gap: 3px; }
+.patch-inputs input {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+}
+.patch-answers { display: flex; gap: 14px; align-items: baseline; margin: 8px 0; }
+.patch-grid-wrap { overflow-x: auto; }
+.patch-grid { border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); }
+.patch-grid th { font-weight: 500; padding: 3px 5px; white-space: nowrap; opacity: 0.75; }
+.patch-grid thead th { writing-mode: vertical-rl; transform: rotate(180deg); }
+.patch-grid td {
+  min-width: 42px; height: 22px; text-align: center;
+  border: 1px solid var(--line); font-variant-numeric: tabular-nums;
+}
+/* Outlined, not coloured: the colour already carries the score, and the ring
+   says something orthogonal — that this cell was tested against chance. */
+.patch-grid td.clears { outline: 2px solid var(--color-cobalt); outline-offset: -2px; }
+.patch-read { margin-top: 8px; min-height: 2.6em; }
+.patch-notes { margin: 8px 0 0; padding-left: 18px; }
+.patch-notes li { margin-bottom: 3px; }

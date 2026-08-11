@@ -41,6 +41,15 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   did not, making the denominator exactly 0.000000). Both refusals name what to
   change and print both tokenizations.
 
+  The panel draws the grid with a **diverging** scale — the only heatmap here
+  that needs one, because a patch can push the answer further from the clean
+  run than doing nothing would. Cells that were tested against chance are
+  ringed, and hovering one says whether it beat its own controls or is not
+  distinguished from an edit of that size at that layer. The demo refuses it
+  rather than baking a grid: the answer depends on the two prompts the reader
+  types, so a recorded one would be a fabricated measurement wearing their own
+  words.
+
 
 ### Changed
 
