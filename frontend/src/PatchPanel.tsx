@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { CSSProperties, useState } from "react";
 import { errorText, patchTrace, PatchTrace } from "./api";
+import { useScanOnData } from "./useScanOnData";
 
 /** Activation patching — where in the model the answer is decided.
  *
@@ -54,6 +55,12 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
   // comparison IS the finding — the residual grid says where, the two
   // sublayer grids say through what, and they do not agree.
   const [comp, setComp] = useState("resid");
+  // The specular scan, on the same terms as every other panel: keyed on the
+  // payload, so it fires when a trace ARRIVES and not on every re-render.
+  // Switching tabs re-reads a grid that was already here, and deliberately
+  // does not flash — the data did not change, only which of it you are
+  // looking at.
+  const scanRef = useScanOnData(data);
 
   async function run() {
     setBusy(true);
@@ -85,7 +92,7 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
   const grid = data?.grids?.[comp] ?? [];
 
   return (
-    <div className="panel patch" key={epoch}>
+    <div className="panel patch" key={epoch} ref={scanRef}>
       <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
       <p className="meta">
         Two prompts that differ in one fact. Every other panel asks what
@@ -176,13 +183,13 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
                   ))}
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="stagger">
                 {/* Deepest layer at the top, so the grid reads the way the
                     model runs down the page. */}
                 {[...grid].reverse().map((row, ri) => {
                   const li = data.n_layers - 1 - ri;
                   return (
-                    <tr key={li}>
+                    <tr key={li} style={{ "--i": ri } as CSSProperties}>
                       <th className="mid">L{li}</th>
                       {row.map((v, pi) => {
                         const site = controlled.get(`${li}:${pi}`);
@@ -234,9 +241,11 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
             )}
           </div>
 
-          <ul className="patch-notes meta">
+          <ul className="patch-notes meta stagger">
             {data.notes.map((n, i) => (
-              <li key={i}>{n}</li>
+              <li key={i} style={{ "--i": i } as CSSProperties}>
+                {n}
+              </li>
             ))}
           </ul>
         </>

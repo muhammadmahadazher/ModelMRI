@@ -2388,3 +2388,33 @@ input[type="range"]:focus-visible { outline: none; }
 .patch-notes { margin: 8px 0 0; padding-left: 18px; }
 .patch-notes li { margin-bottom: 3px; }
 .patch-tabs { display: flex; gap: 6px; align-items: center; margin: 10px 0 6px; flex-wrap: wrap; }
+
+/* Cells lift under the pointer rather than recolour: the colour already means
+   something here (recovery, signed), so borrowing it for hover would make the
+   reading ambiguous. Border and z-order are free. */
+.patch-grid td {
+  transition:
+    border-color var(--dur-micro) var(--ease-hover),
+    box-shadow var(--dur-micro) var(--ease-hover);
+}
+.patch-grid td:hover {
+  border-color: color-mix(in oklab, var(--color-cobalt) 60%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-cobalt) 40%, transparent);
+  position: relative;
+  z-index: 1;
+}
+/* The ring on a controlled cell is a verdict, so it settles in rather than
+   appearing — but only travels 0, because a grid that shifts on arrival makes
+   a reader chase the number they were about to read. */
+.patch-grid td.clears { transition: outline-color var(--dur-small) var(--ease-out); }
+
+/* The readout swaps text on hover; without this it flickers between two
+   sentences of different length. Opacity only, no travel. */
+.patch-read { transition: opacity var(--dur-micro) var(--ease-standard); }
+
+/* The grid arrives as one object. Rows stagger (see .stagger), and the whole
+   table fades so a half-drawn heatmap is never briefly readable as a result. */
+.patch-grid-wrap { animation: featIn var(--dur-medium) var(--ease-out) both; }
+@media (prefers-reduced-motion: reduce) {
+  .patch-grid-wrap { animation: none; }
+}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useScanOnData } from "./useScanOnData";
 import {
   clearTraces,
   getTrace,
@@ -24,6 +25,12 @@ export default function AgentsPanel() {
   const [sel, setSel] = useState<TraceStep | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [clearing, setClearing] = useState(false);
+  // Above every conditional return. This panel returns early for its empty
+  // and loading states, so a hook placed after that ran on some renders and
+  // not others — React error #310, and the whole page blank. Hooks are not
+  // allowed to be conditional, and an early return makes everything below it
+  // conditional.
+  const scanRef = useScanOnData(doc?.id ?? null);
 
   useEffect(() => {
     void getTraces().then((l) => {
@@ -98,7 +105,11 @@ export default function AgentsPanel() {
   const nLanes = Math.max(...lanes.map((l) => l.lane), 0) + 1;
 
   return (
-    <div className="panel agents">
+    // A trace arriving from somebody's agent run IS new data — it is the only
+    // panel here whose content can change without the reader doing anything,
+    // which is exactly what the scan is for. Keyed on the opened document so
+    // it fires when a run is loaded, not on every re-render of the list.
+    <div className="panel agents" ref={scanRef}>
       <div className="sect">
         <span className="dot d-agent" />
         <h2 className="h-agent">AGENTS — RECORDED RUNS</h2>
