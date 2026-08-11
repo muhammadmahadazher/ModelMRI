@@ -57,15 +57,19 @@ def boom(*_a, **_k):
 def test_a_refusal_is_still_a_runtimeerror():
     """The property the migration rests on: an unconverted handler's
     `except RuntimeError` keeps catching a converted raise site."""
+    # Asserted BEFORE the block: a `raise` as the last statement inside
+    # `pytest.raises` reads as making everything after it unreachable,
+    # because the analysis does not model the context manager swallowing
+    # the exception. Same test, no dead-code warning.
+    assert issubclass(Refusal, RuntimeError)
     with pytest.raises(RuntimeError):
         raise Refusal("no, and here is why")
-    assert issubclass(Refusal, RuntimeError)
 
 
 def test_a_bad_request_is_still_a_valueerror():
+    assert issubclass(BadRequest, ValueError)
     with pytest.raises(ValueError):
         raise BadRequest("layer must be in [0,12)")
-    assert issubclass(BadRequest, ValueError)
 
 
 def test_the_two_do_not_catch_each_other():

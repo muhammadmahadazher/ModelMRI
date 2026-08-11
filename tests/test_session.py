@@ -64,8 +64,6 @@ def test_a_boundary_outside_the_token_list_is_discarded():
 
     Zero means "unknown" — every reader treats it as "rest on nothing",
     which is the safe reading. It must NOT mean "all prompt"."""
-    import gzip
-    import json
 
     for hostile in (99, -1, "3", True, None):
         raw = json.loads(gzip.decompress(_build()))
@@ -77,8 +75,6 @@ def test_a_boundary_outside_the_token_list_is_discarded():
 def test_an_older_session_without_a_boundary_still_opens():
     """The field is additive. Files written before it exists must not become
     unreadable, and must report unknown rather than a guess."""
-    import gzip
-    import json
 
     raw = json.loads(gzip.decompress(_build()))
     del raw["n_prompt"]

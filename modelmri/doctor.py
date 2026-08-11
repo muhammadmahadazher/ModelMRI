@@ -75,59 +75,84 @@ class Report:
         return asdict(self)
 
 
+def _ram_posix() -> int | None:
+    """Linux and most BSDs, through sysconf."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return None
+    return pages * page_size if pages > 0 and page_size > 0 else None
+
+
+def _ram_windows() -> int | None:
+    """GlobalMemoryStatusEx, through ctypes. No third-party dependency."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemStatus()
+        status.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys)
+    except Exception:
+        return None
+    return None
+
+
+def _ram_macos() -> int | None:
+    """hw.memsize, through sysctl."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    return (
+        int(out.stdout.strip())
+        if out.returncode == 0 and out.stdout.strip().isdigit()
+        else None
+    )
+
+
 def _ram_bytes() -> int | None:
     """Physical RAM, or None. Three platforms, no third-party dependency.
 
     Returning None is a real answer here. A machine whose RAM cannot be read is
     not a machine with 8 GB, and every sentence downstream is written to cope
     with not knowing.
+
+    Split into three probes rather than one function with fall-through
+    `except: pass` arms: the fall-through WAS the handling, but a reader — and
+    a static analyser — cannot tell that from a swallowed error, and it read as
+    three empty excepts in a row.
     """
-    # POSIX: Linux and most BSDs expose this through sysconf.
-    try:
-        pages = os.sysconf("SC_PHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        if pages > 0 and page_size > 0:
-            return pages * page_size
-    except (AttributeError, ValueError, OSError):
-        pass
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            class _MemStatus(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-
-            status = _MemStatus()
-            status.dwLength = ctypes.sizeof(_MemStatus)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.ullTotalPhys)
-        except Exception:  # a probe; None is a valid answer
-            return None
-    if sys.platform == "darwin":
-        try:
-            import subprocess
-
-            out = subprocess.run(
-                ["sysctl", "-n", "hw.memsize"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if out.returncode == 0 and out.stdout.strip().isdigit():
-                return int(out.stdout.strip())
-        except Exception:  # same
-            return None
+    for probe in (_ram_posix, _ram_windows, _ram_macos):
+        got = probe()
+        if got:
+            return got
     return None
 
 
