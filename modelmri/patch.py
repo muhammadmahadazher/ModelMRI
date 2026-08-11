@@ -399,7 +399,10 @@ def trace(
         "notes": [
             "Scores are the share of the clean-vs-corrupt logit gap that the "
             "patch restores. 1.0 is the clean answer, 0.0 is the corrupted "
-            "one, and negative means the patch pushed the answer further away.",
+            "one, and negative means the patch pushed the answer further away. "
+            "It is a share, not a percentage of a whole: one site can overshoot "
+            "the clean run, and one does — gemma-3-270m-it reads 1.010 at its "
+            "last layer on the reference pair.",
             "Layer 0's input is the embedding, so patching all of its "
             "positions at once restores the prompt itself and scores 1.0 by "
             "construction.",
