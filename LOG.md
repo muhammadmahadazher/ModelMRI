@@ -1,5 +1,64 @@
 # Working log
 
+## 2026-08-11 (the load meter) — four bugs behind one impossible number
+
+"5.0 GB / 2.5 GB", reported from the app. A number that cannot happen is the
+best kind of bug report, because it is not a matter of taste: something is
+counting two different things and calling them the same thing.
+
+**The numerator and the denominator disagreed about which files count.** The
+total came from the repo's top-level files; the on-disk figure walked the whole
+tree with `rglob("*")`. `meta-llama/Llama-3.2-1B-Instruct` ships
+`original/consolidated.00.pth` — 2.472 GB, the same weights in Meta's own
+format, which `from_pretrained` never opens — beside `model.safetensors` at
+2.472 GB. Measured on the real cache: 4.955 GB on disk against 2.481 GB
+expected, **199.7%**. The fix is not a clamp. The Hub's file list now decides
+one set of names and both sides count that set; measured after: 2.481 / 2.481,
+**100.0%**. Two more counting bugs fell out of the same walk — a cache holding
+two revisions of one repo had them *added* together, and one file vanishing
+mid-walk (the hub moves blobs into snapshots while a load runs) zeroed the
+whole count because the entire walk sat under one `try`.
+
+**The picker had its own copy of the same walk**, and its own copy of the same
+bug: it listed that model at 4.96 GB. Both sides now call one function. Two
+implementations of "how big is this model" is two things that can disagree,
+and these did.
+
+**The second screenshot was the more serious one.** It showed
+`Qwen/Qwen2.5-0.5B-Instruct` — a model with neither number — against "5.0 GB /
+2.5 GB · 493s". Those are Llama's figures. `py-spy` on the live server:
+thread 37732 blocked in `convert` inside `.to(device)`, and thread 25128
+blocked at `runtime.py:492`, which is `with self._lock`. So the Qwen load was
+queued behind a Llama load that had stopped returning, forever, with no
+timeout and no message — while the browser labelled the running load with
+whatever the picker showed. Two independent defects producing one screenshot.
+A second load is now a 409 naming what holds the slot; the bar names
+`progress.hf_id`.
+
+**Was it slow or stopped?** Worth separating, because the answers differ. The
+server had used 0.3 CPU-seconds and read 0 bytes over 12 s. From another
+process, the same weight file read at **295 MB/s** and the same GPU took
+host-to-device copies at **1266 MB/s** with 7.18 GB free. Neither the disk nor
+the GPU was the problem, so this was stopped, not slow — and "no bytes and no
+CPU" is evidence the meter can gather itself. It now does, in every stage,
+using `time.process_time()`: a plain counter read, which unlike asking CUDA how
+much memory it has handed out cannot block on the very thing that is stuck. A
+fresh server loaded the same model in 20.7 s.
+
+**And one warning that fires on healthy downloads.** The 45 s stall threshold
+predates `hf_xet`, which huggingface_hub 1.x installs by default. Watching a
+real 324 MB download of `EleutherAI/pythia-160m` land on disk: the blob sat
+unchanged at 2.1 MB from 4.1 s to **75.7 s**, then again from 85.4 s to
+144.4 s. xet reconstructs from its own chunk cache and writes in large,
+infrequent jumps, so that download would have been declared stalled twice
+while working perfectly. 180 s clears the longest gap measured, and the
+sentence is now scoped to the download stage — a load wedged on the GPU was
+being reported as a stalled download, which sends people to look at their
+network.
+
+Every threshold in the file now carries the measurement that set it. A number
+chosen by feel is a number nobody can revisit.
+
 ## 2026-08-11 (feature ablation, after the adversaries) — the tick that was green 38 times wrongly
 
 Three adversarial passes over the new feature ranking returned thirteen

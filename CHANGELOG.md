@@ -6,6 +6,50 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The load meter reported 5.0 GB of a 2.5 GB model, and a load that stopped
+  returning took every later load down with it.** Reported from the app while
+  loading `meta-llama/Llama-3.2-1B-Instruct`. Four separate defects, each
+  measured before and after:
+
+  - **199.7% on a fully cached model.** The total counted the repo's top-level
+    files; the on-disk figure walked the whole tree. Llama-3.2 ships
+    `original/consolidated.00.pth` beside `model.safetensors`, both 2.472 GB —
+    the same weights in Meta's format, which `from_pretrained` never opens — so
+    a complete cache measured 4.955 GB against an expected 2.481 GB. The Hub's
+    file list now picks one set of names and **both** sides count exactly that
+    set: 2.481 / 2.481 GB, 100.0%. The same rule now sizes the model picker,
+    which had been listing that model at 4.96 GB.
+
+  - **The wrong model's numbers under the right model's name.** Watcher threads
+    write into one shared snapshot, so a previous load's watcher kept
+    publishing after the next load began, and the browser labelled the bar with
+    the model the *picker* was showing rather than the one the server was
+    loading. Both now name the load that is actually running.
+
+  - **A second load queued behind a wedged one forever.** `load()` took the
+    runtime lock with no timeout, so when one load stopped returning, every
+    request after it blocked with no message — "nothing loads any more". A
+    second load is now a **409** that names what is holding the slot and for
+    how long, rather than a thread that never comes back.
+
+  - **A healthy download called stalled.** The 45 s threshold predates
+    `hf_xet`, which huggingface_hub 1.x installs by default and which writes
+    the blob in large, infrequent jumps. Watching a healthy 324 MB download of
+    `EleutherAI/pythia-160m`, the blob sat unchanged for **71.6 s**, then again
+    for 59 s. Now 180 s, and the message is scoped to the download stage.
+
+  Added with them: a load that goes quiet in any *other* stage is now
+  diagnosed rather than shown as a full bar forever. Measured on the real one —
+  `.to(cuda)` never returned, 0.3 CPU-seconds and 0 bytes read over 12 s, while
+  the same file read at 295 MB/s and the same GPU took host-to-device copies at
+  1266 MB/s from another process — so "no CPU and no bytes" is the evidence the
+  meter now reports, and it says stopped rather than slow. The Hub call that
+  supplies the denominator also gained a timeout (it was unbounded, and cost
+  1502 ms on a model needing no network at all) and now honours
+  `HF_HUB_OFFLINE`.
+
 ### Added
 
 - **The features panel can now say which features actually changed the

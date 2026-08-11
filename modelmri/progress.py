@@ -18,12 +18,22 @@ a current hub the finished blob is *moved* into snapshots, leaving blobs
 empty. Summing double-counts two of those, and counting blobs alone reports
 zero forever on the third.
 
+The numerator and the denominator have to agree on which files count, and
+for a long time they did not: the total came from the repo's top-level
+files while the on-disk figure walked the whole tree. Any repo that ships a
+second copy of its weights in a subfolder then read as more than 100%.
+meta-llama/Llama-3.2-1B-Instruct is one -- it carries
+`original/consolidated.00.pth` beside `model.safetensors`, both 2.472 GB --
+and it displayed as "5.0 GB / 2.5 GB", measured 199.7%. So the Hub's file
+list now decides one set of names, and both sides count exactly that set.
+
 Everything here is best-effort. A load must never fail because its
 progress meter did.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -36,7 +46,37 @@ from pathlib import Path
 _CONFIG = (".json", ".txt", ".model")
 
 # How long a download may sit at the same byte count before we call it stalled.
-STALL_AFTER_S = 45.0
+#
+# This was 45 s, chosen before hf_xet existed. huggingface_hub 1.x installs
+# hf_xet by default and it does not stream into the blob: it reconstructs
+# from its own chunk cache and writes the file in large, infrequent jumps.
+# Watching a healthy 324 MB download of EleutherAI/pythia-160m, the blob sat
+# unchanged at 2.1 MB from 4.1 s to 75.7 s -- a 71.6 s gap -- and again from
+# 85.4 s to 144.4 s. At 45 s that download would have been called stalled
+# twice while it was working perfectly. 180 s clears the longest gap
+# measured with room to spare.
+STALL_AFTER_S = 180.0
+
+# How long *any* stage may go with no bytes, no stage change and no CPU
+# before we say the load is wedged rather than slow. Separate from the
+# download threshold because it is a different claim about a different
+# failure: a download that stopped receiving is still a live process, while
+# this is a load that has stopped executing.
+WEDGED_AFTER_S = 120.0
+
+# CPU seconds the whole process must burn during a wedge window to count as
+# "still doing something". A load that is genuinely working spends far more
+# than this; the polling in here spends far less. Measured on a wedged load:
+# 0.3 CPU-seconds and 0 bytes read over 12 s while `.to(cuda)` never
+# returned, against 295 MB/s available from the same file in another
+# process and 1266 MB/s host-to-device on the same GPU.
+WEDGED_CPU_S = 2.0
+
+# Seconds to wait on the Hub for a file listing. Unbounded, this ran on the
+# watcher thread before the first byte figure was published: measured at
+# 1502 ms on a fully cached model that needed no network at all, and with
+# no ceiling at all on a bad connection.
+HUB_TIMEOUT_S = 8.0
 
 # How much new data has to land before "already cached" is treated as having
 # been wrong. Large enough that a lock file or a rewritten config cannot trip
@@ -69,32 +109,122 @@ def _model_dir(hf_id: str) -> Path:
     return hub_cache() / f"models--{hf_id.replace('/', '--')}"
 
 
-def _tree_bytes(root: Path) -> int:
+def _size(f: Path) -> int:
+    """One file's size, or 0. Per file, deliberately.
+
+    The whole walk used to sit under a single try/except, so one file
+    disappearing -- and the hub moves blobs into snapshots mid-load, so they
+    do -- zeroed the entire count and dropped the bar to nothing.
+    """
     try:
-        return sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+        return f.stat().st_size
     except OSError:
         return 0
 
 
-def _bytes_on_disk(hf_id: str) -> int:
+def _tree_bytes(root: Path, keep=None) -> int:
+    """Bytes under `root`, optionally only the files `keep` accepts.
+
+    `keep` receives the path relative to `root`, in posix form, so it can
+    match the names the Hub publishes.
+    """
+    try:
+        files = list(root.rglob("*"))
+    except OSError:
+        return 0
+    total = 0
+    for f in files:
+        try:
+            if not f.is_file():
+                continue
+        except OSError:
+            continue
+        if keep is not None and not keep(f.relative_to(root).as_posix()):
+            continue
+        total += _size(f)
+    return total
+
+
+def _default_keep(name: str) -> bool:
+    """The files a load pulls, when the Hub could not be asked.
+
+    Top level only: every subfolder in a model repo is a variant of the same
+    weights in another runtime's format (onnx/, gguf/, coreml/, and Meta's
+    original/), and `from_pretrained` reads none of them.
+    """
+    if "/" in name:
+        return False
+    return name.endswith((".safetensors", ".bin", ".pth", *_CONFIG))
+
+
+def _revision_bytes(snapshots: Path, keep) -> int:
+    """The largest single revision, never the sum of several.
+
+    A cache can hold more than one revision of the same repo. Adding them
+    reports a model at a multiple of its real size, and a load reads exactly
+    one of them.
+    """
+    try:
+        revs = [d for d in snapshots.iterdir() if d.is_dir()]
+    except OSError:
+        return 0
+    return max((_tree_bytes(rev, keep) for rev in revs), default=0)
+
+
+def _bytes_on_disk(hf_id: str, wanted: frozenset[str] | None = None) -> int:
     """Bytes of this model already on disk. See the module docstring for why
-    this is a max and not a sum."""
+    this is a max and not a sum.
+
+    `wanted` is the exact set of repo files this load will read, from the
+    Hub's own listing. Without it -- offline, or a repo that publishes no
+    file sizes -- we fall back to a shape rule, which is less precise but
+    still excludes the subfolder duplicates that caused the 199.7% reading.
+    """
+    keep = (lambda n: n in wanted) if wanted else _default_keep
     model = _model_dir(hf_id)
-    return max(_tree_bytes(model / "blobs"), _tree_bytes(model / "snapshots"))
+    # blobs/ is content-addressed and flat: the names are hashes, so there is
+    # nothing there to match against a file list. Everything in it counts,
+    # including the `.incomplete` partials that are the only visible sign of
+    # a download in flight.
+    return max(_tree_bytes(model / "blobs"), _revision_bytes(model / "snapshots", keep))
+
+
+def _offline() -> bool:
+    """Whether the Hub is off limits, by the hub's own environment variable."""
+    return os.environ.get("HF_HUB_OFFLINE", "").strip().lower() not in (
+        "",
+        "0",
+        "false",
+    )
+
+
+def _expected_files(hf_id: str) -> tuple[frozenset[str], int]:
+    """The exact files a load pulls, and their total size.
+
+    An empty set with a 0 total means "could not be determined" -- offline,
+    a rate limit, a private repo, or a repo that publishes no sizes. The
+    caller shows an indeterminate bar rather than inventing a denominator.
+    """
+    if _offline():
+        return frozenset(), 0
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(hf_id, files_metadata=True, timeout=HUB_TIMEOUT_S)
+        files = info.siblings or []
+        # Variants live in subfolders (onnx/, gguf/, coreml/, original/) we
+        # never touch. This is also what keeps the numerator honest: the same
+        # names go on to select what counts on disk.
+        sized = [(f.rfilename, f.size or 0) for f in files if "/" not in f.rfilename]
+        keep = _weight_files(sized) + [(n, s) for n, s in sized if n.endswith(_CONFIG)]
+        return frozenset(n for n, _ in keep), sum(s for _, s in keep)
+    except Exception:
+        return frozenset(), 0
 
 
 def _expected_bytes(hf_id: str) -> int:
     """Total download size for the files a load actually pulls. 0 if unknown."""
-    try:
-        from huggingface_hub import HfApi
-
-        files = HfApi().model_info(hf_id, files_metadata=True).siblings or []
-        # Variants live in subfolders (onnx/, gguf/, coreml/) we never touch.
-        sized = [(f.rfilename, f.size or 0) for f in files if "/" not in f.rfilename]
-        keep = _weight_files(sized) + [(n, s) for n, s in sized if n.endswith(_CONFIG)]
-        return sum(s for _, s in keep)
-    except Exception:
-        return 0
+    return _expected_files(hf_id)[1]
 
 
 @dataclass
@@ -120,6 +250,12 @@ class _Tracker:
         self._snap = Snapshot()
         self._t0 = 0.0
         self._stop: threading.Event | None = None
+        # Which load is current. A watcher writes into the shared snapshot,
+        # so without this the previous load's watcher can publish its byte
+        # counts under the next load's name -- and did: a hung load of
+        # Llama-3.2-1B showed "5.0 GB / 2.5 GB" against a queued
+        # Qwen2.5-0.5B, which has neither number.
+        self._gen = 0
         # Set by the user asking to stop. The loader polls it; see
         # runtime._prefetch_weights for why a flag is enough to actually
         # halt a download that has already started.
@@ -145,12 +281,14 @@ class _Tracker:
         self._t0 = time.monotonic()
         self.cancelled.clear()
         with self._lock:
+            self._gen += 1
+            gen = self._gen
             self._snap = Snapshot(
                 active=True, hf_id=hf_id, stage="resolving", detail="contacting the Hub"
             )
         self._stop = threading.Event()
         threading.Thread(
-            target=self._watch, args=(hf_id, self._stop), daemon=True
+            target=self._watch, args=(hf_id, self._stop, gen), daemon=True
         ).start()
 
     def stage(self, stage: str, detail: str = "") -> None:
@@ -171,30 +309,65 @@ class _Tracker:
             if not error:
                 self._snap.detail = "ready"
 
-    def _watch(self, hf_id: str, stop: threading.Event) -> None:
-        """Poll the cache directory until the load ends."""
-        start_bytes = _bytes_on_disk(hf_id)
-        total = _expected_bytes(hf_id)
-        cached = bool(total) and start_bytes >= total * 0.98
+    def _publish(self, gen: int, **fields) -> bool:
+        """Write into the snapshot, but only while this load is still the one
+        running. False means this watcher is obsolete and should stop."""
         with self._lock:
-            self._snap.bytes_total = total
-            self._snap.bytes_done = start_bytes
-            if cached:
-                self._snap.detail = "reading from local cache, no download needed"
-            elif total:
-                self._snap.detail = f"downloading {total / 1e9:.1f} GB"
+            if gen != self._gen or not self._snap.active:
+                return False
+            for key, value in fields.items():
+                setattr(self._snap, key, value)
+            return True
+
+    def _watch(self, hf_id: str, stop: threading.Event, gen: int) -> None:
+        """Poll the cache directory until the load ends."""
+        # Disk first, Hub second. The listing is a network call -- 1502 ms
+        # measured on a model that was already complete on disk -- and until
+        # it returned the UI had no numbers at all.
+        start_bytes = _bytes_on_disk(hf_id)
+        if not self._publish(gen, bytes_done=start_bytes):
+            return
+        wanted, total = _expected_files(hf_id)
+        if wanted:
+            # Recount against the real file list: the shape rule keeps
+            # sibling weight formats a load will not read.
+            start_bytes = _bytes_on_disk(hf_id, wanted)
+        cached = bool(total) and start_bytes >= total * 0.98
+        detail = ""
+        if cached:
+            detail = "reading from local cache, no download needed"
+        elif total:
+            detail = f"downloading {total / 1e9:.1f} GB"
+        if not self._publish(
+            gen,
+            bytes_total=total,
+            bytes_done=min(start_bytes, total) if total else start_bytes,
+            **({"detail": detail} if detail else {}),
+        ):
+            return
 
         last_change = time.monotonic()
         last_bytes = start_bytes
+        # Process-wide CPU, not this thread's: the question a wedge asks is
+        # whether *anything* in here is still executing. It is a plain
+        # counter read, so unlike asking CUDA how much memory it has handed
+        # out it cannot itself block on the thing that is stuck.
+        last_cpu = time.process_time()
+        last_stage = ""
+        warning: str | None = None  # our own text, if we have overwritten detail
+        said = ""  # what the load was saying before we did
         while not stop.wait(0.7):
-            done = _bytes_on_disk(hf_id)
+            done = _bytes_on_disk(hf_id, wanted)
             now = time.monotonic()
             if done != last_bytes:
                 last_bytes, last_change = done, now
             with self._lock:
-                if not self._snap.active:
+                if gen != self._gen or not self._snap.active:
                     return
-                self._snap.bytes_done = done
+                if self._snap.stage != last_stage:
+                    last_stage, last_change = self._snap.stage, now
+                    last_cpu = time.process_time()
+                self._snap.bytes_done = min(done, total) if total else done
                 if done > start_bytes and self._snap.stage == "resolving":
                     self._snap.stage = "weights"
                 # "Already cached" was decided from the tree's size before
@@ -210,16 +383,60 @@ class _Tracker:
                     self._snap.detail = (
                         f"downloading {total / 1e9:.1f} GB" if total else "downloading"
                     )
-                # A download that dies mid-flight does not raise; it simply
-                # stops moving, and the load then hangs for as long as anyone
-                # is willing to wait. We watched one sit at 128 MB of 3 GB
-                # indefinitely. Say so rather than spin a bar over nothing.
                 stalled_s = now - last_change
-                if not cached and stalled_s > STALL_AFTER_S and done < total:
-                    self._snap.detail = (
-                        f"no new data for {int(stalled_s)}s - the download may have "
-                        f"stalled; cancel and retry, or pick a smaller model"
-                    )
+                cpu_s = time.process_time() - last_cpu
+                note = self._quiet_note(self._snap.stage, cached, stalled_s, cpu_s)
+                # Restore whatever the load itself was saying once it moves
+                # again, so a warning cannot outlive the condition it
+                # described. Only our own text is replaced.
+                if note:
+                    if warning is None:
+                        said = self._snap.detail
+                    warning = note
+                    self._snap.detail = note
+                elif warning is not None:
+                    if self._snap.detail == warning:
+                        self._snap.detail = said
+                    warning = None
+
+    @staticmethod
+    def _quiet_note(stage: str, cached: bool, quiet_s: float, cpu_s: float) -> str:
+        """What to say about a load that has gone quiet, or "" if it is fine.
+
+        Two different silences with two different diagnoses, so they get two
+        different sentences and two different thresholds.
+        """
+        if stage == "weights":
+            # A download that dies mid-flight does not raise; it simply stops
+            # moving, and the load then hangs for as long as anyone is willing
+            # to wait. We watched one sit at 128 MB of 3 GB indefinitely.
+            #
+            # CPU says nothing here: the download runs in a child process
+            # (see runtime._prefetch_weights), so this one is idle by design
+            # while gigabytes arrive. Bytes on disk are the only evidence.
+            if cached or quiet_s <= STALL_AFTER_S:
+                return ""
+            return (
+                f"no new data for {int(quiet_s)}s - the download may have "
+                f"stalled; cancel and retry, or pick a smaller model"
+            )
+        if quiet_s <= WEDGED_AFTER_S or cpu_s >= WEDGED_CPU_S:
+            return ""
+        if stage == "resolving":
+            return (
+                f"no reply from the Hub for {int(quiet_s)}s - check the "
+                f"connection, or Stop and try again"
+            )
+        # Every other stage is this process doing its own work, so no CPU for
+        # this long means it has stopped, not that it is slow. Measured on a
+        # real one: `.to(cuda)` never returned, 0.3 CPU-seconds and 0 bytes
+        # read over 12s, while the same file read at 295 MB/s and the same
+        # GPU took host-to-device copies at 1266 MB/s from another process.
+        return (
+            f"no progress for {int(quiet_s)}s, and {cpu_s:.1f}s of CPU used in "
+            f"that time - this load has stopped rather than slowed; Stop it, "
+            f"and restart `modelmri serve` if that does not clear it"
+        )
 
 
 TRACKER = _Tracker()

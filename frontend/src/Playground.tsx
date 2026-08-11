@@ -488,14 +488,22 @@ function LoadBar({
   onStop: () => void;
 }) {
   const total = p?.bytes_total ?? 0;
-  const done = p?.bytes_done ?? 0;
+  // Clamped, and not only in the bar. The width was already capped at 100%
+  // while the text beside it was not, so a mis-count showed as a full bar
+  // labelled "5.0 GB / 2.5 GB" — the number that gave the bug away.
+  const done = Math.min(p?.bytes_done ?? 0, total || Infinity);
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : null;
   const stopping = (p?.detail ?? "").startsWith("stopping");
+  // The model the server is loading, which is not necessarily the one the
+  // picker is showing: pick a second model while the first is still loading
+  // and `id` is already the new one, so the running load's bytes and elapsed
+  // time appeared under a model that had not started.
+  const loading = p?.hf_id ?? id;
   return (
     <div className="loadbar glass-inset" role="status" aria-live="polite">
       <div className="loadbar-row">
         <span className="loadbar-stage">{STAGES[p?.stage ?? ""] ?? "Loading"}</span>
-        <span className="mid loadbar-id">{id}</span>
+        <span className="mid loadbar-id">{loading}</span>
         <span className="spacer" />
         <span className="meta">
           {pct !== null && `${gb(done)} / ${gb(total)} · `}

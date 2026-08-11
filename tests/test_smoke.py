@@ -504,7 +504,7 @@ def test_load_progress_reports_stages_and_bytes(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 4096)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
-    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 8192)
+    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 8192))
 
     tracker = progress._Tracker()
     tracker.start("acme/tiny")
@@ -535,11 +535,15 @@ def test_load_progress_flags_a_stalled_download(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 128)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 3000)
+    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 3000))
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)  # stall immediately
 
     tracker = progress._Tracker()
     tracker.start("acme/big")
+    # A download stall is a claim about a download, so it is only made during
+    # the download stage. Before this was scoped, a load wedged while moving
+    # weights to the GPU was reported as a stalled download.
+    tracker.stage("weights")
     try:
         for _ in range(60):
             if "stalled" in tracker.snapshot().detail:
@@ -559,7 +563,7 @@ def test_load_progress_does_not_cry_stall_over_a_cached_model(tmp_path, monkeypa
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 1000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 1000)
+    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)
 
     tracker = progress._Tracker()
@@ -594,7 +598,7 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
     # Bigger than expected, exactly like a cache holding a second format.
     (blobs / "old").write_bytes(b"x" * 2000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_bytes", lambda _id: 1000)
+    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
 
     tracker = progress._Tracker()
     tracker.start("acme/stale")
@@ -611,6 +615,156 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
         assert "download" in tracker.snapshot().detail
     finally:
         tracker.finish()
+
+
+def test_a_subfolder_copy_of_the_weights_is_not_counted_twice(tmp_path, monkeypatch):
+    """The numerator and the denominator have to count the same files.
+
+    meta-llama/Llama-3.2-1B-Instruct ships `original/consolidated.00.pth`
+    beside `model.safetensors`, both 2.472 GB — the same weights in Meta's
+    own format, which `from_pretrained` never opens. The total came from the
+    repo's top-level files and the on-disk figure walked the whole tree, so a
+    fully cached model read 4.955 GB of 2.481 GB. Measured: 199.7%, displayed
+    as "5.0 GB / 2.5 GB" over a full bar.
+    """
+    from modelmri import progress
+
+    snap = tmp_path / "models--meta-llama--Llama-3.2-1B-Instruct" / "snapshots" / "r1"
+    (snap / "original").mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(b"x" * 2472)
+    (snap / "original" / "consolidated.00.pth").write_bytes(b"x" * 2472)
+    (snap / "config.json").write_bytes(b"x" * 9)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+
+    hf_id = "meta-llama/Llama-3.2-1B-Instruct"
+    wanted = frozenset({"model.safetensors", "config.json"})
+    assert progress._bytes_on_disk(hf_id, wanted) == 2481
+    # And without a file list — offline, or a repo that publishes no sizes —
+    # the shape rule has to reach the same answer, because "top level only"
+    # is what excludes the variant folders.
+    assert progress._bytes_on_disk(hf_id) == 2481
+
+
+def test_two_cached_revisions_are_not_added_together(tmp_path, monkeypatch):
+    """A load reads one revision. Summing them reports a multiple of the truth."""
+    from modelmri import progress
+
+    root = tmp_path / "models--acme--two" / "snapshots"
+    for rev, size in (("aaa", 500), ("bbb", 700)):
+        (root / rev).mkdir(parents=True)
+        (root / rev / "model.safetensors").write_bytes(b"x" * size)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    assert progress._bytes_on_disk("acme/two") == 700
+
+
+def test_the_previous_loads_watcher_cannot_write_into_the_next_one(
+    tmp_path, monkeypatch
+):
+    """Watchers share one snapshot, so they must be scoped to their own load.
+
+    This is what put "5.0 GB / 2.5 GB" — Llama-3.2-1B's figures — on screen
+    beside Qwen2.5-0.5B, a model with neither number, while the Qwen load was
+    still queued behind a load that had stopped returning.
+    """
+    from modelmri import progress
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 4242))
+
+    tracker = progress._Tracker()
+    tracker.start("acme/first")
+    stale_gen = tracker._gen
+    tracker.start("acme/second")
+    try:
+        # The first load's watcher, still running, tries to publish.
+        assert tracker._publish(stale_gen, bytes_total=999_999) is False
+        assert tracker.snapshot().bytes_total != 999_999
+        assert tracker.snapshot().hf_id == "acme/second"
+    finally:
+        tracker.finish()
+
+
+def test_a_quiet_load_is_diagnosed_by_stage(monkeypatch):
+    """Two silences, two diagnoses. Saying "download stalled" while a model is
+    being copied to the GPU sends people to look at their network."""
+    from modelmri import progress
+
+    note = progress._Tracker._quiet_note
+    # A download runs in a child process, so this process burning no CPU is
+    # normal; only bytes count.
+    assert "stalled" in note("weights", False, progress.STALL_AFTER_S + 1, 0.0)
+    assert note("weights", True, progress.STALL_AFTER_S + 1, 0.0) == ""
+    assert note("weights", False, progress.STALL_AFTER_S - 1, 0.0) == ""
+    # Every other stage is this process working, so no CPU means stopped.
+    quiet = progress.WEDGED_AFTER_S + 1
+    assert "Hub" in note("resolving", False, quiet, 0.0)
+    assert "stopped rather than slowed" in note("device", False, quiet, 0.0)
+    # Still burning CPU is not a wedge, however long it takes.
+    assert note("device", False, quiet, progress.WEDGED_CPU_S + 1) == ""
+
+
+def test_the_hub_is_not_called_when_the_hub_is_off_limits(monkeypatch):
+    """HF_HUB_OFFLINE is the hub's own switch, and the meter has to honour it."""
+    import huggingface_hub
+
+    from modelmri import progress
+
+    def explode(*a, **k):
+        raise AssertionError("model_info called with HF_HUB_OFFLINE set")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", explode)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    assert progress._expected_files("acme/tiny") == (frozenset(), 0)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    assert progress._expected_files("acme/tiny") == (frozenset(), 0)  # explode, caught
+
+
+def test_a_second_load_is_refused_rather_than_queued_forever():
+    """One model loads at a time. A load that stops returning used to hold the
+    lock for the rest of the session, and every later request blocked in it
+    with no timeout and no message."""
+    import threading
+
+    from modelmri import progress, runtime
+    from modelmri.errors import Refusal
+
+    rt = runtime.ModelRuntime.__new__(runtime.ModelRuntime)
+    rt._lock = threading.Lock()
+    rt._lock.acquire()  # stand in for a load that is not coming back
+    try:
+        progress.TRACKER.start("acme/wedged")
+        try:
+            with pytest.raises(Refusal) as err:
+                with rt._load_slot("acme/other"):
+                    pass
+        finally:
+            progress.TRACKER.finish()
+    finally:
+        rt._lock.release()
+    assert "acme/other" in str(err.value)
+    assert "acme/wedged" in str(err.value)  # names what is holding it, not just "busy"
+
+
+def test_the_model_picker_and_the_load_meter_agree_on_size(tmp_path, monkeypatch):
+    """Both sides read the same cache, so they must count it the same way.
+
+    The picker had its own walk and reported Llama-3.2-1B at 4.96 GB — the
+    weights plus their `original/` duplicate — against the 2.48 GB a load
+    actually reads.
+    """
+    from modelmri import paths, progress, runtime
+
+    hub = tmp_path / "hub"
+    snap = hub / "models--acme--dup" / "snapshots" / "r1"
+    (snap / "original").mkdir(parents=True)
+    (snap / "model.safetensors").write_bytes(b"x" * 1_000_000)
+    (snap / "original" / "consolidated.00.pth").write_bytes(b"x" * 1_000_000)
+    monkeypatch.setattr(paths, "hf_hub_cache", lambda: hub)
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+
+    listed = {m["id"]: m["size_gb"] for m in runtime.local_hf_models()}
+    assert listed["acme/dup"] == round(progress._bytes_on_disk("acme/dup") / 1e9, 2)
+    assert listed["acme/dup"] == 0.0  # 1 MB, not 2
 
 
 def test_the_recorder_wheel_size_is_stated_identically_everywhere():
@@ -696,9 +850,20 @@ def test_expected_bytes_counts_only_what_a_load_downloads(monkeypatch):
     monkeypatch.setattr(
         huggingface_hub.HfApi,
         "model_info",
-        lambda self, _id, files_metadata=False: SimpleNamespace(siblings=files),
+        # `timeout` is not decoration: unbounded, this call ran on the watcher
+        # thread before any figure was published — 1502 ms measured against a
+        # model that was already complete on disk, and no ceiling at all on a
+        # connection that never answers.
+        lambda self, _id, files_metadata=False, timeout=None: SimpleNamespace(
+            siblings=files
+        ),
     )
     assert progress._expected_bytes("acme/tiny") == 105
+    # The same list decides what counts on disk, which is the whole point:
+    # one set of names, so the two sides cannot disagree.
+    names, total = progress._expected_files("acme/tiny")
+    assert names == {"model.safetensors", "config.json", "merges.txt"}
+    assert total == 105
 
 
 def test_bytes_on_disk_handles_every_cache_layout(tmp_path, monkeypatch):
