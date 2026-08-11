@@ -93,7 +93,16 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
 
   return (
     <div className="panel patch" key={epoch} ref={scanRef}>
-      <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
+      {/* The house header, which this panel was not using: a colour-coded dot,
+          letterspaced mono caps and the ruler rule that runs to the edge — and
+          that recolours when a cell is pinned, same as the attention panel's
+          does when a token is. Without it this panel read as a different
+          application bolted onto the page. */}
+      <div className="sect">
+        <span className="dot d-patch" />
+        <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
+        <span className="rule" />
+      </div>
       <p className="meta">
         Two prompts that differ in one fact. Every other panel asks what
         mattered by taking something away; this moves an activation from the
@@ -121,7 +130,7 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
       </div>
 
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className="violet" onClick={() => void run()} disabled={busy}>
+        <button className="cta" onClick={() => void run()} disabled={busy}>
           {busy ? "Patching every site…" : "Trace it"}
         </button>
         <span className="meta">

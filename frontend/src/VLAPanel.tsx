@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useScanOnData } from "./useScanOnData";
+import RestingSketch from "./RestingSketch";
 import {
   analyseVLA,
   errorText,
@@ -147,6 +148,7 @@ export default function VLAPanel() {
           <span className="rule" />
         </div>
         <div className="resting">
+            <RestingSketch kind="vla" />
           <p>
             Watch what a real robot policy looks at, frame by frame, on recorded
             episodes. Nothing is loaded yet.

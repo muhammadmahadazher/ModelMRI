@@ -245,6 +245,16 @@ export default function Playground({ model, onModelChange, replay }: Props) {
 
   return (
     <>
+      {/* This was the only region on the page with no card and no header: a
+          model button, a prompt and a Generate floating on the background
+          above five panels that all had both. It is the part of the tool
+          somebody uses FIRST, and it looked the least finished. */}
+      <div className="panel workbench">
+        <div className="sect">
+          <span className="dot d-run" />
+          <h2 className="h-run">RUN — A PROMPT THROUGH A MODEL</h2>
+          <span className="rule" />
+        </div>
       <div className="row">
         <button className="model-btn glass" onClick={() => setPickerOpen(true)} disabled={busy !== ""}>
           <span className="model-btn-label">model</span>
@@ -256,20 +266,6 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           {isLoadedPick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load"}
         </button>
       </div>
-
-      <ModelPicker
-        open={pickerOpen}
-        current={pick}
-        onClose={() => setPickerOpen(false)}
-        onPick={(id, src) => {
-          setPick(id);
-          setSource(src);
-          setPickerOpen(false);
-          // A refusal is about one model. Keeping it on screen after a
-          // different pick is an assertion that is no longer true.
-          setOversize(null);
-        }}
-      />
 
       {source === "ollama" && (
         <div className="hint" style={{ marginTop: -6 }}>
@@ -339,7 +335,7 @@ export default function Playground({ model, onModelChange, replay }: Props) {
         <span className="meta">{meta}</span>
       </div>
 
-      <div className="panel output">
+      <div className="output">
         {output === "" && busy !== "generating" ? (
           <span style={{ color: "var(--color-mute)" }}>
             Output appears here — Generate loads the model automatically if
@@ -404,6 +400,21 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           );
         })()}
       </div>
+      </div>
+
+      <ModelPicker
+        open={pickerOpen}
+        current={pick}
+        onClose={() => setPickerOpen(false)}
+        onPick={(id, src) => {
+          setPick(id);
+          setSource(src);
+          setPickerOpen(false);
+          // A refusal is about one model. Keeping it on screen after a
+          // different pick is an assertion that is no longer true.
+          setOversize(null);
+        }}
+      />
 
       {epoch > 0 && introspectable && (
         <AttentionPanel epoch={epoch} replay={replay} />

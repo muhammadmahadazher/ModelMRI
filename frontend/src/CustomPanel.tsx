@@ -13,6 +13,7 @@ import {
   unloadCustom,
 } from "./api";
 import { useScanOnData } from "./useScanOnData";
+import RestingSketch from "./RestingSketch";
 
 /** Health of one layer, in the order a person would notice it. */
 function verdict(l: CustomLayer): { label: string; tone: string } | null {
@@ -170,6 +171,7 @@ export default function CustomPanel() {
         {header}
         {!cands ? (
           <div className="resting">
+            <RestingSketch kind="custom" />
             <p>
               Trained something yourself? Point ModelMRI at it and get a
               layer-by-layer map of one real forward pass — shapes, activation
