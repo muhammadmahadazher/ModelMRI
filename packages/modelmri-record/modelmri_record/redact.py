@@ -17,7 +17,7 @@ gets the whole feature turned off -- which protects nobody.
 from __future__ import annotations
 
 import re
-from typing import Callable, Iterable
+from collections.abc import Callable, Iterable
 
 Redactor = Callable[[str], str]
 

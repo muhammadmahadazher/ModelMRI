@@ -145,7 +145,7 @@ class LeRobotV3Reader:
     @classmethod
     def discover(
         cls, hf_home: str | Path | None = None, repo_id: str = DEFAULT_DATASET
-    ) -> "LeRobotV3Reader":
+    ) -> LeRobotV3Reader:
         return cls(snapshot_path(hf_home, repo_id), repo_id)
 
     # ---------- metadata ----------

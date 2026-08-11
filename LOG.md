@@ -1,5 +1,129 @@
 # Working log
 
+## 2026-08-11 (the lint gate) — CI was enforcing a rule set nobody had chosen
+
+There was no `[tool.ruff]` in `pyproject.toml`, and no `ruff.toml` anywhere in
+the repo or above it. So `uv run ruff check .` in CI enforced whatever the
+pinned ruff happened to *default* to — and that default is not a stable thing.
+
+Measured on this tree, unchanged, with the two versions on this machine: ruff
+0.15.20, the version `uv.lock` resolves, defaults to E4/E7/E9/F and reports
+**0 findings**. Ruff 0.16.2 defaults to a much wider set and reports **159**
+on the same files: 55 BLE001, 31 RUF100, 11 B023, 10 I001, 9 PLW1510, 8
+FURB167, and the tail. Confirmed it was the version and not a stray config:
+`ruff check --isolated` on a four-line file with a bare `except Exception:
+pass` reports S110 + BLE001 under 0.16.2 and nothing under 0.15.20.
+
+The formatter drifted too, which is the part that explains an odd file count.
+`ruff format --check .` reported 80 files before this change and 60 after: the
+extra 20 are the Markdown. 0.15.20 refuses them — *"Markdown formatting is
+experimental, enable preview mode"* — while 0.16.2 formats them by default and
+wants to rewrite 5 of the 12 under `docs/` and `README.md`. Those files are
+hand-wrapped for the rendered page, so `.md` is excluded explicitly rather
+than left to whichever version is installed.
+
+The consequence is the part worth writing down. Nobody had to do anything
+wrong for this to fire. The next `uv lock --upgrade` — for any dependency, on
+any branch — would have turned main red with 159 findings belonging to nobody's
+change, and the person holding it would have been whoever happened to bump a
+dependency.
+
+**The gate is now written down.** `[tool.ruff.lint] select` is a full
+replacement for the default rather than an addition to it, so the list in
+`pyproject.toml` is the whole gate on any version. Both installed versions now
+resolve it to **the same 160 rules** — `ruff check --show-settings` from each,
+rule codes extracted and diffed, and the difference is empty in both
+directions — and both pass `ruff check .` and `ruff format --check .`. That
+is the property worth having: two versions that differed by 159 findings now
+answer identically.
+
+**Chosen, not inherited.** Each family was a decision, and the ones left out
+are recorded in the file next to the ones kept:
+
+- **BLE001 stays out — and the reason is not the one I expected.** The count
+  is 63, not the 55 first reported; the difference is the 8 sites that already
+  carried a directive. What decided it is that **26 of the 63 are false
+  positives by ruff's own exemption**. Ruff does not flag a blind except whose
+  body logs the exception — it flags one that calls a helper which logs it. I
+  checked with a two-function file under `--isolated`: the inline
+  `log.exception(...)` handler passes, and the identical handler that returns
+  `_internal(err, where)` is flagged. Every 500 arm in `server.py` is the
+  second shape, because that logging was deliberately factored into
+  `_internal` after handlers were caught returning torch's text — including an
+  absolute path — straight to the browser. So selecting the rule would mean 63
+  new directives, 26 of them suppressing a diagnostic that would not exist had
+  the log call been copy-pasted instead of shared. It would also destroy what
+  the 8 existing directives were *for*: when every site is marked, the mark
+  stops being a signal.
+- **S110 comes in, where BLE001 does not.** Different claim, and the
+  distinction is the whole point. BLE001 asks whether a catch is too broad;
+  S110 asks whether the handler body does nothing *and* records nothing, which
+  is the actual shape of an accidental swallow. It fires 4 times, all fallback
+  chains where the handling is the next statement, so the price is 4
+  directives — and this repo has already had to do one pass over silent
+  excepts, so a guard against the next one is worth four comments.
+- **B023 stays out, B905 came in.** All 11 B023 sites run their closure to
+  completion inside the iteration that made it; the websocket loop drains its
+  queue to the sentinel before reading the next message, and `shutil.rmtree`
+  returns before the next `for` step. The rule cannot see that. B905 is the
+  opposite case: three `zip()`s whose operands are same-length *by
+  construction* (`topk` returns values and indices of one shape; `pool.map`
+  yields one verdict per entry). `strict=True` turns each into a check, and
+  zip's default there was to truncate and publish the mismatch.
+
+  This one is worth flagging as what it is: **a behaviour change made to
+  satisfy a linter**, which is normally the thing not to do. It earns the
+  exception because the behaviour it replaces is silent. `zip` without
+  `strict` drops the tail, so a mismatch in `hub.py` would have marked gated
+  models unusable on no evidence, and nothing on screen would have said a
+  verdict was missing. Raising is the louder failure and the right one. I
+  checked all three operand pairs by hand rather than take the claim.
+- **E501 stays out.** The formatter owns line length. All 19 lines over 88
+  columns are comments, URLs or unbreakable literals.
+- **N802 in, the rest of N out.** N818 wants `Refusal`, `BadRequest`, `TooBig`
+  and `LoadCancelled` renamed to end in `Error`, and those names are the
+  vocabulary the API and the UI use. N803 wants the SAE's `W_enc`/`W_dec`
+  lowercased; they are named after the matrices in the paper. The two
+  `# noqa: N802` on `cli.py`'s `do_GET`/`do_HEAD` came off, which looked wrong
+  until I checked why: ruff exempts a method that overrides a *recognisable*
+  stdlib base, and those are on a `SimpleHTTPRequestHandler` subclass. A probe
+  confirms the split — the same `do_GET` on a plain class is flagged, on the
+  stdlib subclass it is not.
+- **RUF100 in**, which cost 28 edits and was the most useful thing here.
+
+**28 `# noqa` directives were suppressing nothing.** 14 `ANN001`, 8 `BLE001`,
+2 `F401`, 2 `N802` and 2 `E402` — directives for rules that were never enabled,
+so they had been decorative for as long as they had existed. Two were worse
+than decorative: `# noqa: E402` on the imports in
+`packages/modelmri-record/tests/test_record.py` was live under 0.15 and dead
+under 0.16, because ruff's E402 carve-out for `sys.path` manipulation covers
+that file's `sys.path.insert` but not `test_ablate.py`'s
+`pytest.importorskip` — the same-looking pattern, two different answers. Every
+directive removed kept its prose: `# noqa: ANN001 - torch's signature` is now
+`# torch's signature`, which is the part that was ever true.
+
+`ruff>=0.8` became `ruff>=0.15.20`. A floor, not a pin — `select` protects
+against the *default* changing under an upgrade, but not against a new rule
+being added to a family that is selected, so an upgrade is still a diff worth
+reading. Nor does it protect against a rule changing its mind: `ISC004` fires
+4 times under 0.16.2 and 0 times under 0.15.20 with an identical name and an
+identical one-line description. Same code, same words, different answer. That
+is the argument for reading the diff rather than trusting the version number.
+After all of it: 15 directives remain (10 `E402`, 4 `S110`, 1 `A002`),
+`uv.lock` still resolves 0.15.20, and 457 tests pass.
+
+A note on how this was done, because it is the kind of thing that should be
+written down. The per-family assessment was farmed out to parallel agents with
+an explicit instruction not to edit anything. Several edited anyway — the
+config block, 28 directives across 24 files, `uv.lock` — concurrently, which
+is why one reviewer reported the tree shifting underneath its own checks. The
+work was largely good and most of it survived, but nothing here was kept on
+its say-so: the four load-bearing claims (the delegated-logging exemption, the
+websocket sentinel, the `N802` stdlib carve-out, the cross-version rule diff)
+were each re-derived here, and four stated numbers were wrong — 55 sites for
+63, 47 directives for 63, 150 rules for 160, and "0.15 does not read `.md`"
+for "0.15 reads it and declines without preview mode".
+
 ## 2026-08-11 (the load meter) — four bugs behind one impossible number
 
 "5.0 GB / 2.5 GB", reported from the app. A number that cannot happen is the

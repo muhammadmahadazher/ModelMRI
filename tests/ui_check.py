@@ -107,7 +107,7 @@ async def main() -> int:
         # Establish the precondition instead of assuming it.
         try:
             await page.request.post(BASE.rstrip("/") + "/api/custom/unload")
-        except Exception:
+        except Exception:  # noqa: S110 - a precondition, not an assertion
             pass  # demo builds have no server to reset
 
         await page.goto(BASE, wait_until="networkidle")

@@ -180,7 +180,8 @@ decided.
 from __future__ import annotations
 
 import time
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import torch
 
@@ -284,12 +285,12 @@ def _register_capture(block: torch.nn.Module, point: str, sink: list) -> Any:
     """
     if point == "resid_post":
 
-        def post(module, args, output):  # noqa: ANN001 - torch's signature
+        def post(module, args, output):  # torch's signature
             sink.append((output[0] if isinstance(output, tuple) else output).detach())
 
         return block.register_forward_hook(post)
 
-    def pre(module, args):  # noqa: ANN001 - torch's signature
+    def pre(module, args):  # torch's signature
         sink.append(args[0].detach())
 
     return block.register_forward_pre_hook(pre)
@@ -299,12 +300,12 @@ def _register_edit(block: torch.nn.Module, point: str, x: torch.Tensor) -> Any:
     """Write `x` ([1, S, d_in]) into the stream at the SAE's hook point."""
     if point == "resid_post":
 
-        def post(module, args, output):  # noqa: ANN001 - torch's signature
+        def post(module, args, output):  # torch's signature
             return (x,) + output[1:] if isinstance(output, tuple) else x
 
         return block.register_forward_hook(post)
 
-    def pre(module, args):  # noqa: ANN001 - torch's signature
+    def pre(module, args):  # torch's signature
         return (x,) + args[1:]
 
     return block.register_forward_pre_hook(pre)

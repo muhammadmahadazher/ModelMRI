@@ -490,7 +490,7 @@ def gpt2():
         model = transformers.AutoModelForCausalLM.from_pretrained(
             "gpt2", attn_implementation="eager"
         ).eval()
-    except Exception as err:  # noqa: BLE001 - no weights here, nothing to test
+    except Exception as err:  # no weights here, nothing to test
         pytest.skip(f"gpt2 is not available: {err}")
     return tok, model
 

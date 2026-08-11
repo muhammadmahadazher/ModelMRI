@@ -185,7 +185,7 @@ def whoami(tok: str | None = None) -> HubAuth:
             user=me.get("name") or me.get("fullname"),
             source=source,
         )
-    except Exception as err:  # noqa: BLE001 - the contract, see below
+    except Exception as err:  # the contract, see below
         # Deliberately broad, and it stays broad. The contract is the first
         # line of the docstring, and `/api/hub/auth` calls this with no
         # handler at all — anything that escapes is an unhandled 500 on the
@@ -417,7 +417,7 @@ def _has_access(repo: str, tok: str | None) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
             return 200 <= r.status < 300
-    except Exception as err:  # noqa: BLE001 - see below
+    except Exception as err:  # see below
         # Broad on purpose. This runs inside a thread pool over every gated
         # row in the picker, and an exception here does not stay here — it
         # comes back out of `pool.map` and takes the whole search down with
@@ -441,7 +441,11 @@ def _resolve_access(entries: list[dict], tok: str | None) -> list[dict]:
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         verdicts = pool.map(lambda e: _has_access(e["id"], tok), gated)
-    for entry, ok in zip(gated, verdicts):
+    # `strict`: pool.map yields one verdict per entry it was handed, so a
+    # mismatch means the verdicts are no longer aligned to the entries — and
+    # zip's default is to drop the tail, leaving those models marked unusable
+    # on no evidence.
+    for entry, ok in zip(gated, verdicts, strict=True):
         entry["usable"] = ok
     return entries
 

@@ -161,7 +161,7 @@ class SAEHandle:
     @classmethod
     def load(
         cls, repo: str = DEFAULT_SAE_REPO, hook: str = DEFAULT_SAE_HOOK
-    ) -> "SAEHandle":
+    ) -> SAEHandle:
         m = re.search(r"blocks\.(\d+)\.hook_(\w+)", hook)
         if not m:
             raise BadRequest(f"Cannot parse layer index from hook name: {hook!r}")

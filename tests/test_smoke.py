@@ -1278,9 +1278,9 @@ def test_a_model_swap_mid_generation_does_not_poison_the_attention_view():
     """A load that lands while tokens are still streaming used to leave the
     OLD model's token ids in last_ids. The next attention request then ran the
     NEW model's weights over them: no crash, just numbers about nothing."""
-    from modelmri.runtime import ModelRuntime
-
     import torch
+
+    from modelmri.runtime import ModelRuntime
 
     rt = ModelRuntime()
     # Stand the runtime up far enough that the epoch check is the ONLY thing
@@ -1339,7 +1339,7 @@ def test_a_load_that_lands_while_an_intervention_waits_for_the_lock_is_refused(c
     def intervene():
         try:
             getattr(rt, call)()
-        except BaseException as err:  # noqa: BLE001 - the refusal is the result
+        except BaseException as err:  # the refusal is the result
             raised.append(err)
 
     caller = threading.Thread(target=intervene)
@@ -1361,9 +1361,9 @@ def test_a_load_that_lands_while_an_intervention_waits_for_the_lock_is_refused(c
 
 def test_derived_state_is_served_when_the_epoch_still_matches(monkeypatch):
     """The guard must not block the normal case."""
-    from modelmri.runtime import ModelRuntime
-
     import torch
+
+    from modelmri.runtime import ModelRuntime
 
     rt = ModelRuntime()
     rt.epoch = 3
@@ -1630,8 +1630,9 @@ def test_the_documented_import_path_redacts(tmp_path, monkeypatch):
 
 def test_record_is_one_implementation_now():
     """Two copies of a security-relevant module cannot drift if there is one."""
-    import modelmri.record as intree
     import modelmri_record as standalone
+
+    import modelmri.record as intree
 
     assert intree.trace is standalone.trace
     assert intree.step is standalone.step

@@ -310,7 +310,7 @@ def load_torchscript(path: Path):
 
     try:
         return torch.jit.load(str(path), map_location="cpu")
-    except Exception as err:  # noqa: BLE001 - a probe, not a load; see below
+    except Exception as err:  # a probe, not a load; see below
         # Deliberately broad: the question this try asks is "is this file
         # TorchScript", and every way of answering no is a no. torch raises
         # RuntimeError for most of them (a zip with no `constants.pkl`, a

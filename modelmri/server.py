@@ -9,20 +9,19 @@ import os
 import threading
 from dataclasses import asdict
 from importlib.resources import files
+from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from pathlib import Path
-
 from . import __version__
+from .custom import AdapterError, CustomHandle
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore
-from .custom import AdapterError, CustomHandle
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
 from .vla import VLAHandle
 

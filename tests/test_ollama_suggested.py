@@ -119,8 +119,8 @@ def test_a_base_ollama_tag_is_not_called_instruction_tuned(monkeypatch):
     Reporting every Ollama model as instruction-tuned silenced the base-model
     caveat for exactly the models that need it."""
     import json as _json
-    from contextlib import contextmanager
     import urllib.request
+    from contextlib import contextmanager
 
     def answer(template: str):
         @contextmanager

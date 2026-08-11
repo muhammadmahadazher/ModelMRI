@@ -20,14 +20,14 @@ only, so it drags in no torch, no fastapi, nothing.
 from __future__ import annotations
 
 try:
-    from modelmri_record import (  # noqa: F401
+    from modelmri_record import (
         DEFAULT_ENDPOINT,
         __version__,
         instrument_anthropic,
         step,
         trace,
     )
-    from modelmri_record import redact as redact  # noqa: F401
+    from modelmri_record import redact as redact
 except ModuleNotFoundError as err:  # pragma: no cover - packaging accident
     raise ModuleNotFoundError(
         "modelmri.record needs the `modelmri-record` package, which modelmri "

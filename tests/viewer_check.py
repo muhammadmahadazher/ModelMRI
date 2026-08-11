@@ -23,8 +23,8 @@ import functools
 import http.server
 import socketserver
 import sys
-import urllib.parse
 import threading
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

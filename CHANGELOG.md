@@ -6,6 +6,37 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The lint gate is written down instead of inherited.** There was no
+  `[tool.ruff]` section anywhere, so `uv run ruff check .` in CI enforced
+  whatever the pinned ruff happened to *default* to — and that default is not
+  stable. Measured on one unchanged tree: ruff 0.15.20 (what `uv.lock`
+  resolves) reports **0 findings**; ruff 0.16.2 reports **159**. The next
+  `uv lock --upgrade`, for any dependency, would have turned `main` red with
+  159 findings belonging to nobody's change.
+
+  `select` now names every rule, and `select` replaces the default rather than
+  adding to it, so the list is the whole gate on any version. Both installed
+  versions resolve it to **the same 160 rules** — settings dumped from each and
+  diffed, empty in both directions — and both pass `ruff check .` and
+  `ruff format --check .`.
+
+  Every family left out is recorded in the file with its reason and its count,
+  so enabling one later is a decision someone makes rather than one a release
+  makes for them. `BLE001` is out because **26 of its 63 sites are false
+  positives by ruff's own exemption**: ruff does not flag a blind except whose
+  body logs the exception, only one that calls a helper which logs it, and this
+  codebase deliberately factored that logging into `_internal`. `S110` is in,
+  because it makes the opposite claim — that the handler records nothing — for
+  the price of 4 directives. 28 `# noqa` directives that had never suppressed
+  anything were removed, each keeping its explanatory prose.
+
+  One behaviour change came with it, flagged rather than buried: three `zip()`
+  calls gained `strict=True`. Their operands are equal-length by construction,
+  and `zip`'s default was to truncate — which in `hub.py` would have marked
+  gated models unusable on no evidence, silently.
+
 ### Fixed
 
 - **The load meter reported 5.0 GB of a 2.5 GB model, and a load that stopped

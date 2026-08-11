@@ -8,8 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import modelmri_record as rec  # noqa: E402
-from modelmri_record.redact import default_redactor, make_redactor  # noqa: E402
+import modelmri_record as rec
+from modelmri_record.redact import default_redactor, make_redactor
 
 
 @pytest.fixture(autouse=True)
