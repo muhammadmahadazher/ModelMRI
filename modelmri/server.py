@@ -167,6 +167,14 @@ class CustomRunRequest(BaseModel):
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
 
 
+class PatchRequest(BaseModel):
+    # Two prompts, not one, and the pair is the unit of meaning: neither is
+    # usable without the other, so they arrive together rather than as a
+    # prompt plus a query parameter.
+    clean: str
+    corrupt: str
+
+
 class PromptRequest(BaseModel):
     prompt: str
     max_new_tokens: int = Field(default=256, ge=1, le=4096)
@@ -1109,6 +1117,47 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate")
+
+    @app.post("/api/patch")
+    async def patch_trace(req: PatchRequest):
+        """Where in the model does the answer get decided? Two prompts, one grid.
+
+        Every other ranking here removes something from one prompt. This moves
+        an activation from a run that knows the answer into a run that does
+        not, at every (layer, position), and reports the share of the gap
+        between the two answers that comes back. Ablation says "this
+        mattered"; this says "the fact is here".
+
+        The score is SIGNED and so it is not KL, which every other panel uses.
+        Patching has a direction and a patch can push the answer further away:
+        measured on gpt2 float32 with "The Eiffel Tower is located in the city
+        of" against "The Colosseum is located in the city of", 5 of 132 sites
+        moved it away, worst -0.157, and KL cannot tell those from a site that
+        recovered nothing. The two rankings also disagree — top-8 by recovery
+        against bottom-8 by KL-to-clean overlap on 5 of 8.
+
+        Cost is `n_layers * n_positions` passes for the grid plus
+        `draws + 1` for each of the top 24 sites: 350 passes in 9.66 s on gpt2
+        for a 12x11 grid. Controls are eight draws, not one, because one is a
+        coin flip — at a single site the draws ran -2.038 to +0.616 against a
+        real recovery of +0.427, and the gate moves from 76 of 132 sites on
+        one draw to 20 on all eight.
+
+        422 when the pair cannot be compared, which is most casually-written
+        pairs and is never visible without being told: the two prompts must
+        tokenize to the SAME length (2 of 8 natural minimal pairs did not) and
+        must actually predict different tokens (2 of 3 did not, making the
+        denominator exactly 0). Both refusals name what to change. 409 when
+        there is no live HuggingFace model to re-run.
+        """
+        try:
+            return await asyncio.to_thread(runtime.patch_trace, req.clean, req.corrupt)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch")
 
     @app.get("/api/attention/attribute")
     async def attribute_tokens(position: int | None = None):
