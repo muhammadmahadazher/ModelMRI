@@ -17,6 +17,17 @@ from modelmri import custom
 from modelmri.server import create_app
 
 
+def _local_client() -> TestClient:
+    """A client that looks like the person at the keyboard.
+
+    TestClient reports its host as "testclient", which the scan route
+    correctly refuses — widening where the tool may import from is loopback
+    only. Spelling the address out keeps the tests honest about which side of
+    that gate they are on.
+    """
+    return TestClient(create_app(), client=("127.0.0.1", 5900))
+
+
 @pytest.fixture(autouse=True)
 def _forget_roots():
     yield
@@ -26,7 +37,7 @@ def _forget_roots():
 def test_unload_with_nothing_loaded_is_not_an_error():
     """Pressing it twice is not a mistake, and a 500 on the second press would
     read as one."""
-    c = TestClient(create_app())
+    c = _local_client()
     r = c.post("/api/model/unload")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -78,7 +89,7 @@ def test_unload_clears_everything_a_load_set():
 def test_a_folder_can_be_added_to_the_scan(tmp_path):
     """The scan was limited to the launch directory, which is the wrong
     question to ask somebody whose model is on another drive."""
-    c = TestClient(create_app())
+    c = _local_client()
     elsewhere = tmp_path / "over-here"
     elsewhere.mkdir()
     (elsewhere / "my_adapter.py").write_text(
@@ -112,7 +123,7 @@ def test_adding_a_folder_widens_the_boundary_rather_than_removing_it(tmp_path):
 def test_a_file_is_refused_with_the_thing_to_do_instead(tmp_path):
     f = tmp_path / "model.pt"
     f.write_bytes(b"x")
-    c = TestClient(create_app())
+    c = _local_client()
     r = c.post("/api/custom/scan", json={"path": str(f)})
     assert r.status_code == 422
     # Naming the problem without the remedy leaves the reader stuck.
@@ -120,7 +131,37 @@ def test_a_file_is_refused_with_the_thing_to_do_instead(tmp_path):
 
 
 def test_a_missing_folder_says_which_one():
-    c = TestClient(create_app())
+    c = _local_client()
     r = c.post("/api/custom/scan", json={"path": "/definitely/not/here"})
     assert r.status_code == 422
     assert "does not exist" in r.json()["error"]
+
+
+def test_a_request_from_the_network_may_not_widen_the_boundary(tmp_path):
+    """The reason this feature is not a security hole.
+
+    Widening the roots turns "import from the directory I was started in" into
+    "import from a directory somebody named", and the adapter loader IMPORTS
+    what it loads — so on a server bound to 0.0.0.0 this would be remote code
+    execution in two requests. The person at the keyboard may move the
+    boundary; a stranger on the network may not.
+    """
+    elsewhere = tmp_path / "over-here"
+    elsewhere.mkdir()
+
+    remote = TestClient(create_app(), client=("10.0.0.7", 51234))
+    r = remote.post("/api/custom/scan", json={"path": str(elsewhere)})
+    assert r.status_code == 403, r.text
+    assert "only possible from this machine" in r.json()["error"]
+    # And it really did not take effect.
+    assert elsewhere.resolve() not in custom.allowed_roots()
+
+
+def test_the_root_of_a_filesystem_is_refused():
+    """Adding one would make every .py on the machine importable, which is not
+    what anybody means by "the folder my model is in"."""
+    c = _local_client()
+    root = Path(Path.cwd().anchor or "/")
+    r = c.post("/api/custom/scan", json={"path": str(root)})
+    assert r.status_code == 422, r.text
+    assert "root of a filesystem" in r.json()["error"]

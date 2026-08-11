@@ -915,7 +915,7 @@ def create_app(
             return _internal(err, "/api/custom/run")
 
     @app.post("/api/custom/scan")
-    async def custom_scan(req: CustomRootRequest):
+    async def custom_scan(req: CustomRootRequest, request: Request):
         """Also look in this folder, then scan.
 
         The scan was limited to the directory the server was launched in,
@@ -927,6 +927,27 @@ def create_app(
         bypass them — `custom._resolve` still refuses anything outside the
         list — so the boundary moves once, deliberately, when a person asks.
         """
+        # LOOPBACK ONLY, and this is the reason the whole thing is not a
+        # security hole. Widening the roots turns "import from the directory I
+        # was started in" into "import from a directory somebody named", and
+        # the adapter loader IMPORTS what it loads — so on a server bound to
+        # 0.0.0.0 this would be remote code execution with two requests. The
+        # person at the keyboard may move the boundary; a stranger on the
+        # network may not.
+        client = (request.client.host if request.client else "") or ""
+        if client not in ("127.0.0.1", "::1", "localhost"):
+            return JSONResponse(
+                {
+                    "error": (
+                        "Choosing a folder to scan is only possible from this "
+                        "machine. ModelMRI imports what it loads, so widening "
+                        "where it may import from is not something a request "
+                        "over the network gets to do — start the server where "
+                        "your model lives, or set MODELMRI_MODELS_DIR."
+                    )
+                },
+                status_code=403,
+            )
         try:
             root = custom.add_root(req.path)
             adapters, scripts = await asyncio.to_thread(

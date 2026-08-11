@@ -177,6 +177,15 @@ def add_root(raw: str) -> Path:
             f"{resolved} is a file, not a folder — give the folder it is in "
             f"and ModelMRI will find it"
         )
+    # A filesystem or drive root is not a folder somebody means. Adding one
+    # would make every .py on the machine loadable, and the adapter loader
+    # IMPORTS what it loads, so "widen the search" would quietly become "run
+    # anything on this disk". Naming a real directory is the whole point.
+    if resolved.parent == resolved:
+        raise AdapterError(
+            f"{resolved} is the root of a filesystem, not a folder of models. "
+            f"Name the directory your model is actually in."
+        )
     if resolved not in _SESSION_ROOTS:
         _SESSION_ROOTS.append(resolved)
     return resolved
