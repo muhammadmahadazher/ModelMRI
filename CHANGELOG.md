@@ -189,7 +189,22 @@ here before anything was changed.
   (`control_kl`, `clears_control`), which is the second forward pass per row
   and why the cost is now `2 × tested + 6`. Measured: **34 of 43** rows clear
   their own control, and two that do not — #22852 and #1288 — are 5th and 6th
-  in the bar chart the panel plots.
+  in the bar chart the panel plots. **That 34 is one draw's verdict**, and it
+  is corrected below rather than left standing as a property of the features.
+
+- **"34 of 43 rows clear their own control" was one sample, not a finding.**
+  The control is a single seeded Gaussian draw per row, and re-measured with 8
+  draws per row on the same setup — draw 0 reproducing every shipped `kl` and
+  `control_kl` exactly — the same 43 rows give **34 clearing one draw, 21 the
+  95th percentile of 8, and 20 all 8**. 21 of the 43 fall between their own
+  smallest and largest draw, 14 are called differently by one draw than by all
+  8, and 7 of the 9 that fail would have passed on some other draw. The count
+  is not device-stable either: 34 on cpu/float32, 36 on cuda/float32 consuming
+  the identical draws. `clears_control` is still one draw — paying for 8 costs
+  `9 × tested + 6`, 4.27× — but nothing now reads it as more than that: the
+  panel says "beat the one random direction of the same size each was given",
+  the row tooltip says the control moves, and `control_means` carries the
+  8-draw counts.
 
 - **The reconstruction baseline was measured at one token while the edits
   landed at eleven.** At `scope=prompt` the ranking edits every token where a

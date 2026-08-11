@@ -1,5 +1,89 @@
 # Working log
 
+## 2026-08-11 (the control) — "34 of 43 clear their own control" was one coin toss
+
+Activation patching put the same control design under 8 draws instead of one
+and it did not survive: 76 of 132 patch sites beat one draw, 27 beat the 95th
+percentile of 8, 20 beat all 8, and the 8 draws at a single site spanned 2.654
+nats. `feature_ablate.py` uses that design — `CONTROL_SEED = 0`, one
+`torch.randn(sae.d_in)` per row — so the question was whether its shipped
+number, **34 of 43 rows clear their own control**, is the same coin toss.
+
+It is. Same setup (gpt2, float32, `jbloom/GPT2-Small-SAEs-Reformatted` @
+`blocks.8.hook_resid_pre`, prompt *"The Eiffel Tower is located in the city
+of"*, position 10, `scope="position"`, 43 firing features), 8 draws per row,
+with draw 0 consuming the shipped seed-0 stream in row order so it reproduces
+every shipped `kl` and `control_kl` exactly — **43 of 43 matched to 5e-08**,
+which is what makes the rest of this a re-measurement rather than a second
+experiment.
+
+| rule | cpu/float32 | cuda/float32 |
+| --- | --- | --- |
+| beats ONE draw (shipped) | **34 / 43** | **36 / 43** |
+| beats the median of 8 | 35 / 43 | 35 / 43 |
+| beats the 95th pct of 8 | **21 / 43** | 24 / 43 |
+| beats ALL 8 draws | **20 / 43** | 23 / 43 |
+| falls inside its own draw spread | 21 / 43 | 19 / 43 |
+
+The counts diverge the way patching's did, and the middle of the table is where
+it happens: **21 of the 43 rows have min(draws) < kl < max(draws)**, so their
+verdict is a property of which draw they were handed. 14 rows are called
+differently by one draw than by all 8, and **7 of the 9 rows the shipped test
+fails would have passed on at least one of the 8** — including #313, whose
+single draw *was* the largest of its 8.
+
+**The caveat that was already in the file understated itself.** It said five
+draws at the top row's norm of 35.5 spanned 0.0666–0.1093, "a factor of 1.6".
+Eight draws at that row span **0.068414 to 0.186287, a factor of 2.72**, and
+the median max/min over all 43 rows is **2.45** — so the "within that factor"
+band the note asked readers to discount covers most of the table, not its
+fringe.
+
+**And the number is not device-stable.** 34 of 43 is cpu/float32; the identical
+code consuming the identical draws on cuda/float32 gives 36. Two rows change
+verdict on the device alone. The docstring's header credits every number in the
+file to "cuda" while `LOG.md` credits the control work to "this CPU" — the 34
+reproduces only on CPU, and the 92 passes / 11.69 s measured here match the
+logged 10.09 s, so CPU is where it came from.
+
+**Cost, because that is the reason it is still one draw.** Eight for every row
+is `9 × tested + 6` = 393 passes against the shipped 92, **4.27×**: 33.71 s
+against 11.69 s on cpu, 12.36 s against 4.03 s on cuda; at prompt scope it
+would take 518 passes to 2310. Escalating only the boundary rows was the
+obvious way out and it was measured rather than assumed — draw once, then draw
+7 more only where `kl` is within a factor B of that first draw:
+
+| band B | rows escalated | passes | vs shipped | rows still called wrong vs all-8 |
+| --- | --- | --- | --- | --- |
+| 1.5 | 18 / 43 | 218 | 2.37× | 5 |
+| 2 | 26 / 43 | 274 | 2.98× | 4 |
+| 3 | 34 / 43 | 330 | 3.59× | 1 |
+| ∞ (all) | 42 / 43 | 386 | 4.20× | 0 |
+
+It does not buy much: the boundary set *is* the table. Band 3 saves 16% of the
+passes over drawing 8 everywhere and still calls one row differently.
+
+**The lead worth following is a different shape of control.** Pooled over the
+43 rows the median control is a clean function of the edit's norm and not of
+the row — `6.3e-05 × norm^2.035`, i.e. very nearly quadratic — and leave-one-out
+predicts a row's own median to a ratio of **0.998 (0.760–1.244)** without ever
+drawing at that row. A gate at that prediction × 1.595 (the pooled p95/median)
+agrees with the per-row 95th-percentile-of-8 rule on **32 of 35 rows**, and the
+three it misses are near-boundary rows. That would make the control cost a
+fixed handful of draws for the whole ranking instead of `k` per row. It is one
+prompt on one model and it is **not** shipped.
+
+**What changed in the tree.** No change to the number of draws — the cost above
+is a product call, not a bug fix, and the point of the exercise was the
+measurement. What changed is that nothing now presents one draw's verdict as
+the feature's: the docstring paragraph carries the 8-draw counts and the device
+split, `control_means` says the count is one draw's verdict and gives 34/21/20,
+the row tooltip says the control is a single draw that moves by 2.7×, the panel
+line reads "beat the one random direction of the same size each was given"
+rather than "move the answer more than a random direction of the same size
+does", and the test comment says why its 20–42 band is the honest width of the
+claim rather than device slack.
+
 ## 2026-08-11 (the lint gate) — CI was enforcing a rule set nobody had chosen
 
 There was no `[tool.ruff]` in `pyproject.toml`, and no `ruff.toml` anywhere in

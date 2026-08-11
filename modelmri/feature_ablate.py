@@ -98,10 +98,54 @@ its own control by about 4x, not by everything. One control per scored row is
 therefore measured and returned (`control_kl`, `clears_control`), which doubles
 the passes and is the reason the cost is `2 x tested + 6`. Measured on the
 reference prompt, 34 of 43 rows clear their own-norm control and 9 do not —
-including 22852 and 1288, which sit 5th and 6th in the activation chart. It is
-ONE draw per row with a fixed seed: at the top row's norm the five draws above
-span 0.0666 to 0.1093, a factor of 1.6, so a row within that factor of its
-control is not separated by this test.
+including 22852 and 1288, which sit 5th and 6th in the activation chart.
+
+**And that 34 is one sample of a random variable, not a finding.** It stood
+here as one. Re-measured on the same setup with 8 draws per row instead of one
+— draw 0 being the shipped seed-0 stream, so every shipped `kl` and
+`control_kl` is reproduced exactly, 43 of 43 — the same rows give 34 clearing
+ONE draw, 35 the median of 8, 21 the 95th percentile of 8, and 20 ALL 8. The
+gap is not a tail: 21 of the 43 rows have min(draws) < kl < max(draws), so
+their verdict is a property of which draw they were handed and not of the
+feature; 14 rows are called differently by one draw than by all 8; and 7 of the
+9 rows this test FAILS would have passed on at least one of the 8. The
+factor-1.6 caveat that used to close this paragraph understated its own point:
+8 draws at the top row's norm of 35.5 span 0.068414 to 0.186287, a factor of
+2.72, and the median max/min over all 43 rows is 2.45.
+
+Nor is the count device-stable. 34 of 43 is cpu/float32; the identical code
+consuming the identical draws on cuda/float32 gives 36 of 43 clearing one draw,
+24 the 95th percentile and 23 all 8. So `n_clearing_control` is a count of one
+draw's verdicts, it is reported as that, and a reader must not take it for the
+number of features whose score outran their control.
+
+And the eight-draw counts are a sample too, which is worth stating plainly
+because the paragraph above could otherwise be read as replacing one fixed
+number with four. Replicated independently on cuda/float32 with a different
+set of eight draws — eight full runs at CONTROL_SEED 0..7, confirming first
+that `kl` is byte-identical across all eight, so only the control moved — the
+same 43 rows gave 37 clearing one draw, 30 the 95th percentile and 24 all 8,
+against 36/24/23 from the first set. The shipped figure is the stable one:
+34 of 43 on cpu/float32 reproduces exactly, top row 5856 at kl 0.417460 and
+control 0.105611. What moves is every count derived from a fresh draw, which
+is the finding rather than a caveat on it. Median spread agrees across both
+sets (2.45 and 2.53); the per-row extremes do not (the top row spanned a
+factor of 2.72 in one set and 1.69 in the other).
+
+It is still one draw. Eight for every row costs `9 x tested + 6` passes, 4.27x
+the shipped `2 x tested + 6` — 393 against 92 at position scope, measured 33.71
+s against 11.69 s on cpu and 12.36 s against 4.03 s on cuda — and escalating
+only the rows near the boundary does not buy much, because on this prompt the
+boundary set is nearly the whole table: drawing 7 more only where `kl` is
+within a factor of 3 of the first draw escalates 34 of 43 rows (330 passes,
+3.59x) and still calls one row differently from the full 8, while matching the
+full 8 exactly needs 42 of the 43 escalated (386 passes, 4.20x). The cheaper
+lead, measured but NOT shipped here, is that the control is a property of the
+edit's SIZE rather than of the row: pooled over the 43 rows the median control
+fits 6.3e-05 * norm^2.035, leave-one-out predicts a row's own median to a ratio
+of 0.998 (0.760 to 1.244) without drawing at that row at all, and a gate at
+that prediction x 1.595 — the pooled p95/median — agrees with the per-row
+95th-percentile-of-8 rule on 32 of 35 rows. One prompt, one model, one SAE.
 
 **The floor is zero and the resolution is not.** The edit hook installed with
 the captured stream written back unchanged scores KL 0.0 against the plain
@@ -269,6 +313,13 @@ ENCODER_RESIDUAL_TOLERANCE = 0.01
 # alternative measured slightly cheaper on the reference prompt
 # ([0.086, 0.051, 0.063, 0.102, 0.141] against [0.106, 0.109, 0.092, 0.067,
 # 0.089] at norm 35.5), so the Gaussian is the stricter of the two.
+#
+# ONE draw, and the seed buys reproducibility rather than reliability. Measured
+# with 8 draws per row on the reference prompt, 34 of 43 rows clear one draw and
+# 20 clear all 8, with 21 of the 43 falling between their own smallest and
+# largest draw — for those the verdict is which draw was taken. `clears_control`
+# is therefore "cleared the one draw it was given", the response says so, and
+# the module docstring has the cost of the alternatives.
 CONTROL_SEED = 0
 
 
@@ -599,10 +650,16 @@ def rank_features(
             # measured negative scores (-1e-08, -3e-08) as -0.0 and hide the
             # evidence that the resolution is not the floor.
             "kl": round(kl, 8),
-            # What a random direction of the same norm at the same tokens cost.
-            # A row scoring under this is not distinguished from any edit of its
-            # size — measured, 9 of 43 rows on the reference prompt, two of them
-            # (22852, 1288) in the bar chart's plotted top-8.
+            # What ONE random direction of the same norm at the same tokens
+            # cost. A row scoring under this is not distinguished from any edit
+            # of its size — measured, 9 of 43 rows on the reference prompt, two
+            # of them (22852, 1288) in the bar chart's plotted top-8.
+            #
+            # A row scoring just OVER it is not distinguished either, and that
+            # is the part this single number cannot say: with 8 draws per row,
+            # 21 of those 43 rows land between their own smallest and largest
+            # draw. `clears_control` is a verdict against one sample, not
+            # against the distribution the sample came from.
             "control_kl": round(ctrl, 8),
             "clears_control": kl > ctrl,
             # Per row, because it varies from 0% to 60.3% and a single verdict
@@ -793,9 +850,15 @@ def rank_features(
             f"0.09 nats, against that feature's own 0.417 — so part of a score "
             f"is the SIZE of the edit rather than the identity of the feature. "
             f"{n_clearing_control} of {n_tested} rows here score above their own "
-            f"control. One draw per row: five draws at 35.5 spanned 0.0666 to "
-            f"0.1093, a factor of 1.6, so a row within that factor of its "
-            f"control is not separated by this test."
+            f"control — and that is ONE DRAW's verdict, not a property of the "
+            f"features. Re-measured with 8 draws per row on the reference prompt, "
+            f"the same 43 rows gave 34 clearing one draw, 21 the 95th percentile "
+            f"of 8 and 20 all 8, with 21 of the 43 falling between their own "
+            f"smallest and largest draw; 7 of the 9 that failed would have passed "
+            f"on some other draw. Eight draws at norm 35.5 spanned 0.068414 to "
+            f"0.186287, a factor of 2.72. Read `clears_control` as 'cleared the "
+            f"one draw it was given', and a row near its own control as undecided "
+            f"by this test rather than settled by it."
         ),
         "means": (
             "KL divergence in nats of the next-token distribution at this "

@@ -596,6 +596,12 @@ def test_the_real_ranking_is_not_the_bar_chart():
     # #22852 and #1288 — 5th and 6th in the activation chart — among the nine
     # that do not. Pinned as a band rather than a number because the draws are
     # seeded but the model may be running on a different device here.
+    #
+    # The band is also the honest width of the claim, not just device slack.
+    # With 8 draws per row on this setup the same 43 rows give 34 clearing one
+    # draw, 21 the 95th percentile and 20 all 8, and the shipped count moved
+    # 34 -> 36 between cpu and cuda on identical draws. A tighter assertion
+    # here would be pinning one sample of a random variable.
     assert 20 <= out["n_clearing_control"] <= 42, out["n_clearing_control"]
     assert out["ranked"][0]["control_kl"] > 0.02, "a same-size edit is not free"
     assert out["ranked"][0]["kl"] > 3 * out["ranked"][0]["control_kl"]
