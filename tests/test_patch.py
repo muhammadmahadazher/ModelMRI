@@ -157,3 +157,69 @@ def test_capture_reads_the_block_input():
     assert 7 in sink and torch.equal(sink[7], x)
     # A clone, not a view: the cache has to survive the tensor being reused.
     assert sink[7].data_ptr() != x.data_ptr()
+
+
+def test_the_sublayer_lookup_knows_both_spellings():
+    """GPT-2 calls it `attn`; Llama, Qwen and Gemma call it `self_attn`. Both
+    call the MLP `mlp`. Guessing wrong does not raise — it would read a
+    different tensor and report it as the model's attention."""
+
+    class _GPT2ish(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = _Block()
+            self.mlp = _Block()
+
+    class _Llamaish(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = _Block()
+            self.mlp = _Block()
+
+    g, ll = _GPT2ish(), _Llamaish()
+    assert patch._sublayer(g, "attn") is g.attn
+    assert patch._sublayer(ll, "attn") is ll.self_attn
+    assert patch._sublayer(g, "mlp") is g.mlp and patch._sublayer(ll, "mlp") is ll.mlp
+
+
+def test_an_unknown_layout_is_refused_and_points_at_the_one_that_always_works():
+    from modelmri import patch as patch_mod
+
+    class _Exotic(torch.nn.Module):
+        pass
+
+    with pytest.raises(patch_mod.PatchError) as err:
+        patch_mod._sublayer(_Exotic(), "attn")
+    msg = str(err.value)
+    assert "self_attn" in msg and "attn" in msg
+    # The refusal has to leave the reader somewhere to go, and resid reads the
+    # block input, which every layout this tool walks has.
+    assert "resid" in msg
+
+
+def test_splicing_a_sublayer_output_keeps_the_rest_of_its_tuple():
+    """Attention returns the hidden states alongside a cache on several
+    transformers versions. Returning a bare tensor would silently drop the
+    tail, and nothing downstream would say so."""
+
+    class _TupleOut(torch.nn.Module):
+        def forward(self, x):
+            return (x, "cache-sentinel")
+
+    m = _TupleOut()
+    handle = patch._splice_out(m, 1, torch.full((1, 4), 9.0))
+    try:
+        out = m(torch.zeros(1, 3, 4))
+    finally:
+        handle.remove()
+    assert isinstance(out, tuple) and len(out) == 2
+    assert out[1] == "cache-sentinel", "the cache was dropped"
+    assert torch.equal(out[0][:, 1, :], torch.full((1, 4), 9.0))
+    assert torch.equal(out[0][:, 0, :], torch.zeros(1, 4))
+
+
+def test_every_component_is_named_once():
+    """The three grids are the product's claim; a typo here would silently
+    drop one from every response."""
+    assert patch.COMPONENTS == ("resid", "attn", "mlp")
+    assert len(set(patch.COMPONENTS)) == len(patch.COMPONENTS)
