@@ -368,7 +368,7 @@ export default function FeaturesPanel({
         : `≈ ${estPasses} passes`;
   const passesNote =
     `${PASSES_PER_FEATURE} forward passes per feature tested — its own edit ` +
-    `and a random direction of the same size at the same tokens, without ` +
+    `and one random direction of the same size at the same tokens, without ` +
     `which a score cannot be told apart from the size of the edit — plus ` +
     `${PASS_OVERHEAD}: the base pass, a plain replay, the write-back floor, ` +
     `one joint ablation of everything tested, one substitution of the SAE's ` +
@@ -650,7 +650,7 @@ export default function FeaturesPanel({
                         title={
                           score.below_resolution
                             ? `KL ${fmtKL(score.kl)} nats — at or below this measurement's numerical resolution of ${measured.resolution_kl.toExponential(0)}, which is arithmetic rather than the model. The noise floor is a different and smaller number (${measured.noise_floor_kl}); greying out at the floor would grey out nothing.`
-                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${score.p_top_before.toFixed(3)} → ${score.p_top_after.toFixed(3)}${score.flips_top ? " · changes the top token" : ""} · a random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · after the edit the SAE still reads ${(score.encoder_residual * 100).toFixed(0)}% of this feature`
+                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${score.p_top_before.toFixed(3)} → ${score.p_top_after.toFixed(3)}${score.flips_top ? " · changes the top token" : ""} · ONE random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · that control is a single draw, and it moves: over 8 draws per row the median row's control spans a factor of about 2.5, and roughly half the rows fall between their own smallest and largest draw, so a score near its control is left undecided by this test rather than settled by it · after the edit the SAE still reads ${(score.encoder_residual * 100).toFixed(0)}% of this feature`
                         }
                       >
                         {score.below_resolution
@@ -1040,11 +1040,22 @@ function FeatureRanking({
       {/* What a score is worth against an edit of the same size that means
           nothing. Not a footnote: on gpt2 the top feature clears its own
           control by about 4x, not by everything, and 9 of 43 rows do not clear
-          it at all. */}
+          it at all.
+
+          The count is one draw's verdict and the sentence now says so. With 8
+          draws per row the same 43 rows give 34 clearing one draw and 20
+          clearing all 8, and about half fall inside their own draw spread —
+          "move the answer more than a random direction does" was a claim about
+          the distribution, taken from one sample of it.
+
+          Replicated with a second, independent set of 8 draws: 37 / 24 rather
+          than 34 / 20. The shipped 34 reproduces exactly; every count derived
+          from a FRESH draw moves, which is the point rather than a caveat on
+          it, so the wording above avoids quoting one. */}
       <div className={a.n_clearing_control > 0 ? "hint" : "hint err"}>
         <b>
-          {a.n_clearing_control} of the {a.n_scored} scored features move the
-          answer more than a random direction of the same size does.
+          {a.n_clearing_control} of the {a.n_scored} scored features beat the
+          one random direction of the same size each was given.
         </b>{" "}
         {a.control_means}
       </div>
