@@ -33,7 +33,12 @@ from pathlib import Path
 from . import paths
 from .errors import BadRequest, Refusal
 
-HUB_API = "https://huggingface.co/api"
+# `HF_ENDPOINT` is huggingface_hub's own variable for pointing at a mirror or
+# an enterprise Hub, and every other part of this tool honours it implicitly by
+# going through the library. This constant did not, so on an air-gapped or
+# mirrored setup the model picker was the one thing still talking to
+# huggingface.co — and failing there while downloads worked.
+HUB_API = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/") + "/api"
 
 log = logging.getLogger("modelmri")
 

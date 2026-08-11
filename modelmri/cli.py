@@ -361,6 +361,16 @@ def main() -> None:
 
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
 
+    # `pip install` cannot run this for you: a wheel is an archive and pip does
+    # not execute code from it, which is the whole difference between a wheel
+    # and an sdist. So the capability check lives here and on the serve banner,
+    # where it can also give a different answer to "can I open a recording"
+    # than to "can I load a 7B model".
+    sub.add_parser(
+        "doctor",
+        help="Report what this machine can and cannot run, and why",
+    )
+
     remove = sub.add_parser(
         "uninstall", help="Remove everything ModelMRI has written to this machine"
     )
@@ -374,10 +384,24 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.command == "doctor":
+        from . import doctor as _doctor
+
+        return _doctor.write_to()
+
     if args.command == "serve":
         import uvicorn
 
+        # Measured on THIS machine at startup, every time. A user who lands on
+        # a page saying "no model loaded" should already know whether that is
+        # a choice or a limit.
+        from . import doctor as _doctor
+
+        report = _doctor.check()
         print(f"ModelMRI {__version__} serving on http://{args.host}:{args.port}")
+        print(f"  {_doctor.one_line(report)}")
+        for blocker in report.blockers:
+            print(f"  PROBLEM  {blocker}", file=sys.stderr)
         try:
             uvicorn.run(
                 "modelmri.server:create_app",

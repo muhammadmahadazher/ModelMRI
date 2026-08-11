@@ -366,6 +366,14 @@ def count_params(model) -> tuple[int, int]:
     return total, trainable
 
 
+def _model_device(model) -> str:
+    """Where this model's parameters actually are."""
+    try:
+        return str(next(model.parameters()).device)
+    except (StopIteration, AttributeError):
+        return "cpu"  # a model with no parameters is on no device in particular
+
+
 def leaf_modules(model) -> list[tuple[str, object]]:
     """Modules with no children, in declaration order, named as you named them."""
     out = []
@@ -640,7 +648,10 @@ class CustomHandle:
                 path=str(p),
                 source=source,
                 name=type(model).__name__,
-                device="cpu",
+                # Read off the model, not asserted. A CustomStatus that says
+                # "cpu" about a model whose parameters are on a GPU is a label
+                # that contradicts the thing it describes.
+                device=_model_device(model),
                 n_params=total,
                 n_trainable=trainable,
                 n_modules=len(leaf_modules(model)),
@@ -772,7 +783,13 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
         for path in sorted(base.rglob("*.py")):
             if len(found) >= limit:
                 return found
-            if any(part in skip for part in path.parts):
+            # Relative to the scan root, not the absolute path. `path.parts`
+            # includes every ancestor above the root, so a repo that happens to
+            # live under a directory named `build`, `dist`, `node_modules` or
+            # `venv` had EVERY candidate skipped and the scan silently found
+            # nothing — the result depending on where the user keeps their code
+            # rather than on what is in it.
+            if any(part in skip for part in path.relative_to(base).parts):
                 continue
             if path.name.startswith("test_"):
                 continue

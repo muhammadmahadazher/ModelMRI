@@ -76,7 +76,32 @@ def dataset_roots(hf_home: str | Path | None = None) -> list[Path]:
     out = [root / "lerobot" / "hub", paths.hf_hub_cache()]
     if hf_home:
         out.insert(1, root / "hub")
+    # The "not cached" refusal tells the reader to point HF_LEROBOT_HOME at the
+    # cache that has it. Nothing read it. So a user who kept datasets on a
+    # second drive did exactly what the message said, restarted, and got the
+    # identical refusal listing the same directories — with the one they had
+    # just configured still missing. The tool's own instructions were the dead
+    # end. LEROBOT_HOME is the older spelling and costs nothing to honour.
+    for var in ("HF_LEROBOT_HOME", "LEROBOT_HOME"):
+        if env := paths._env_path(var):
+            out.insert(0, env)
+            out.insert(1, env / "hub")
     return [p for i, p in enumerate(out) if p not in out[:i]]
+
+
+def _read_all(files: list) -> dict:
+    """Concatenate every parquet shard into one column dict.
+
+    `pq.read_table(files[0])` was the old shape of this and it is the kind of
+    mistake that never raises: one shard reads perfectly, so a small dataset is
+    correct and a large one is quietly truncated.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if len(files) == 1:
+        return pq.read_table(files[0]).to_pydict()
+    return pa.concat_tables([pq.read_table(f) for f in files]).to_pydict()
 
 
 def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) -> Path:
@@ -152,12 +177,10 @@ class LeRobotV3Reader:
 
     def episodes(self) -> list[EpisodeInfo]:
         if self._episodes is None:
-            import pyarrow.parquet as pq
-
             files = sorted((self.snapshot / "meta" / "episodes").rglob("*.parquet"))
             if not files:
                 raise Refusal(f"No episode metadata under {self.snapshot}")
-            table = pq.read_table(files[0]).to_pydict()
+            table = _read_all(files)  # same shard trap as the frames
             out: list[EpisodeInfo] = []
             n = len(table["episode_index"])
             for i in range(n):
@@ -185,12 +208,16 @@ class LeRobotV3Reader:
     def _frame_table(self) -> dict:
         """All per-frame rows, loaded once (PushT is ~1.4 MB)."""
         if self._frames is None:
-            import pyarrow.parquet as pq
-
             files = sorted((self.snapshot / "data").rglob("*.parquet"))
             if not files:
                 raise Refusal(f"No frame data under {self.snapshot}")
-            self._frames = pq.read_table(files[0]).to_pydict()
+            # EVERY shard, not the first. LeRobot splits larger datasets across
+            # data/chunk-000/file-000.parquet, file-001, ... and reading only
+            # files[0] does not fail — it silently returns a prefix of the
+            # dataset, so episodes past the first shard simply do not exist and
+            # every index past it is wrong. A truncated answer that looks whole
+            # is the worst shape a bug can take here.
+            self._frames = _read_all(files)
         return self._frames
 
     def summary(self) -> dict:
