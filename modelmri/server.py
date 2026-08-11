@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import asdict
 from importlib.resources import files
@@ -1220,7 +1221,15 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/session/export")
-        name = (runtime.hf_id or "session").replace("/", "-")
+        # The basename, sanitised -- never the id itself. `hf_id` is not always
+        # a Hub id: load a model from a local folder and it is an absolute path,
+        # so the header carried the whole path, where backslashes are
+        # quoted-string escapes. Worse, Starlette encodes header values as
+        # latin-1, so a Cyrillic or CJK username raised UnicodeEncodeError and
+        # the reader got a generic 500 with nothing naming the cause. Export was
+        # simply dead for those users.
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", Path(runtime.hf_id or "session").name)
+        name = name.strip("-") or "session"
         return Response(
             content=blob,
             media_type="application/octet-stream",

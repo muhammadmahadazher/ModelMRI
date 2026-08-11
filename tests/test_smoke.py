@@ -318,8 +318,15 @@ def test_feature_ablation_refuses_a_model_that_is_not_float32():
     body = r.json()["error"]
     assert "float32" in body, body
     # It has to say what to DO. A refusal naming only the problem leaves the
-    # reader with a GPU they cannot turn off.
-    assert "CUDA_VISIBLE_DEVICES" in body, body
+    # reader with a GPU they cannot turn off — and the remedy has to work on
+    # the reader's machine, not just on NVIDIA. This used to name
+    # CUDA_VISIBLE_DEVICES, which does nothing on Apple Silicon, an Intel GPU
+    # or ROCm: the message told those readers to run a command that could not
+    # help them.
+    assert "MODELMRI_DEVICE" in body, body
+    assert "CUDA_VISIBLE_DEVICES" not in body, (
+        "a remedy that only works on one vendor's hardware is not a remedy"
+    )
 
     # float32 gets past the gate: the next refusal is the fake SAE failing,
     # which reaches the 500 arm rather than the dtype one. The point is only

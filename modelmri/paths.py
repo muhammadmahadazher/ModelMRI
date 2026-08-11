@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 APP = "ModelMRI"  # display-cased; lowercased on Linux by convention
@@ -113,9 +114,30 @@ def models_dirs() -> list[Path]:
     return out
 
 
+def _no_home() -> Path:
+    """Somewhere absolute to stand when there is no home directory.
+
+    `os.path.expanduser("~")` is NOT the answer, and it was: unlike
+    `Path.home()` it does not raise when it cannot resolve, it returns the
+    string `"~"` unchanged. Every path built on it was therefore RELATIVE,
+    rooted at a directory literally named `~`. Measured with the home
+    variables cleared: `data_dir()` returned `~/AppData/Local/ModelMRI` with
+    `is_absolute()` False, so `modelmri serve` created a junk directory named
+    `~` inside whatever directory it was started in, wrote the trace database
+    there, and `modelmri where` answered the question "where is my stuff" with
+    a relative path. On a read-only working directory it did not start at all.
+
+    This is the trap `models_dirs()` documents two functions above, arriving
+    by a different door. The temporary directory is not a good home, but it is
+    an absolute one, and `describe()` says so rather than letting the fallback
+    pass for a real answer.
+    """
+    return Path(tempfile.gettempdir()) / "modelmri-no-home"
+
+
 def _platform_dir(kind: str) -> Path:
     """kind: data | config | cache"""
-    home = _home() or Path(os.path.expanduser("~"))
+    home = _home() or _no_home()
     if sys.platform == "win32":
         # LOCALAPPDATA for data and cache (machine-local, not roamed);
         # APPDATA for config, which is small and worth roaming.
@@ -269,7 +291,7 @@ def hf_hub_cache() -> Path:
     if constant := _hub_constant("HF_HUB_CACHE"):
         return constant
     home = _home()
-    base = home / ".cache" if home else Path(".cache")
+    base = home / ".cache" if home else _no_home() / ".cache"
     return base / "huggingface" / "hub"
 
 
@@ -282,7 +304,7 @@ def hf_home() -> Path:
     if constant := _hub_constant("HF_HOME"):
         return constant
     home = _home()
-    return (home / ".cache" if home else Path(".cache")) / "huggingface"
+    return (home / ".cache" if home else _no_home() / ".cache") / "huggingface"
 
 
 def describe() -> dict:

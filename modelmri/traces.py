@@ -54,7 +54,17 @@ class TraceStore:
     def __init__(self, path: str | Path) -> None:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(str(path), check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
+        # WAL needs a shared-memory file and byte-range locking, which SQLite
+        # documents as unsupported on network filesystems. An NFS-mounted Linux
+        # home, a macOS home on SMB, or MODELMRI_HOME on a mapped drive answers
+        # SQLITE_IOERR here rather than declining the mode -- and this runs
+        # unguarded inside `create_app`, so the exception escaped before the
+        # server printed its URL. The whole tool became unusable over a feature
+        # the reader may not be using. The rollback journal works everywhere.
+        try:
+            self._db.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.Error:
+            pass
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(_SCHEMA)
 

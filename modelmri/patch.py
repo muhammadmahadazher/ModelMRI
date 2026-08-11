@@ -302,8 +302,18 @@ def trace(
 
     caches: dict[str, dict[int, torch.Tensor]] = {}
     grids: dict[str, list[list[float]]] = {}
+    skipped: list[str] = []
     for component in COMPONENTS:
-        caches[component] = cache_for(component)
+        # A model with no submodule of this name still has a residual stream,
+        # and the residual grid is the one that answers "where". Refusing the
+        # whole trace because a sublayer could not be found threw away the two
+        # thirds that would have worked — so the missing component is recorded
+        # and the rest is measured.
+        try:
+            caches[component] = cache_for(component)
+        except PatchError as err:
+            skipped.append(f"{component}: {err}")
+            continue
         grids[component] = [
             [
                 run_patched(component, li, pi, caches[component][li][:, pi, :])
@@ -311,6 +321,12 @@ def trace(
             ]
             for li in range(n_layers)
         ]
+
+    if not grids:
+        raise PatchError(
+            "None of the components could be read on this architecture. "
+            + " ".join(skipped)
+        )
 
     # Controls on the strongest sites, PER COMPONENT rather than pooled.
     #
@@ -323,7 +339,7 @@ def trace(
     per_component = max(1, max_controlled // len(COMPONENTS))
     ranked = [
         (score, c, li, pi)
-        for c in COMPONENTS
+        for c in grids
         for score, li, pi in sorted(
             (
                 (grids[c][li][pi], li, pi)
@@ -383,7 +399,7 @@ def trace(
         "gap": round(gap, 6),
         "n_layers": n_layers,
         "n_positions": n_pos,
-        "components": list(COMPONENTS),
+        "components": list(grids),
         "grids": {
             c: [[round(v, 6) for v in row] for row in grids[c]] for c in COMPONENTS
         },
@@ -397,30 +413,40 @@ def trace(
         # 1.00000 by construction -- measured, not assumed. A reader who sees a
         # bright bottom row should know it is a definition, not a discovery.
         "notes": [
-            "Scores are the share of the clean-vs-corrupt logit gap that the "
-            "patch restores. 1.0 is the clean answer, 0.0 is the corrupted "
-            "one, and negative means the patch pushed the answer further away. "
-            "It is a share, not a percentage of a whole: one site can overshoot "
-            "the clean run, and one does — gemma-3-270m-it reads 1.010 at its "
-            "last layer on the reference pair.",
-            "Layer 0's input is the embedding, so patching all of its "
-            "positions at once restores the prompt itself and scores 1.0 by "
-            "construction.",
-            "The residual grid says where; the two sublayer grids say through "
-            "what, and they disagree. On the reference pair the MLP grid peaks "
-            "at +0.365 on a SUBJECT token in layer 0 and the attention grid at "
-            "+0.232 on the LAST token in layer 9 — early MLP writing the fact, "
-            "late attention moving it to where the prediction is made.",
-            "A sublayer's output at an earlier position cannot reach the "
-            "prediction from the final layer, so the last rows of the attn and "
-            "mlp grids are exactly 0 everywhere but the last column. That is "
-            "the geometry, not a measurement.",
-            f"Scores depend on the dtype the model is loaded in: the reference "
-            f"tokens themselves change. These were measured in {dtype} against "
-            f"{tokenizer.decode([a])!r} and {tokenizer.decode([b])!r}. On the "
-            f"same pair, float32 gave ' Paris' against ' P' with a gap of "
-            f"4.467, and bfloat16 gave ' Paris' against ' T' with a gap of "
-            f"exactly 4.000 — which also quantises the scores themselves into "
-            f"steps of an eighth. Compare within a dtype, not across one.",
+            (
+                "Scores are the share of the clean-vs-corrupt logit gap that the "
+                "patch restores. 1.0 is the clean answer, 0.0 is the corrupted "
+                "one, and negative means the patch pushed the answer further away. "
+                "It is a share, not a percentage of a whole: one site can overshoot "
+                "the clean run, and one does — gemma-3-270m-it reads 1.010 at its "
+                "last layer on the reference pair."
+            ),
+            (
+                "Layer 0's input is the embedding, so patching all of its "
+                "positions at once restores the prompt itself and scores 1.0 by "
+                "construction."
+            ),
+            (
+                "The residual grid says where; the two sublayer grids say through "
+                "what, and they disagree. On the reference pair the MLP grid peaks "
+                "at +0.365 on a SUBJECT token in layer 0 and the attention grid at "
+                "+0.232 on the LAST token in layer 9 — early MLP writing the fact, "
+                "late attention moving it to where the prediction is made."
+            ),
+            (
+                "A sublayer's output at an earlier position cannot reach the "
+                "prediction from the final layer, so the last rows of the attn and "
+                "mlp grids are exactly 0 everywhere but the last column. That is "
+                "the geometry, not a measurement."
+            ),
+            (
+                f"Scores depend on the dtype the model is loaded in: the reference "
+                f"tokens themselves change. These were measured in {dtype} against "
+                f"{tokenizer.decode([a])!r} and {tokenizer.decode([b])!r}. On the "
+                f"same pair, float32 gave ' Paris' against ' P' with a gap of "
+                f"4.467, and bfloat16 gave ' Paris' against ' T' with a gap of "
+                f"exactly 4.000 — which also quantises the scores themselves into "
+                f"steps of an eighth. Compare within a dtype, not across one."
+            ),
         ],
     }

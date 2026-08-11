@@ -119,7 +119,11 @@ def guard(
             overridable=False,
         )
 
-    vram = vram_gb or 0
+    # `vram_gb or 0` collapsed "we could not read it" into "there is none",
+    # so an accelerator whose properties are unreadable got the same ceiling as
+    # a machine with no GPU. They are different states and the message below
+    # says different things about them.
+    vram = vram_gb if vram_gb is not None else 0.0
     ceiling = max(VRAM_MULTIPLE * vram, MIN_INTERESTING_GB)
     if need_gb > ceiling and not confirm:
         machine = (

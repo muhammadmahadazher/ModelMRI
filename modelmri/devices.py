@@ -15,6 +15,7 @@ here imports anything heavier than torch.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 
 
@@ -37,7 +38,14 @@ def _cuda_like() -> Device | None:
     try:
         if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
             return None
-        props = torch.cuda.get_device_properties(0)
+        # torch's own current device, not device 0. On a multi-GPU box the two
+        # differ the moment anything sets CUDA_VISIBLE_DEVICES or calls
+        # `set_device` — and this tool then reported card 0's name and VRAM
+        # while loading onto a different card. Every number on screen would
+        # describe hardware the model was not running on, which is worse than
+        # no number at all.
+        index = torch.cuda.current_device()
+        props = torch.cuda.get_device_properties(index)
         vram = round(props.total_memory / 1e9, 1)
         is_rocm = bool(getattr(torch.version, "hip", None))
         # bf16 needs Ampere (SM80) or newer on NVIDIA; ROCm reports it directly
@@ -47,12 +55,13 @@ def _cuda_like() -> Device | None:
             bf16 = False
         return Device(
             kind="rocm" if is_rocm else "cuda",
-            torch_device="cuda:0",
+            torch_device=f"cuda:{index}",
             name=props.name,
             vram_gb=vram,
             dtype="bfloat16" if bf16 else "float16",
             reason=("AMD ROCm GPU detected" if is_rocm else "NVIDIA GPU detected")
-            + f" ({vram} GB)",
+            + f" ({vram} GB)"
+            + (f", device {index}" if index else ""),
         )
     except Exception:
         return None
@@ -67,8 +76,14 @@ def _xpu() -> Device | None:
             return None
         name = "Intel GPU"
         vram = None
+        # Defaulted before the try, because the except below falls through to
+        # a Device() that needs it: an Intel GPU we cannot describe is still an
+        # Intel GPU, and losing it to a NameError would be worse than a
+        # cosmetic label.
+        index = 0
         try:
-            props = xpu.get_device_properties(0)
+            index = xpu.current_device()
+            props = xpu.get_device_properties(index)
             name = getattr(props, "name", name)
             total = getattr(props, "total_memory", None)
             vram = round(total / 1e9, 1) if total else None
@@ -95,7 +110,7 @@ def _xpu() -> Device | None:
             pass
         return Device(
             kind="xpu",
-            torch_device="xpu:0",
+            torch_device=f"xpu:{index}",
             name=name,
             vram_gb=vram,
             dtype="float16",
@@ -105,6 +120,15 @@ def _xpu() -> Device | None:
         return None
 
 
+def _system_ram_gb() -> float | None:
+    """System RAM in GB, or None. Shared with the capability report rather
+    than reimplemented: one reader, three platforms, no extra dependency."""
+    from .doctor import _ram_bytes
+
+    b = _ram_bytes()
+    return round(b / 1e9, 1) if b else None
+
+
 def _mps() -> Device | None:
     import torch
 
@@ -112,13 +136,24 @@ def _mps() -> Device | None:
         backend = getattr(torch.backends, "mps", None)
         if backend is None or not backend.is_available():
             return None
+        # Unified memory: on Apple Silicon the GPU addresses system RAM, so
+        # there is no separate VRAM figure — but reporting None meant every
+        # consumer downstream treated the machine as having no memory budget
+        # at all. `capacity.guard` collapsed it to 0 GB and `doctor` printed no
+        # size estimate on exactly the machines that most need one. The honest
+        # number is the system's, labelled as what it is.
+        unified = _system_ram_gb()
         return Device(
             kind="mps",
             torch_device="mps",
             name="Apple Silicon GPU",
-            vram_gb=None,
+            vram_gb=unified,
             dtype="float16",
-            reason="Apple Silicon detected",
+            reason=(
+                f"Apple Silicon detected, {unified:.1f} GB unified memory"
+                if unified
+                else "Apple Silicon detected"
+            ),
         )
     except Exception:
         return None
@@ -141,9 +176,23 @@ def detect(prefer: str = "auto") -> Device:
     prefer="auto" (default) walks cuda/rocm -> xpu -> mps -> cpu.
     prefer="cpu" forces CPU. Any other value is treated as an explicit
     torch device string and used verbatim if that backend is available.
+
+    `MODELMRI_DEVICE` overrides the default, and exists because the remedies
+    printed elsewhere needed something true to point at. The float32-only
+    refusal used to say `CUDA_VISIBLE_DEVICES=`, which is NVIDIA's variable
+    and does nothing on Apple Silicon, an Intel GPU or ROCm — the reader on
+    any of those was told to run a command that could not work. One variable,
+    every backend.
     """
+    if prefer in ("auto", "", None):
+        prefer = os.environ.get("MODELMRI_DEVICE", "auto").strip() or "auto"
+
     if prefer == "cpu":
-        return _cpu("forced by the caller")
+        return _cpu(
+            "forced to CPU by MODELMRI_DEVICE"
+            if os.environ.get("MODELMRI_DEVICE", "").strip() == "cpu"
+            else "forced by the caller"
+        )
 
     if prefer not in ("auto", "", None):
         for probe in (_cuda_like, _xpu, _mps):

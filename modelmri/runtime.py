@@ -924,10 +924,26 @@ class ModelRuntime:
         if self.last_ids_epoch != self.epoch:
             return {"available": False, "reason": "model changed since that generation"}
         cfg = self.model.config
+        # Not every causal LM has these. Pure state-space and RNN models
+        # (Mamba, RWKV) have no attention heads to report, and reading the key
+        # unguarded turned "this architecture has no attention" into an
+        # AttributeError and a 500 — the panel said the tool was broken when
+        # the honest answer is that there is nothing here to show.
+        n_layers = getattr(cfg, "num_hidden_layers", None)
+        n_heads = getattr(cfg, "num_attention_heads", None)
+        if n_layers is None or n_heads is None:
+            return {
+                "available": False,
+                "reason": (
+                    "this architecture publishes no attention layers or heads, "
+                    "so there is no attention to show — state-space and RNN "
+                    "models reach here"
+                ),
+            }
         return {
             "available": True,
-            "n_layers": cfg.num_hidden_layers,
-            "n_heads": cfg.num_attention_heads,
+            "n_layers": n_layers,
+            "n_heads": n_heads,
             "n_tokens": int(self.last_ids.shape[0]),
         }
 
@@ -1549,8 +1565,8 @@ class ModelRuntime:
                     "bit-exact and still scores 0.0, so the noise floor cannot "
                     "catch this. It works in float32, which ModelMRI selects "
                     "for CPU and never for a GPU: start the server with the "
-                    "GPU hidden (PowerShell `$env:CUDA_VISIBLE_DEVICES=''`, "
-                    "or `CUDA_VISIBLE_DEVICES= modelmri serve`) and load the "
+                    "GPU hidden (`MODELMRI_DEVICE=cpu modelmri serve`, or in "
+                    "PowerShell `$env:MODELMRI_DEVICE='cpu'`) and load the "
                     "model again — verified on this machine to select "
                     "cpu/float32."
                 )
@@ -1657,8 +1673,25 @@ class ModelRuntime:
 
         tokens = self._attn_tokens or []
         cut = min(self.last_n_prompt_tokens, len(tokens))
+        # THE NAME, NOT THE PATH. `hf_id` is a Hub id for a Hub model and an
+        # absolute filesystem path for one loaded from a local folder
+        # (discover.py sets `id=str(d)`). A `.mri` is the one artefact in this
+        # project designed to LEAVE the machine — people attach them to issues
+        # — so publishing the raw id shipped `C:\Users\<their real name>\...`
+        # to whoever they sent it to, and `modelmri open` then printed it on
+        # the recipient's terminal. The no-machine-leaks test never loaded a
+        # folder model, so nothing caught it.
+        shared_id = self.hf_id or ""
+        try:
+            if shared_id and Path(shared_id).exists():
+                shared_id = Path(shared_id).name
+        except OSError:
+            # A malformed path is not a reason to fail an export; the name is
+            # metadata, and an unreadable one is better dropped than leaked.
+            shared_id = Path(shared_id).name if shared_id else ""
+
         return session.build(
-            model_id=self.hf_id,
+            model_id=shared_id,
             device=self.device,
             dtype=str(next(self.model.parameters()).dtype).removeprefix("torch."),
             n_params=sum(p.numel() for p in self.model.parameters()),
