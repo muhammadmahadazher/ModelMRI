@@ -41,6 +41,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/model/cancel` | Cancel Load |
 | `POST` | `/api/model/load` | Load Model |
 | `POST` | `/api/model/prompt` | Prompt |
+| `POST` | `/api/model/unload` | Unload Model |
 
 
 ## Discovery
@@ -92,6 +93,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/custom/candidates` | Custom Candidates |
 | `POST` | `/api/custom/load` | Custom Load |
 | `POST` | `/api/custom/run` | Custom Run |
+| `POST` | `/api/custom/scan` | Custom Scan |
 | `POST` | `/api/custom/unload` | Custom Unload |
 
 

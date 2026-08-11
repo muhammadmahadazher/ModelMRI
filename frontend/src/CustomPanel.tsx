@@ -7,6 +7,7 @@ import {
   errorText,
   getCustom,
   getCustomCandidates,
+  scanFolder,
   loadCustom,
   runCustom,
   unloadCustom,
@@ -48,6 +49,10 @@ export default function CustomPanel() {
   const [shape, setShape] = useState("");
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  // A folder to also look in. Kept here rather than in the server's config so
+  // it lasts exactly one run — widening where a local tool will import from
+  // is not a setting that should quietly persist.
+  const [folder, setFolder] = useState("");
   const [manual, setManual] = useState("");
   // A counter, not layers.length: two runs of the same model have the same
   // layer count, and a scan that never fires again says nothing.
@@ -71,6 +76,25 @@ export default function CustomPanel() {
     setErr("");
     try {
       setCands(await getCustomCandidates());
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function onScanFolder() {
+    if (!folder.trim()) return;
+    setBusy("scan");
+    setErr("");
+    try {
+      const found = await scanFolder(folder);
+      setCands(found);
+      if (found.adapters.length === 0 && found.torchscript.length === 0) {
+        // Saying "nothing found" without saying WHERE it looked sends people
+        // to check a path that was never the problem.
+        setErr(`Nothing under ${found.added}. Looked in: ${found.roots.join(", ")}`);
+      }
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -158,6 +182,30 @@ export default function CustomPanel() {
               scans {status?.roots?.[0] ?? "the directory you launched in"} for
               adapters and TorchScript · reads text, imports nothing
             </span>
+
+            {/* The scan used to be limited to the directory the server was
+                launched in, which is the wrong question to ask somebody whose
+                model lives on another drive: their answer is "it is over
+                there" and the tool's was "restart me somewhere else". The
+                folder joins the allowed roots for this run — it does not
+                bypass them, so the boundary moves once, deliberately, when a
+                person asks it to. */}
+            <div className="row cust-elsewhere">
+              <input
+                value={folder}
+                onChange={(e) => setFolder(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void onScanFolder()}
+                placeholder="…or a folder anywhere on this machine"
+                spellCheck={false}
+              />
+              <button
+                className="ghost sm"
+                onClick={() => void onScanFolder()}
+                disabled={busy !== "" || !folder.trim()}
+              >
+                {busy === "scan" ? "scanning…" : "Look here too"}
+              </button>
+            </div>
           </div>
         ) : (
           <div className="cand-wrap">

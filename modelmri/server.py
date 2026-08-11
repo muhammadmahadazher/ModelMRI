@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__
+from . import __version__, custom
 from .custom import AdapterError, CustomHandle
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime
@@ -158,6 +158,13 @@ class VLADatasetRequest(BaseModel):
 
 
 class CustomLoadRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class CustomRootRequest(BaseModel):
+    # A folder to also look in, for a model that does not live where the
+    # server was started. Added to the allowed roots rather than bypassing
+    # them — see custom.add_root.
     path: str = Field(min_length=1, max_length=4096)
 
 
@@ -315,6 +322,27 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/model/load")
+
+    @app.post("/api/model/unload")
+    async def unload_model():
+        """Drop the model and hand the memory back.
+
+        There was no way to do this, which mattered most on the machines where
+        it mattered most: an 8 GB card holding a 2.5 GB checkpoint has room for
+        the next model only if the last one leaves, and the only way to make it
+        leave was killing the server.
+
+        Reports what was actually freed rather than what should have been —
+        `freed_bytes` is the difference in allocator-reported bytes across the
+        call, and an allocator that keeps its arena is a real outcome the
+        reader should see.
+        """
+        try:
+            return await asyncio.to_thread(runtime.unload)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/model/unload")
 
     @app.post("/api/model/cancel")
     def cancel_load() -> dict:
@@ -885,6 +913,35 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/run")
+
+    @app.post("/api/custom/scan")
+    async def custom_scan(req: CustomRootRequest):
+        """Also look in this folder, then scan.
+
+        The scan was limited to the directory the server was launched in,
+        which is the wrong question to ask somebody whose model lives on
+        another drive: their answer is "it is over there" and the tool's was
+        "restart me somewhere else".
+
+        The folder joins the allowed roots for this run only. It does not
+        bypass them — `custom._resolve` still refuses anything outside the
+        list — so the boundary moves once, deliberately, when a person asks.
+        """
+        try:
+            root = custom.add_root(req.path)
+            adapters, scripts = await asyncio.to_thread(
+                lambda: (custom.find_adapters(), custom.find_torchscript())
+            )
+            return {
+                "added": str(root),
+                "adapters": adapters,
+                "torchscript": scripts,
+                "roots": [str(r) for r in custom.allowed_roots()],
+            }
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/custom/scan")
 
     @app.post("/api/custom/unload")
     def custom_unload() -> dict:

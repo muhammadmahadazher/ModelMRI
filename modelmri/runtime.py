@@ -12,6 +12,7 @@ attn_implementation="eager".
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import re
@@ -444,6 +445,80 @@ class ModelRuntime:
             n_params=sum(p.numel() for p in self.model.parameters()),
             instruct=bool(getattr(self.tokenizer, "chat_template", None)),
         )
+
+    def unload(self) -> dict:
+        """Drop the model and give the memory back.
+
+        There was no way to do this. Custom models had `unload`; the model
+        actually holding your VRAM did not, so the only way to free a 2.5 GB
+        checkpoint was to kill the server — on the machines where that matters
+        most, the ones where the next model will not fit beside this one.
+
+        Everything a load sets is cleared, because a half-unloaded runtime is
+        worse than either state: the SAE is bound to a model that is gone, the
+        retained attention describes a sequence nothing can reproduce, and the
+        steering hook would install into nothing.
+        """
+        with self._load_slot("unload"):
+            was = self.hf_id
+            freed = self._accel_bytes()
+
+            self.epoch += 1
+            self.model = None
+            self.tokenizer = None
+            self.hf_id = None
+            self.backend = None
+            self.replay = None
+            self.last_ids = None
+            self.last_user_span = None
+            self._attn_variants.clear()
+            self._attn_tokens = None
+            self.sae = None
+            self._feats = None
+            self._steer = None
+
+            gc.collect()
+            self._empty_accel_cache()
+            now = self._accel_bytes()
+
+            return {
+                "unloaded": bool(was),
+                "was": was,
+                # What actually came back, not what should have. An allocator
+                # that keeps its arena is a real outcome and the reader should
+                # see it rather than a promise.
+                "freed_bytes": max(0, (freed or 0) - (now or 0)),
+                "accelerator_bytes_in_use": now,
+                "status": asdict(self.status()),
+            }
+
+    def _accel_bytes(self) -> int | None:
+        """Bytes this process has on the accelerator, or None if unknowable."""
+        try:
+            if self.accel.kind in ("cuda", "rocm") and torch.cuda.is_available():
+                return int(torch.cuda.memory_allocated())
+            if self.accel.kind == "xpu" and hasattr(torch, "xpu"):
+                return int(torch.xpu.memory_allocated())
+        except Exception:
+            return None
+        return None
+
+    def _empty_accel_cache(self) -> None:
+        """Hand the allocator's cache back to the driver."""
+        try:
+            if self.accel.kind in ("cuda", "rocm") and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif self.accel.kind == "xpu" and hasattr(torch, "xpu"):
+                torch.xpu.empty_cache()
+            elif self.accel.kind == "mps" and hasattr(torch, "mps"):
+                torch.mps.empty_cache()
+        except Exception as err:
+            # Best effort by definition — the memory is already dereferenced,
+            # and an allocator that will not release its arena is not a reason
+            # to fail the unload the caller asked for. Recorded rather than
+            # swallowed, because "I pressed Unload and nvidia-smi did not move"
+            # is a question somebody will ask, and the answer is in here.
+            log.info("could not empty the %s cache: %s", self.accel.kind, err)
 
     def _in_flight(self) -> str:
         """A sentence describing the load already running, or "" if none is.

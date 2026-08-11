@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Accelerator,
+  closeSession,
+  errorText,
   getAccelerator,
   getSession,
   getSessionState,
   ModelStatus,
   SessionState,
+  unloadModel,
 } from "./api";
 import AgentsPanel from "./AgentsPanel";
 import AsciiField from "./AsciiField";
@@ -25,6 +28,17 @@ export default function App() {
   // Sessions live on the server, so a reload must find one that is still open
   // rather than quietly showing an empty page beside a loaded recording.
   const [session, setSession] = useState<SessionState>({ open: false });
+  // Top-bar actions. `busyTop` disables both while either runs, because they
+  // act on the same thing and a reset landing mid-unload would report a state
+  // neither of them produced.
+  const [busyTop, setBusyTop] = useState<"" | "unload" | "reset">("");
+  // What the unload actually gave back, kept on screen until something else
+  // happens. Not a toast: the number is the point of pressing the button.
+  const [freed, setFreed] = useState("");
+  // Bumping this remounts the playground, which is what "reset" means — every
+  // panel keys its state off its own mount, so there is no list of things to
+  // clear that could fall out of date as panels are added.
+  const [resetKey, setResetKey] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -61,6 +75,45 @@ export default function App() {
     void refresh();
   }, [refresh]);
 
+  async function onUnload() {
+    setBusyTop("unload");
+    setFreed("");
+    try {
+      const out = await unloadModel();
+      await refresh();
+      setResetKey((k) => k + 1);
+      // Report what came back, not what should have. An allocator that keeps
+      // its arena is a real outcome and rounding it away would be a small lie
+      // in the one place someone is watching for a number.
+      const mb = out.freed_bytes / 1e6;
+      setFreed(
+        out.freed_bytes > 0
+          ? `freed ${mb >= 1000 ? (mb / 1000).toFixed(2) + " GB" : Math.round(mb) + " MB"}`
+          : "nothing to free",
+      );
+    } catch (err) {
+      setFreed(errorText(err));
+    } finally {
+      setBusyTop("");
+    }
+  }
+
+  async function onReset() {
+    setBusyTop("reset");
+    setFreed("");
+    try {
+      // A shared recording is view state too, so reset closes it — otherwise
+      // "reset" leaves the most conspicuous thing on the page untouched.
+      if (session.open) {
+        await closeSession().catch(() => undefined);
+      }
+      await refresh();
+      setResetKey((k) => k + 1);
+    } finally {
+      setBusyTop("");
+    }
+  }
+
   const pill = session.open
     ? `replay · ${session.meta?.model ?? "shared session"}`
     : model?.loaded
@@ -95,6 +148,37 @@ export default function App() {
           </span>
         )}
         <span className={`pill ${model?.loaded ? "on" : ""}`}>{pill}</span>
+
+        {/* Unload and Reset live up here beside the model pill because they
+            are about the whole session rather than any one panel, and because
+            the thing they act on — what is resident — is named two inches to
+            the left. Both are hidden when there is nothing to act on rather
+            than shown disabled: a control that is never usable is furniture. */}
+        {!session.open && model?.loaded && (
+          <button
+            className="pill act"
+            onClick={() => void onUnload()}
+            disabled={busyTop !== ""}
+            title="Drop the model and give the memory back"
+          >
+            {busyTop === "unload" ? "unloading…" : "unload"}
+          </button>
+        )}
+        {/* Always present, unlike unload. Reset re-reads the server and
+            remounts the panels, which is meaningful whatever is loaded — and a
+            control that disappears when you are looking for it is worse than
+            one that occasionally does nothing. */}
+        {!DEMO && (
+          <button
+            className="pill act"
+            onClick={() => void onReset()}
+            disabled={busyTop !== ""}
+            title="Clear every panel and start from nothing"
+          >
+            {busyTop === "reset" ? "resetting…" : "reset"}
+          </button>
+        )}
+        {freed && <span className="pill freed">{freed}</span>}
       </div>
 
       <div className="hero">
@@ -148,7 +232,7 @@ export default function App() {
       </div>
 
       <SessionBar session={session} onChange={setSession} />
-      <Playground model={model} onModelChange={refresh} replay={session.open} />
+      <Playground key={resetKey} model={model} onModelChange={refresh} replay={session.open} />
       {/* The viewer has no machine behind it. Panels that can only ever say
           "install ModelMRI" are worse than absent — the one thing this page
           does, it should do without three dead ends around it. */}
