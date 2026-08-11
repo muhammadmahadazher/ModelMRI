@@ -1349,3 +1349,42 @@ export const patchTrace = (clean: string, corrupt: string) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clean, corrupt }),
   }).then((r) => json<PatchTrace>(r));
+
+/** Drop the model and hand the memory back.
+ *
+ *  `freed_bytes` is the difference in allocator-reported bytes across the
+ *  call, not a promise — an allocator that keeps its arena is a real outcome
+ *  and the panel says so rather than claiming a round number.
+ */
+export interface UnloadResult {
+  unloaded: boolean;
+  was: string | null;
+  freed_bytes: number;
+  accelerator_bytes_in_use: number | null;
+  status: ModelStatus;
+}
+
+export const unloadModel = () =>
+  fetch("/api/model/unload", { method: "POST" }).then((r) =>
+    json<UnloadResult>(r),
+  );
+
+/** Also look in this folder for custom models.
+ *
+ *  The folder joins the allowed roots for this run only — it does not bypass
+ *  them. A local tool that will import any path handed to it is a nastier
+ *  primitive than it looks.
+ */
+export const scanFolder = (path: string) =>
+  fetch("/api/custom/scan", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  }).then((r) =>
+    json<{
+      added: string;
+      adapters: CustomCandidate[];
+      torchscript: CustomCandidate[];
+      roots: string[];
+    }>(r),
+  );

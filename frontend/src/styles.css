@@ -2418,3 +2418,48 @@ input[type="range"]:focus-visible { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   .patch-grid-wrap { animation: none; }
 }
+
+/* ── top-bar actions ────────────────────────────────────────────────────
+   Unload and Reset sit beside the model pill because they act on the whole
+   session, not on any one panel. Styled as pills rather than buttons so the
+   row reads as one instrument header instead of a toolbar. */
+.pill.act {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  border-color: var(--line-ctrl);
+  transition:
+    color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover),
+    background-color var(--dur-micro) var(--ease-hover);
+}
+.pill.act:hover:not(:disabled) {
+  color: var(--color-pop);
+  border-color: color-mix(in oklab, var(--color-pop) 55%, transparent);
+}
+.pill.act:disabled { opacity: 0.55; cursor: default; }
+/* The freed figure is a measurement, so it arrives rather than appearing —
+   and it stays until something else happens, because the number is the whole
+   reason for pressing the button. */
+.pill.freed {
+  color: var(--color-cobalt);
+  font-family: var(--font-mono);
+  animation: staggerIn var(--dur-small) var(--ease-out) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill.freed { animation: none; }
+}
+
+/* A folder from anywhere on the machine, beside the scan of where we started. */
+.cust-elsewhere { margin-top: 10px; gap: 8px; }
+.cust-elsewhere input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--hair);
+  background: var(--color-card);
+  color: var(--color-ink);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

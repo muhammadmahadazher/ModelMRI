@@ -145,6 +145,57 @@ class AdapterError(BadRequest):
 # ---------------------------------------------------------------- path safety
 
 
+# Folders the user pointed at during this run. The scan used to be limited to
+# the directory the server was launched in, which is the wrong question to ask
+# somebody whose model lives on another drive: their answer is "it is over
+# there", and the tool's answer was "restart me somewhere else".
+#
+# These are ADDED to the allowed roots rather than bypassing them. A local tool
+# that will import any path handed to it is a nastier primitive than it looks —
+# `_resolve` still refuses anything outside this list, so the boundary moves
+# deliberately, once, when a person asks it to, and it does not survive a
+# restart.
+_SESSION_ROOTS: list[Path] = []
+
+
+def add_root(raw: str) -> Path:
+    """Let this run also look in `raw`. Returns the resolved directory."""
+    if not raw or not raw.strip():
+        raise AdapterError("no folder given")
+    candidate = Path(raw.strip()).expanduser()
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError as err:
+        raise AdapterError(
+            f"that path cannot be resolved ({type(err).__name__})"
+        ) from err
+    if not resolved.exists():
+        raise AdapterError(f"{resolved} does not exist")
+    if not resolved.is_dir():
+        # A file is what the NEXT step takes; this one widens where to look.
+        raise AdapterError(
+            f"{resolved} is a file, not a folder — give the folder it is in "
+            f"and ModelMRI will find it"
+        )
+    # A filesystem or drive root is not a folder somebody means. Adding one
+    # would make every .py on the machine loadable, and the adapter loader
+    # IMPORTS what it loads, so "widen the search" would quietly become "run
+    # anything on this disk". Naming a real directory is the whole point.
+    if resolved.parent == resolved:
+        raise AdapterError(
+            f"{resolved} is the root of a filesystem, not a folder of models. "
+            f"Name the directory your model is actually in."
+        )
+    if resolved not in _SESSION_ROOTS:
+        _SESSION_ROOTS.append(resolved)
+    return resolved
+
+
+def clear_roots() -> None:
+    """Forget the folders added during this run. Used by the tests."""
+    _SESSION_ROOTS.clear()
+
+
 def allowed_roots() -> list[Path]:
     """Directories an adapter may be loaded from.
 
@@ -154,7 +205,7 @@ def allowed_roots() -> list[Path]:
     """
     from . import paths
 
-    roots = [Path.cwd(), *paths.models_dirs()]
+    roots = [Path.cwd(), *paths.models_dirs(), *_SESSION_ROOTS]
     out: list[Path] = []
     for r in roots:
         try:
