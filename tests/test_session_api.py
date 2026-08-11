@@ -139,7 +139,8 @@ def test_loading_a_model_closes_the_recording(monkeypatch):
     that reaches the same reset without downloading gigabytes. Setting
     `rt.replay = None` in the test instead would pass with the fix reverted.
     """
-    from modelmri import ollama, runtime as runtime_mod
+    from modelmri import ollama
+    from modelmri import runtime as runtime_mod
 
     monkeypatch.setattr(
         ollama, "status", lambda *a, **k: {"up": True, "models": ["qwen3:0.6b"]}

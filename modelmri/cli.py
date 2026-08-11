@@ -91,7 +91,7 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
             self.end_headers()
             return True
 
-        def do_GET(self):  # noqa: N802 - stdlib's spelling
+        def do_GET(self):  # stdlib's spelling
             if not self._is_ours():
                 return
             if self.path.split("?")[0] == f"/{name}":
@@ -100,7 +100,7 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
                 return
             super().do_GET()
 
-        def do_HEAD(self):  # noqa: N802
+        def do_HEAD(self):
             # Overriding do_GET alone made HEAD /session.mri answer 404 while
             # GET answered 200 — the two disagreeing about whether a file
             # exists is the kind of thing that breaks a client for no visible

@@ -123,7 +123,7 @@ def head_geometry(block: torch.nn.Module, n_heads: int) -> int:
 def _cut(head: int, head_dim: int, baseline: str):
     """A pre-hook that removes one head's contribution from the projection."""
 
-    def hook(module, args):  # noqa: ANN001 - torch's signature
+    def hook(module, args):  # torch's signature
         x = args[0].clone()
         lo, hi = head * head_dim, (head + 1) * head_dim
         if baseline == "mean":

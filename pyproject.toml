@@ -91,7 +91,14 @@ vla-lite = [
 # re-syncs the environment to the lockfile before every command, so a
 # package installed outside it is gone by the next line. CI caught that.
 dev = [
-    "ruff>=0.8",
+    # Floor, not a pin: the [tool.ruff] block below is verified against 0.15.20
+    # (what uv.lock resolves) and 0.16.2, which agree on all 150 rules it
+    # enables. `>=0.8` let a five-major-series-old ruff satisfy the gate while
+    # reporting something else entirely. `select` protects against the default
+    # rule set changing under an upgrade; it does not protect against a new
+    # rule being *added* to a family that is selected, so an upgrade is still
+    # a change worth reading the diff of.
+    "ruff>=0.15.20",
     "pytest>=8",
     "httpx>=0.27",
     "playwright>=1.48",
@@ -100,6 +107,113 @@ dev = [
     # where an import error is most likely to be mistaken for "unsupported".
     "tomli>=2; python_version < '3.11'",
 ]
+
+# ------------------------------------------------------------------- the gate
+# There was no [tool.ruff] here at all, which meant `uv run ruff check .` in CI
+# enforced whichever rule set the pinned ruff happened to default to — and that
+# default is not stable across releases. Measured on this tree, unchanged: ruff
+# 0.15.20 (the version in uv.lock) defaults to E4/E7/E9/F and reports nothing;
+# ruff 0.16.2 defaults to a far wider set and reports 159 findings. A
+# `uv lock --upgrade` for some unrelated dependency would have turned main red
+# with 159 errors belonging to nobody's change.
+#
+# So the gate is written down. Every rule below is one this tree satisfies;
+# every family deliberately left out is listed at the bottom with the reason.
+# `select` is a full replacement for the default, not an addition to it, so
+# what is here is the whole gate on any ruff version.
+[tool.ruff]
+# Stated rather than inherited, for the same reason as everything else in this
+# block: it is what the formatter wraps to, and E501 is switched off below on
+# the strength of it.
+line-length = 88
+
+# Ruff 0.16 began formatting fenced code blocks inside Markdown; 0.15 does not
+# look at .md at all. That is a real difference in what `ruff format --check .`
+# covers, and it lands on hand-wrapped documentation samples — docs/guides
+# narrow their columns for the rendered page, not for an 88-column formatter.
+# Ruff formats the Python in this repo. Prose is not Python.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+  "F",      # pyflakes — real errors: undefined names, unused imports
+  "E",      # pycodestyle errors (E402 included, see per-rule note below)
+  "W",      # pycodestyle warnings
+  "I",      # isort — import order is mechanical, so a tool should own it
+  "UP",     # pyupgrade — requires-python is >=3.10, so use what 3.10 has
+  "A",      # flake8-builtins — shadowing `input`/`id`/`type` reads as the builtin
+  "B",      # flake8-bugbear (minus B023, see below)
+  "N802",   # method names are lowercase
+  "RUF100", # every `# noqa` must still be suppressing something
+  # A different claim from BLE001, which is why it survives where BLE001 does
+  # not. BLE001 asks whether a catch is too broad; S110 asks whether the
+  # handler body does nothing AND records nothing, which is the actual shape
+  # of an accidental swallow. It fires 4 times, all of them fallback chains
+  # where the handling is the next statement, so the price is 4 directives —
+  # and this repo has already had to do one pass over silent excepts, so a
+  # guard against the next one is worth that.
+  "S110",
+]
+
+ignore = [
+  # The formatter owns line length. It wraps code to 88 and leaves prose and
+  # long string literals alone, which is the right call for both — and this
+  # repo's comments carry a lot of the reasoning, so a hard 88 on them would
+  # be a rule about paragraph shape. 19 lines currently sit at 89-169 columns
+  # and every one of them is a comment, a URL or an unbreakable literal.
+  "E501",
+  # Late-binding closures in a loop. Every one of the 11 sites flagged here
+  # runs its closure to completion inside the iteration that created it —
+  # `shutil.rmtree` returns before the next `for` step in cli.py, and the
+  # websocket loop in server.py drains its queue to the sentinel before it
+  # reads the next message. Silencing it costs threading `loop=loop,
+  # queue=queue, failure=failure` through closures that already read clearly,
+  # to state an invariant the rule cannot see anyway.
+  "B023",
+]
+
+# The families NOT selected, and why — so that turning one on later is a
+# decision someone makes rather than one a release makes for them:
+#
+#   BLE001  Broad `except Exception`, 63 sites — and 26 of them are false
+#           positives by ruff's own exemption. Ruff does not flag a blind
+#           except whose body logs the exception; it flags one that calls a
+#           helper which logs it. Verified with a two-function file under
+#           `--isolated`: the inline `log.exception(...)` handler passes, the
+#           identical handler that returns `_internal(err, where)` is flagged.
+#           Every 500 arm in server.py is the second shape, because the
+#           logging was deliberately factored into `_internal` (server.py:76)
+#           after handlers were found returning torch's text — including an
+#           absolute path — straight to the browser. Selecting the rule means
+#           63 new directives, 26 of them suppressing a diagnostic that would
+#           not exist had the log call been copy-pasted instead of shared.
+#           It would also destroy the signal the 8 existing directives carried:
+#           when every site is marked, the mark means nothing.
+#   S       flake8-bandit as a family, 928 findings — S101 alone fires on
+#           every `assert` in the test suite, which is what tests are made of.
+#           S110 is selected individually above; it is the one member of this
+#           family that makes a claim about the handler body rather than a
+#           claim about tests being tests.
+#   PL      pylint, 507 findings, mostly PLR limits on argument and branch
+#           counts. Not a shape this codebase is written to.
+#   ANN     1005 findings; ANN001 alone is 396. The codebase annotates its
+#           public surface and not its torch hook callbacks, deliberately —
+#           `def hook(module, args)` is torch's signature, not a choice.
+#   D       pydocstyle, 626 findings. Docstrings here are prose where prose
+#           helps, not one per symbol.
+#   TRY/EM  159-160 findings each, both about moving exception message text
+#           into intermediate variables. The messages here are written to be
+#           read by a user at a terminal and are better at the raise site.
+#   N (rest of)
+#           N818 wants `Refusal`, `BadRequest`, `TooBig` and `LoadCancelled`
+#           renamed to end in `Error`; those names are the vocabulary the API
+#           and the UI use. N803 wants the SAE's `W_enc`/`W_dec` lowercased,
+#           and they are named after the matrices in the paper. Hence N802
+#           alone, which the codebase does hold to.
+#   SIM, PERF, FURB, ISC, C4, PTH, ARG, PT, RUF (other than RUF100)
+#           Style preferences with 1-15 findings apiece and no correctness
+#           claim behind them. Left out because nothing here is written
+#           against them, not because they are wrong.
 
 [tool.hatch.build.targets.wheel]
 packages = ["modelmri"]

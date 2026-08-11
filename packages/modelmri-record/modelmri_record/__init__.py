@@ -35,10 +35,10 @@ import sys
 import time
 import urllib.request
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from .redact import Redactor, default_redactor, redact_document
 
@@ -46,7 +46,7 @@ __version__ = "0.1.3"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
 
-_current: contextvars.ContextVar["_Trace | None"] = contextvars.ContextVar(
+_current: contextvars.ContextVar[_Trace | None] = contextvars.ContextVar(
     "modelmri_trace", default=None
 )
 
@@ -176,7 +176,7 @@ class _NoStep:
     def __bool__(self) -> bool:
         return False
 
-    def __enter__(self) -> "_NoStep":
+    def __enter__(self) -> _NoStep:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -194,7 +194,7 @@ class _StepCtx:
         self._trace = tr
         self._entered_ms = 0
 
-    def __enter__(self) -> "_StepCtx":
+    def __enter__(self) -> _StepCtx:
         self._token = self._trace.parents.set(
             self._trace.parents.get() + (self._record["id"],)
         )
@@ -220,7 +220,7 @@ def step(
     tokens_out: int | None = None,
     error: bool = False,
     started_ms: int | None = None,  # override for backfilled/synthetic traces
-) -> "_StepCtx | _NoStep":
+) -> _StepCtx | _NoStep:
     """Record one step in the active trace (no-op outside a trace block)."""
     t = _current.get()
     if t is None:
@@ -274,7 +274,7 @@ def instrument_anthropic() -> bool:
         return True
     original = Messages.create
 
-    def wrapped(self, *args, **kwargs):  # noqa: ANN001, ANN202
+    def wrapped(self, *args, **kwargs):
         t = _current.get()
         started = t.now_ms() if t else 0
         try:
@@ -342,7 +342,7 @@ def _undelivered_dir() -> Path:
         from modelmri import paths  # type: ignore[import-not-found]
 
         return paths.data_dir() / "undelivered"
-    except Exception:
+    except Exception:  # noqa: S110 - the next fallback IS the handling
         pass
     try:
         return Path.home() / ".modelmri" / "undelivered"
@@ -372,7 +372,7 @@ def _complain(message: str) -> None:
         stream = sys.stderr
         if stream is not None:
             print(message, file=stream)
-    except Exception:
+    except Exception:  # noqa: S110 - this IS the reporter; see the docstring
         pass  # there is no third place to report to, and raising is worse
 
 
@@ -393,7 +393,7 @@ def _deliver(t: _Trace) -> None:
         )
         urllib.request.urlopen(req, timeout=3)
         return
-    except Exception:
+    except Exception:  # noqa: S110 - the disk fallback below is the handling
         # Not narrowed to OSError: `endpoint` is caller-supplied, so a typo in
         # the scheme is a ValueError from urllib rather than a network error.
         # Nothing is swallowed here — the disk fallback below is the handling,

@@ -15,7 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from modelmri import capacity, hub, progress, runtime as runtime_mod
+from modelmri import capacity, hub, progress
+from modelmri import runtime as runtime_mod
 
 
 class FakeAccel:
@@ -394,7 +395,7 @@ def test_a_chatty_child_does_not_deadlock_the_load(monkeypatch):
     def run():
         try:
             rt._prefetch_weights("some/model")
-        except BaseException as err:  # noqa: BLE001 - reported below
+        except BaseException as err:  # reported below
             error.append(err)
         finally:
             done.set()

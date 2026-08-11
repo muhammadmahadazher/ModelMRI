@@ -99,12 +99,12 @@ def unusable_sae() -> SAEHandle:
 class ToyBlock(torch.nn.Module):
     """Identity, so hooks are the only thing that changes the stream."""
 
-    def forward(self, x):  # noqa: ANN001
+    def forward(self, x):
         return x
 
 
 class _Out:
-    def __init__(self, logits):  # noqa: ANN001
+    def __init__(self, logits):
         self.logits = logits
 
 
@@ -121,7 +121,7 @@ class ToyModel:
     records the first call and the edit replaces both.
     """
 
-    def __init__(self, block, resid, readout, double: bool = False):  # noqa: ANN001
+    def __init__(self, block, resid, readout, double: bool = False):
         self.block, self.resid, self.readout, self.double = (
             block,
             resid,
@@ -129,7 +129,7 @@ class ToyModel:
             double,
         )
 
-    def __call__(self, ids):  # noqa: ANN001
+    def __call__(self, ids):
         h = self.block(self.resid.unsqueeze(0))
         if self.double:
             h = h + self.block(self.resid.unsqueeze(0) * 0.5)

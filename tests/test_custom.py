@@ -15,7 +15,6 @@ torch = pytest.importorskip("torch")
 
 from modelmri import custom  # noqa: E402
 
-
 # --------------------------------------------------------------- fixtures
 
 

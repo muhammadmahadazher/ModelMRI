@@ -97,7 +97,8 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 
@@ -464,7 +465,7 @@ def rank_tokens(
             attentions = getattr(
                 forward(masked(probe), output_attentions=True), "attentions", None
             )
-        except Exception as err:  # noqa: BLE001 - a failed check is a reported check
+        except Exception as err:  # a failed check is a reported check
             attentions, why = None, f"{type(err).__name__}: {err}"
         if attentions:
             residual: float | None = max(

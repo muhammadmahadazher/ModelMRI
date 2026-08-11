@@ -19,10 +19,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
@@ -33,8 +34,8 @@ from . import (
     capacity,
     devices,
     feature_ablate,
-    paths,
     ollama,
+    paths,
     progress,
     session,
 )
@@ -553,7 +554,7 @@ class ModelRuntime:
                     self._prefetch_weights(hf_id)
                 except LoadCancelled:
                     raise
-                except Exception as err:  # noqa: BLE001 - see the comment
+                except Exception as err:  # see the comment
                     # The child could not be started or could not be waited
                     # on: no usable sys.executable, a box that refuses process
                     # creation, a denied CREATE_NEW_PROCESS_GROUP. Falling
@@ -1080,7 +1081,7 @@ class ModelRuntime:
 
         if self.sae.point == "resid_post":
 
-            def _post(module, args, output):  # noqa: ANN001
+            def _post(module, args, output):
                 tup = isinstance(output, tuple)
                 hidden = output[0] if tup else output
                 moved = hidden + scale * direction.to(hidden.dtype)
@@ -1088,7 +1089,7 @@ class ModelRuntime:
 
             return block.register_forward_hook(_post)
 
-        def _pre(module, args):  # noqa: ANN001
+        def _pre(module, args):
             hidden = args[0]
             return (hidden + scale * direction.to(hidden.dtype),) + args[1:]
 
@@ -1702,14 +1703,14 @@ class ModelRuntime:
                 # the SAE the stream from the wrong side of the block, which
                 # does not error -- it just yields features for activations the
                 # SAE never saw in training.
-                def _capture(module, args, output):  # noqa: ANN001
+                def _capture(module, args, output):
                     hidden = output[0] if isinstance(output, tuple) else output
                     captured.append(hidden.detach())
 
                 handle = block.register_forward_hook(_capture)
             else:
 
-                def _capture(module, args):  # noqa: ANN001
+                def _capture(module, args):
                     captured.append(args[0].detach())
 
                 handle = block.register_forward_pre_hook(_capture)
@@ -1741,10 +1742,14 @@ class ModelRuntime:
             "top": [
                 [
                     [int(fid), round(float(act), 3)]
-                    for fid, act in zip(id_row, act_row)
+                    # `strict`: topk returns values and indices of the same
+                    # shape, so a length mismatch here would mean the pairing
+                    # of feature id to activation had already gone wrong, and
+                    # zip's default is to truncate and publish it anyway.
+                    for fid, act in zip(id_row, act_row, strict=True)
                     if act > 0
                 ]
-                for id_row, act_row in zip(ids.tolist(), acts.tolist())
+                for id_row, act_row in zip(ids.tolist(), acts.tolist(), strict=True)
             ],
         }
 
