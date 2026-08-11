@@ -23,6 +23,22 @@ const DEFAULT_POLICY = "lerobot/smolvla_base";
 
 /** Robot-policy introspection: scrub a real episode, then see what the
  *  policy's vision tower attends to on that exact frame. */
+/** Enough digits to distinguish two readings, whatever the units are.
+ *
+ *  `toFixed(0)` read fine on pusht, whose state is pixel coordinates in the
+ *  hundreds, and destroyed every normalised dataset: joint angles in [-1, 1]
+ *  all printed as "0" or "-0".
+ *
+ *  The precision is chosen once per VECTOR rather than per element. Deciding
+ *  it element by element gave `[222, 97.0]` — two axes of the same
+ *  measurement in two different formats, which reads as though they are
+ *  different kinds of number. */
+function vec(xs: number[]): string {
+  const peak = Math.max(...xs.map(Math.abs), 0);
+  const dp = peak >= 100 ? 0 : peak >= 1 ? 1 : 3;
+  return xs.map((v) => v.toFixed(dp)).join(", ");
+}
+
 export default function VLAPanel() {
   const [vla, setVla] = useState<VLAStatus | null>(null);
   const [ds, setDs] = useState<VLADataset | null>(null);
@@ -42,6 +58,10 @@ export default function VLAPanel() {
   // The policy checkpoint. Blank means the server's default; anything else
   // is loaded by discovering its vision tower rather than assuming SmolVLA's.
   const [policy, setPolicy] = useState("");
+  // Which view. A dataset recorded with a wrist camera and an overhead one
+  // has both in `cameras`; the reader used to show whichever came first and
+  // never mention the others.
+  const [camera, setCamera] = useState("");
   const debounce = useRef<number | undefined>(undefined);
 
   // Status only. Opening the dataset imports pyarrow and pyav and decodes
@@ -72,14 +92,14 @@ export default function VLAPanel() {
     let live = true;
     window.clearTimeout(debounce.current);
     debounce.current = window.setTimeout(() => {
-      void getVLAFrame(episode, t)
+      void getVLAFrame(episode, t, camera)
         .then((f) => live && setFrame(f))
         .catch((e) => live && setErr(errorText(e)));
     }, 90);
     return () => {
       live = false;
     };
-  }, [ds, episode, t]);
+  }, [ds, episode, t, camera]);
 
   useEffect(() => {
     if (!vla?.loaded || !heatKey) return;
@@ -102,7 +122,11 @@ export default function VLAPanel() {
       // Switch first when the pick differs, so "Open" always opens what the
       // dropdown says rather than whatever the server last had.
       if (chosen && chosen !== vla?.dataset_repo) await setVLADataset(chosen);
-      setDs(await getVLAEpisodes());
+      const opened = await getVLAEpisodes(camera || undefined);
+      setDs(opened);
+      // The server answers with the camera it actually used, so the selector
+      // shows a real view rather than an empty string.
+      setCamera(opened.video_key ?? opened.cameras?.[0] ?? "");
       setLayer(0);
     } catch (e) {
       setErr(errorText(e));
@@ -238,7 +262,9 @@ export default function VLAPanel() {
           </span>
         ) : (
           <button className="green" onClick={() => void onLoad()} disabled={busy !== ""}>
-            {busy === "load" ? "Loading policy…" : "Load SmolVLA vision tower"}
+            {busy === "load"
+              ? "Loading policy…"
+              : `Load ${(policy.trim() || vla?.policy_repo || DEFAULT_POLICY).split("/").pop()} vision tower`}
           </button>
         )}
         <span className="meta">{note}</span>
@@ -264,12 +290,36 @@ export default function VLAPanel() {
               setT(0);
             }}
           >
-            {ds.episodes.slice(0, 60).map((e) => (
+            {/* Every episode. This was `.slice(0, 60)`: lerobot/pusht has
+                206, so 146 of them were unreachable and the control said
+                nothing about it — the same shape of bug as reading only the
+                first parquet shard. A <select> handles 206 options fine. */}
+            {ds.episodes.map((e) => (
               <option key={e.index} value={e.index}>
                 {e.index} · {e.length} frames
               </option>
             ))}
           </select>
+
+          {(ds.cameras?.length ?? 0) > 1 && (
+            <>
+              <label className="meta" htmlFor="vla-camera">
+                camera ({ds.cameras!.length} views)
+              </label>
+              <select
+                id="vla-camera"
+                className="combo"
+                value={camera}
+                onChange={(e) => setCamera(e.target.value)}
+              >
+                {ds.cameras!.map((c) => (
+                  <option key={c} value={c}>
+                    {c.replace(/^observation\.(images?\.)?/, "")}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
 
           <label className="meta">frame {t}</label>
           <input
@@ -282,8 +332,7 @@ export default function VLAPanel() {
 
           {frame && (
             <div className="meta">
-              state [{frame.state.map((v) => v.toFixed(0)).join(", ")}] · action [
-              {frame.action.map((v) => v.toFixed(0)).join(", ")}]
+              state [{vec(frame.state)}] · action [{vec(frame.action)}]
             </div>
           )}
 
@@ -311,8 +360,9 @@ export default function VLAPanel() {
 
       {err && <div className="hint">{err}</div>}
       <div className="hint">
-        heat = attention each image patch receives inside SmolVLA's own vision
-        tower · deeper layers concentrate on task-relevant regions
+        heat = attention each image patch receives inside{" "}
+        {vla?.repo ?? "the policy"}'s own vision tower · deeper layers
+        concentrate on task-relevant regions
       </div>
     </div>
   );

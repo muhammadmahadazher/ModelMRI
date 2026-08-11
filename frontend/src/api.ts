@@ -753,6 +753,8 @@ export interface VLADataset {
   image_shape: number[];
   n_episodes: number;
   episodes: VLAEpisode[];
+  cameras?: string[];
+  video_key?: string;
 }
 
 export interface VLAFrame {
@@ -790,11 +792,16 @@ export const loadVLA = (repo?: string) =>
     body: JSON.stringify(repo && repo.trim() ? { repo: repo.trim() } : {}),
   }).then((r) => json<VLAStatus>(r));
 
-export const getVLAEpisodes = () =>
-  fetch("/api/vla/episodes").then((r) => json<VLADataset>(r));
+export const getVLAEpisodes = (camera?: string) =>
+  fetch(
+    camera ? `/api/vla/episodes?camera=${encodeURIComponent(camera)}` : "/api/vla/episodes",
+  ).then((r) => json<VLADataset>(r));
 
-export const getVLAFrame = (episode: number, t: number) =>
-  fetch(`/api/vla/frame?episode=${episode}&t=${t}`).then((r) => json<VLAFrame>(r));
+export const getVLAFrame = (episode: number, t: number, camera?: string) =>
+  fetch(
+    `/api/vla/frame?episode=${episode}&t=${t}` +
+      (camera ? `&camera=${encodeURIComponent(camera)}` : ""),
+  ).then((r) => json<VLAFrame>(r));
 
 export const analyseVLA = (episode: number, t: number) =>
   fetch("/api/vla/analyse", {

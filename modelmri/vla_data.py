@@ -37,6 +37,12 @@ class EpisodeInfo:
     task: str
     from_ts: float
     to_ts: float
+    # Where this episode's frames actually live. LeRobot v3.0 concatenates
+    # many episodes into one mp4 and one parquet, so an episode is a SPAN
+    # inside a file, not a file -- and which file depends on the camera.
+    video_chunk: int = 0
+    video_file: int = 0
+    data_from: int = 0
 
 
 @dataclass
@@ -158,14 +164,38 @@ class LeRobotV3Reader:
         self.fps: int = int(self.info.get("fps", 10))
         self._episodes: list[EpisodeInfo] | None = None
         self._frames: dict | None = None
-        self._video_key = next(
-            (
-                k
-                for k, v in self.info.get("features", {}).items()
-                if v.get("dtype") in ("video", "image")
-            ),
-            "observation.image",
-        )
+        # Every camera, not the first one. A single-arm SO-100 recording has
+        # a wrist and an overhead view; an ALOHA recording has four. Keeping
+        # only `next(...)` meant the other views were not merely unselectable,
+        # they were invisible -- the panel reported one camera as though it
+        # were the dataset.
+        self._cameras = [
+            k
+            for k, v in self.info.get("features", {}).items()
+            if v.get("dtype") in ("video", "image")
+        ] or ["observation.image"]
+        self._video_key = self._cameras[0]
+
+    @property
+    def cameras(self) -> list[str]:
+        return list(self._cameras)
+
+    @property
+    def camera(self) -> str:
+        return self._video_key
+
+    def use_camera(self, name: str | None) -> None:
+        """Choose which view the frames come from."""
+        if not name or name == self._video_key:
+            return
+        if name not in self._cameras:
+            raise BadRequest(
+                f"{name!r} is not a camera in {self.repo_id} — "
+                f"this dataset has {', '.join(self._cameras)}"
+            )
+        self._video_key = name
+        self._episodes = None  # routing is per camera
+        self.close()  # and so is the open container
 
     @classmethod
     def discover(
@@ -183,27 +213,65 @@ class LeRobotV3Reader:
             table = _read_all(files)  # same shard trap as the frames
             out: list[EpisodeInfo] = []
             n = len(table["episode_index"])
+            cam = self._video_key
+            vid_from = self._column(table, f"videos/{cam}/from_timestamp", n, True)
+            vid_to = self._column(table, f"videos/{cam}/to_timestamp", n, True)
+            vid_chunk = self._column(table, f"videos/{cam}/chunk_index", n, True)
+            vid_file = self._column(table, f"videos/{cam}/file_index", n, True)
+            data_from = self._column(table, "dataset_from_index", n, False)
             for i in range(n):
                 length = int(table["length"][i])
                 tasks = table.get("tasks", [[]] * n)[i]
                 task = (
                     tasks[0] if isinstance(tasks, list) and tasks else str(tasks or "")
                 )
+                # THE COLUMNS ARE NAMESPACED BY CAMERA. This read
+                # `video_from_timestamp`, which is not a column any LeRobot
+                # v3.0 dataset has -- the real name is
+                # `videos/<camera>/from_timestamp`. `.get(name, default)`
+                # turned that miss into 0.0 for every episode, so every
+                # episode decoded from the start of the file: measured on
+                # lerobot/pusht, episodes 0, 5 and 20 returned byte-identical
+                # images while the state vector printed underneath them was
+                # correctly episode 5's and episode 20's. The picture and the
+                # numbers disagreed and nothing said so.
+                #
+                # Hence `_column`, which refuses instead of defaulting. A
+                # missing routing column means frames cannot be located, and
+                # saying so is the only honest answer.
                 out.append(
                     EpisodeInfo(
                         index=int(table["episode_index"][i]),
                         length=length,
                         task=task,
-                        from_ts=float(
-                            table.get("video_from_timestamp", [0.0] * n)[i] or 0.0
-                        ),
-                        to_ts=float(
-                            table.get("video_to_timestamp", [0.0] * n)[i] or 0.0
-                        ),
+                        from_ts=float(vid_from[i] or 0.0),
+                        to_ts=float(vid_to[i] or 0.0),
+                        video_chunk=int(vid_chunk[i] or 0),
+                        video_file=int(vid_file[i] or 0),
+                        # The dataset states the row range outright. Summing
+                        # the lengths of earlier episodes gets the same answer
+                        # only while the rows happen to be contiguous and in
+                        # episode order.
+                        data_from=int(data_from[i] or 0)
+                        if data_from is not None
+                        else sum(int(table["length"][j]) for j in range(i)),
                     )
                 )
             self._episodes = out
         return self._episodes
+
+    def _column(self, table: dict, name: str, n: int, required: bool):
+        col = table.get(name)
+        if col is None:
+            if required:
+                raise Refusal(
+                    f"{self.repo_id} has no `{name}` column — this reader needs "
+                    "LeRobot v3.0 episode metadata to locate frames, and "
+                    "guessing the location silently is how the wrong episode "
+                    "ends up on screen"
+                )
+            return None
+        return col
 
     def _frame_table(self) -> dict:
         """All per-frame rows, loaded once (PushT is ~1.4 MB)."""
@@ -231,6 +299,7 @@ class LeRobotV3Reader:
             "repo_id": self.repo_id,
             "fps": self.fps,
             "video_key": self._video_key,
+            "cameras": self.cameras,
             "image_shape": list(shape),
             "n_episodes": len(eps),
             "episodes": [e.__dict__ for e in eps],
@@ -238,17 +307,36 @@ class LeRobotV3Reader:
 
     # ---------- frames ----------
 
-    def _video_file(self) -> Path:
-        vids = sorted((self.snapshot / "videos").rglob("*.mp4"))
+    def _video_file(self, ep: EpisodeInfo | None = None) -> Path:
+        """The mp4 holding `ep`, for the camera currently selected.
+
+        This was `sorted(rglob("*.mp4"))[0]` -- the first mp4 anywhere under
+        the snapshot. With one camera and one chunk that is the right file by
+        luck. With two cameras it is whichever key sorts first, so the panel
+        could show the wrist view while labelling it the overhead one; with
+        two chunks every episode past the first chunk decoded from the wrong
+        file entirely. The layout states where to look:
+        videos/<camera>/chunk-000/file-000.mp4
+        """
+        root = self.snapshot / "videos" / self._video_key
+        if ep is not None:
+            exact = (
+                root / f"chunk-{ep.video_chunk:03d}" / f"file-{ep.video_file:03d}.mp4"
+            )
+            if exact.is_file():
+                return exact
+        vids = sorted(root.rglob("*.mp4")) or sorted(
+            (self.snapshot / "videos").rglob("*.mp4")
+        )
         if not vids:
             raise Refusal(f"No videos under {self.snapshot}")
         return vids[0]
 
-    def _decode(self, timestamp: float):
+    def _decode(self, timestamp: float, ep: EpisodeInfo | None = None):
         """Decode the frame at `timestamp` seconds (keeps one container open)."""
         import av
 
-        path = self._video_file()
+        path = self._video_file(ep)
         if self._container is None or self._container_key != (str(path), "r"):
             self.close()
             self._container = av.open(str(path))
@@ -287,13 +375,14 @@ class LeRobotV3Reader:
 
         with self._lock:
             rows = self._frame_table()
-            # rows are stored contiguously per episode, in episode order
-            offset = sum(e.length for e in eps if e.index < episode)
-            i = offset + t
+            # `data_from` comes from the dataset's own dataset_from_index
+            # where that column exists, and falls back to the summed-length
+            # assumption where it does not.
+            i = match.data_from + t
             state = [float(v) for v in rows["observation.state"][i]]
             action = [float(v) for v in rows["action"][i]]
             timestamp = match.from_ts + t / self.fps
-            rgb = self._decode(timestamp)
+            rgb = self._decode(timestamp, match)
 
         return FrameSample(
             episode=episode,
@@ -314,7 +403,7 @@ class LeRobotV3Reader:
         if match is None:
             raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
         with self._lock:
-            return self._decode(match.from_ts + t / self.fps)
+            return self._decode(match.from_ts + t / self.fps, match)
 
     def close(self) -> None:
         if self._container is not None:

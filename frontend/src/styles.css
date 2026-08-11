@@ -1055,6 +1055,11 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   box-shadow: 0 0 0 3px var(--sf-ground), 0 0 0 6px var(--acc);
 }
 input[type="range"]:focus-visible { outline: none; }
+/* A range control takes the colour of the panel it steers. The global accent
+   is violet, which is the features panel's colour, so the robot panel's frame
+   scrubber was the one violet thing in a green card. */
+.panel.vla input[type="range"] { accent-color: var(--color-vla); }
+.panel:has(.h-patch) input[type="range"] { accent-color: var(--color-cobalt); }
 
 /* ---------- the workbench ---------- */
 .workbench {

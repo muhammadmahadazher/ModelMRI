@@ -1061,9 +1061,17 @@ def create_app(
         return await asyncio.to_thread(reader.summary)
 
     @app.get("/api/vla/episodes")
-    async def vla_episodes():
+    async def vla_episodes(camera: str | None = None):
+        # The camera is part of the question, not a property of the dataset:
+        # episode routing (which mp4, which span inside it) is stored per
+        # camera, so switching views has to re-read the episode table.
+        def read() -> dict:
+            reader = _reader()
+            reader.use_camera(camera)
+            return reader.summary()
+
         try:
-            return await asyncio.to_thread(lambda: _reader().summary())
+            return await asyncio.to_thread(read)
         except ImportError as err:
             # See /api/vla/dataset: ImportError alone, because vla_data.py's
             # own sentences are Refusals now and a library's OSError is not
@@ -1077,9 +1085,14 @@ def create_app(
             return _internal(err, "/api/vla/episodes")
 
     @app.get("/api/vla/frame")
-    async def vla_frame(episode: int = 0, t: int = 0):
+    async def vla_frame(episode: int = 0, t: int = 0, camera: str | None = None):
+        def read():
+            reader = _reader()
+            reader.use_camera(camera)
+            return reader.frame(episode, t)
+
         try:
-            sample = await asyncio.to_thread(lambda: _reader().frame(episode, t))
+            sample = await asyncio.to_thread(read)
             return asdict(sample)
         except ImportError as err:
             # See /api/vla/dataset: ImportError alone, because vla_data.py's
