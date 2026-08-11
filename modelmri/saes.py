@@ -317,6 +317,30 @@ class SAEHandle:
         )
 
     @torch.no_grad()
+    def encode_feature(self, x: torch.Tensor, feature_id: int) -> torch.Tensor:
+        """[S, d_in] -> [S] activations of ONE feature. Same arithmetic as encode.
+
+        One column of `W_enc` instead of all 24,576, which is the difference
+        between 768 multiply-adds and 19 million. `feature_ablate` asks this
+        once per scored row to report how much of a feature the SAE still reads
+        after that feature's contribution has been subtracted from the stream —
+        a full `encode` per row would have made a free check cost seconds.
+
+        Requires an existing calibration and does not create one: a single
+        feature's activation is not enough to choose a convention, and silently
+        calibrating from it would pick one on evidence nobody asked for.
+        """
+        cal = self.calibration
+        if cal is None:
+            raise ValueError(
+                "encode_feature needs a calibration; call encode() on the full "
+                "activations first so the input convention is chosen on all of "
+                "them rather than on one feature."
+            )
+        prepared = self._prepare(x.float(), cal.center, cal.subtract_b_dec)
+        return torch.relu(prepared @ self.W_enc[:, feature_id] + self.b_enc[feature_id])
+
+    @torch.no_grad()
     def decode(self, feats: torch.Tensor) -> torch.Tensor:
         """[S, d_sae] feature activations -> [S, d_in] reconstruction."""
         return feats.float() @ self.W_dec + self.b_dec

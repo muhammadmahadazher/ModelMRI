@@ -74,6 +74,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 
 | method | path | notes |
 |---|---|---|
+| `GET` | `/api/features/ablate` | Ablate Features |
 | `GET` | `/api/features/summary` | Features Summary |
 | `GET` | `/api/features/{feature_id}` | Feature Detail |
 | `GET` | `/api/sae` | Sae Status |

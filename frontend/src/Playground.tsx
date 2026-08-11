@@ -411,7 +411,16 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           — it is an observation, not a checkpoint. Mounting the panel anyway
           would offer a control that can only ever answer "no model loaded". */}
       {epoch > 0 && introspectable && !replay && (
-        <FeaturesPanel epoch={epoch} prompt={lastPrompt} onSteering={setSteering} />
+        <FeaturesPanel
+          epoch={epoch}
+          prompt={lastPrompt}
+          /* The feature ranking is float32-only and ModelMRI picks bfloat16 for
+             every NVIDIA GPU, so the panel needs the dtype to know whether to
+             offer the control at all. It is already on /api/session, which this
+             component is handed. */
+          dtype={model?.dtype ?? null}
+          onSteering={setSteering}
+        />
       )}
     </>
   );

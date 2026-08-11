@@ -245,6 +245,95 @@ def test_attribute_via_ollama_is_409():
     assert "Ollama" in r.json()["error"]
 
 
+def test_feature_ablation_on_a_recording_is_409():
+    """A `.mri` carries attention, not weights. Ranking features means
+    subtracting one from the residual stream and running the model again, and
+    there is no model here to run.
+
+    The status code is also what pins the route's position in server.py.
+    `/api/features/{feature_id}` is declared with no path converter, so its
+    regex swallows any single segment; registered after it, `/api/features/
+    ablate` would be parsed as feature_id="ablate" and answer 422 for a
+    perfectly well-formed request. 409 can only come from the real handler.
+    """
+    app = create_app()
+    app.state.runtime.replay = object()
+
+    r = TestClient(app).get("/api/features/ablate")
+    assert r.status_code == 409, r.text
+    assert "recording" in r.json()["error"]
+
+
+def test_feature_ablation_via_ollama_is_409():
+    """Ollama hands back text. There is no residual stream to subtract a
+    feature's decoder direction from, and the refusal says which backend to
+    load instead."""
+    app = create_app()
+    rt = app.state.runtime
+    rt.backend, rt.hf_id = "ollama", "qwen3:0.6b"
+    assert rt.loaded, "the ollama refusal has to be what rejects this, not 'no model'"
+
+    r = TestClient(app).get("/api/features/ablate")
+    assert r.status_code == 409, r.text
+    assert "Ollama" in r.json()["error"]
+
+
+def test_feature_ablation_refuses_a_model_that_is_not_float32():
+    """The refusal nothing inside the measurement can raise for itself.
+
+    `feature_ablate` proves its floor by writing the captured stream back
+    unchanged — bit-exact in every dtype, 0.0 in every dtype. So it cannot see
+    that in bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats by
+    itself. Measured on gpt2 at blocks.8.hook_resid_pre, position 10: feature
+    3841 (activation 0.051) moves the answer 4.9e-07 nats in float32 and
+    0.02836 in bfloat16, outranking a feature with 100x its activation, while
+    noise_floor_kl still reads 0.0 beside it.
+
+    Half-precision is the DEFAULT on a GPU — `devices.detect` picks bfloat16
+    for any Ampere-or-newer NVIDIA card — so without this the ordinary path on
+    an ordinary machine publishes a ranking of rounding error.
+    """
+    import torch
+
+    class Half:
+        """Just enough model to be asked its dtype."""
+
+        def parameters(self):
+            yield torch.zeros(1, dtype=torch.bfloat16)
+
+    app = create_app()
+    rt = app.state.runtime
+    rt.backend = "hf"
+    rt.model = Half()
+    rt.sae = object()  # loaded, so the SAE refusal is not what answers
+    rt.last_ids = torch.zeros(5, dtype=torch.long)
+    rt.last_n_prompt_tokens = 5
+    rt.epoch = rt.last_ids_epoch = 1
+
+    with pytest.raises(RuntimeError, match="bfloat16"):
+        rt.rank_features()
+
+    r = TestClient(app).get("/api/features/ablate")
+    assert r.status_code == 409, r.text
+    body = r.json()["error"]
+    assert "float32" in body, body
+    # It has to say what to DO. A refusal naming only the problem leaves the
+    # reader with a GPU they cannot turn off.
+    assert "CUDA_VISIBLE_DEVICES" in body, body
+
+    # float32 gets past the gate: the next refusal is the fake SAE failing,
+    # which reaches the 500 arm rather than the dtype one. The point is only
+    # that the dtype check is not rejecting everything.
+    class Full(Half):
+        def parameters(self):
+            yield torch.zeros(1, dtype=torch.float32)
+
+    rt.model = Full()
+    with pytest.raises(Exception) as caught:
+        rt.rank_features()
+    assert "float32" not in str(caught.value)
+
+
 def test_sae_status_unloaded():
     r = client().get("/api/sae")
     assert r.status_code == 200
@@ -1048,7 +1137,7 @@ def test_a_model_swap_mid_generation_does_not_poison_the_attention_view():
             call()
 
 
-@pytest.mark.parametrize("call", ("attribute_tokens", "ablate_heads"))
+@pytest.mark.parametrize("call", ("attribute_tokens", "ablate_heads", "rank_features"))
 def test_a_load_that_lands_while_an_intervention_waits_for_the_lock_is_refused(call):
     """The epoch check used to be taken OUTSIDE `self._lock`, and `load` holds
     that same lock across the epoch bump and the model swap. A load landing in

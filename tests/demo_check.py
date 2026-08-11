@@ -55,6 +55,21 @@ EXEMPT = {
         "forward passes against a live model; the button is gated off in "
         "demo and viewer builds instead"
     ),
+    # Exempt for the same reason, and it MUST be listed rather than left to
+    # `covered()`. `covered()` would have passed it: demo.ts answers
+    # `/api/features/` as a PREFIX, so this path matched a handler whose body
+    # returns the single-feature DETAIL payload with a 200. A prefix handler
+    # returning a different shape is not coverage, it is a fabricated ranking
+    # rendered as a measurement — the one failure this project cannot ship. The
+    # exemption records that the answer is "the control does not exist here",
+    # and `feature_ranking_is_not_offered` below is what keeps that true.
+    "/api/features/ablate": (
+        "ranks SAE features by removing one at a time, two forward passes per "
+        "feature against a live model (92 for one token on gpt2, 518 across a "
+        "prompt); the button is gated off in demo and viewer builds instead, "
+        "and demo.ts's /api/features/ prefix would otherwise answer it 200 "
+        "with a single feature's detail payload"
+    ),
 }
 
 FAILURES: list[str] = []
@@ -211,6 +226,79 @@ def token_ranking_is_not_offered() -> None:
         not leaked,
         f"{leaked} survived into the published JavaScript, so the gate is a "
         f"runtime one and the demo is shipping a control it cannot answer",
+    )
+
+
+def feature_ranking_is_not_offered() -> None:
+    """The same argument as `token_ranking_is_not_offered`, and one more.
+
+    A feature ranking is a measurement — "removing THIS feature moves the
+    answer at THIS token by THIS much" — so a button that can only answer with
+    a failure teaches a visitor that the measurement does not work rather than
+    that the page has no model behind it.
+
+    The one more: demo.ts answers `/api/features/` as a PREFIX, and its body
+    returns the single-feature DETAIL payload. So unlike token attribution,
+    an ungated control here would not get a 409 it could report — it would get
+    a 200 carrying the wrong shape, and the panel would render a fabricated
+    ranking as a measurement. `rankFeatures` also refuses in DEMO and VIEWER
+    builds, which is a second lock; this checks the first one, and the bundle
+    assertion at the end checks that neither is needed at runtime because the
+    code is not there at all.
+    """
+    print("\ndemo — is the feature ranking correctly not offered?")
+    panel = (SRC / "FeaturesPanel.tsx").read_text("utf-8")
+
+    at = panel.find('"Rank features"')
+    check(
+        "the panel still has a Rank features control to gate",
+        at >= 0,
+        "no 'Rank features' label found in FeaturesPanel.tsx — if the control "
+        "was renamed, this check went blind and must be renamed with it",
+    )
+    at = max(at, 0)
+    guard = panel[max(0, at - 600) : at]
+    check(
+        "Rank features is gated on !DEMO && !VIEWER",
+        "!DEMO && !VIEWER" in guard,
+        "that guard is not in the 600 characters before the label. The static "
+        "demo and the .mri viewer have no model, and demo.ts would answer the "
+        "call 200 with a single feature's detail payload",
+    )
+
+    calls = re.findall(r"rankFeatures\s*\(", panel)
+    check(
+        "the ranking is requested from exactly one place",
+        len(calls) == 1,
+        f"{len(calls)} calls to rankFeatures — every one of them needs the "
+        f"same gate, and a second call site is how the gate stops being true",
+    )
+
+    built = sorted(DIST.glob("assets/*.js")) if DIST.is_dir() else []
+    if not built:
+        print(f"    (no demo bundle at {DIST.name}/ — run npm run build:demo)")
+        return
+    js = "\n".join(f.read_text("utf-8", errors="replace") for f in built)
+    leaked = [s for s in ("Rank features", "/api/features/ablate") if s in js]
+    check(
+        "the built demo bundle carries neither the control nor its endpoint",
+        not leaked,
+        f"{leaked} survived into the published JavaScript, so the gate is a "
+        f"runtime one and the demo is shipping a control whose endpoint would "
+        f"answer 200 with the wrong payload",
+    )
+    # And the annotation that hangs off a ranking. It cannot render in this
+    # build — `measured` is only ever set by the gated button — but rollup
+    # cannot prove that from a runtime value, so the JSX and its tooltip prose
+    # shipped as ~2.4 kB of text nothing could reach. Hoisting it behind the
+    # same folded constants is what makes the exclusion a build-time fact.
+    dead = [s for s in ("below_resolution", "same-size random edit") if s in js]
+    check(
+        "the per-row KL annotation is dropped rather than shipped dead",
+        not dead,
+        f"{dead} is in the demo bundle, which means the annotation is gated on "
+        f"a runtime value instead of on !DEMO && !VIEWER and rollup could not "
+        f"drop it",
     )
 
 
@@ -521,6 +609,7 @@ def main() -> int:
     print("demo parity check")
     static_coverage()
     token_ranking_is_not_offered()
+    feature_ranking_is_not_offered()
     no_machine_leaks()
     bundle_integrity()
     print()

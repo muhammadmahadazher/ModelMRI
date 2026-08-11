@@ -1138,6 +1138,58 @@ input[type="range"]:focus-visible { outline: none; }
 .feat-id { color: var(--color-feat); min-width: 62px; font-weight: 600; }
 .feat-act { color: var(--color-mute); margin-left: auto; font-variant-numeric: tabular-nums; }
 
+/* ---------- the causal column, beside the activation it disagrees with ----
+   The list stays in activation order and gains a second number rather than
+   being re-sorted, because the panel's claim is that these are two different
+   orderings of the same features — measured on gpt2 at one token, the top 8
+   by activation and the top 8 by causal effect share 6 members, and across
+   the prompt only 3. Re-sorting silently would answer a question the reader
+   did not know had two answers.
+
+   The row is wider only when there is a second number in it. `.feat-list`'s
+   480px was cut for id + bar + activation and a KL like `4.17e-01` does not
+   fit beside them without the bar collapsing. */
+.feat-list.ranked { max-width: 660px; }
+.feat-rank-row { margin-top: 12px; }
+.feat-kl {
+  color: var(--color-attn);
+  font-variant-numeric: tabular-nums;
+  min-width: 82px;
+  text-align: right;
+}
+/* Below the measured resolution: shown, because hiding it would imply the
+   list is complete, but never presented as a result. */
+.feat-kl.faint { color: var(--color-mute); opacity: 0.7; }
+/* A THIRD state, and the one that must not look like the second. A feature the
+   run had no budget for was NOT ASKED — rendering it as a small number, or as
+   an empty cell beside scored rows, both read as "measured, and it was
+   nothing". Dashed is this stylesheet's existing word for "not asked" (see
+   `.tok.untested`), and it is reused here on purpose. */
+.feat-kl.untested {
+  color: var(--color-mute);
+  font-size: 10.5px;
+  border: 1px dashed var(--hair);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+/* A score that did not beat a random edit of its own size. Measured on gpt2 at
+   the attributed token, 9 of 43 rows, two of them in the plotted top-8 — so
+   this is not a rare footnote and it has to be visible on the bar itself, not
+   only in a tooltip. Muted rather than red: the number is real, it is just not
+   separated from the size of the edit that produced it. */
+.feat-kl-flag {
+  color: var(--color-mute);
+  font-size: 10px;
+  margin-left: 4px;
+}
+/* Which feature the heat strip and the steering control are currently on. The
+   causal list is a second way into the same selection, so it has to be able to
+   show it. */
+.ranking-list li.sel {
+  background: color-mix(in oklab, var(--sem-feat) 9%, transparent);
+  border-radius: 6px;
+}
+
 /* ---------- compare ---------- */
 .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
