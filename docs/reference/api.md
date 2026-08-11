@@ -127,6 +127,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/paths` | Where |
+| `GET` | `/api/pull/progress` | Pull Progress |
 | `POST` | `/api/patch` | Patch Trace |
 
 ## Streaming
