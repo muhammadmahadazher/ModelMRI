@@ -1103,6 +1103,37 @@ export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummar
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
 
+/** What the last generation cost, including what watching it cost.
+ *
+ *  Every field may be null and none is ever faked — CPU has no allocator to
+ *  ask, and a 0 in a memory column is a claim that nothing was used. */
+export interface TelemetryReport {
+  available: boolean;
+  reason?: string;
+  prompt_tokens: number;
+  generated_tokens: number;
+  prompt_ms: number | null;
+  decode_ms: number | null;
+  tokens_per_s: number | null;
+  peak_bytes: number | null;
+  reserved_bytes: number | null;
+  memory_note: string;
+  context_used: number;
+  context_limit: number | null;
+  context_fraction: number | null;
+  /** `n_layers x n_heads x S^2 x dtype` — the attention scores ModelMRI asks
+   *  for and a plain runner never allocates. */
+  introspection_bytes: number | null;
+  introspection_note: string;
+  device: string;
+  dtype: string;
+  notes: string[];
+  means: string;
+}
+
+export const getTelemetry = () =>
+  fetch("/api/telemetry").then((r) => json<TelemetryReport>(r));
+
 /** One step that matched a search, with the run it belongs to. */
 export interface SearchHit {
   step_id: string;

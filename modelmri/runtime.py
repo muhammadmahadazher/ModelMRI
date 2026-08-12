@@ -42,6 +42,7 @@ from . import (
     paths,
     progress,
     session,
+    telemetry,
 )
 from .errors import BadRequest, Refusal
 from .saes import SAEHandle, SAEStatus
@@ -428,6 +429,10 @@ class ModelRuntime:
         # by 25,563x (measured on Qwen3-0.6B, see `_user_span`), so a panel that
         # cannot tell them apart has to say that rather than pick one.
         self.last_user_span: tuple[int, int] | None = None
+        # What the last generation cost, including what watching it cost.
+        # None until something has been generated -- a telemetry bar with
+        # zeros in it is a claim about a run that never happened.
+        self.last_telemetry: telemetry.Telemetry | None = None
         # One entry per intervention: "live", "steered", "ablate:L.H".
         # Comparing two runs means holding two, and they must all be dropped
         # together — a stale "live" beside a fresh "steered" would render a
@@ -999,14 +1004,32 @@ class ModelRuntime:
         if self._steer is not None and self.sae is not None:
             steer_handle = self._steer_handle()
 
+        # Timed around the loop rather than inside `generate`, because the
+        # boundary that separates prompt processing from decode is the arrival
+        # of the FIRST streamed token and there is nowhere else to observe it.
+        run = telemetry.Run(self.accel.kind)
         try:
             worker = threading.Thread(target=_generate, daemon=True)
             worker.start()
-            yield from streamer
+            with run:
+                for chunk in streamer:
+                    run.token()
+                    yield chunk
             worker.join(timeout=30)
         finally:
             if steer_handle is not None:
                 steer_handle.remove()
+
+        cfg = getattr(self.model, "config", None)
+        self.last_telemetry = run.finish(
+            prompt_tokens=int(inputs["input_ids"].shape[1]),
+            n_layers=int(getattr(cfg, "num_hidden_layers", 0) or 0),
+            n_heads=int(getattr(cfg, "num_attention_heads", 0) or 0),
+            dtype_bytes=2 if self.accel.dtype in ("float16", "bfloat16") else 4,
+            device=self.accel.torch_device,
+            dtype=self.accel.dtype,
+            context=telemetry.context_limit(self.model, self.tokenizer),
+        )
 
         ids = result.get("ids")
         if ids is None or not commit:

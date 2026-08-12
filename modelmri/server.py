@@ -1214,6 +1214,27 @@ def create_app(
     # BEFORE /api/traces/{trace_id}. FastAPI matches in definition order,
     # so with this below it the literal path `search` was captured as a
     # trace id and every query answered "trace not found".
+    @app.get("/api/telemetry")
+    async def read_telemetry():
+        """What the last generation cost, with the introspection cost split out.
+
+        Every local runner shows tokens/sec. None of them shows what being
+        looked at costs — and ModelMRI is slower than Ollama for a specific
+        reason: it forces eager attention and `output_attentions=True`, which
+        materialises `n_layers x n_heads x S x S`. At 4,096 tokens on a
+        12-layer, 12-head model that is 4.8 GB, larger than the weights.
+
+        204 before anything has been generated, because a bar full of zeros is
+        a claim about a run that never happened.
+        """
+        t = getattr(runtime, "last_telemetry", None)
+        if t is None:
+            return JSONResponse(
+                {"available": False, "reason": "nothing has been generated yet"},
+                status_code=200,
+            )
+        return {"available": True, **t.to_dict()}
+
     @app.get("/api/gguf")
     async def read_gguf(path: str):
         """What is inside a GGUF, without loading it or touching the GPU.

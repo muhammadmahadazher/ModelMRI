@@ -57,6 +57,32 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   scores are fifty times smaller and nearly uniform. The ranking survives,
   which is the outcome you want and not the guaranteed one.
 
+- **A telemetry bar, with the cost of being watched broken out.** Tokens/sec
+  measured over the streamed tokens, prompt processing kept apart from decode,
+  peak allocator memory, and context fullness against the model's real limit.
+  Live telemetry is table stakes — TextGen, LM Studio and llama-server all
+  have it — so the differentiated line is the other one: **what introspection
+  costs.**
+
+  ModelMRI is slower than Ollama for a specific, nameable reason rather than a
+  vague one. It forces `attn_implementation="eager"` and asks for
+  `output_attentions=True`, which materialises an `n_layers x n_heads x S x S`
+  tensor a plain runner never allocates. That figure is computed from the
+  shape and shown as its own line, with a warning available *before* a run
+  that would not fit rather than an explanation after the allocation fails. At
+  4,096 tokens on a 12-layer, 12-head model it is 4.8 GB — larger than the
+  weights of most models this runs on.
+
+  Every number is labelled for what it is. Memory reads `allocated by
+  PyTorch`, never "VRAM used": the caching allocator's view is not the
+  driver's and other processes are invisible to it. The rate travels with the
+  prompt length and sequence length it was measured at, because one generation
+  is one sample. A cell that could not be measured says so — CPU has no
+  allocator to ask, and a 0 in a memory column is a claim that nothing was
+  used. `tokenizer.model_max_length` is rejected when it is a sentinel (several
+  tokenizers report 1000000000000000019884624838656) rather than turned into a
+  confident 0.0% of context.
+
 - **Open a GGUF and read what is inside it.** The scanner has always found
   `.gguf` files — the format most people running models on their own machine
   actually have — and then refused them with a note. It still cannot *run*

@@ -10,6 +10,7 @@ import {
   streamGenerate,
 } from "./api";
 import AttentionPanel from "./AttentionPanel";
+import TelemetryBar from "./TelemetryBar";
 import FeaturesPanel from "./FeaturesPanel";
 import PatchPanel from "./PatchPanel";
 import ModelPicker from "./ModelPicker";
@@ -442,6 +443,12 @@ export default function Playground({
         }}
       />
 
+      {/* Above the panels, because it describes the run they are all reading.
+          Renders nothing until something has been generated — a bar of zeros
+          is a claim about a run that never happened. Not shown for a replay:
+          a `.mri` carries no timings, and the numbers would belong to
+          somebody else's machine. */}
+      {epoch > 0 && !replay && <TelemetryBar epoch={epoch} />}
       {epoch > 0 && introspectable && (
         <AttentionPanel epoch={epoch} replay={replay} />
       )}
