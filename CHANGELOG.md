@@ -1285,6 +1285,27 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   leaves a wake, and a slow diagonal sweep crosses on its own. The
   composition is still seeded from the loaded checkpoint, so every model keeps
   its own stable field.
+- **The agents panel records the generations you make here**, not only runs of
+  code you instrumented yourself. Loading a model, typing a prompt and
+  generating — the thing the whole page is for — used to put nothing in
+  AGENTS — RECORDED RUNS on any model or backend, and the panel's own copy
+  said so ("no model will fill it"), which reads as broken and was reported as
+  broken. Every committed generation is now stored as a one-step `llm_call`
+  trace: prompt in, output out, with the model id as the trace name, the
+  duration, and token counts where the backend can give them. Failures are
+  recorded as failures, keeping whatever the stream managed to produce, and in
+  the reader's words rather than torch's — a trace is a document people
+  export.
+
+  Marked `meta {"source": "app"}` and labelled `this app` in the list, a new
+  key rather than a reuse of the `demo` flag: "sample data you did not
+  produce" and "a run you just made" are opposite claims, and collapsing them
+  would file your own generations behind the "Remove sample" button. The
+  steering A/B's throwaway completions (`commit=false`) stay out.
+
+  Same store, same SQLite file, no new network path — your prompts do not go
+  anywhere they were not already going. And recording cannot cost you a
+  generation: a store that will not write is one log line, not a failed run.
 
 ### Changed
 

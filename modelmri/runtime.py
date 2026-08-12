@@ -1025,6 +1025,27 @@ class ModelRuntime:
             f"with the model id and it becomes one line here."
         )
 
+    def count_tokens(self, text: str) -> int | None:
+        """How many tokens `text` is on this backend, or None if it cannot say.
+
+        None is an answer, not a failure. Ollama runs the tokenizer inside its
+        own process and `/api/generate`'s stream carries text and nothing
+        else, so there is no local tokenizer to ask — and a character count
+        dressed up as a token count is a fabricated measurement, which is the
+        one thing this tool must not render. The generation trace then carries
+        the timing and the text without a token count, which is true.
+        """
+        tok = self.tokenizer
+        if tok is None:
+            return None
+        try:
+            return len(tok.encode(text))
+        except Exception:
+            # A tokenizer refusing a string is not worth losing anything
+            # over: this only ever annotates a recording.
+            log.exception("could not count tokens")
+            return None
+
     def generate_stream(
         self,
         prompt: str,

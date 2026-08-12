@@ -42,6 +42,11 @@ export default function App() {
   // panel keys its state off its own mount, so there is no list of things to
   // clear that could fall out of date as panels are added.
   const [resetKey, setResetKey] = useState(0);
+  // Every finished generation is a recorded run now, and the panel that shows
+  // recorded runs is a sibling of the playground rather than a child of it.
+  // A counter is the whole message — the panel refetches, it does not need to
+  // be told what happened.
+  const [runs, setRuns] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -275,6 +280,7 @@ export default function App() {
         replay={session.open}
         sessionPatch={session.patch}
         sessionGround={session.ground}
+        onGenerated={() => setRuns((n) => n + 1)}
       />
       {/* The viewer has no machine behind it. Panels that can only ever say
           "install ModelMRI" are worse than absent — the one thing this page
@@ -299,8 +305,15 @@ export default function App() {
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to
               re-ask what the server can answer — the same path a page reload
-              already takes, without the reload. */}
-          <AgentsPanel onAdopted={() => setResetKey((k) => k + 1)} />
+              already takes, without the reload.
+
+              `runs` is the other direction: a generation in the playground
+              files a step, and the panel has no way to see the stream end
+              from over here. */}
+          <AgentsPanel
+            runs={runs}
+            onAdopted={() => setResetKey((k) => k + 1)}
+          />
         </>
       )}
       <footer>

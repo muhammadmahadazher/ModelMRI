@@ -1107,6 +1107,12 @@ export const getOllama = () => fetch("/api/ollama").then((r) => json<OllamaState
 export interface TraceSummary {
   /** Scripted sample data, not a run you recorded. */
   demo?: boolean;
+  /**
+   * Where the run came from. `"app"` is a generation made in this page;
+   * `""` (or absent) is a run of your own code, posted by modelmri-record.
+   * Both belong in the panel, and they are not the same thing.
+   */
+  source?: string;
   id: string;
   name: string;
   started_at: string;

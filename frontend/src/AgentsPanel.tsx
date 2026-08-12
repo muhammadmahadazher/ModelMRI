@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
 import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
 import ShareRun from "./ShareRun";
@@ -27,13 +27,24 @@ const KIND_COLOR: Record<TraceStep["kind"], string> = {
   error: "var(--color-pop)",
 };
 
-/** Agent Mode: recorded runs -> lanes timeline -> step inspector.
- *
- *  `onAdopted` fires after a step has been opened in the mechanistic panels.
- *  The panels above are mounted by Playground, which asks the server what it
- *  can answer — so the parent remounts it and the attention, lens, ablation
- *  and patching views come up on the adopted generation. */
-export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
+interface Props {
+  /**
+   * How many generations the playground above has finished this session.
+   * Every one of them is a recorded run now, so the panel has to refetch —
+   * see the effect below for why nothing else here would notice.
+   */
+  runs?: number;
+  /**
+   * Fires after a step has been opened in the mechanistic panels. Those are
+   * mounted by Playground, which asks the server what it can answer — so the
+   * parent remounts it and the attention, lens, ablation and patching views
+   * come up on the adopted generation.
+   */
+  onAdopted?: () => void;
+}
+
+/** Agent Mode: recorded runs -> lanes timeline -> step inspector. */
+export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
   const [list, setList] = useState<TraceSummary[] | null>(null);
   const [doc, setDoc] = useState<TraceDoc | null>(null);
   const [sel, setSel] = useState<TraceStep | null>(null);
@@ -72,25 +83,52 @@ export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
   const empty = useRef(true);
   empty.current = !list || list.length === 0;
 
+  // Hoisted out of the mount effect so the generation effect below can call
+  // the same fetch. StrictMode mounts twice in dev, so this is set on the way
+  // IN as well as cleared on the way out — otherwise the second mount runs
+  // with a flag the first mount's cleanup already turned off, and the panel
+  // never renders a list at all.
+  const live = useRef(true);
   useEffect(() => {
-    let live = true;
-    const load = () =>
-      void getTraces()
-        .then((l) => {
-          if (!live) return;
-          setList(l);
-          // Only auto-open the newest when nothing is open, so a refresh
-          // never yanks the reader off the trace they are reading.
-          setDoc((current) => {
-            if (current || !l.length) return current;
-            void getTrace(l[0].id).then((d) => live && setDoc(d));
-            return current;
-          });
-        })
-        // A failed poll is not an empty store. Keeping the last list is the
-        // difference between "nothing recorded" and "the server blinked".
-        .catch(() => undefined);
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
 
+  const load = useCallback(() => {
+    void getTraces()
+      .then((l) => {
+        if (!live.current) return;
+        setList(l);
+        // Only auto-open the newest when nothing is open, so a refresh
+        // never yanks the reader off the trace they are reading.
+        setDoc((current) => {
+          if (current || !l.length) return current;
+          void getTrace(l[0].id).then((d) => live.current && setDoc(d));
+          return current;
+        });
+      })
+      // A failed poll is not an empty store. Keeping the last list is the
+      // difference between "nothing recorded" and "the server blinked".
+      .catch(() => undefined);
+  }, []);
+
+  // GENERATING IN THIS TAB IS THE ONE ARRIVAL NOTHING ELSE HERE SEES.
+  //
+  // Every other refresh path assumes the run happened somewhere else: the
+  // focus listener fires when you come back from the terminal you ran your
+  // agent in, and the three-try poll is long finished by the time anyone has
+  // loaded a model. Now that a generation in the playground above IS a
+  // recorded run, it lands with the window already focused and the poll long
+  // over — so without this the panel keeps saying it has nothing while the
+  // run sits in the store, which is the exact dead end the empty state used
+  // to be.
+  useEffect(() => {
+    if (runs > 0) load();
+  }, [runs, load]);
+
+  useEffect(() => {
     load();
 
     // FOCUS IS THE REAL SIGNAL. You ran `record_demo.py` in another terminal
@@ -116,7 +154,7 @@ export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
     let tries = 0;
     let timer = 0;
     const tick = () => {
-      if (!live || tries >= 3) return;
+      if (!live.current || tries >= 3) return;
       tries += 1;
       timer = window.setTimeout(() => {
         // `empty.current`, not `list`. Depending on `list` here is what made
@@ -132,12 +170,11 @@ export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
     tick();
 
     return () => {
-      live = false;
       window.removeEventListener("focus", again);
       document.removeEventListener("visibilitychange", again);
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [load]);
 
   /** One row per agent, not per run.
    *
@@ -175,23 +212,24 @@ export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
           <span className="rule" />
         </div>
         <div className="agents-empty">
-          {/* WHAT THIS PANEL IS, before what to type into it.
-              It said "no traces yet" and gave a command, which reads as an
-              empty list of something you already have. It is not: this panel
-              has nothing to do with the model loaded above, and loading a
-              bigger one or a reasoning one will never fill it. It shows runs
-              of YOUR OWN agent code, recorded by a separate library you add
-              to that code. Somebody who does not know that reasonably
-              concludes the feature is broken. */}
+          {/* WHAT FILLS THIS PANEL, both ways, before what to type into it.
+              This used to say the opposite — "not for the model loaded above.
+              Nothing you run in this page appears here, and no model will
+              fill it" — which was true of the panel and a dead end for the
+              person reading it, who had come here after loading a model and
+              generating. Generations made in this page are now recorded, so
+              that sentence is false as well as unhelpful. Both sources get a
+              line, in the order somebody meets them. */}
           <p>
-            <b>This is a flight recorder for agents you write</b> — not for the
-            model loaded above. Nothing you run in this page appears here, and
-            no model will fill it.
+            <b>A flight recorder for model runs.</b> Two things fill it:
+            generations you make in the playground above, recorded with their
+            prompt, output, timing and token count — and runs of your own agent
+            code, with every LLM call, tool call and sub-agent nested as a
+            timeline.
           </p>
           <p className="meta">
-            Add three lines to your own agent and every run it makes shows up
-            here as a timeline: each LLM call, tool call and sub-agent, nested,
-            with inputs, outputs, timings and failures.
+            Nothing yet. Generate something above and the run appears here. For
+            your own agent, add three lines to it:
           </p>
           <pre className="agents-snippet">
 {`from modelmri.record import trace, step
@@ -201,7 +239,7 @@ with trace("my-agent"):
     step("tool_call", name="search", input=query, output=hits)`}
           </pre>
           <div className="hint">
-            Try it without writing anything:&nbsp;
+            Or see what an agent run looks like without writing one:&nbsp;
             <b>uv run python examples/record_demo.py</b>
             &nbsp;— this panel picks it up on its own.
           </div>
@@ -306,15 +344,18 @@ with trace("my-agent"):
         <span className="rule" />
       </div>
 
-      {/* What this panel is, which nothing said.
-          It records YOUR agent's steps — an external program you instrumented
-          with `modelmri-record` — and has no connection to the model selected
-          in the playground above. Reading it as "the calls that model made"
-          is the obvious guess, and it is wrong, so say so once, here. */}
+      {/* What this panel is, which nothing said — and which changed.
+          It used to record only YOUR agent's steps, so this line's job was to
+          say it had no connection to the model above. It now records that
+          too, and a paragraph still denying it would be the worse error: the
+          reader would look for their own generation and be told it is not
+          here, while it sits in the list underneath. Both sources, one line,
+          and the `this app` pill on the rows says which is which. */}
       <p className="agents-what meta">
-        A flight recorder for agent runs: your program calls{" "}
-        <b>modelmri-record</b> and its steps land here. Independent of the model
-        loaded above — an agent usually calls a hosted API, not this process.
+        A flight recorder for runs: each generation you make above lands here
+        as one <b>llm_call</b>, and a program of your own calling{" "}
+        <b>modelmri-record</b> lands here with its tool calls and sub-agents
+        nested underneath it.
       </p>
 
       {/* Search is over STEPS, not runs — what somebody is looking for is the
@@ -467,9 +508,24 @@ with trace("my-agent"):
                         demo
                       </span>
                     )}
+                    {i === 0 && t.source === "app" && (
+                      // A generation from the playground above, whose group
+                      // name is a model id. Unlabelled, it sits in a list of
+                      // agent names looking like an agent someone wrote and
+                      // happened to name after a model.
+                      <span
+                        className="pill tiny"
+                        title="a generation you ran in this page, not an agent you instrumented"
+                      >
+                        this app
+                      </span>
+                    )}
                   </span>
                   <span className="tmeta">
-                    {t.n_steps} steps · {(t.total_ms / 1000).toFixed(1)}s
+                    {/* A generation is exactly one step, so "1 steps" is now
+                        the common case rather than a rarity. */}
+                    {t.n_steps} step{t.n_steps === 1 ? "" : "s"} ·{" "}
+                    {(t.total_ms / 1000).toFixed(1)}s
                     {t.n_errors > 0 && <em> · {t.n_errors} error</em>}
                   </span>
                 </button>

@@ -28,6 +28,12 @@ interface Props {
   /** The recorded patching trace that `.mri` carries, if it carries one. */
   sessionPatch?: { available: boolean; clean: string; corrupt: string };
   sessionGround?: { available: boolean; question: string };
+  /**
+   * A generation finished — succeeded or failed, the server records both.
+   * The agents panel is a sibling of this component, so it cannot see the
+   * stream end any other way.
+   */
+  onGenerated?: () => void;
 }
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
@@ -43,6 +49,7 @@ export default function Playground({
   replay,
   sessionPatch,
   sessionGround,
+  onGenerated,
 }: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
@@ -230,6 +237,9 @@ export default function Playground({
         setBusy("");
         setLastPrompt(p);
         setEpoch((e) => e + 1);
+        // The server filed this run as a trace before it sent `done`, so the
+        // agents panel has something to find the moment it is told to look.
+        onGenerated?.();
         // The server drops any open session on a committed generation, so
         // the banner has to go with it — otherwise the page keeps claiming
         // you are reading a recording while showing your own output.
@@ -241,6 +251,9 @@ export default function Playground({
           setFailed(true);
           setOutput(`Error: ${message}`);
           setBusy("");
+          // A failed run is recorded too — it is the one you most want a
+          // record of — so the panel is told about this end as well.
+          onGenerated?.();
         },
       },
       DECODE,
