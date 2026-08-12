@@ -605,8 +605,36 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
 
     handles = []
     for name, mod in leaves:
-        handles.append(mod.register_forward_pre_hook(pre_hook))
-        handles.append(mod.register_forward_hook(make_hook(name, mod)))
+        try:
+            handles.append(mod.register_forward_pre_hook(pre_hook))
+            handles.append(mod.register_forward_hook(make_hook(name, mod)))
+        except RuntimeError as err:
+            # A REFUSAL, NOT A 500. torch installs a generated `fail()` over
+            # both hook APIs on RecursiveScriptModule, which is what
+            # `torch.jit.load` returns -- so every TorchScript archive on disk
+            # is un-hookable, all of them, not a corner case. Only an
+            # in-memory `torch.jit.trace` result keeps its hooks and `load`
+            # cannot produce one.
+            #
+            # This raised from the registration loop, ABOVE the try/finally
+            # below, as a bare RuntimeError. server.py catches AdapterError
+            # and nothing else, so it fell to the 500 arm and the reader was
+            # told something inside ModelMRI had failed -- when the honest
+            # answer is that this file format cannot carry what the panel
+            # measures, and there is something they can do about it.
+            for h in handles:
+                h.remove()
+            raise AdapterError(
+                "This is a TorchScript archive, and TorchScript cannot be "
+                "instrumented — PyTorch removes the forward hooks this panel "
+                "reads activations through, so there is nothing here to "
+                "measure. It loads and runs; only the layer-by-layer "
+                "statistics are unavailable.\n\n"
+                "To inspect it, point ModelMRI at the original nn.Module "
+                "instead: an adapter with a `load()` that builds your model "
+                "and loads the weights. `modelmri where` prints the folders "
+                "that are scanned."
+            ) from err
 
     was_training = model.training
     model.eval()

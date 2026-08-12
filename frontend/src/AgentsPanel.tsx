@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
   clearTraces,
@@ -32,11 +32,88 @@ export default function AgentsPanel() {
   // conditional.
   const scanRef = useScanOnData(doc?.id ?? null);
 
+  // THE EMPTY STATE USED TO BE A DEAD END. This ran once on mount with `[]`
+  // deps and there was no other path to `setList` reachable from the empty
+  // branch -- so the panel told you to go and run `record_demo.py`, you ran
+  // it, the trace was delivered and stored correctly, and the panel kept
+  // rendering "no traces yet" until the whole page was reloaded. Nothing in
+  // the UI said so. It was instructing you to do the one thing whose result
+  // it could not display.
+  //
+  // A recorder is something you leave switched on in another terminal, so the
+  // list has to be able to arrive later. Polled while there is nothing to
+  // show, and on regaining focus -- which is the actual gesture, since you
+  // ran the command in a different window and came back.
+  // Tracked in a ref so the poll can ask "is it still empty?" without the
+  // effect depending on the value it sets.
+  const empty = useRef(true);
+  empty.current = !list || list.length === 0;
+
   useEffect(() => {
-    void getTraces().then((l) => {
-      setList(l);
-      if (l.length) void getTrace(l[0].id).then(setDoc);
-    });
+    let live = true;
+    const load = () =>
+      void getTraces()
+        .then((l) => {
+          if (!live) return;
+          setList(l);
+          // Only auto-open the newest when nothing is open, so a refresh
+          // never yanks the reader off the trace they are reading.
+          setDoc((current) => {
+            if (current || !l.length) return current;
+            void getTrace(l[0].id).then((d) => live && setDoc(d));
+            return current;
+          });
+        })
+        // A failed poll is not an empty store. Keeping the last list is the
+        // difference between "nothing recorded" and "the server blinked".
+        .catch(() => undefined);
+
+    load();
+
+    // FOCUS IS THE REAL SIGNAL. You ran `record_demo.py` in another terminal
+    // and came back to this window; that is the gesture, and it costs one
+    // request at the exact moment something might have changed.
+    const again = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+
+    // The backstop is for a reader watching both windows at once, and it has
+    // to STOP -- soon. An unbounded poll on an empty panel is a request every
+    // few seconds forever AND it means the page never reaches network idle,
+    // which broke Playwright's `networkidle` wait outright.
+    //
+    // Six tries at a widening gap totalled ~31s of activity, which is longer
+    // than the 30s `goto` budget, so the "bounded" version failed CI in
+    // exactly the same way as the unbounded one. Three tries, ~6s: long
+    // enough to catch a trace that lands just after the page does, short
+    // enough that the network genuinely goes quiet. Focus does the rest, and
+    // focus was always the real signal.
+    let tries = 0;
+    let timer = 0;
+    const tick = () => {
+      if (!live || tries >= 3) return;
+      tries += 1;
+      timer = window.setTimeout(() => {
+        // `empty.current`, not `list`. Depending on `list` here is what made
+        // the previous two attempts at bounding this fail: the effect both
+        // READ and SET it, so every fetch produced a new array reference,
+        // re-ran the effect, and reset the counter -- an unbounded poll
+        // wearing a bound. The page then never reached network idle and
+        // Playwright's `goto` timed out, twice, at two different intervals.
+        if (empty.current) load();
+        tick();
+      }, 1000 * tries);
+    };
+    tick();
+
+    return () => {
+      live = false;
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+      window.clearTimeout(timer);
+    };
   }, []);
 
   /** One row per agent, not per run.

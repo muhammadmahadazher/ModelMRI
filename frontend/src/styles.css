@@ -203,15 +203,23 @@
       shadow is the clearest tell of an unconsidered surface. ────────── */
 :root {
   --e0: none;
+  /* ELEVATION YOU CAN ACTUALLY SEE. These were 4.5-6% opacity, which on a
+     cream ground is arithmetically present and visually nothing: every panel
+     read as a flat white rectangle with a hairline, and three rounds of
+     "the UI looks the same" were all describing this one number.
+
+     A panel is a plate resting on paper. Plates cast shadows. The ambient
+     layer carries most of the weight, the contact layer keeps the edge from
+     floating, and the ring stays faint so the border does the outlining. */
   --e1:
-    0 0 0 1px rgb(var(--sh) / 0.045),
-    0 1px 1.5px -0.5px rgb(var(--sh) / 0.05),
-    0 3px 6px -2px rgb(var(--sh) / 0.05);
+    0 0 0 1px rgb(var(--sh) / 0.07),
+    0 1px 2px -0.5px rgb(var(--sh) / 0.13),
+    0 6px 14px -4px rgb(var(--sh) / 0.14);
   --e2:
-    0 0 0 1px rgb(var(--sh) / 0.05),
-    0 1px 2px -0.5px rgb(var(--sh) / 0.06),
-    0 4px 8px -3px rgb(var(--sh) / 0.06),
-    0 10px 18px -6px rgb(var(--sh) / 0.06);
+    0 0 0 1px rgb(var(--sh) / 0.08),
+    0 1px 2px -0.5px rgb(var(--sh) / 0.14),
+    0 6px 12px -4px rgb(var(--sh) / 0.15),
+    0 18px 32px -10px rgb(var(--sh) / 0.16);
   --e3:
     0 0 0 1px rgb(var(--sh) / 0.06),
     0 1px 2px -1px rgb(var(--sh) / 0.07),
@@ -756,14 +764,53 @@ button.model-btn:hover:not(:disabled) {
 
 /* ---------- plates ---------- */
 .panel {
-  background: var(--color-card);
+  /* Not a flat fill. A plate catches more light at its top edge than its
+     bottom, and two thirds of a percent of lightness is enough to read as a
+     surface rather than a rectangle -- while staying well inside the paper
+     palette. */
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-card) 97%, white) 0%,
+      var(--color-card) 42%
+    );
   border: 1px solid var(--hair);
   border-radius: var(--r-panel);
   padding: var(--sp-5);
-  box-shadow: var(--e1);
+  /* The inset rim is the specular line along the top bevel. It is what makes
+     the shadow below read as depth instead of as a grey smudge. */
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.55),
+    var(--e1);
   position: relative;
   overflow: hidden;
   animation: panelIn var(--dur-medium) var(--ease-out) both;
+  transition:
+    box-shadow var(--dur-medium) var(--ease-hover),
+    transform var(--dur-medium) var(--ease-hover);
+}
+/* Answering to the cursor. A panel that never responds is furniture; one that
+   lifts a single pixel is an instrument you are holding. */
+.panel:hover {
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    var(--e2);
+  transform: translateY(-1px);
+}
+:root[data-theme="dark"] .panel,
+html[data-theme="dark"] .panel {
+  background: var(--color-card);
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.045),
+    var(--e1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .panel {
+    background: var(--color-card);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.045),
+      var(--e1);
+  }
 }
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
@@ -2629,4 +2676,230 @@ input[type="range"]:focus-visible { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   .pull-track.indeterminate .pull-fill { animation: none; width: 100%; opacity: 0.35; }
   .pull-progress { animation: none; }
+}
+
+
+/* ── MOTION THAT IS STILL HAPPENING WHEN YOU LOOK ────────────────────────
+   `panelIn` runs 240ms on mount. By the time a reader has focused on the
+   page it finished, so the honest description of this page's motion was
+   "none". A scroll-driven timeline ties the reveal to the reader instead of
+   to the clock: panels rise as they are scrolled to, every session, at
+   whatever pace the reader moves.
+
+   `animation-timeline: view()` needs no JavaScript, no observer and no
+   per-component wiring, and browsers without it keep the mount animation
+   above -- which is exactly what they have today, so the fallback is the
+   current behaviour rather than a broken one. Elements already on screen at
+   load compute their progress as complete, so nothing above the fold hides.
+   ──────────────────────────────────────────────────────────────────────── */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    main > .panel,
+    main > * > .panel {
+      animation: panelRise linear both;
+      animation-timeline: view();
+      /* Finishes well before the panel is centred, so a reader is never
+         reading text that is still moving. */
+      animation-range: entry 2% cover 22%;
+    }
+    @keyframes panelRise {
+      from {
+        opacity: 0;
+        transform: translateY(30px) scale(0.988);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    /* The measurement rule draws itself as its panel arrives -- the gesture
+       of an instrument calibrating, on the element that already carries the
+       measurement metaphor. */
+    .sect .rule {
+      animation: ruleDraw linear both;
+      animation-timeline: view();
+      animation-range: entry 4% cover 26%;
+      transform-origin: 0 50%;
+    }
+    @keyframes ruleDraw {
+      from { transform: scaleX(0); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+  }
+}
+
+
+/* ── THE GROUND IS PAPER, NOT A HEX VALUE ───────────────────────────────
+   A flat fill behind flat cards is why the whole page read as a form. This
+   is one inline SVG turbulence tile at very low alpha: invisible as a
+   pattern, and the reason the cream stops looking like #f5f2ec and starts
+   looking like a surface something is resting on. Fixed attachment so it
+   does not slide against the panels and become noticeable as texture.
+
+   Under `screen` in dark mode rather than `multiply`, because darkening an
+   already-dark ground makes mud. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.42;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.055'/%3E%3C/svg%3E");
+}
+:root[data-theme="dark"] body::before,
+html[data-theme="dark"] body::before {
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body::before {
+    mix-blend-mode: screen;
+    opacity: 0.3;
+  }
+}
+/* Everything the reader interacts with sits above the tile. */
+main,
+header,
+.topbar,
+footer {
+  position: relative;
+  z-index: 1;
+}
+
+
+/* Whose credential it is, when it is not ours. Deliberately NOT link-styled:
+   there is nothing here to click, and a control that cannot act is what made
+   the sign-out button read as broken in the first place. */
+.hub-source {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+  margin-left: 8px;
+  cursor: help;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EVERY PANEL IS AN INSTRUMENT, AND INSTRUMENTS ARE LABELLED
+
+   The palette was already defined and almost nothing spent it: each panel
+   carried its colour in a 7px dot and a 10.5px caption, on a white rectangle,
+   and the page read as a stack of identical cards. Nothing below invents a
+   hue -- it takes the one that panel already owns and lets it be seen.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Each panel adopts its own section colour, taken from the dot it already
+   renders. `:has()` because the accent belongs to the header, and the header
+   is the thing that knows which instrument this is. */
+.panel:has(.d-attn)   { --panel-accent: var(--color-attn); }
+.panel:has(.d-feat)   { --panel-accent: var(--color-feat); }
+.panel:has(.d-patch)  { --panel-accent: var(--color-cobalt); }
+.panel:has(.d-agent)  { --panel-accent: var(--color-agent); }
+.panel:has(.d-vla)    { --panel-accent: var(--color-vla); }
+.panel:has(.d-custom) { --panel-accent: var(--color-custom); }
+.panel:has(.d-replay) { --panel-accent: var(--sem-agent); }
+.panel:has(.d-run)    { --panel-accent: var(--color-mute); }
+
+/* THE BAND. A 4px edge of the panel's own colour across its top, inside the
+   radius. One declaration, and the stack of identical white cards becomes a
+   rack of labelled instruments you can find by colour from across the page. */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--panel-accent, var(--color-mute)) 0%,
+    color-mix(in oklab, var(--panel-accent, var(--color-mute)) 45%, transparent) 62%,
+    transparent 100%
+  );
+  opacity: 0.95;
+  pointer-events: none;
+}
+/* The panel body starts below the band rather than under it. */
+.panel { padding-top: calc(var(--sp-5) + 4px); }
+
+/* THE HEADER, OFF THE FLOOR. 10.5px is a footnote. These are the titles of
+   the instruments and they were smaller than the body text under them. */
+.sect { margin-bottom: 14px; gap: 12px; }
+.sect h2 {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  font-weight: 700;
+}
+.sect .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  /* A lit indicator, not a printed square. */
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--panel-accent, var(--color-mute)) 16%, transparent),
+    0 0 10px -1px color-mix(in oklab, var(--panel-accent, var(--color-mute)) 70%, transparent);
+}
+
+/* The measurement rule takes the panel's colour too, instead of staying grey
+   next to a coloured title. */
+.sect .rule {
+  background-image:
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--panel-accent, var(--line)) 55%, transparent) 0 1px,
+      transparent 1px 40px),
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--panel-accent, var(--line)) 26%, transparent) 0 1px,
+      transparent 1px 8px);
+  background-size: 100% 100%, 100% 40%;
+}
+
+/* THE GROUND IS DRAWN ON. Every section rule on this page is a ruler; the
+   surface underneath them was blank. A 40px grid at very low contrast, the
+   same pitch as the rule's major ticks, so the panels sit ON something. */
+body {
+  background-image:
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--ink) 5%, transparent) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(180deg,
+      color-mix(in oklab, var(--ink) 5%, transparent) 0 1px, transparent 1px 40px);
+  background-attachment: fixed;
+}
+
+/* A white plate on cream needs the cream to be cream. */
+.panel { border-color: color-mix(in oklab, var(--panel-accent, var(--hair)) 22%, var(--hair)); }
+
+/* MOTION WITH TRAVEL IN IT. 30px and a 1.2% scale was a polite nudge. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes panelRise {
+      from {
+        opacity: 0;
+        transform: translateY(64px) scale(0.965);
+        filter: blur(3px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+        filter: none;
+      }
+    }
+    /* The band wipes in after its panel has landed -- the instrument
+       switching on. */
+    .panel::before {
+      animation: bandWipe linear both;
+      animation-timeline: view();
+      animation-range: entry 8% cover 30%;
+      transform-origin: 0 50%;
+    }
+    @keyframes bandWipe {
+      from { transform: scaleX(0); }
+      to { transform: none; }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel::before { animation: none; transform: none; }
 }

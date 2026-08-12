@@ -156,15 +156,33 @@ class TraceStore:
         return trace_id
 
     def list_traces(self) -> list[dict]:
-        rows = self._db.execute(
-            "SELECT t.id, t.name, t.started_at,"
-            " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id),"
-            " (SELECT COALESCE(MAX(s.started_ms + s.duration_ms),0) FROM step s"
-            "   WHERE s.trace_id=t.id),"
-            " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
-            " t.meta"
-            " FROM trace t ORDER BY t.started_at DESC"
-        ).fetchall()
+        # UNDER THE LOCK, like every writer in this class.
+        #
+        # `__init__` opens ONE connection with check_same_thread=False and
+        # shares it across threads, which Python's sqlite3 permits and does
+        # not make safe: serialising access is the caller's job. Every writer
+        # here did it; the two readers did not. So a request arriving while
+        # anything else touched the database ran a second statement on the
+        # same connection, the cursors interleaved, and `fetchall()` came back
+        # with rows of the wrong width -- surfacing as
+        # `IndexError: tuple index out of range` in the row mapping below, on
+        # a SELECT whose column count is fixed and cannot vary.
+        #
+        # It showed up as an intermittent 500 from GET /api/traces on a cold
+        # start, when the browser's first load races the store's own setup.
+        # Before the agents panel was given a retry, one of those left the
+        # panel empty for the rest of the session with no way back -- which is
+        # indistinguishable from "you have not recorded anything".
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT t.id, t.name, t.started_at,"
+                " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id),"
+                " (SELECT COALESCE(MAX(s.started_ms + s.duration_ms),0) FROM step s"
+                "   WHERE s.trace_id=t.id),"
+                " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
+                " t.meta"
+                " FROM trace t ORDER BY t.started_at DESC"
+            ).fetchall()
         return [
             {
                 "id": r[0],
@@ -207,17 +225,24 @@ class TraceStore:
         return cur.rowcount
 
     def get_trace(self, trace_id: str) -> dict | None:
-        t = self._db.execute(
-            "SELECT id, name, started_at, meta FROM trace WHERE id=?", (trace_id,)
-        ).fetchone()
-        if t is None:
-            return None
-        rows = self._db.execute(
-            "SELECT id, parent_id, kind, name, started_ms, duration_ms, input,"
-            " output, tokens_in, tokens_out, error, seq"
-            " FROM step WHERE trace_id=? ORDER BY seq",
-            (trace_id,),
-        ).fetchall()
+        # Same rule as list_traces, and for the same reason: one connection
+        # shared across threads has to be serialised by its owner. This one
+        # runs TWO statements whose results are read together, so an
+        # interleaving here can also pair one trace's header with another
+        # trace's steps -- a wrong answer rather than a crash, which is worse.
+        with self._lock:
+            t = self._db.execute(
+                "SELECT id, name, started_at, meta FROM trace WHERE id=?",
+                (trace_id,),
+            ).fetchone()
+            if t is None:
+                return None
+            rows = self._db.execute(
+                "SELECT id, parent_id, kind, name, started_ms, duration_ms,"
+                " input, output, tokens_in, tokens_out, error, seq"
+                " FROM step WHERE trace_id=? ORDER BY seq",
+                (trace_id,),
+            ).fetchall()
         steps = [
             {
                 "id": r[0],
