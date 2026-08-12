@@ -1016,8 +1016,58 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
     return found
 
 
+def checkpoint_kind(path: Path) -> str:
+    """What a .pt/.pth actually IS, without executing a byte of it.
+
+    The panel grouped these by extension under a heading reading TORCHSCRIPT,
+    so somebody's state_dict was filed as TorchScript -- two different things
+    that fail in two different ways, and the heading told them the wrong one
+    before they clicked.
+
+    Both are zip archives since torch 1.6, and the member names say which is
+    which: a TorchScript archive carries `constants.pkl` and a `code/` tree
+    (the serialised graph), while `torch.save` of a tensor dict writes
+    `data.pkl` and a `data/` directory of storages. Reading the central
+    directory is a read of the file's index -- no unpickling, no import, and
+    nothing from the file is run.
+
+    Returns "torchscript" | "checkpoint" | "legacy" | "unreadable". Never
+    raises: this labels a row in a candidate list, and a file that cannot be
+    inspected is still a file worth showing with an honest label on it.
+    """
+    import zipfile
+
+    try:
+        # Explicitly, because `is_zipfile` answers False for a path that does
+        # not exist rather than raising -- so a file that vanished between the
+        # scan and this call was being labelled "legacy", which is a claim
+        # about its format made about a file that is not there.
+        if not path.is_file():
+            return "unreadable"
+        if not zipfile.is_zipfile(path):
+            # Pre-1.6 torch.save, or not a torch file at all. Either way it is
+            # not TorchScript, which only ever used the zip container.
+            return "legacy"
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()[:400]
+    except (OSError, zipfile.BadZipFile, ValueError):
+        return "unreadable"
+
+    tail = [n.rsplit("/", 1)[-1] for n in names]
+    if "constants.pkl" in tail or any("/code/" in n for n in names):
+        return "torchscript"
+    if "data.pkl" in tail:
+        return "checkpoint"
+    return "unreadable"
+
+
 def find_torchscript(limit: int = 40) -> list[dict]:
-    """TorchScript-looking files under the allowed roots. Never opened."""
+    """Loadable-looking checkpoints under the allowed roots.
+
+    Named for history: it used to list only TorchScript. It lists every
+    .pt/.pth candidate now, each labelled with what it actually is, and
+    the file is READ (its zip index) but never executed.
+    """
     out: list[dict] = []
     # ONE ROW PER FILE. The allowed roots overlap by design -- the working
     # directory, MODELMRI_MODELS_DIR and any folder added this session -- so
@@ -1064,6 +1114,10 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                         "name": path.name,
                         "dir": str(path.parent),
                         "mb": round(size / 1e6, 2),
+                        # What it IS, read from the archive index rather than
+                        # guessed from the extension. `.pt` and `.pth` are the
+                        # same container and say nothing about the contents.
+                        "kind": checkpoint_kind(path),
                     }
                 )
     return out

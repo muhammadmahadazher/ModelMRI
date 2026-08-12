@@ -1162,6 +1162,10 @@ export interface CustomCandidate {
   has_example?: boolean;
   hint?: boolean;
   mb?: number;
+  /** What the file actually is, read from its archive index rather than
+   *  guessed from `.pt` vs `.pth` — which are the same container and say
+   *  nothing about the contents. */
+  kind?: "torchscript" | "checkpoint" | "legacy" | "unreadable";
 }
 
 export interface CustomRun {

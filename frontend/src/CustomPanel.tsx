@@ -242,7 +242,12 @@ export default function CustomPanel() {
             )}
             {cands.torchscript.length > 0 && (
               <>
-                <div className="meta cand-head">torchscript</div>
+                {/* "checkpoints", not "torchscript". The heading used to
+                    name one of the things this list can hold, so a state_dict
+                    was filed under TorchScript -- and those fail differently,
+                    so the heading was telling the reader the wrong story
+                    before they clicked. Each row now says what it is. */}
+                <div className="meta cand-head">checkpoints</div>
                 <div className="cand-list">
                   {cands.torchscript.map((c) => (
                     <button
@@ -254,6 +259,22 @@ export default function CustomPanel() {
                     >
                       <span className="cand-name">{c.name}</span>
                       <span className="pill tiny">{c.mb} MB</span>
+                      {c.kind && (
+                        <span
+                          className={`pill tiny ${c.kind === "torchscript" ? "ok" : ""}`}
+                          title={
+                            c.kind === "torchscript"
+                              ? "A TorchScript archive — it loads, but PyTorch strips the hooks this panel reads activations through"
+                              : c.kind === "checkpoint"
+                                ? "Weights only. It needs an adapter that builds your model class and loads them in."
+                                : c.kind === "legacy"
+                                  ? "Saved by a torch older than 1.6, or not a torch file at all"
+                                  : "Could not be read as an archive"
+                          }
+                        >
+                          {c.kind === "checkpoint" ? "weights only" : c.kind}
+                        </span>
+                      )}
                       <span className="spacer" />
                       <span className="cand-dir">{c.dir}</span>
                     </button>
