@@ -64,18 +64,40 @@ export default function AgentsPanel() {
         .catch(() => undefined);
 
     load();
-    const onFocus = () => load();
-    window.addEventListener("focus", onFocus);
-    // Slow on purpose: this is a "did anything arrive while I was away"
-    // check, not a live feed, and it stops once something has.
-    const id = window.setInterval(() => {
-      if (!list || list.length === 0) load();
-    }, 4000);
+
+    // FOCUS IS THE REAL SIGNAL. You ran `record_demo.py` in another terminal
+    // and came back to this window; that is the gesture, and it costs one
+    // request at the exact moment something might have changed.
+    const again = () => {
+      if (document.visibilityState === "visible") load();
+    };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+
+    // The interval is only a backstop for a reader watching both windows at
+    // once, and it STOPS. An unbounded poll on an empty panel is a request
+    // every few seconds forever, and it also means the page never reaches
+    // network idle -- which broke Playwright's `networkidle` wait outright,
+    // measured, and would do the same to anything else that waits on a quiet
+    // network. Six tries with a widening gap, then focus carries it.
+    let tries = 0;
+    let timer = 0;
+    const tick = () => {
+      if (!live || tries >= 6) return;
+      tries += 1;
+      timer = window.setTimeout(() => {
+        if (!list || list.length === 0) load();
+        tick();
+      }, 1500 * tries);
+    };
+    tick();
+
     return () => {
       live = false;
-      window.removeEventListener("focus", onFocus);
-      window.clearInterval(id);
-      };
+      window.removeEventListener("focus", again);
+      document.removeEventListener("visibilitychange", again);
+      window.clearTimeout(timer);
+    };
   }, [list]);
 
   /** One row per agent, not per run.
