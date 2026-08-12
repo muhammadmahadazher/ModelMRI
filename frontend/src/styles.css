@@ -2781,3 +2781,125 @@ footer {
   margin-left: 8px;
   cursor: help;
 }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   EVERY PANEL IS AN INSTRUMENT, AND INSTRUMENTS ARE LABELLED
+
+   The palette was already defined and almost nothing spent it: each panel
+   carried its colour in a 7px dot and a 10.5px caption, on a white rectangle,
+   and the page read as a stack of identical cards. Nothing below invents a
+   hue -- it takes the one that panel already owns and lets it be seen.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Each panel adopts its own section colour, taken from the dot it already
+   renders. `:has()` because the accent belongs to the header, and the header
+   is the thing that knows which instrument this is. */
+.panel:has(.d-attn)   { --panel-accent: var(--color-attn); }
+.panel:has(.d-feat)   { --panel-accent: var(--color-feat); }
+.panel:has(.d-patch)  { --panel-accent: var(--color-cobalt); }
+.panel:has(.d-agent)  { --panel-accent: var(--color-agent); }
+.panel:has(.d-vla)    { --panel-accent: var(--color-vla); }
+.panel:has(.d-custom) { --panel-accent: var(--color-custom); }
+.panel:has(.d-replay) { --panel-accent: var(--sem-agent); }
+.panel:has(.d-run)    { --panel-accent: var(--color-mute); }
+
+/* THE BAND. A 4px edge of the panel's own colour across its top, inside the
+   radius. One declaration, and the stack of identical white cards becomes a
+   rack of labelled instruments you can find by colour from across the page. */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--panel-accent, var(--color-mute)) 0%,
+    color-mix(in oklab, var(--panel-accent, var(--color-mute)) 45%, transparent) 62%,
+    transparent 100%
+  );
+  opacity: 0.95;
+  pointer-events: none;
+}
+/* The panel body starts below the band rather than under it. */
+.panel { padding-top: calc(var(--sp-5) + 4px); }
+
+/* THE HEADER, OFF THE FLOOR. 10.5px is a footnote. These are the titles of
+   the instruments and they were smaller than the body text under them. */
+.sect { margin-bottom: 14px; gap: 12px; }
+.sect h2 {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  font-weight: 700;
+}
+.sect .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  /* A lit indicator, not a printed square. */
+  box-shadow:
+    0 0 0 3px color-mix(in oklab, var(--panel-accent, var(--color-mute)) 16%, transparent),
+    0 0 10px -1px color-mix(in oklab, var(--panel-accent, var(--color-mute)) 70%, transparent);
+}
+
+/* The measurement rule takes the panel's colour too, instead of staying grey
+   next to a coloured title. */
+.sect .rule {
+  background-image:
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--panel-accent, var(--line)) 55%, transparent) 0 1px,
+      transparent 1px 40px),
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--panel-accent, var(--line)) 26%, transparent) 0 1px,
+      transparent 1px 8px);
+  background-size: 100% 100%, 100% 40%;
+}
+
+/* THE GROUND IS DRAWN ON. Every section rule on this page is a ruler; the
+   surface underneath them was blank. A 40px grid at very low contrast, the
+   same pitch as the rule's major ticks, so the panels sit ON something. */
+body {
+  background-image:
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--ink) 5%, transparent) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(180deg,
+      color-mix(in oklab, var(--ink) 5%, transparent) 0 1px, transparent 1px 40px);
+  background-attachment: fixed;
+}
+
+/* A white plate on cream needs the cream to be cream. */
+.panel { border-color: color-mix(in oklab, var(--panel-accent, var(--hair)) 22%, var(--hair)); }
+
+/* MOTION WITH TRAVEL IN IT. 30px and a 1.2% scale was a polite nudge. */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes panelRise {
+      from {
+        opacity: 0;
+        transform: translateY(64px) scale(0.965);
+        filter: blur(3px);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+        filter: none;
+      }
+    }
+    /* The band wipes in after its panel has landed -- the instrument
+       switching on. */
+    .panel::before {
+      animation: bandWipe linear both;
+      animation-timeline: view();
+      animation-range: entry 8% cover 30%;
+      transform-origin: 0 50%;
+    }
+    @keyframes bandWipe {
+      from { transform: scaleX(0); }
+      to { transform: none; }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel::before { animation: none; transform: none; }
+}
