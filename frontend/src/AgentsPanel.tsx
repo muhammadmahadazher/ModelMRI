@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
+  Adopted,
+  adoptStep,
   clearTraces,
+  errorText,
   getTrace,
   getTraces,
   TraceDoc,
@@ -18,13 +21,24 @@ const KIND_COLOR: Record<TraceStep["kind"], string> = {
   error: "var(--color-pop)",
 };
 
-/** Agent Mode: recorded runs -> lanes timeline -> step inspector. */
-export default function AgentsPanel() {
+/** Agent Mode: recorded runs -> lanes timeline -> step inspector.
+ *
+ *  `onAdopted` fires after a step has been opened in the mechanistic panels.
+ *  The panels above are mounted by Playground, which asks the server what it
+ *  can answer — so the parent remounts it and the attention, lens, ablation
+ *  and patching views come up on the adopted generation. */
+export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
   const [list, setList] = useState<TraceSummary[] | null>(null);
   const [doc, setDoc] = useState<TraceDoc | null>(null);
   const [sel, setSel] = useState<TraceStep | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [clearing, setClearing] = useState(false);
+  // The adopt result, and its refusal. Both belong to the selected step, so
+  // both are cleared whenever the selection changes — a refusal left hanging
+  // beside a different step reads as being about that one.
+  const [adopted, setAdopted] = useState<Adopted | null>(null);
+  const [adoptErr, setAdoptErr] = useState("");
+  const [adopting, setAdopting] = useState(false);
   // Above every conditional return. This panel returns early for its empty
   // and loading states, so a hook placed after that ran on some renders and
   // not others — React error #310, and the whole page blank. Hooks are not
@@ -191,6 +205,30 @@ with trace("my-agent"):
   // remove them rather than leaving a red "1 error" nobody recognises.
   const demos = list.filter((t) => t.demo).length;
 
+  async function adopt(step: TraceStep) {
+    if (!doc) return;
+    setAdopting(true);
+    setAdoptErr("");
+    try {
+      const result = await adoptStep(doc.id, step.id);
+      setAdopted(result);
+      // Tell the parent to remount the playground. Nothing is re-run — the
+      // server is already holding this step's token ids as its current
+      // generation, and Playground's restore path mounts the panels on
+      // whatever the server says it can answer.
+      onAdopted?.();
+    } catch (e) {
+      // The server's own sentence, unwrapped. Every refusal here already says
+      // what would make it work — wrong model, weights not on this machine, a
+      // tokenisation that no longer matches — and anything added in front of
+      // those is the client guessing.
+      setAdoptErr(errorText(e));
+      setAdopted(null);
+    } finally {
+      setAdopting(false);
+    }
+  }
+
   async function wipe(keepDemo: boolean) {
     setClearing(true);
     try {
@@ -346,7 +384,12 @@ with trace("my-agent"):
                   background: KIND_COLOR[step.kind],
                 }}
                 title={`${step.kind} · ${step.name}`}
-                onClick={() => setSel(step)}
+                onClick={() => {
+                  setSel(step);
+                  // Belongs to the step that produced it, not to the panel.
+                  setAdopted(null);
+                  setAdoptErr("");
+                }}
               />
             ))}
           </div>
@@ -382,6 +425,54 @@ with trace("my-agent"):
                   {sel.output}
                 </pre>
               )}
+              {/* The join. Every other panel on this page reads whatever the
+                  server is holding as its current generation, so a step that
+                  ran on this machine can simply BECOME that — no re-running,
+                  no substitute model, the recorded token ids themselves. */}
+              {sel.adoptable ? (
+                <div className="row adopt-row">
+                  <button
+                    className="sm"
+                    onClick={() => void adopt(sel)}
+                    disabled={adopting}
+                    title={
+                      "Point the attention, logit-lens, ablation and patching " +
+                      "panels at the generation this step made"
+                    }
+                  >
+                    {adopting ? "opening…" : "open in the panels"}
+                  </button>
+                  {typeof sel.meta?.model === "string" && (
+                    <span className="meta">
+                      recorded from <code>{sel.meta.model}</code>
+                    </span>
+                  )}
+                </div>
+              ) : (
+                sel.kind === "llm_call" && (
+                  // A sentence, not a disabled button. A control that can only
+                  // ever refuse teaches the reader that the feature is broken
+                  // rather than that the weights are somewhere else.
+                  <div className="hint">
+                    This call did not run on this machine, so there are no
+                    weights here to look inside. Steps recorded through{" "}
+                    <code>instrument_transformers()</code> carry the token ids
+                    that make the panels above work on them; a hosted API
+                    returns text and nothing underneath it.
+                  </div>
+                )
+              )}
+              {adopted && (
+                <div className="hint ok">
+                  <strong>
+                    The panels above are now reading this step's generation.
+                  </strong>{" "}
+                  {adopted.n_prompt_tokens} prompt tokens +{" "}
+                  {adopted.n_tokens - adopted.n_prompt_tokens} generated, from{" "}
+                  <code>{adopted.model}</code>. {adopted.means}
+                </div>
+              )}
+              {adoptErr && <div className="hint err">{adoptErr}</div>}
             </div>
           )}
           {!sel && <div className="hint">click any block to inspect the step</div>}

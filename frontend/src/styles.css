@@ -677,6 +677,21 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
 .chip.ok { background: color-mix(in oklab, var(--sem-vla) 14%, transparent); color: var(--color-vla); }
 .hint.err { color: var(--color-pop); }
 
+/* The adopt control and its result. A step that ran on this machine can become
+   what every panel above is reading, so the confirmation has to be legible as
+   a state change rather than as chatter — it is the one line telling the
+   reader why the views above them just changed. */
+.adopt-row {
+  margin-top: 12px;
+  gap: 10px;
+  align-items: center;
+}
+.hint.ok {
+  color: var(--color-ink);
+  border-left: 3px solid var(--color-agent);
+  padding-left: 10px;
+}
+
 /* the button that opens the picker */
 button.model-btn {
   display: inline-flex;

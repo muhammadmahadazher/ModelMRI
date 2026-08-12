@@ -1074,6 +1074,14 @@ export interface TraceStep {
   tokens_out: number | null;
   error: boolean;
   seq: number;
+  /** True when this step was produced by a model on THIS machine and carries
+   *  the token ids needed to reopen it in the mechanistic panels. False for a
+   *  hosted-API call — the weights are not here, and that is a sentence to
+   *  print rather than a button to disable. */
+  adoptable?: boolean;
+  /** Machine facts the recorder captured: model, ids, dtype, device. Never
+   *  prompt or completion text — redaction covers input/output only. */
+  meta?: Record<string, unknown>;
 }
 
 export interface TraceDoc {
@@ -1086,6 +1094,29 @@ export interface TraceDoc {
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
+/** What `adopt` gives back once the panels are pointed at a recorded step. */
+export interface Adopted {
+  adopted: true;
+  model: string;
+  step_id: string;
+  kind: string;
+  n_tokens: number;
+  n_prompt_tokens: number;
+  prompt: string;
+  generation: string;
+  means: string;
+}
+
+/** Point every mechanistic panel at the generation this agent step made.
+ *
+ *  Nothing is re-run: these are the recorded token ids, verified against the
+ *  loaded tokenizer. 409 when the weights are not on this machine, when the
+ *  wrong model is loaded, or when re-tokenising disagrees with the recording. */
+export const adoptStep = (traceId: string, stepId: string) =>
+  fetch(`/api/traces/${traceId}/steps/${stepId}/adopt`, { method: "POST" }).then(
+    (r) => json<Adopted>(r),
+  );
 
 export type StreamHandlers = {
   onToken: (text: string) => void;

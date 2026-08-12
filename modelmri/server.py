@@ -1312,7 +1312,7 @@ def create_app(
         never saw, and nothing downstream would notice.
         """
         try:
-            doc = await asyncio.to_thread(store.get_trace, trace_id)
+            doc = await asyncio.to_thread(traces.get_trace, trace_id)
             if doc is None:
                 return JSONResponse({"error": "no such trace"}, status_code=404)
             step = next((s for s in doc["steps"] if s["id"] == step_id), None)

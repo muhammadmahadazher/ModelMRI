@@ -246,7 +246,11 @@ export default function App() {
         <>
           <CustomPanel />
           <VLAPanel />
-          <AgentsPanel />
+          {/* Adopting a step makes the server's current generation that
+              step's. Remounting the playground is what gets the panels to
+              re-ask what the server can answer — the same path a page reload
+              already takes, without the reload. */}
+          <AgentsPanel onAdopted={() => setResetKey((k) => k + 1)} />
         </>
       )}
       <footer>
