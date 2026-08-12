@@ -45,10 +45,35 @@ CREATE TABLE IF NOT EXISTS step (
   tokens_in INTEGER,
   tokens_out INTEGER,
   error INTEGER NOT NULL DEFAULT 0,
-  seq INTEGER NOT NULL
+  seq INTEGER NOT NULL,
+  meta TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS step_trace ON step(trace_id, seq);
 """
+
+# Columns added after the table shipped. `CREATE TABLE IF NOT EXISTS` does
+# nothing to a database that already has the table, so a store written by an
+# earlier version keeps its old shape and every INSERT naming the new column
+# fails — which would be an existing user's traces breaking on upgrade.
+_MIGRATIONS = (
+    ("step", "meta", "TEXT NOT NULL DEFAULT '{}'"),
+)
+
+
+def _loads(raw) -> dict:
+    """Parse a stored JSON blob, treating damage as empty rather than fatal.
+
+    A step whose `meta` cannot be read is a step that cannot be adopted, which
+    is exactly what `{}` means here — the same outcome as a hosted-API call.
+    Raising instead would take down the whole trace view over one bad row.
+    """
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 class TraceStore:
@@ -80,6 +105,37 @@ class TraceStore:
             )
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns this version needs to a store an older one created.
+
+        Read from `PRAGMA table_info` rather than attempted-and-caught: an
+        `ALTER TABLE` that fails for a reason other than "column exists" should
+        surface, and catching OperationalError blindly would hide it.
+
+        Takes the lock even though it only runs from `__init__`, where nothing
+        else can hold a reference to the store yet. `test_traces_concurrency`
+        asserts every method touching the connection serialises it, and its
+        reasoning is that the original defect was an ABSENCE nobody noticed —
+        "a new method added tomorrow is the same bug". This was that method,
+        and the test caught it. An uncontended lock costs nothing; an
+        invariant with a remembered exception is how the 0.10 data race
+        happened.
+        """
+        with self._lock:
+            for table, column, decl in _MIGRATIONS:
+                existing = {
+                    row[1] for row in self._db.execute(f"PRAGMA table_info({table})")
+                }
+                if not existing:  # table absent; the schema above handles it
+                    continue
+                if column not in existing:
+                    self._db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
+                    )
+                    log.info("added %s.%s to the trace store", table, column)
+            self._db.commit()
 
     def import_trace(self, doc: dict) -> str:
         """Store one trace document; returns the trace id.
@@ -134,8 +190,9 @@ class TraceStore:
             for seq, s in enumerate(steps):
                 self._db.execute(
                     "INSERT INTO step(id, trace_id, parent_id, kind, name, started_ms,"
-                    " duration_ms, input, output, tokens_in, tokens_out, error, seq)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " duration_ms, input, output, tokens_in, tokens_out, error, seq,"
+                    " meta)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         str(s.get("id") or f"{trace_id}-{seq}"),
                         trace_id,
@@ -150,6 +207,12 @@ class TraceStore:
                         s.get("tokens_out"),
                         1 if s.get("error") else 0,
                         seq,
+                        # What the recorder captured about the model that
+                        # produced this step, when a local one did: model id,
+                        # input ids, dtype, device. Absent for a hosted-API
+                        # call, and absence is the signal that the weights are
+                        # not on this machine rather than a missing field.
+                        json.dumps(s.get("meta") or {}),
                     ),
                 )
             self._db.commit()
@@ -239,7 +302,7 @@ class TraceStore:
                 return None
             rows = self._db.execute(
                 "SELECT id, parent_id, kind, name, started_ms, duration_ms,"
-                " input, output, tokens_in, tokens_out, error, seq"
+                " input, output, tokens_in, tokens_out, error, seq, meta"
                 " FROM step WHERE trace_id=? ORDER BY seq",
                 (trace_id,),
             ).fetchall()
@@ -257,6 +320,10 @@ class TraceStore:
                 "tokens_out": r[9],
                 "error": bool(r[10]),
                 "seq": r[11],
+                "meta": _loads(r[12]),
+                # The one thing the panel needs without parsing meta itself:
+                # can this step be opened in the mechanistic panels at all?
+                "adoptable": bool(_loads(r[12]).get("input_ids")),
             }
             for r in rows
         ]

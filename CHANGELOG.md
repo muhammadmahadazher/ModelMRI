@@ -57,6 +57,44 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   scores are fifty times smaller and nearly uniform. The ranking survives,
   which is the outcome you want and not the guaranteed one.
 
+- **A recorded agent step opens in the mechanistic panels.** The two halves of
+  this tool have sat beside each other doing nothing for one another: a
+  timeline of agent steps on one side, attention and ablation and patching on
+  the other, and no way to get from a failing step to what the model was doing
+  when it produced it. `modelmri_record.instrument_transformers()` now records
+  a local `generate()` call's actual token ids, and `adopt_step` re-establishes
+  that generation as the current one — so every existing panel reads it
+  unchanged, with nothing re-run.
+
+  Demonstrated end to end on gpt2: instrument, generate inside a `trace()`,
+  store, reload, adopt, and rank heads on the result — H7, KL 0.898, on a
+  sequence nobody typed into the UI.
+
+  This is the one join no hosted platform can build, and the reason is
+  structural rather than clever: LangSmith, Langfuse, Phoenix, Braintrust,
+  Weave, Opik and Laminar all stop at the API boundary and none of them ever
+  holds the weights.
+
+  Four refusals, because every panel downstream reads `last_ids` and none of
+  them checks where it came from. A hosted-API step says the weights are not on
+  this machine rather than offering a button that can only fail. A step from a
+  different model is refused by name — reading one model's ids through
+  another's weights produces numbers about nothing and no panel would show
+  that it had. Re-tokenising the prompt is checked against the recorded ids and
+  a mismatch refuses, naming the likely cause, because adopting near-identical
+  ids would point every panel at a sequence the model never saw. And there is
+  **no substitute-model path**: replaying a hosted model's prompt through
+  whatever happens to be loaded is a machine for confident wrong conclusions,
+  however loudly it is labelled.
+
+  `meta` carries ids and numbers only, never prompt or completion text —
+  `redact.py` runs over `input` and `output` at delivery and nothing else, so
+  text smuggled through `meta` would leave the machine unredacted. One
+  consequence worth stating: if redaction rewrites a prompt, the step becomes
+  un-adoptable, because re-tokenising the redacted text no longer reproduces
+  the recorded ids. That is correct — the model saw the unredacted text and
+  this tool should not reconstruct it.
+
 - **Steering for the models that have no SAE, which is almost all of them.**
   Contrastive prompt pairs give a direction without an SAE and without a
   training run — but difference-of-means *always* returns a direction, and

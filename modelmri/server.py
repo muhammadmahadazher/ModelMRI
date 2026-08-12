@@ -1295,6 +1295,37 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/attention/ablate/estimate")
 
+    @app.post("/api/traces/{trace_id}/steps/{step_id}/adopt")
+    async def adopt_step(trace_id: str, step_id: str):
+        """Open a recorded agent step in the mechanistic panels.
+
+        The join no hosted tracing platform can build: they stop at the API
+        boundary and never hold the weights. A step recorded from a local model
+        carries its token ids, so it can be re-established as the current
+        generation and every panel — attention, lens, ablation, patching, SAE —
+        reads it with no changes.
+
+        409 when the step came from a hosted API (no weights here), when the
+        wrong model is loaded, or when re-tokenising the prompt disagrees with
+        what the recorder captured. That last one is the important refusal:
+        near-identical ids would point every panel at a sequence the model
+        never saw, and nothing downstream would notice.
+        """
+        try:
+            doc = await asyncio.to_thread(store.get_trace, trace_id)
+            if doc is None:
+                return JSONResponse({"error": "no such trace"}, status_code=404)
+            step = next((s for s in doc["steps"] if s["id"] == step_id), None)
+            if step is None:
+                return JSONResponse({"error": "no such step"}, status_code=404)
+            return await asyncio.to_thread(runtime.adopt_step, step)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/adopt")
+
     @app.get("/api/attention/control")
     async def control_ranking(
         layer: int | None = None, baseline: str = "zero", seed: int = 0

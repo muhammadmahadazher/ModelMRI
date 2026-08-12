@@ -1468,6 +1468,112 @@ class ModelRuntime:
                 ]
             return out
 
+    def adopt_step(self, step: dict) -> dict:
+        """Point every mechanistic panel at a generation an agent already made.
+
+        This is the join nothing else in the category can build, and the reason
+        is structural rather than clever: LangSmith, Langfuse, Phoenix,
+        Braintrust, Weave, Opik and Laminar all stop at the API boundary and
+        none of them ever holds the weights. ModelMRI has the recorder and the
+        model in one process, so a recorded step that ran on this machine can
+        be re-established as "the last generation" and every existing panel —
+        attention, lens, ablation, patching, SAE — works on it unchanged.
+
+        `step` is a row from `TraceStore.get_trace`. What makes it adoptable is
+        `meta.input_ids`: the exact ids the recorder saw. They are checked
+        against this tokenizer rather than trusted, because adopting ids the
+        loaded model would not produce points every downstream panel at a
+        sequence the model never saw — and none of those panels would notice.
+
+        There is deliberately **no substitute-model path**. Replaying a hosted
+        model's prompt through whatever happens to be loaded, however loudly
+        labelled, is a machine for confident wrong conclusions.
+        """
+        meta = step.get("meta") or {}
+        recorded = meta.get("input_ids")
+        if not recorded:
+            raise Refusal(
+                "this step was not produced by a model on this machine, so "
+                "there are no weights here to look inside. Steps recorded "
+                "through instrument_transformers() or instrument_ollama() "
+                "carry the token ids that make this possible; a hosted API "
+                "call cannot."
+            )
+
+        wanted = str(meta.get("model") or "")
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Adopting a step means running a model, "
+                "and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass for the "
+                "panels to read. Load this model through HuggingFace to adopt "
+                "the step."
+            )
+
+        with self._lock:
+            if self.model is None:
+                raise Refusal(
+                    f"no model is loaded. This step ran on {wanted or 'a local model'}"
+                    " — load it first, then adopt the step."
+                )
+            if wanted and self.hf_id and wanted != self.hf_id:
+                raise Refusal(
+                    f"this step was produced by {wanted} and {self.hf_id} is "
+                    "loaded. Load the model that made it — reading one model's "
+                    "token ids through another model's weights produces numbers "
+                    "about nothing, and no panel here would show that it had."
+                )
+
+            prompt = str(meta.get("prompt") or step.get("input") or "")
+            retokenised = self.tokenizer(prompt, return_tensors="pt").input_ids[0]
+            recorded_ids = [int(t) for t in recorded]
+
+            # The prompt's ids, not the whole recorded sequence: the recording
+            # holds prompt + generation, and re-tokenising the prompt can only
+            # reproduce the prompt half.
+            n_prompt = int(meta.get("n_prompt_tokens") or len(retokenised))
+            if [int(t) for t in retokenised.tolist()] != recorded_ids[:n_prompt]:
+                raise Refusal(
+                    f"re-tokenising this step's prompt gives {len(retokenised)} "
+                    f"ids and the recorder captured {n_prompt}, and they do not "
+                    "match. A tokenizer or transformers upgrade between the "
+                    "recording and now is the usual cause. Refusing rather than "
+                    "adopting near-identical ids, which would point every panel "
+                    "at a sequence the model never saw."
+                )
+
+            ids = torch.tensor(recorded_ids, dtype=torch.long)
+            self.last_ids = ids
+            self.last_prompt = prompt
+            self.last_n_prompt_tokens = n_prompt
+            self.last_user_span = None
+            self.last_ids_epoch = self.epoch
+            # Everything derived from the PREVIOUS generation has to go, or a
+            # stale attention capture would be rendered against these tokens.
+            # Same discipline the load path uses.
+            self._attn_variants = {}
+            self._attn_tokens = None
+            self._last_patch = {}
+
+        return {
+            "adopted": True,
+            "model": wanted or self.hf_id,
+            "step_id": step.get("id"),
+            "kind": step.get("kind"),
+            "n_tokens": len(recorded_ids),
+            "n_prompt_tokens": n_prompt,
+            "prompt": prompt,
+            "generation": self.tokenizer.decode(recorded_ids[n_prompt:]),
+            "means": (
+                "Every panel is now reading the generation this agent step "
+                "actually made. Nothing was re-run — these are the recorded "
+                "token ids, verified against this tokenizer."
+            ),
+        }
+
     def control_ranking(
         self, layer: int | None = None, baseline: str = "zero", seed: int = 0
     ) -> dict:

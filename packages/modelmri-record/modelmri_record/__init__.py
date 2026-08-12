@@ -220,8 +220,18 @@ def step(
     tokens_out: int | None = None,
     error: bool = False,
     started_ms: int | None = None,  # override for backfilled/synthetic traces
+    meta: dict | None = None,
 ) -> _StepCtx | _NoStep:
-    """Record one step in the active trace (no-op outside a trace block)."""
+    """Record one step in the active trace (no-op outside a trace block).
+
+    `meta` carries machine facts about a step produced by a LOCAL model —
+    model id, the token ids, dtype, device — so ModelMRI can reopen that exact
+    generation in its attention, lens, ablation and patching panels.
+
+    **Never put prompt or completion text in `meta`.** `redact.py` runs over
+    `input` and `output` at delivery and nothing else, so text hidden in `meta`
+    would leave the machine unredacted. Ids and numbers only.
+    """
     t = _current.get()
     if t is None:
         return _NO_STEP
@@ -237,6 +247,7 @@ def step(
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
         "error": error,
+        "meta": meta or {},
     }
     t.steps.append(record)
     return _StepCtx(record, t)
@@ -306,6 +317,104 @@ def instrument_anthropic() -> bool:
     wrapped._modelmri_wrapped = True  # type: ignore[attr-defined]
     Messages.create = wrapped  # type: ignore[assignment]
     return True
+
+
+def instrument_transformers() -> bool:
+    """Auto-record `generate()` calls, with the ids needed to reopen them.
+
+    This is what makes an agent step openable in the mechanistic panels. Every
+    hosted tracing platform stops at the API boundary; a local model's
+    generation can carry its actual token ids, so ModelMRI can re-establish it
+    as the current generation and read attention, the logit lens, head ablation
+    and patching off the exact sequence the agent produced.
+
+    Records ids, model id, dtype and device — and no text. Prompt and
+    completion go through `input`/`output`, which is what `redact.py` covers;
+    text smuggled through `meta` would leave the machine unredacted.
+
+    A consequence worth knowing: if redaction rewrites the prompt, ModelMRI
+    will refuse to adopt the step, because re-tokenising the redacted text no
+    longer reproduces the recorded ids. That is the correct outcome — the model
+    saw the unredacted text, and this tool should not reconstruct it.
+
+    Returns False (no crash) when transformers is not installed.
+    """
+    try:
+        from transformers.generation.utils import GenerationMixin
+    except Exception:
+        return False
+    if getattr(GenerationMixin.generate, "_modelmri_wrapped", False):
+        return True
+    original = GenerationMixin.generate
+
+    def wrapped(self, *args, **kwargs):
+        t = _current.get()
+        started = t.now_ms() if t else 0
+        result = original(self, *args, **kwargs)
+        if t is None:
+            return result
+        try:
+            inputs = kwargs.get("input_ids")
+            if inputs is None and args:
+                inputs = args[0]
+            n_prompt = int(inputs.shape[-1]) if inputs is not None else 0
+            sequence = result[0] if hasattr(result, "__getitem__") else None
+            ids = [int(i) for i in sequence.tolist()] if sequence is not None else []
+            config = getattr(self, "config", None)
+            model_id = str(
+                getattr(config, "_name_or_path", "") or getattr(config, "name_or_path", "")
+            )
+            meta = {
+                "model": model_id,
+                "input_ids": ids,
+                "n_prompt_tokens": n_prompt,
+                "dtype": str(getattr(self, "dtype", "")),
+                "device": str(getattr(self, "device", "")),
+            }
+        except Exception:
+            # Instrumentation must never break the thing it instruments. A
+            # step with no meta is simply one that cannot be adopted, which is
+            # the same state a hosted call is in.
+            meta = {}
+
+        tok = getattr(self, "_modelmri_tokenizer", None)
+        step(
+            "llm_call",
+            name=meta.get("model", "") or "transformers",
+            input=_decode_span(tok, meta, 0, meta.get("n_prompt_tokens", 0)),
+            output=_decode_span(tok, meta, meta.get("n_prompt_tokens", 0), None),
+            duration_ms=(t.now_ms() - started),
+            tokens_in=meta.get("n_prompt_tokens") or None,
+            tokens_out=(
+                len(meta["input_ids"]) - meta["n_prompt_tokens"]
+                if meta.get("input_ids")
+                else None
+            ),
+            meta=meta,
+        )
+        return result
+
+    wrapped._modelmri_wrapped = True  # type: ignore[attr-defined]
+    GenerationMixin.generate = wrapped  # type: ignore[assignment]
+    return True
+
+
+def _decode_span(tokenizer, meta: dict, start: int, end: int | None) -> str:
+    """Readable text for a slice of the recorded ids, or a stated placeholder.
+
+    Without a tokenizer there is no honest text to show, so it says that rather
+    than printing raw ids as though they were the prompt.
+    """
+    ids = meta.get("input_ids") or []
+    if not ids:
+        return ""
+    span = ids[start:] if end is None else ids[start:end]
+    if tokenizer is None:
+        return f"<{len(span)} tokens; attach a tokenizer to see the text>"
+    try:
+        return tokenizer.decode(span)
+    except Exception:
+        return f"<{len(span)} tokens; this tokenizer could not decode them>"
 
 
 def _msgs_preview(kwargs: dict) -> str:
