@@ -324,6 +324,25 @@ export default function Playground({
         }}
         placeholder="Type a prompt… (Ctrl+Enter to generate)"
       />
+
+      {/* SAID BEFORE THE GENERATION, NOT UNDER IT.
+          This warning existed and rendered beneath the output, which is after
+          the reader has already typed a question, waited, and read something
+          confidently wrong. By then they have concluded the tool is broken --
+          asking gpt2 "whats 2+2" and being told about respecting each other
+          is not a bug report anybody writes as "I used a base model".
+          A caveat that arrives after the surprise is a footnote; the same
+          sentence before it is a warning. */}
+      {model?.loaded && model.instruct === false && !replay && (
+        <div className="base-warn" role="note">
+          <b>{model.hf_id}</b> is a base model. It continues text rather than
+          answering questions, so a question will usually come back as
+          plausible nonsense — that is the model, not a fault. Pick an{" "}
+          <b>-Instruct</b> or <b>-it</b> model to get answers, or write a
+          prompt it can continue: <code>The capital of France is</code>
+        </div>
+      )}
+
       <div className="row">
         <button
           className="cta"

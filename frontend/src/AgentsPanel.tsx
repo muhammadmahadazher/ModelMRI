@@ -151,9 +151,37 @@ export default function AgentsPanel() {
           <h2 className="h-agent">AGENTS — RECORDED RUNS</h2>
           <span className="rule" />
         </div>
-        <div className="hint">
-          no traces yet — record one:&nbsp; <b>uv run python examples/record_demo.py</b>
-          &nbsp; · or instrument your agent with <b>modelmri.record</b>
+        <div className="agents-empty">
+          {/* WHAT THIS PANEL IS, before what to type into it.
+              It said "no traces yet" and gave a command, which reads as an
+              empty list of something you already have. It is not: this panel
+              has nothing to do with the model loaded above, and loading a
+              bigger one or a reasoning one will never fill it. It shows runs
+              of YOUR OWN agent code, recorded by a separate library you add
+              to that code. Somebody who does not know that reasonably
+              concludes the feature is broken. */}
+          <p>
+            <b>This is a flight recorder for agents you write</b> — not for the
+            model loaded above. Nothing you run in this page appears here, and
+            no model will fill it.
+          </p>
+          <p className="meta">
+            Add three lines to your own agent and every run it makes shows up
+            here as a timeline: each LLM call, tool call and sub-agent, nested,
+            with inputs, outputs, timings and failures.
+          </p>
+          <pre className="agents-snippet">
+{`from modelmri.record import trace, step
+
+with trace("my-agent"):
+    step("llm_call", name="plan", input=prompt, output=reply)
+    step("tool_call", name="search", input=query, output=hits)`}
+          </pre>
+          <div className="hint">
+            Try it without writing anything:&nbsp;
+            <b>uv run python examples/record_demo.py</b>
+            &nbsp;— this panel picks it up on its own.
+          </div>
         </div>
       </div>
     );

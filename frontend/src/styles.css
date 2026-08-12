@@ -2910,3 +2910,55 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .hero canvas.ascii { cursor: default; }
 }
+
+
+/* ---------- returning from a ranking ----------
+   Ranking swaps the arcs for a table. Without this the only ways back were a
+   reload or another generation, so the result read as a mode rather than an
+   answer. */
+.ranking { position: relative; }
+.ranking-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 2;
+}
+
+/* ---------- the agents panel, explaining itself ---------- */
+.agents-empty { display: grid; gap: 10px; max-width: 74ch; }
+.agents-empty p { margin: 0; }
+.agents-snippet {
+  margin: 2px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+
+/* ---------- a warning, before the surprise ----------
+   Amber rather than red: a base model is working correctly, it is simply not
+   the tool for a question. Red would say something is broken, and the whole
+   point of this note is that nothing is. */
+.base-warn {
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 38%, var(--hair));
+  border-left: 3px solid var(--sem-agent);
+  border-radius: var(--r-well);
+  background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
+  padding: 10px 14px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  max-width: 80ch;
+}
+.base-warn code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: var(--r-chip);
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+}

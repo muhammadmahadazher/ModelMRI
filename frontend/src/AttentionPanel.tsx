@@ -340,7 +340,7 @@ export default function AttentionPanel({
                   : "")
               }
             >
-              {ranking ? "ranking…" : "Rank heads"}
+              {ranking ? "ranking…" : ranked ? "Rank heads again" : "Rank heads"}
               <span className="meta">
                 {" "}
                 {secPerPass
@@ -399,7 +399,7 @@ export default function AttentionPanel({
             disabled={attributing}
             title={attrTitle}
           >
-            {attributing ? "attributing…" : "Rank tokens"}
+            {attributing ? "attributing…" : attr ? "Rank tokens again" : "Rank tokens"}
             {attrPasses > 0 && (
               <span className="meta">
                 {" "}
@@ -422,6 +422,18 @@ export default function AttentionPanel({
       </div>
       {ranked && (
         <div className="ranking">
+          {/* A WAY BACK. Ranking replaces the arcs with a table and there was
+              no control that returned you to them -- the only exits were a
+              page reload or generating again, neither of which is obviously
+              "close this". A result you cannot dismiss is a mode, and this
+              panel is not supposed to have modes. */}
+          <button
+            className="ghost sm ranking-close"
+            onClick={() => setRanked(null)}
+            title="Back to the attention arcs"
+          >
+            ← back to the arcs
+          </button>
           <div className="ranking-head">
             <strong>
               Removing one head from{" "}
