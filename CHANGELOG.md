@@ -57,6 +57,31 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   scores are fifty times smaller and nearly uniform. The ranking survives,
   which is the outcome you want and not the guaranteed one.
 
+- **Steering for the models that have no SAE, which is almost all of them.**
+  Contrastive prompt pairs give a direction without an SAE and without a
+  training run — but difference-of-means *always* returns a direction, and
+  adding any large vector to a residual stream changes the output, so nothing
+  about the result looks different when there was no signal. Every direction is
+  therefore scored against its own **label-shuffled null**: refit eight times
+  with the labels reassigned, and report a direction that does not beat its
+  shuffles as *not measured* rather than as a small finding. Fitted on half the
+  pairs and scored on the other half, because a direction scored on its own
+  fitting set separates it by construction.
+
+  Measured on gpt2, bf16, twelve sentiment pairs: CAA has 11 of 12 layers beat
+  their null (best at layer 9, +3.326 against a null max of 2.185), RepE 11 of
+  12 (best at layer 10). Splitting the same 24 sentences at random instead of
+  by sentiment: **0 of 12** survive. Layer 0 fails in both, which is correct —
+  that is the embedding, before anything has been computed.
+
+  Directions persist with the provenance needed to judge them later — model,
+  revision, layer, dtype, hidden size, method, and whether they beat their
+  null. Loading one onto a model whose residual stream is a different width is
+  refused by name rather than reshaped; loading onto a *different* model of the
+  same width warns loudly rather than blocking, because cross-checkpoint
+  transfer is a legitimate experiment when the person running it knows that is
+  what they are doing.
+
 - **Every logit-lens row reports its own error.** `kl_to_final` is the KL from
   the model's real next-token distribution to that layer's lens distribution.
   On gpt2 with "The Eiffel Tower is located in the city of": layer 0 is 21.58
