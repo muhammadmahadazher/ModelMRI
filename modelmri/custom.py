@@ -972,6 +972,15 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
             # rather than on what is in it.
             if any(part in skip for part in path.relative_to(base).parts):
                 continue
+            # NOT ModelMRI'S OWN TEMPLATE. `examples/adapter_template.py` ships
+            # inside this package as something to copy, and listing it beside
+            # somebody's real model reads as "here is a model you have" when it
+            # is a blank form -- worse when a checkout, a worktree and an
+            # install all contribute a copy and the panel shows four. The
+            # refusal that tells you to write an adapter already names the file
+            # by path; that is where it belongs, not in a list of your models.
+            if path.name == "adapter_template.py":
+                continue
             if path.name.startswith("test_"):
                 continue
             if path in seen:
@@ -1010,7 +1019,21 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
 def find_torchscript(limit: int = 40) -> list[dict]:
     """TorchScript-looking files under the allowed roots. Never opened."""
     out: list[dict] = []
-    skip = {".git", ".venv", "venv", "node_modules", "__pycache__", "site-packages"}
+    # ONE ROW PER FILE. The allowed roots overlap by design -- the working
+    # directory, MODELMRI_MODELS_DIR and any folder added this session -- so
+    # a checkpoint sitting under two of them was listed twice, with identical
+    # names and identical paths. Two rows for one file reads as two models.
+    seen: set[Path] = set()
+    skip = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "site-packages",
+        ".claude",
+        ".worktrees",
+    }
     for base in allowed_roots():
         if not base.is_dir():
             continue
@@ -1020,6 +1043,13 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                     return out
                 if any(part in skip for part in path.parts):
                     continue
+                try:
+                    key = path.resolve()
+                except OSError:
+                    key = path
+                if key in seen:
+                    continue
+                seen.add(key)
                 try:
                     size = path.stat().st_size
                 except OSError:
