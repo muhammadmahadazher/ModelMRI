@@ -14,7 +14,7 @@ scroll. This puts it back.
 pip install modelmri-record
 ```
 
-Stdlib only. No torch, no SDK pins, 8.9 KiB. Instrumenting an agent should not
+Stdlib only. No torch, no SDK pins, 10.9 KiB. Instrumenting an agent should not
 cost you a deep-learning install.
 
 ## Record

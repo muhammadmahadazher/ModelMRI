@@ -252,12 +252,66 @@ The browser viewer and the Python tool are checked cell-for-cell against the sam
 
 ---
 
+## Every command
+
+Nine of them, and only one needs a GPU. Everything below reads what is already
+on your disk — no model is downloaded and no server is started unless the
+command says so.
+
+| Command | What it does | Needs |
+| --- | --- | --- |
+| `pip install modelmri` | Install it. `modelmri[vla]` adds the robot-policy reader; `modelmri[dev]` adds the test suite. | — |
+| `modelmri serve` | Start the app and open it at `localhost:5900`. This is the one that loads models. `--port`, `--host`. | a model |
+| `modelmri models` | List every model on this machine, **and the ones that will not load, with the reason**. Instant. | — |
+| `modelmri traces` | List agent runs recorded here, newest first. Instant. | — |
+| `modelmri open FILE.mri` | Open an analysis somebody sent you, in a browser. No model, no GPU, ~0.3s. | — |
+| `modelmri inspect FILE.mri` | Print what a `.mri` holds and exit — model, shape, what was captured, the prompt. `--json` for the lot. ~0.2s. | — |
+| `modelmri doctor` | What this machine can and cannot run, and why. Run it before you file a bug. | — |
+| `modelmri where` | Every directory ModelMRI reads or writes, and the variables that move them. | — |
+| `modelmri uninstall` | Remove everything ModelMRI has written here. `--models` takes the weights too. Asks first. | — |
+
+**The two you will use most**
+
+```bash
+modelmri models        # what have I got, and why won't that one open?
+modelmri serve         # look inside one of them
+```
+
+**Sending someone a finding**
+
+```bash
+modelmri inspect gpt2.mri     # what is in this file?
+modelmri open gpt2.mri        # show me
+```
+
+A `.mri` is one analysis without the model — attention, the logit lens, the
+generation, and the activation-patching trace if you ran one. It is how you
+show a colleague the head you found without asking them to download 8 GB.
+
+**When something is wrong**
+
+```bash
+modelmri doctor        # can this machine run it at all?
+modelmri where         # where did it put my stuff?
+```
+
+### Moving where things go
+
+| Variable | Moves |
+| --- | --- |
+| `MODELMRI_MODELS_HOME` | where downloaded models land (default: wherever HuggingFace already puts them) |
+| `MODELMRI_MODELS_DIR` | extra folders to search for your own models |
+| `MODELMRI_HOME` | all of ModelMRI's own state, under one directory |
+| `MODELMRI_TRACE_DIR` | where undelivered agent traces are written |
+| `MODELMRI_DEVICE` | force `cpu`, `cuda`, `mps`, `xpu` |
+| `HF_HOME` / `HF_HUB_CACHE` | HuggingFace's own cache, honoured as-is |
+
 ## Install
 
 ```bash
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
-pip install modelmri-record       # just the agent recorder — stdlib only, an 8.9 KiB wheel
+pip install modelmri-record       # just the agent recorder — stdlib only, an 10.9 KiB wheel
 modelmri doctor                   # what this machine can and cannot run, measured
 modelmri serve
 ```

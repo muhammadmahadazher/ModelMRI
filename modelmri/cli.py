@@ -112,6 +112,85 @@ def _clip(text: str, width: int = 62) -> str:
     return flat if len(flat) <= width else flat[: width - 1] + "…"
 
 
+def list_models() -> int:
+    """What can this machine run, without starting anything.
+
+    `modelmri serve` and a browser tab is a lot of ceremony for "what have I
+    got". This walks the same roots the picker does and prints what it finds,
+    including the things that will NOT load and why -- discover.py's whole
+    premise is that "why isn't my model here" is worse than "here it is, and
+    here is why it won't open".
+    """
+    from . import discover, paths
+
+    found = discover.discover()
+    models = found.get("models", [])
+    roots = found.get("roots", [])
+
+    if not models:
+        print("No models found. Looked in:")
+        for r in roots:
+            print(f"  {r}")
+        print("\n  Point it somewhere else with MODELMRI_MODELS_DIR, or pull one:")
+        print(
+            "    modelmri serve   ->  the picker downloads from HuggingFace or Ollama"
+        )
+        return 0
+
+    usable = [m for m in models if m.get("loadable")]
+    print(f"{len(models)} found, {len(usable)} loadable\n")
+    for m in sorted(models, key=lambda x: (not x.get("loadable"), x.get("name", ""))):
+        mark = "  " if m.get("loadable") else "! "
+        size = f"{m['size_gb']:.1f} GB" if m.get("size_gb") else ""
+        print(f"{mark}{m.get('name', '?'):<38}{size:>10}  {m.get('kind', '')}")
+        note = (m.get("note") or "").strip()
+        if note and not m.get("loadable"):
+            print(f"    {note}")
+    print(f"\n  searched: {', '.join(str(r) for r in roots) or 'nothing'}")
+    print(f"  downloads go to: {paths.hf_hub_cache()}")
+    return 0
+
+
+def list_traces() -> int:
+    """Agent runs recorded on this machine, newest first.
+
+    The panel that shows these is behind a server and a scroll. `record_demo`
+    finishing in another terminal is the moment you want this answer, and the
+    terminal is where you already are.
+    """
+    from . import paths
+    from .traces import TraceStore
+
+    db = paths.trace_db_path()
+    if not db.exists():
+        print("No trace database yet.")
+        print(f"  It would live at {db}")
+        print("\n  Record one:")
+        print("    uv run python examples/record_demo.py")
+        print("  or instrument your own agent with `from modelmri.record import trace`")
+        return 0
+
+    rows = TraceStore(db).list_traces()
+    if not rows:
+        print(f"No traces recorded yet ({db})")
+        print("\n  Record one:  uv run python examples/record_demo.py")
+        return 0
+
+    print(f"{len(rows)} recorded  ({db})\n")
+    for r in rows[:40]:
+        flag = "demo" if r.get("demo") else ""
+        errs = f"  {r['n_errors']} failed" if r.get("n_errors") else ""
+        secs = (r.get("total_ms") or 0) / 1000
+        print(
+            f"  {r['name'][:30]:<30} {r['n_steps']:>4} steps  {secs:>7.1f}s"
+            f"{errs}  {flag}"
+        )
+    if len(rows) > 40:
+        print(f"  ... and {len(rows) - 40} more")
+    print("\n  Open them in the browser:  modelmri serve")
+    return 0
+
+
 def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
     """Serve the bundled `.mri` viewer, using only the standard library.
 
@@ -483,6 +562,11 @@ def main() -> None:
         help="emit the summary as JSON instead of text",
     )
 
+    sub.add_parser(
+        "models", help="List the models on this machine, and what will not load"
+    )
+    sub.add_parser("traces", help="List agent runs recorded on this machine")
+
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
 
     # `pip install` cannot run this for you: a wheel is an archive and pip does
@@ -575,6 +659,10 @@ def main() -> None:
         return
     elif args.command == "inspect":
         raise SystemExit(inspect_session(args.file, as_json=args.json))
+    elif args.command == "models":
+        raise SystemExit(list_models())
+    elif args.command == "traces":
+        raise SystemExit(list_traces())
     elif args.command == "uninstall":
         raise SystemExit(uninstall(yes=args.yes, models=args.models))
     elif args.command == "where":
