@@ -185,6 +185,46 @@ export async function demoFetch(
   }
   if (p === "/api/accelerator") return ok((await bundle<any>("env")).accelerator ?? {});
   if (p === "/api/model/progress") return ok((await bundle<any>("env")).progress ?? {});
+  // A pull has its own progress slot, separate from a model load. Nothing can
+  // be downloading on a static page, so the honest answer is the idle
+  // snapshot rather than a refusal -- the picker polls this on open and a 501
+  // would paint an error over a panel that is working correctly.
+  if (p === "/api/pull/progress") {
+    return ok({
+      active: false,
+      hf_id: null,
+      stage: "",
+      detail: "",
+      bytes_done: 0,
+      bytes_total: 0,
+      elapsed_s: 0,
+      eta_s: null,
+      error: null,
+    });
+  }
+  // Unloading frees a model this page never held. Answering with the recorded
+  // status keeps the button honest: it reports nothing was freed, which is
+  // true, instead of claiming to have released memory that was never taken.
+  if (p === "/api/model/unload") {
+    return ok({
+      unloaded: false,
+      was: null,
+      freed_bytes: 0,
+      accelerator_bytes_in_use: 0,
+      status: (await bundle<any>("env")).model ?? {},
+    });
+  }
+  // Scanning a folder means reading the reader's disk, which a page served
+  // from GitHub Pages cannot do and should not pretend to.
+  if (p === "/api/custom/scan") {
+    return refuse(
+      501,
+      `Scanning a folder reads your disk, and this page is a static recording ` +
+        `served from the web with no access to it. Installed, this box takes ` +
+        `any folder on your machine and lists the models in it -- including ` +
+        `the ones that will not load, and why.`,
+    );
+  }
   if (p === "/api/paths") return ok((await bundle<any>("env")).paths ?? {});
   if (p === "/api/hub/auth") return ok((await bundle<any>("env")).hub_auth ?? { signed_in: false });
   if (p === "/api/sae/available") return ok((await bundle<any>("env")).sae_available ?? []);
