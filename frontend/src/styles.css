@@ -2978,49 +2978,53 @@ body {
 }
 
 
-/* ── THE MODEL PICKER IS THE PRIMARY CONTROL ─────────────────────────────
-   It is the first thing you touch and the thing every panel below depends
-   on, and it was rendered at 12.5px inside a 9px pad -- smaller than the
-   prompt beneath it and quieter than the Generate button it sits above. It
-   read as a label with a caret rather than the way in.
+/* ── THE CARET, WHICH IS THE PART THAT WAS INVISIBLE ─────────────────────
+   The button was never too small. It was a control whose only signal that it
+   OPENS something -- the caret -- was a 12px glyph in the muted ink, sitting
+   next to a 12.5px monospace id that out-weighed it. So the affordance was
+   there and unreadable, and my first attempt at this enlarged the whole
+   button instead, which fixed nothing and made the row top-heavy.
 
-   Bigger, but still a control and not a headline: the id carries the size,
-   the MODEL tag stays small because it is scaffolding, and the caret grows
-   enough to be a target. */
-button.model-btn {
-  padding: 13px 20px;
-  gap: 13px;
-  border-radius: 15px;
-  min-height: 52px;
-}
-.model-btn-id {
-  font-size: 15px;
-  letter-spacing: 0.005em;
-}
-.model-btn-label {
-  font-size: 10.5px;
-  opacity: 0.85;
-}
+   Everything else here is untouched. The caret is drawn rather than typed,
+   at full ink weight, and it turns over on hover and while the sheet is
+   open. */
 .model-btn-caret {
-  font-size: 15px;
-  opacity: 0.75;
-  transition: transform var(--dur-small) var(--ease-out);
+  /* The glyph is replaced by a real chevron: a text caret inherits the
+     font's idea of a small arrow, which at this size is a smudge. */
+  font-size: 0;
+  width: 11px;
+  height: 11px;
+  display: inline-block;
+  position: relative;
+  align-self: center;
+  opacity: 0.9;
+  transition: transform var(--dur-small) var(--ease-out),
+    opacity var(--dur-micro) var(--ease-hover);
+}
+.model-btn-caret::before {
+  content: "";
+  position: absolute;
+  inset: 1px 0 auto 0;
+  height: 7px;
+  border-right: 2px solid var(--color-ink);
+  border-bottom: 2px solid var(--color-ink);
+  width: 7px;
+  margin: 0 auto;
+  transform: rotate(45deg);
+  border-radius: 1px;
 }
 button.model-btn:hover:not(:disabled) .model-btn-caret {
   transform: translateY(2px);
   opacity: 1;
 }
-/* The accent edge says "this one opens something" without adding a second
-   filled button beside Generate. */
+
+/* The one change to the button itself: an accent edge, so the control that
+   every panel below depends on is findable without being enlarged. */
 button.model-btn {
   border-left: 3px solid color-mix(in oklab, var(--acc) 55%, transparent);
 }
 button.model-btn:hover:not(:disabled) {
   border-left-color: var(--acc);
-}
-@media (max-width: 640px) {
-  .model-btn-id { font-size: 13.5px; }
-  button.model-btn { min-height: 46px; padding: 10px 14px; }
 }
 
 
