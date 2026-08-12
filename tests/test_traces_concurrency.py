@@ -25,6 +25,7 @@ is fail loudly against the unlocked version, which the fix has to beat.
 
 from __future__ import annotations
 
+import itertools
 import threading
 
 import pytest
@@ -94,7 +95,12 @@ def test_listing_while_writing_does_not_return_short_rows(store):
     """The reported failure, directly. `list_traces` maps r[0]..r[6] over a
     SELECT with seven fixed columns, so an IndexError there can only mean the
     row did not come from that statement."""
-    counter = iter(range(10_000))
+    # itertools.count, not a finite range. A fast runner gets through tens of
+    # thousands of writes inside the window and the thread dies on its own
+    # StopIteration, which reads exactly like a real defect -- it failed that
+    # way on macOS py3.12 after I had already fixed the identical mistake in
+    # the delete test below and not looked for it here.
+    counter = itertools.count()
 
     def write():
         store.import_trace(doc(next(counter)))
@@ -114,7 +120,7 @@ def test_reading_one_trace_while_writing_stays_consistent(store):
     wrong answer rather than a crash, which is the worse outcome."""
     for n in range(6):
         store.import_trace(doc(n))
-    counter = iter(range(100, 10_000))
+    counter = itertools.count(100)
 
     def write():
         store.import_trace(doc(next(counter)))
@@ -135,11 +141,6 @@ def test_reading_one_trace_while_writing_stays_consistent(store):
 def test_deleting_while_listing_does_not_raise(store):
     for n in range(20):
         store.import_trace(doc(n))
-    # `cycle`, not a finite list: the delete thread got through 10,000 ids in
-    # 1.5s on the first run and failed the test with its own StopIteration,
-    # which would have looked exactly like a real defect.
-    import itertools
-
     ids = itertools.cycle(f"trace-{n}" for n in range(20))
 
     def delete():

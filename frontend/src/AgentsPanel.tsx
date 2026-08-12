@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
 import {
   clearTraces,
@@ -44,6 +44,11 @@ export default function AgentsPanel() {
   // list has to be able to arrive later. Polled while there is nothing to
   // show, and on regaining focus -- which is the actual gesture, since you
   // ran the command in a different window and came back.
+  // Tracked in a ref so the poll can ask "is it still empty?" without the
+  // effect depending on the value it sets.
+  const empty = useRef(true);
+  empty.current = !list || list.length === 0;
+
   useEffect(() => {
     let live = true;
     const load = () =>
@@ -74,21 +79,32 @@ export default function AgentsPanel() {
     window.addEventListener("focus", again);
     document.addEventListener("visibilitychange", again);
 
-    // The interval is only a backstop for a reader watching both windows at
-    // once, and it STOPS. An unbounded poll on an empty panel is a request
-    // every few seconds forever, and it also means the page never reaches
-    // network idle -- which broke Playwright's `networkidle` wait outright,
-    // measured, and would do the same to anything else that waits on a quiet
-    // network. Six tries with a widening gap, then focus carries it.
+    // The backstop is for a reader watching both windows at once, and it has
+    // to STOP -- soon. An unbounded poll on an empty panel is a request every
+    // few seconds forever AND it means the page never reaches network idle,
+    // which broke Playwright's `networkidle` wait outright.
+    //
+    // Six tries at a widening gap totalled ~31s of activity, which is longer
+    // than the 30s `goto` budget, so the "bounded" version failed CI in
+    // exactly the same way as the unbounded one. Three tries, ~6s: long
+    // enough to catch a trace that lands just after the page does, short
+    // enough that the network genuinely goes quiet. Focus does the rest, and
+    // focus was always the real signal.
     let tries = 0;
     let timer = 0;
     const tick = () => {
-      if (!live || tries >= 6) return;
+      if (!live || tries >= 3) return;
       tries += 1;
       timer = window.setTimeout(() => {
-        if (!list || list.length === 0) load();
+        // `empty.current`, not `list`. Depending on `list` here is what made
+        // the previous two attempts at bounding this fail: the effect both
+        // READ and SET it, so every fetch produced a new array reference,
+        // re-ran the effect, and reset the counter -- an unbounded poll
+        // wearing a bound. The page then never reached network idle and
+        // Playwright's `goto` timed out, twice, at two different intervals.
+        if (empty.current) load();
         tick();
-      }, 1500 * tries);
+      }, 1000 * tries);
     };
     tick();
 
@@ -98,7 +114,7 @@ export default function AgentsPanel() {
       document.removeEventListener("visibilitychange", again);
       window.clearTimeout(timer);
     };
-  }, [list]);
+  }, []);
 
   /** One row per agent, not per run.
    *
