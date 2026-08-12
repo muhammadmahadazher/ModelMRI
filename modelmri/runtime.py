@@ -33,8 +33,10 @@ from . import (
     ablate,
     attribute,
     capacity,
+    corpus,
     devices,
     feature_ablate,
+    nullmodel,
     ollama,
     patch,
     paths,
@@ -1366,20 +1368,235 @@ class ModelRuntime:
             # output feeds back in.
             size = int(self.last_ids.shape[0])
             position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            ids = self.last_ids.unsqueeze(0).to(self.device)
+
+            extra: dict = {}
+            if baseline == "resample":
+                extra = self._resample_donors(ids, layers)
+
             try:
                 return ablate.rank_heads(
                     self.model,
                     self._block,
-                    self.last_ids.unsqueeze(0).to(self.device),
+                    ids,
                     position=position,
                     layers=layers,
                     n_heads=n_heads,
                     baseline=baseline,
                     decode=lambda t: self.tokenizer.decode([t]),
+                    **extra,
                 )
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
                 raise Refusal(str(err)) from err
+
+    def _resample_donors(self, ids, layers: list[int]) -> dict:
+        """Capture `RESAMPLE_DRAWS` donor activations, or refuse saying why.
+
+        Costs one forward pass per draw, on top of the sweep itself. Called
+        with `self._lock` already held by `ablate_heads`.
+        """
+        sentences, label = corpus.load()
+        size = int(ids.shape[-1])
+        donor_ids = corpus.donor_ids(
+            self.tokenizer,
+            sentences,
+            at_least=size,
+            want=ablate.RESAMPLE_DRAWS,
+            device=self.device,
+        )
+        donors = [
+            ablate.capture_projection_inputs(self.model, self._block, d, layers)
+            for d in donor_ids
+        ]
+        return {"donors": donors, "corpus": label}
+
+    def estimate_ablation(self, layer: int | None = None, baseline: str = "zero") -> dict:
+        """What would this sweep cost here? One probe pass, then arithmetic.
+
+        Exists because `baseline="resample"` is `RESAMPLE_DRAWS` times the work
+        of the other two — 98 passes against 14 for one gpt2 layer — and the
+        panel should be able to say so before the user waits for it rather
+        than after.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Estimating a sweep means running the "
+                "model, and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass to "
+                "intervene in. Load the model through HuggingFace."
+            )
+        with self._lock:
+            self._require_live_generation("Generate something first.")
+            cfg = self.model.config
+            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            if layer is not None and not 0 <= layer < n_layers:
+                raise BadRequest(f"layer must be in [0,{n_layers})")
+            layers = list(range(n_layers)) if layer is None else [layer]
+
+            size = int(self.last_ids.shape[0])
+            position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            out = ablate.estimate_cost(
+                self.model,
+                self._block,
+                self.last_ids.unsqueeze(0).to(self.device),
+                position=position,
+                layers=layers,
+                n_heads=n_heads,
+                baseline=baseline,
+                device_kind=self.accel.kind,
+            )
+            if baseline == "resample":
+                # The draws multiply the sweep, and the donor captures are one
+                # extra pass each. Both are real cost and neither is in the
+                # single-baseline projection.
+                out["estimate"]["passes"] = (
+                    len(layers) * n_heads * ablate.RESAMPLE_DRAWS
+                    + ablate.RESAMPLE_DRAWS
+                    + 2
+                )
+                probe_seconds = out["probe"]["seconds"]
+                out["estimate"]["seconds"] = round(
+                    probe_seconds * out["estimate"]["passes"], 2
+                )
+                out["estimate"]["notes"] = list(out["estimate"].get("notes", [])) + [
+                    f"{ablate.RESAMPLE_DRAWS} draws per head, plus one capture "
+                    "pass per draw"
+                ]
+            return out
+
+    def control_ranking(
+        self, layer: int | None = None, baseline: str = "zero", seed: int = 0
+    ) -> dict:
+        """The same ranking on an untrained twin, and how far the two agree.
+
+        Runs `ablate.rank_heads` twice over the same token ids — once on the
+        loaded model, once on the same architecture with random weights — and
+        reports the rank correlation between them. Both go through the same
+        function, deliberately: a second implementation of the measurement
+        could differ from the one being checked, and then agreement would mean
+        nothing in either direction.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. A control means running a second model, "
+                "and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass to "
+                "intervene in. Load the model through HuggingFace."
+            )
+
+        # The real ranking first, and through the public method, so it obeys
+        # every gate (live generation, layer range, baseline validation) rather
+        # than duplicating them here.
+        real = self.ablate_heads(layer, baseline)
+
+        with self._lock:
+            cfg = self.model.config
+            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            layers = list(range(n_layers)) if layer is None else [layer]
+            ids = self.last_ids.unsqueeze(0).to(self.device)
+            size = int(self.last_ids.shape[0])
+            position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+
+            twin = nullmodel.build_twin(
+                cfg, seed=seed, dtype=self.model.dtype, device=self.device
+            )
+            try:
+                extra: dict = {}
+                if baseline == "resample":
+                    # Donors must come from the TWIN's own activations. A
+                    # trained model's activations spliced into an untrained one
+                    # would be a third experiment, not a control.
+                    sentences, label = corpus.load()
+                    donor_ids = corpus.donor_ids(
+                        self.tokenizer, sentences, at_least=size,
+                        want=ablate.RESAMPLE_DRAWS, device=self.device,
+                    )
+                    extra = {
+                        "donors": [
+                            ablate.capture_projection_inputs(
+                                twin, lambda i: self._block_of(twin, i), d, layers
+                            )
+                            for d in donor_ids
+                        ],
+                        "corpus": label,
+                    }
+
+                control = ablate.rank_heads(
+                    twin,
+                    lambda i: self._block_of(twin, i),
+                    ids,
+                    position=position,
+                    layers=layers,
+                    n_heads=n_heads,
+                    baseline=baseline,
+                    decode=lambda t: self.tokenizer.decode([t]),
+                    **extra,
+                )
+            except ablate.AblationError as err:
+                raise Refusal(str(err)) from err
+            finally:
+                nullmodel.teardown(twin)
+
+        agreement = ablate.compare_baselines(
+            {"model": real["ranked"], "untrained": control["ranked"]}, top=5
+        )
+        pair = agreement["pairs"][0] if agreement["pairs"] else {}
+        return {
+            "seed": seed,
+            "baseline": baseline,
+            "model": real,
+            "untrained": control,
+            "spearman": pair.get("spearman"),
+            "top_k": pair.get("top_k", 0),
+            "top_k_shared": pair.get("top_k_shared", 0),
+            "verdict": nullmodel.verdict(
+                pair.get("spearman"),
+                top_k_shared=pair.get("top_k_shared", 0),
+                top_k=pair.get("top_k", 0),
+            ),
+        }
+
+    def _block_of(self, model, index: int):
+        """The transformer block at `index` on an arbitrary model.
+
+        `self._block` is bound to the loaded model. The twin has the same
+        architecture, so the same lookup rules apply — but they have to be
+        applied to it rather than to `self.model`.
+        """
+        for path in ("model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"):
+            node = model
+            for part in path.split("."):
+                node = getattr(node, part, None)
+                if node is None:
+                    break
+            if node is not None:
+                return node[index]
+        raise ablate.AblationError(
+            "cannot find the transformer blocks on the untrained twin, so "
+            "there is no control to compare against."
+        )
+
+    def compare_baselines(self, layer: int | None = None) -> dict:
+        """Run every baseline on the same layer and report how much they differ.
+
+        The panel has always shown one baseline at a time with nothing saying
+        the others existed. Measured on gpt2 layer 0 the three disagree badly —
+        Spearman 0.34 to 0.47, and the top five share only two or three heads —
+        so which one is selected has been quietly deciding the answer.
+        """
+        rankings = {}
+        for name in ablate.BASELINES:
+            rankings[name] = self.ablate_heads(layer, name)["ranked"]
+        out = ablate.compare_baselines(rankings, top=5)
+        out["rankings"] = rankings
+        return out
 
     def attribute_tokens(self, position: int | None = None) -> dict:
         """Rank the prompt's own tokens by how far masking one moves the answer.

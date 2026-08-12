@@ -4,9 +4,12 @@ import {
   Ablation,
   AttentionData,
   AttentionDiff,
+  Baseline,
+  BaselineComparison,
   TokenAttribution,
   TokenScore,
   attributeTokens,
+  compareBaselines,
   errorText,
   exportSession,
   getAttention,
@@ -43,7 +46,11 @@ export default function AttentionPanel({
   const [err, setErr] = useState("");
   const [ranked, setRanked] = useState<Ablation | null>(null);
   const [ranking, setRanking] = useState(false);
-  const [baseline, setBaseline] = useState<"zero" | "mean">("zero");
+  const [baseline, setBaseline] = useState<Baseline>("zero");
+  // How far apart the three baselines rank the same heads. Null until asked
+  // for — it costs all three sweeps, so it is never run on load.
+  const [agree, setAgree] = useState<BaselineComparison | null>(null);
+  const [comparing, setComparing] = useState(false);
   // Seconds per forward pass, measured on THIS model. Null until one
   // ranking has run — an estimate before that would be a number we made up.
   const [secPerPass, setSecPerPass] = useState<number | null>(null);
@@ -108,9 +115,32 @@ export default function AttentionPanel({
     }
   }
 
+  // Not `compare` — that name is already taken by the head-diff view below,
+  // and a duplicate declaration here silently shadowed it.
+  async function compareAllBaselines() {
+    setComparing(true);
+    setErr("");
+    try {
+      const result = await compareBaselines(layer);
+      setAgree(result);
+      // Leave whichever ranking is on screen alone. The point of this control
+      // is that the choice of baseline changes the answer — replacing the
+      // visible ranking with one of the three would be picking for them again.
+    } catch (e) {
+      setErr(errorText(e));
+      setAgree(null);
+    } finally {
+      setComparing(false);
+    }
+  }
+
   async function rank(scope: "layer" | "all" = "layer") {
     setRanking(true);
     setErr("");
+    // A comparison describes the baselines as they were; re-ranking makes it
+    // stale rather than wrong, and a stale disagreement figure beside a fresh
+    // ranking is the kind of thing nobody notices.
+    setAgree(null);
     try {
       const result = await rankHeads(layer, baseline, scope);
       setRanked(result);
@@ -372,13 +402,30 @@ export default function AttentionPanel({
             <select
               className="sm"
               value={baseline}
-              onChange={(e) => setBaseline(e.target.value as "zero" | "mean")}
+              onChange={(e) => setBaseline(e.target.value as Baseline)}
               disabled={ranking}
               title="What a removed head is replaced with — this changes the ranking"
             >
               <option value="zero">zero-ablation</option>
               <option value="mean">mean-ablation</option>
+              <option value="resample">resample ×8</option>
             </select>
+            {/* Not run on load: all three baselines, and resample is eight
+                times the work of the other two. The number it produces is the
+                one the panel could never show — how much the answer depends
+                on which baseline happens to be selected. */}
+            <button
+              className="ghost sm"
+              onClick={() => void compareAllBaselines()}
+              disabled={ranking || comparing}
+              title={
+                "Run all three baselines on this layer and report how far " +
+                "apart they rank the same heads. Costs about ten times a " +
+                "single ranking."
+              }
+            >
+              {comparing ? "comparing…" : "compare baselines"}
+            </button>
           </>
         )}
         {/* Beside "Rank heads", and gated harder than it is.
@@ -444,6 +491,15 @@ export default function AttentionPanel({
             <span className="meta">
               {ranked.passes} forward passes · {ranked.elapsed_s}s ·{" "}
               {ranked.baseline}-ablation
+              {/* The corpus is part of a resample measurement: the same head
+                  scores differently against different donor sentences, so a
+                  number shown without it cannot be checked by anyone. */}
+              {ranked.corpus && (
+                <>
+                  {" "}
+                  · {ranked.draws} draws from {ranked.corpus}
+                </>
+              )}
             </span>
           </div>
           <ol className="ranking-list">
@@ -468,12 +524,39 @@ export default function AttentionPanel({
                       {wholeModel ? `L${r.layer} H${r.head}` : `H${r.head}`}
                     </button>
                     <span className="mid">
-                      {noise ? "below the noise floor" : `KL ${r.kl.toFixed(3)}`}
+                      {noise
+                        ? "below the noise floor"
+                        : `KL ${r.kl.toFixed(3)}`}
+                      {/* The median is not the measurement, the spread is.
+                          Head 10 on gpt2 layer 0 ranged 0.027 to 0.335 over
+                          eight draws: one donor could have reported any of
+                          those as this head's score. */}
+                      {r.draws != null && (
+                        <span className="meta">
+                          {" "}
+                          median of {r.draws}, {r.kl_min?.toFixed(3)}–
+                          {r.kl_max?.toFixed(3)}
+                        </span>
+                      )}
                     </span>
                     <span className="meta">
-                      p({JSON.stringify(ranked.target_token)}){" "}
-                      {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
-                      {r.flips_top && " · changes the top token"}
+                      {r.p_top_after == null ? (
+                        // No single "after" exists across eight draws, so
+                        // there is no honest number to print here.
+                        <>
+                          p({JSON.stringify(ranked.target_token)}){" "}
+                          {r.p_top_before.toFixed(3)} → varies by draw
+                        </>
+                      ) : (
+                        <>
+                          p({JSON.stringify(ranked.target_token)}){" "}
+                          {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+                        </>
+                      )}
+                      {r.flips_top &&
+                        (r.draws != null
+                          ? " · changes the top token under every draw"
+                          : " · changes the top token")}
                     </span>
                     <span className="spacer" />
                     <button
@@ -497,6 +580,41 @@ export default function AttentionPanel({
             <code>{ranked.baseline}</code>, and on some layers the mean baseline
             gives a different order.
           </div>
+          {/* The measurement the panel could never show: how much of this
+              ranking is the model, and how much is the baseline that happened
+              to be selected. Measured on gpt2 layer 0 the three agree only
+              weakly (Spearman 0.34-0.47), so this is not a formality. */}
+          {agree && (
+            <div className="hint agreement">
+              <strong>
+                How much does the baseline decide this ranking?
+              </strong>
+              <ul>
+                {agree.pairs.map((p) => (
+                  <li key={p.baselines.join("/")}>
+                    <code>{p.baselines[0]}</code> vs{" "}
+                    <code>{p.baselines[1]}</code> —{" "}
+                    {p.spearman == null ? (
+                      // Not 0.0: "uncorrelated" and "one side is constant"
+                      // are different statements about the data.
+                      <>no rank correlation (one side is constant)</>
+                    ) : (
+                      <>Spearman {p.spearman.toFixed(2)}</>
+                    )}
+                    ,{" "}
+                    {p.top_k_disagree === 0 ? (
+                      <>same top {p.top_k}</>
+                    ) : (
+                      <strong>
+                        disagree on {p.top_k_disagree} of the top {p.top_k}
+                      </strong>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <span className="meta">{agree.means}</span>
+            </div>
+          )}
         </div>
       )}
       {/* The server's own sentence, unwrapped. Several of the things this

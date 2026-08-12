@@ -1274,6 +1274,75 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/attention/ablate")
 
+    @app.get("/api/attention/ablate/estimate")
+    async def estimate_ablation(
+        layer: int | None = None, baseline: str = "zero", scope: str = "layer"
+    ):
+        """What this sweep would cost on THIS machine, before it is started.
+
+        The pass count is exact and portable; the seconds and the peak memory
+        are projected from one probe pass here and are labelled as one sample.
+        Matters most for `baseline=resample`, which is `RESAMPLE_DRAWS` times
+        the work — 98 passes against 14 for one gpt2 layer.
+        """
+        target = None if scope == "all" else (layer if layer is not None else 0)
+        try:
+            return await asyncio.to_thread(runtime.estimate_ablation, target, baseline)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/ablate/estimate")
+
+    @app.get("/api/attention/control")
+    async def control_ranking(
+        layer: int | None = None, baseline: str = "zero", seed: int = 0
+    ):
+        """The same ranking on an untrained twin of this architecture.
+
+        Answers the question underneath every ranking in this tool: would this
+        measurement have produced a confident, ordered list anyway? Builds the
+        model from `config.json` alone — no weights fetched, works offline —
+        seeds it, runs the identical `rank_heads` over the same tokens, and
+        reports the rank correlation with the real one.
+
+        Costs a second model in memory for the duration, and two sweeps.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.control_ranking,
+                layer if layer is not None else 0,
+                baseline,
+                seed,
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/control")
+
+    @app.get("/api/attention/baselines")
+    async def compare_baselines(layer: int | None = None):
+        """Every baseline on one layer, and how much they disagree.
+
+        Expensive on purpose — it runs all three, so it is a deliberate action
+        rather than something the panel does on load. Ask
+        `/api/attention/ablate/estimate?baseline=resample` first; resample
+        dominates the total.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.compare_baselines, layer if layer is not None else 0
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/baselines")
+
     @app.post("/api/patch")
     async def patch_trace(req: PatchRequest):
         """Where in the model does the answer get decided? Two prompts, one grid.

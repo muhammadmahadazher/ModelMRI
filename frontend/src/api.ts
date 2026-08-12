@@ -187,13 +187,23 @@ export const getAttention = (layer: number, head: number) =>
  *  prediction — measured on gpt2 layer 0, the twelve per-head scores sum to
  *  1.995 while ablating the whole layer gives 0.208.
  */
+export type Baseline = "zero" | "mean" | "resample";
+
 export interface HeadScore {
   layer: number;
   head: number;
+  /** For `resample` this is the MEDIAN over draws, not a single run. */
   kl: number;
   p_top_before: number;
-  p_top_after: number;
+  /** Null under `resample`: there is no single "after" across eight draws. */
+  p_top_after: number | null;
   flips_top: boolean;
+  /** Resample only — the spread across draws. Head 10 on gpt2 layer 0 ranged
+   *  0.027 to 0.335 around a median of 0.036, so one draw could have reported
+   *  any of those as the head's score. */
+  kl_min?: number;
+  kl_max?: number;
+  draws?: number;
 }
 
 export interface Ablation {
@@ -207,6 +217,46 @@ export interface Ablation {
   elapsed_s: number;
   ranked: HeadScore[];
   means: string;
+  /** Resample only. Part of the measurement, not provenance: the same head
+   *  scores differently against a different corpus. */
+  corpus?: string;
+  draws?: number;
+}
+
+/** One pair of baselines, and how far apart they rank the same heads. */
+export interface BaselinePair {
+  baselines: [string, string];
+  /** Null when one side is constant — "uncorrelated" and "that is not a
+   *  ranking" are different statements. */
+  spearman: number | null;
+  heads_compared: number;
+  top_k: number;
+  top_k_shared: number;
+  top_k_disagree: number;
+}
+
+export interface BaselineComparison {
+  pairs: BaselinePair[];
+  means: string;
+  rankings: Record<string, HeadScore[]>;
+}
+
+/** What a sweep would cost on THIS machine, before starting it. */
+export interface CostEstimate {
+  estimate: {
+    passes: number;
+    seconds: number | null;
+    peak_bytes: number | null;
+    free_bytes: number | null;
+    fraction_of_free: number | null;
+    verdict: "ok" | "tight" | "refuse" | "unknown";
+    basis: string;
+    unmeasured: string;
+    notes: string[];
+  };
+  baseline: string;
+  layers: number;
+  n_heads: number;
 }
 
 /** One run's attention minus another's, over the same token sequence. */
@@ -237,12 +287,31 @@ export const getAttentionDiff = (
 
 export const rankHeads = (
   layer: number,
-  baseline: "zero" | "mean" = "zero",
+  baseline: Baseline = "zero",
   scope: "layer" | "all" = "layer",
 ) =>
   fetch(
     `/api/attention/ablate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
   ).then((r) => json<Ablation>(r));
+
+/** Price the sweep before running it. `resample` is eight times the work. */
+export const estimateAblation = (
+  layer: number,
+  baseline: Baseline = "zero",
+  scope: "layer" | "all" = "layer",
+) =>
+  fetch(
+    `/api/attention/ablate/estimate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
+  ).then((r) => json<CostEstimate>(r));
+
+/** Run every baseline on one layer and report how much they disagree.
+ *
+ *  Deliberately not called on load: it runs all three, and resample dominates
+ *  the total. */
+export const compareBaselines = (layer: number) =>
+  fetch(`/api/attention/baselines?layer=${layer}`).then((r) =>
+    json<BaselineComparison>(r),
+  );
 
 /** How far masking one token moves the answer at one position.
  *

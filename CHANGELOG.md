@@ -6,6 +6,95 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A third ablation baseline, and the number that says the baseline is
+  deciding.** `ablate.py` has documented since it was written that zero- and
+  mean-ablation disagree, and done nothing about it — so every ranking this
+  tool has shown was one of several answers with nothing on screen saying the
+  others existed. `resample` is the on-distribution third: replace a head with
+  what it really computes on a different sentence, eight times, and report the
+  median with its spread. Measured on gpt2 layer 0, bf16, "The capital of
+  France is", against 8 plain sentences — zero ranks H7, H10, H9; mean ranks
+  H1, H8, H2; resample ranks H7, H8, H10. Spearman between pairs runs 0.34 to
+  0.47 and the top five disagree on two or three heads in every pair.
+
+  Head 10 in that run scored between **0.0274 and 0.3349** across the eight
+  draws, around a median of 0.0355 — a twelvefold spread, so a single donor
+  could have reported any number in that range as the head's importance. One
+  draw is a coin flip, which is why there are eight, and why the corpus is
+  named in every response: the same head scores differently against different
+  donors, so a resample number quoted without its corpus cannot be checked.
+
+  Refusals rather than fallbacks throughout — no corpus, a donor shorter than
+  the prompt (both lengths named), a donor missing a layer. Padding a short
+  donor would score the padding; falling back to `mean` would return a
+  different measurement under this one's name.
+
+- **A cost preflight, so an analysis is priced before you pay for it.** One
+  probe pass on this machine, multiplied by the pass count the analysis already
+  knows. Time multiplies across sequential passes; **peak memory does not** —
+  measured on gpt2 over the full 146-pass sweep, the loop's peak was 2.00x one
+  pass, not 146x, so multiplying the peak would have refused every analysis this
+  tool offers. Projection called 146 passes exactly, 4.90 s against 4.46 s
+  actual and 1.1 MB against 1.8 MB. Labelled as one sample, and CPU/MPS report
+  what they could not measure rather than a confident zero.
+
+- **A fit calculator that shows its arithmetic and grades itself.** Weight
+  bytes from the safetensors header, KV cache as
+  `2 x layers x kv_heads x head_dim x seq_len x dtype`, and the eager-attention
+  buffer ModelMRI itself forces — every term printed with its formula, and the
+  longest context that fits your card by binary search (5,313 tokens for gpt2
+  on an 8.6 GB 4060). MLA, sliding-window and hybrid-SSM architectures are
+  refused by name rather than approximated; pointed at a real cache it declined
+  `gemma-3-270m-it`, which genuinely has a 512-token window.
+
+- **A random-weight control.** The same architecture built from `config.json`
+  alone — no weights fetched, works offline — seeded, and run through the
+  identical `rank_heads`. Measured on gpt2 layer 0, seed 0: the trained model
+  ranks H7 0.898, H10 0.535, H9 0.412 while the untrained twin ranks H3 0.016,
+  H0 0.015, H1 0.015. Spearman -0.50, sharing 1 of the top 5, and the twin's
+  scores are fifty times smaller and nearly uniform. The ranking survives,
+  which is the outcome you want and not the guaranteed one.
+
+- **Every logit-lens row reports its own error.** `kl_to_final` is the KL from
+  the model's real next-token distribution to that layer's lens distribution.
+  On gpt2 with "The Eiffel Tower is located in the city of": layer 0 is 21.58
+  nats away reading ' destro', layers 9-11 turn ' Rome' -> ' London' ->
+  ' Paris', and 0.96 at layer 11 is the closest the lens gets. Past a stated
+  threshold the panel calls the lens unusable instead of rendering a confident
+  ranked list that describes nothing.
+
+### Fixed
+
+- **The logit lens double-normed its final row on every bfloat16 load.** The
+  check that decides whether the last hidden state is already normalised
+  compared *logits* with `allclose(atol=1e-3, rtol=1e-3)`. Measured on gpt2,
+  cuda: in float32 the two vectors differ by 0.00007 and it passed; in bfloat16
+  they differ by 0.5 and it failed — but the logits are ~128 and bf16's
+  precision there is `128 * 2^-8 = 0.5`, so that IS agreement to the last
+  representable digit. The check was reading the dtype, not the model.
+
+  The consequence is the exact failure that block was written to prevent, and
+  it had been shipping: the final row read `' the'` where gpt2 actually says
+  `' Paris'`, and both `final` and `settled_at` are derived from that row. bf16
+  is the default on every current NVIDIA GPU, so this was wrong for most users,
+  silently, on the one row a reader can check by eye.
+
+  Now compared as **distributions** rather than logits — softmax is scale-free,
+  so bf16 rounding lands near 1e-4 nats while a genuine double-norm measures
+  2.12. Found by the new `kl_to_final`: the last row is the model, so its KL is
+  an arithmetic floor that has to read ~0, and it read 2.12.
+
+- **`/api/attention/ablate/estimate?baseline=resample` answered 500.** The
+  probe built its hook with no donor, so the resample arm indexed `None` inside
+  a forward pass. Found by driving the browser, not by a unit test — the
+  estimator had only ever been called with the default baseline.
+
+- **An empty `t.sqlite` was committed at the repo root.** A trace store left
+  behind by a test run; the test itself writes to a temp directory, and nothing
+  referenced the root copy. Removed, and `*.sqlite` added to `.gitignore`.
+
 ## [0.10.1] — 2026-08-12
 
 ### Fixed

@@ -25,6 +25,8 @@ modelmri/static/app/*
 activations/
 *.zarr/
 sessions.sqlite*
+*.sqlite
+*.sqlite-journal
 
 # Models & weights — never commit
 *.safetensors
