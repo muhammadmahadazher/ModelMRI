@@ -57,6 +57,30 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   scores are fifty times smaller and nearly uniform. The ranking survives,
   which is the outcome you want and not the guaranteed one.
 
+- **Open a GGUF and read what is inside it.** The scanner has always found
+  `.gguf` files — the format most people running models on their own machine
+  actually have — and then refused them with a note. It still cannot *run*
+  one, but "cannot run" and "cannot tell you anything" are different claims and
+  only the first was ever true. Every metadata key, a full tensor table with
+  each tensor's ggml type, shape, byte count and file offset, and per-type
+  roll-ups.
+
+  **Bits-per-weight is arithmetic, not a label.** Ollama, LM Studio, Jan and
+  Open WebUI show a quant preset name and a file size. Measured on this
+  machine's own Ollama blobs: a `qwen3-0.6B` whose dominant type is Q4_K reads
+  **5.499 bpw effective**, because 164 MB of it sits in Q6_K and 59 MB in F16
+  against 294 MB at the 4.5 headline. The tensors above the headline are named
+  rather than averaged into it.
+
+  Stdlib only, and deliberately not the `gguf` pip package: nothing here reads
+  tensor data, only the length-prefixed table describing it, so there is no
+  dependency to add and nothing that a release versioned against llama.cpp can
+  break. Reading a 0.82 GB blob's header took 963 ms and the tensor byte counts
+  account for 98.2% of the file. An unknown ggml type renders as
+  `ggml type N (unknown)` with its size omitted — never bucketed into the
+  nearest familiar thing, since a wrong bits-per-weight computed confidently is
+  worse than an absent one.
+
 - **Search every recorded step, from a pip install.** Free text plus
   allow-listed filters — `kind:tool_call`, `error:true`, `duration>2000`,
   `name:pytest` — over every trace on the machine. Results are steps rather

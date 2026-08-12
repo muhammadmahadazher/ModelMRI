@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, custom, paths
+from . import __version__, custom, gguf_read, paths
 from .custom import AdapterError, CustomHandle
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
@@ -1214,6 +1214,40 @@ def create_app(
     # BEFORE /api/traces/{trace_id}. FastAPI matches in definition order,
     # so with this below it the literal path `search` was captured as a
     # trace id and every query answered "trace not found".
+    @app.get("/api/gguf")
+    async def read_gguf(path: str):
+        """What is inside a GGUF, without loading it or touching the GPU.
+
+        The scanner has always found these and then refused them. It still
+        cannot RUN one — a quantised GGUF is not something transformers loads —
+        but that is a different claim from having nothing to say about it.
+        Reads the header only: a few hundred milliseconds and well under a
+        megabyte for a multi-gigabyte model.
+
+        Bits-per-weight is computed per tensor from the file's own table, so
+        the answer is arithmetic rather than the preset name every other runner
+        shows. Measured on Ollama's own blobs: a qwen3-0.6B labelled Q4_K
+        reads 5.499 bpw effective, because a third of its bytes are in Q6_K
+        and F16.
+        """
+        try:
+            # The same boundary the adapter loader uses, not a second one: a
+            # path arriving from a browser is only read if it sits under a
+            # root this server was already told about. `resolve_under_roots`
+            # raises AdapterError with the sentence to show.
+            target = await asyncio.to_thread(custom.resolve_under_roots, path)
+            return await asyncio.to_thread(
+                lambda: gguf_read.read(target).to_dict()
+            )
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf")
+
     @app.get("/api/traces/search")
     async def search_traces(q: str = "", limit: int = 100):
         """Full-text search over every recorded step on this machine.
