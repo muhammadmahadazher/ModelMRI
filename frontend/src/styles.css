@@ -3022,3 +3022,18 @@ button.model-btn:hover:not(:disabled) {
   .model-btn-id { font-size: 13.5px; }
   button.model-btn { min-height: 46px; padding: 10px 14px; }
 }
+
+
+/* ---------- a module that ran more than once ----------
+   Quiet, because it is a qualifier on the name rather than a reading. Loud
+   enough to stop two rows with the same name looking like a duplication. */
+.l-call {
+  margin-left: 7px;
+  padding: 0 5px;
+  border-radius: var(--r-chip);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--color-mute);
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+  cursor: help;
+}

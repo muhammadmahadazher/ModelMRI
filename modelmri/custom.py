@@ -92,6 +92,14 @@ class LayerStat:
     trainable: bool
     ms: float
     # Activation statistics. None when the output held no float tensor.
+    # WHICH CALL, when a module runs more than once in a single forward pass.
+    # A shared encoder applied to two inputs -- a siamese or two-branch model
+    # -- fires every one of its leaves twice, so the table showed two rows
+    # named `enc.0` with nothing to tell them apart. Correct data, read as a
+    # duplication bug, which is exactly the failure this project keeps
+    # finding: a true row that looks false. 1 for a module that ran once.
+    call: int = 1
+    calls_total: int = 1
     mean: float | None = None
     std: float | None = None
     min: float | None = None
@@ -647,9 +655,13 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
     def pre_hook(mod, _inp):
         starts[id(mod)] = time.perf_counter()
 
+    # How many times each module has fired during THIS pass.
+    call_no: dict[str, int] = {}
+
     def make_hook(name: str, mod):
         def hook(_m, _inp, output):
             kind = type(mod).__name__
+            call_no[name] = call_no.get(name, 0) + 1
             began = starts.pop(id(mod), None)
             ms = round((time.perf_counter() - began) * 1000, 3) if began else 0.0
             n_params = sum(p.numel() for p in mod.parameters(recurse=False))
@@ -664,6 +676,7 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
                 "ms": ms,
                 "is_activation": kind in _ACTIVATIONS,
                 "out_shape": [],
+                "call": call_no[name],
             }
             order[0] += 1
             if t is None:
@@ -726,11 +739,22 @@ def inspect(model, example) -> tuple[list[LayerStat], dict]:
         if was_training:
             model.train()
 
+    # The TOTAL is only knowable once the pass is over, so it is stamped on
+    # afterwards. A row saying "call 1" tells you nothing on its own; "call 1
+    # of 2" tells you the module is shared and that a second reading of it
+    # exists further down.
+    for r in rows:
+        r.calls_total = call_no.get(r.name, 1)
+
     total_ms = round((time.perf_counter() - t0) * 1000, 3)
     out_t = _first_tensor(output)
     meta = {
         "total_ms": total_ms,
         "n_layers": len(rows),
+        # Modules that ran more than once. A two-branch model applies the same
+        # encoder to two inputs, and without this the table simply looks like
+        # it has repeated itself.
+        "repeated": sorted({r.name for r in rows if r.calls_total > 1}),
         "truncated": truncated,
         "output_shape": list(out_t.shape) if out_t is not None else [],
         "output": _summarise_output(out_t),

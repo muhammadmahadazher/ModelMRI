@@ -387,6 +387,21 @@ export default function CustomPanel() {
                 <div className={`layer-row ${v ? v.tone : ""}`} key={`${l.order}-${l.name}`} role="row">
                   <span className="l-name" title={l.name}>
                     {l.name}
+                    {/* A module that ran more than once in this pass. Without
+                        it the table repeats a name and looks like it has
+                        duplicated a row -- correct data reading as a bug,
+                        which is the failure this panel keeps having. A
+                        two-branch model applies one encoder to two inputs;
+                        every leaf under it fires twice, and both readings are
+                        real and different. */}
+                    {(l.calls_total ?? 1) > 1 && (
+                      <span
+                        className="l-call"
+                        title={`This module ran ${l.calls_total} times in one forward pass — your forward() calls it more than once. This row is reading ${l.call}.`}
+                      >
+                        {l.call}/{l.calls_total}
+                      </span>
+                    )}
                   </span>
                   <span className="l-kind">{l.kind}</span>
                   <span className="l-shape">{shapeText(l.out_shape)}</span>

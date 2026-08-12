@@ -1124,6 +1124,11 @@ export interface CustomLayer {
   name: string;
   kind: string;
   out_shape: number[];
+  /** Which invocation this row is, when a module runs more than once in one
+   *  forward pass — a shared encoder applied to two inputs fires every leaf
+   *  twice. `1 of 1` for the ordinary case. */
+  call?: number;
+  calls_total?: number;
   n_params: number;
   trainable: boolean;
   ms: number;
