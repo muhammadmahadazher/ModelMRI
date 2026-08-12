@@ -2962,3 +2962,17 @@ body {
   border-radius: var(--r-chip);
   background: color-mix(in oklab, var(--ink) 6%, transparent);
 }
+
+
+/* ---------- a refusal that was written with line breaks ----------
+   These messages carry a worked example -- an adapter built from the reader's
+   own class and filename -- and HTML collapses the newlines that make it
+   readable, so six lines of code arrived as one run-on sentence. Honouring
+   the whitespace is the difference between something you can copy and
+   something you have to decode. */
+.hint.err.refusal {
+  white-space: pre-wrap;
+  line-height: 1.6;
+  max-width: 96ch;
+  overflow-x: auto;
+}

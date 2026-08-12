@@ -276,13 +276,25 @@ export default function CustomPanel() {
               >
                 Load
               </button>
-              <button className="ghost sm" onClick={() => setCands(null)} disabled={busy !== ""}>
+              <button
+                className="ghost sm"
+                // Clears the error as well as the list. "Back" is the control
+                // for "I am done with this" and an error that outlives the
+                // thing it was about is a stale claim about the current state
+                // -- the refusal for a file you are no longer looking at,
+                // sitting under the resting copy as if it applied to it.
+                onClick={() => {
+                  setCands(null);
+                  setErr("");
+                }}
+                disabled={busy !== ""}
+              >
                 Back
               </button>
             </div>
           </div>
         )}
-        {err && <div className="hint err">{err}</div>}
+        {err && <div className="hint err refusal">{err}</div>}
       </div>
     );
   }
@@ -334,7 +346,7 @@ export default function CustomPanel() {
         )}
       </div>
 
-      {err && <div className="hint err">{err}</div>}
+      {err && <div className="hint err refusal">{err}</div>}
 
       {run && (
         <>
