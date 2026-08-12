@@ -60,6 +60,22 @@ let px = -1e4;
 let py = -1e4;
 let pInfluence = 0;
 
+/** Where the pointer has just been. A lens alone spotlights; a short wake
+ *  means a fast drag draws a line through the field and you can see that you
+ *  did it. Six samples is enough to read as a stroke and cheap enough to walk
+ *  per cell. */
+const WAKE = 6;
+const wake: { x: number; y: number; life: number }[] = [];
+
+/** A click drops a wave that travels outward and dies. The gesture everybody
+ *  tries on a field like this, and until now the only one that did nothing.
+ *  Capped, because a reader holding the mouse down should not be able to
+ *  make the hero cost more than the model does. */
+const MAX_RIPPLES = 5;
+const ripples: { x: number; y: number; born: number }[] = [];
+const RIPPLE_LIFE = 2.6; // seconds
+const RIPPLE_SPEED = 190; // px per second
+
 function field(
   x: number, y: number, t: number, w: number, h: number, P: FieldParams,
 ): number {
@@ -74,7 +90,41 @@ function field(
   if (pInfluence > 0.01) {
     const d = Math.hypot(x - px, y - py);
     v += pInfluence * Math.exp(-(d * d) / 9000) * 0.55;
+
+    // ...and the wake behind it, each sample fainter and tighter than the
+    // last so the stroke tapers instead of ending in a blob.
+    for (let i = 0; i < wake.length; i++) {
+      const s = wake[i];
+      if (s.life <= 0) continue;
+      const wd = Math.hypot(x - s.x, y - s.y);
+      v += pInfluence * s.life * Math.exp(-(wd * wd) / 5200) * 0.3;
+    }
   }
+
+  // ripples: a travelling ring, not a growing disc. The cell brightens only
+  // while the wavefront is passing through it, which is what makes it read as
+  // a wave rather than a bloom.
+  for (let i = 0; i < ripples.length; i++) {
+    const rp = ripples[i];
+    const age = t - rp.born;
+    if (age < 0 || age > RIPPLE_LIFE) continue;
+    const radius = age * RIPPLE_SPEED;
+    const d = Math.hypot(x - rp.x, y - rp.y);
+    const band = d - radius;
+    // Fades with age AND with distance travelled, so a ripple does not reach
+    // the far corner as loud as it left.
+    const decay = (1 - age / RIPPLE_LIFE) ** 2;
+    v += Math.exp(-(band * band) / 900) * decay * 0.85;
+  }
+
+  // A slow diagonal sweep so the field has somewhere to go when nobody is
+  // touching it. Long period on purpose: an element that moves constantly is
+  // one the eye learns to discard.
+  const sweep = ((x + y) * 0.6 - t * 46) % 900;
+  if (sweep > 0 && sweep < 150) {
+    v += Math.sin((sweep / 150) * Math.PI) * 0.16;
+  }
+
   return v;
 }
 
@@ -122,6 +172,16 @@ export default function AsciiField({ modelId }: { modelId?: string | null }) {
       // ease the pointer lens in/out so entering and leaving both feel soft
       pInfluence += ((hovering ? 1 : 0) - pInfluence) * 0.08;
 
+      // Age the wake and reap dead ripples once per FRAME, not once per cell.
+      // The field function runs ~2500 times a frame and must stay a pure read
+      // of this state; mutating it in there would make the tail length depend
+      // on the canvas size.
+      for (let i = 0; i < wake.length; i++) wake[i].life *= 0.82;
+      while (wake.length && wake[wake.length - 1].life < 0.02) wake.pop();
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        if (t - ripples[i].born > RIPPLE_LIFE) ripples.splice(i, 1);
+      }
+
       for (let y = 0; y < h; y += CELL) {
         for (let x = 0; x < w; x += CELL) {
           const v = field(x, y, t, w, h, P);
@@ -158,9 +218,25 @@ export default function AsciiField({ modelId }: { modelId?: string | null }) {
       px = e.clientX - r.left;
       py = e.clientY - r.top;
       hovering = true;
+      // Record where the pointer was, so the lens leaves a stroke. Ageing
+      // happens in the draw loop, which is the only thing with a clock.
+      wake.unshift({ x: px, y: py, life: 1 });
+      wake.length = Math.min(wake.length, WAKE);
     };
     const onLeave = () => {
       hovering = false;
+      wake.length = 0;
+    };
+    const onDown = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      ripples.push({
+        x: e.clientX - r.left,
+        y: e.clientY - r.top,
+        born: performance.now() / 1000,
+      });
+      // Oldest first, so holding the button down cannot make the hero cost
+      // more than the model it is sitting above.
+      if (ripples.length > MAX_RIPPLES) ripples.shift();
     };
 
     size();
@@ -173,6 +249,7 @@ export default function AsciiField({ modelId }: { modelId?: string | null }) {
     if (!reduced) {
       canvas.addEventListener("pointermove", onMove);
       canvas.addEventListener("pointerleave", onLeave);
+      canvas.addEventListener("pointerdown", onDown);
     }
 
     draw(1.7); // paint frame 1 synchronously — no blank hero before rAF fires
@@ -186,6 +263,7 @@ export default function AsciiField({ modelId }: { modelId?: string | null }) {
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVis);
       canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerdown", onDown);
       canvas.removeEventListener("pointerleave", onLeave);
     };
   }, [themeV, modelId]);

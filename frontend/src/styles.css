@@ -2903,3 +2903,10 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .panel::before { animation: none; transform: none; }
 }
+
+
+/* The hero answers to the pointer, so it should look like it will. */
+.hero canvas.ascii { cursor: crosshair; }
+@media (prefers-reduced-motion: reduce) {
+  .hero canvas.ascii { cursor: default; }
+}
