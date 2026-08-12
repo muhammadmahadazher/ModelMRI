@@ -6,4 +6,4 @@ Run `modelmri serve` and open http://localhost:5900
     https://github.com/muhammadmahadazher/ModelMRI
 """
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"

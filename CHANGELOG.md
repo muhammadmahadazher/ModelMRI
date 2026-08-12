@@ -6,6 +6,19 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-08-12
+
+### Fixed
+
+- **The model picker's caret was invisible, and the first attempt at that
+  enlarged the whole button.** A 12px text glyph in the muted ink, beside a
+  12.5px monospace id that out-weighed it — so the one signal that the control
+  OPENS something rendered as a smudge. The button's size is restored exactly
+  as it was; the caret is drawn rather than typed, at full ink weight, and
+  dips on hover. An accent edge makes the control findable without making it
+  bigger.
+
+
 ## [0.10.0] — 2026-08-12
 
 ### Added
