@@ -6,6 +6,8 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-12
+
 ### Added
 
 - **Activation patching: where in the model the answer gets decided.** Every
@@ -115,7 +117,69 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   roots, so models already downloaded stay visible rather than appearing to
   have vanished.
 
+- **`modelmri models` and `modelmri traces`.** Two questions people were
+  starting a server and opening a browser tab to answer. `models` lists what
+  is on this machine **and what will not load, with the reason** — 17 found
+  and 6 loadable here, the eleven refusals each naming themselves ("a
+  vision-language model, not a causal LM", "no architecture in config.json").
+  `traces` lists recorded agent runs, newest first, which is what you want the
+  moment `record_demo.py` finishes in another terminal. Both follow the rule
+  `open` and `inspect` follow — no torch, no transformers, no server — and
+  import in 0.082s. The README now opens with a table of all nine commands.
+
+- **The scanner finds the checkpoints people actually have.** It matched
+  exactly one standalone extension, `.gguf`, so a folder holding
+  `weights.pth`, `scripted.pt`, `model.onnx` and `epoch3.ckpt` returned **zero
+  results** — somebody who trained their own model and pointed this tool at it
+  was told, in effect, that it was not there. It now covers `.pt`, `.pth`,
+  `.onnx`, `.ckpt`, `.h5`, `.msgpack` and `.pkl`, each with the truthful
+  reason it will or will not open, and `loadable: false` wherever the loader
+  would refuse. Finding a file is not the same as claiming to support it.
+
+- **A state_dict refusal that looks for the missing half first.** A `.pth` is
+  weights with no architecture and cannot be loaded alone — but "write an
+  adapter" is a poor answer when the model class is sitting in the same
+  folder, which is how people lay a project out. The refusal now reads the
+  neighbouring `.py` files, names the `nn.Module` subclass it finds, and
+  writes the six-line adapter using *that class, that filename, those
+  weights*. Found with `ast`, never by importing: reading a stranger's file to
+  see what is in it must not mean executing it.
+
+- **A hero you can touch.** A click drops a travelling ripple, the cursor
+  leaves a wake, and a slow diagonal sweep crosses on its own. The
+  composition is still seeded from the loaded checkpoint, so every model keeps
+  its own stable field.
+
 ### Changed
+
+- **Every panel spends the colour it already owns.** Six semantic hues were
+  defined and almost nothing used them: each panel carried its accent in a 7px
+  dot and a 10.5px caption on a white rectangle. Panels now take that accent
+  as a 4px band across the top edge, the measurement rule takes it too, the
+  dot is a lit indicator rather than a printed square, and section titles went
+  from 10.5px — smaller than the body text beneath them — to 13px. Elevation
+  went from 4.5% opacity, which on a cream ground is arithmetically present
+  and visually nothing, to something that reads as a plate resting on paper.
+  Panels reveal as you scroll to them rather than in a 240ms flash that is
+  over before anybody looks, and the ground carries a 40px grid at the same
+  pitch as the rules' major ticks.
+
+- **The model picker was 38px tall at 12.5px type** — smaller than the prompt
+  under it and quieter than the Generate button above it, for the control
+  every panel on the page depends on. 52px at 15px, with an accent edge.
+
+- **The base-model caveat arrives before the generation, not under it.** It
+  rendered beneath the output — after the reader had typed a question, waited,
+  and read something confidently wrong. Asking gpt2 "whats 2+2" and being told
+  to respect each other is not a bug report anybody files as "I used a base
+  model". It fires on `instruct === false` only, never on `null`: unknown is a
+  third state and announcing "this is a base model" when the tool does not
+  know would be a false claim made confidently.
+
+- **The agents panel says what it is.** It said "no traces yet" and gave a
+  command, which reads as an empty list of something you already have. It is
+  not: that panel has nothing to do with the model loaded above it, and no
+  model will ever fill it. It records runs of your own agent code.
 
 - **The lint gate is written down instead of inherited.** There was no
   `[tool.ruff]` section anywhere, so `uv run ruff check .` in CI enforced
@@ -163,6 +227,68 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   this project could put on screen.
 
 ### Fixed
+
+- **`modelmri-record` 0.1.3 shipped the trace-parking leak, and the version
+  never moved.** The published artefact had no `_undelivered_dir`, did not read
+  `MODELMRI_TRACE_DIR`, and parked traces at a bare `modelmri-traces` path
+  relative to the working directory — which for somebody instrumenting an
+  agent is normally their git repo. Untracked JSON of their conversations, one
+  `git add -A` from a public remote. Because the fix landed in source under the
+  same version number, `pip install -U` was a no-op for everyone holding the
+  leaky build and nobody could tell which one they had. **0.1.4 is published
+  and 0.1.3 is yanked.** This is also why the credential-redaction test looked
+  order-dependent for a day and a half: it was reading the stale installed
+  copy whenever the repo's was not already on `sys.path`.
+
+- **A data race in the trace store.** One sqlite3 connection shared across
+  threads with `check_same_thread=False`, which Python permits and does not
+  make safe. Every writer serialised it; both readers did not — so a read
+  arriving beside any other statement got rows of the wrong width, surfacing
+  as an intermittent 500 from `/api/traces`. Before the agents panel had a
+  retry, one of those left it empty for the session, indistinguishable from
+  "you have not recorded anything". `get_trace` was worse and never raised at
+  all: two statements read together, so an interleaving pairs one trace's
+  header with another trace's steps.
+
+- **The agents panel fetched once and could never fetch again.** No polling,
+  no revalidation, and from the empty branch no reachable path to `setList` —
+  so it told you to run `record_demo.py` and then could not display the result
+  without a full page reload. It polls briefly and refetches on window focus,
+  which is the actual gesture.
+
+- **A `.pth` was filed under a heading reading TORCHSCRIPT.** Those fail in
+  completely different ways, and grouping by extension decides nothing —
+  `.pt` and `.pth` are the same zip container. The kind is read from the
+  archive *index* now (TorchScript writes `constants.pkl` and a `code/` tree;
+  `torch.save` writes `data.pkl`), which executes nothing.
+
+- **TorchScript answered 500 instead of refusing.** PyTorch installs a
+  generated `fail()` over both hook APIs on `RecursiveScriptModule`, so every
+  TorchScript archive on disk is un-instrumentable — all of them, not a corner
+  case. The raise sat above the try/finally as a bare `RuntimeError`, so the
+  reader got "Something inside ModelMRI failed rather than refusing" for a
+  format that simply cannot carry what the panel measures.
+
+- **The custom panel listed our own template, and duplicated yours.**
+  `examples/adapter_template.py` ships inside the package as something to
+  copy, and it was listed beside real models — once per agent worktree, so
+  four rows of a blank form above the one file that mattered. A checkpoint
+  under two overlapping scan roots was listed twice. And a module that runs
+  more than once in one forward pass — a shared encoder applied to two inputs
+  — printed its name twice with nothing to tell the readings apart; rows now
+  say `1/2`.
+
+- **The sign-out button was offered for credentials this tool does not own.**
+  `sign_out` deletes ModelMRI's own token and nothing else, which is right —
+  but `whoami` falls back to `HF_TOKEN` and to huggingface-cli's file, so the
+  server truthfully answered `signed_in: true` and the click looked dead. It
+  now appears only for a token ModelMRI stored, and otherwise names the owner
+  and how to remove it.
+
+- **The keyboard focus ring was a rectangle around rounded controls.** The
+  rule said `border-radius: inherit`, meaning "keep the shape you have", and
+  `inherit` takes the *parent's* radius — so every control in a flex row had
+  its own overwritten with 0.
 
 - **The robot panel showed episode 0's video for every one of 206 episodes.**
   Measured on `lerobot/pusht`: episodes 0, 5 and 20 returned byte-identical
