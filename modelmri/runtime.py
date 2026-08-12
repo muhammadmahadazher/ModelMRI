@@ -1615,6 +1615,7 @@ class ModelRuntime:
             # a cached (2, 16), with features_summary publishing 6 tokens and
             # 2 rows of activations belonging to a different sequence.
             self._feats = None
+            self.last_telemetry = None
 
         return {
             "adopted": True,

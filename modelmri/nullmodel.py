@@ -83,16 +83,31 @@ def build_twin(config: Any, *, seed: int, dtype: Any, device: str):
 
 
 def teardown(twin) -> None:
-    """Give the memory back immediately rather than at the next collection.
+    """Give the accelerator memory back, even though the caller still holds it.
 
-    The twin is the size of the model it doubles, and on an 8 GB card holding
-    it one moment longer than needed is the difference between the next
-    analysis running and refusing.
+    `del twin` here only unbinds this function's own parameter — the caller's
+    variable is still a live reference, so `gc.collect()` collects nothing and
+    `empty_cache()` has nothing to release. Measured: a gpt2 twin allocated
+    255.3 MB and 255.3 MB was still allocated after teardown returned. The
+    docstring claimed the memory came back immediately and it did not, which on
+    an 8 GB card is the difference between the next analysis running and
+    refusing.
+
+    Moving the parameters to CPU frees the CUDA storage regardless of how many
+    Python references survive, which is the only thing that works from inside a
+    function the caller called.
     """
     import gc
 
     import torch
 
+    try:
+        twin.to("cpu")
+    except Exception:
+        # A model that will not move is one we cannot free this way; the
+        # collector below is then the only lever, and saying nothing would be
+        # worse than trying and moving on.
+        pass
     del twin
     gc.collect()
     if torch.cuda.is_available():
@@ -110,6 +125,17 @@ def verdict(rho: float | None, *, top_k_shared: int, top_k: int) -> str:
         return (
             "The untrained twin produced no ranking to compare against — its "
             "scores were all equal, so there is nothing to correlate."
+        )
+    if top_k <= 0:
+        # Defensive: `compare_baselines` cannot produce top_k == 0 alongside a
+        # real correlation, since a ranking short enough to give top_k 0 is
+        # also too short for spearman to be defined. But the sentence below
+        # would read "sharing 0 of the top 0" if it ever did, which is a
+        # conclusion drawn from nothing.
+        return (
+            f"The untrained twin correlates at Spearman {rho:.2f}, but no top "
+            "heads were compared, so there is nothing to say about which heads "
+            "the two agree on."
         )
     if rho >= 0.7 or top_k_shared >= max(1, top_k - 1):
         return (

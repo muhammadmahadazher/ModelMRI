@@ -42,6 +42,22 @@ two clouds separated by 6.0 along one axis it scored 1.04 against a null whose
 worst shuffle reached 1.30. A real direction failing its own control, because
 the estimator had thrown the direction away before scoring it.
 
+**The gate is not free of false positives, and here is its rate.** With
+`NULL_REFITS` draws the smallest attainable permutation p-value is
+`1/(K+1)` — 0.111 at eight — so the gate cannot assert more than that however
+clean the data is. Measured directly, 200 trials per method on structureless
+Gaussian clouds with arbitrary labels and no real direction at all:
+
+    caa    32/200 beat their own null   16.0%
+    repe   24/200                       12.0%
+
+against 50/50 detection of a real separation of 4.0 sigma. So it is a useful
+screen and it is not a significance test: roughly one direction in six that
+this reports as real, on data with nothing in it, is noise. `p_value` is
+published alongside `beats_null` for that reason — a boolean hides whether the
+call was 1/9 or 9/9. Raising `NULL_REFITS` is the lever if you need a tighter
+gate, at linear cost in refits.
+
 **Fit on half, score on the other half.** A direction scored on the pairs it
 was fitted from will separate them, because it was built to. The split is the
 difference between "this direction encodes the property" and "this direction
@@ -90,6 +106,10 @@ class Direction:
     null_mean: float
     null_max: float
     beats_null: bool
+    # The standard permutation p-value, (1 + #{null >= |effect|}) / (1 + draws).
+    # `beats_null` is the same gate expressed as a boolean, and a boolean hides
+    # how close the call was — 1/9 and 9/9 both read as "no" today.
+    p_value: float
     n_pairs: int
     n_fit: int
     n_score: int
@@ -259,6 +279,15 @@ def fit_direction(
     null_mean = sum(nulls) / len(nulls) if nulls else 0.0
     null_max = max(nulls) if nulls else 0.0
     beats = bool(nulls) and abs(effect) > null_max
+    # Textbook permutation p-value. With K draws the smallest attainable value
+    # is 1/(K+1), so 8 draws can never assert better than p = 0.111 — which is
+    # exactly why the measured false-positive rate below is what it is, and why
+    # this number is published rather than only the boolean.
+    p_value = (
+        (1 + sum(1 for x in nulls if x >= abs(effect))) / (1 + len(nulls))
+        if nulls
+        else 1.0
+    )
 
     notes = []
     if not nulls:
@@ -283,6 +312,7 @@ def fit_direction(
         n_pairs=n,
         n_fit=int(half),
         n_score=int(n - half),
+        p_value=round(p_value, 4),
         residual_norm=round(float(torch.cat([pos, neg]).norm(dim=-1).mean()), 3),
         notes=notes,
     ), direction

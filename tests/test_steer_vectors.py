@@ -229,3 +229,47 @@ def test_saved_files_are_plain_json(store):
     sv.save("politeness", vec, META)
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert len(payload["values"]) == D
+
+
+# ---------------------------- regressions from the round-2 audit
+
+
+def test_the_p_value_is_the_textbook_permutation_form():
+    """`beats_null` is a boolean and a boolean hides how close the call was —
+    1/9 and 9/9 both read as "no"."""
+    judged, _ = sv.fit_direction(separated(), 0)
+    assert judged.p_value == pytest.approx(1 / (sv.NULL_REFITS + 1), abs=1e-4)
+    assert judged.beats_null is True
+
+    empty, _ = sv.fit_direction(structureless(), 0)
+    assert empty.p_value > 1 / (sv.NULL_REFITS + 1)
+    assert empty.beats_null is False
+
+
+def test_the_gate_cannot_assert_better_than_one_over_draws_plus_one():
+    """With K draws the smallest attainable p-value is 1/(K+1). Publishing a
+    smaller one would be claiming a resolution the estimator does not have."""
+    judged, _ = sv.fit_direction(separated(gap=50.0), 0)
+    # `round(1/9, 4)` is 0.1111, a hair BELOW 1/9 — compare against the value
+    # as reported rather than against the unrounded fraction.
+    assert judged.p_value >= round(1 / (sv.NULL_REFITS + 1), 4)
+
+
+def test_the_false_positive_rate_has_not_silently_got_worse():
+    """Measured at the time of writing: caa 32/200 = 16.0% on structureless
+    data. This pins the order of magnitude so a change to the null, the split
+    or the draw count cannot quietly make the gate useless."""
+    hits = sum(
+        1 for s in range(120)
+        if sv.fit_direction(structureless(seed=s), 0, method="caa")[0].beats_null
+    )
+    rate = hits / 120
+    assert rate < 0.30, f"false-positive rate {rate:.2f} — the gate has degraded"
+
+
+def test_a_real_direction_is_still_found_after_the_p_value_change():
+    found = sum(
+        1 for s in range(30)
+        if sv.fit_direction(separated(gap=4.0, seed=s), 0)[0].beats_null
+    )
+    assert found >= 27, f"only {found}/30"

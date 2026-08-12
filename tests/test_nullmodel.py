@@ -121,3 +121,40 @@ def test_teardown_does_not_raise_without_cuda():
     cfg = GPT2Config(n_layer=1, n_head=2, n_embd=8, vocab_size=16, n_positions=16)
     twin = nullmodel.build_twin(cfg, seed=0, dtype=torch.float32, device="cpu")
     nullmodel.teardown(twin)
+
+
+# ---------------------------- regressions from the round-2 audit
+
+
+def test_teardown_actually_releases_accelerator_memory():
+    """`del twin` inside teardown unbinds only its own parameter — the caller's
+    variable is still a live reference, so gc collects nothing. Measured: a
+    gpt2 twin allocated 255.3 MB and 255.3 MB was still allocated after
+    teardown returned, while its docstring claimed the memory came back."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs an accelerator to observe the allocation")
+    from transformers import GPT2Config
+
+    cfg = GPT2Config(n_layer=4, n_head=4, n_embd=256, vocab_size=512, n_positions=64)
+    torch.cuda.empty_cache()
+    before = torch.cuda.memory_allocated()
+    twin = nullmodel.build_twin(cfg, seed=0, dtype=torch.float32, device="cuda")
+    allocated = torch.cuda.memory_allocated() - before
+    assert allocated > 0, "the twin did not allocate anything to free"
+
+    nullmodel.teardown(twin)
+    # `twin` is deliberately still bound here — that is the caller shape the
+    # old implementation could not handle.
+    retained = torch.cuda.memory_allocated() - before
+    assert retained < allocated * 0.15, (
+        f"{retained / 1e6:.1f} MB of {allocated / 1e6:.1f} MB still held"
+    )
+
+
+def test_a_verdict_with_nothing_compared_does_not_draw_a_conclusion():
+    """`top_k_shared >= max(1, top_k - 1)` is false at top_k 0, but a high rho
+    still took the "mostly the architecture" branch and printed "sharing 0 of
+    the top 0"."""
+    said = nullmodel.verdict(0.9, top_k_shared=0, top_k=0)
+    assert "top 0" not in said
+    assert "nothing to say" in said

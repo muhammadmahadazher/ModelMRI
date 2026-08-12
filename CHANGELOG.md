@@ -202,6 +202,50 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **Three more from a second audit of the areas the first one skipped.** The
+  first audit named what it had NOT exercised, which is the only reason these
+  were findable: `budget.py`'s projection arithmetic, `nullmodel.py`,
+  `corpus.py`, the steering null, `spearman`, the lens normed check, and React
+  hook ordering.
+
+  - **`nullmodel.teardown` did not free the twin.** `del twin` unbinds the
+    function's own parameter; the caller's variable is still a live reference,
+    so `gc.collect()` collected nothing and `empty_cache()` had nothing to
+    release. Measured on a real gpt2 twin: 255.3 MB allocated, 255.3 MB still
+    allocated after teardown returned — while its docstring claimed the memory
+    came back immediately. On an 8 GB card that is the difference between the
+    next analysis running and refusing. Moves the parameters to CPU first now,
+    which frees the CUDA storage however many references survive: 256.2 MB in,
+    0.0 MB retained.
+
+  - **The steering gate's false-positive rate is now measured and published.**
+    With eight draws the smallest attainable permutation p-value is 1/9, so the
+    gate cannot assert better than 0.111 however clean the data. Measured over
+    200 trials per method on structureless clouds with no direction in them:
+    CAA passes 16.0%, RepE 12.0%, against 50/50 detection of a real 4-sigma
+    separation. It is a useful screen and it is not a significance test, and
+    that number now appears in the module rather than being left for a user to
+    discover. Every direction also reports `p_value` alongside `beats_null`,
+    because a boolean hides whether the call was 1/9 or 9/9.
+
+  - **A verdict drawn from nothing.** `nullmodel.verdict` took its
+    "mostly the architecture" branch on a high correlation even when no top
+    heads had been compared, printing "sharing 0 of the top 0". Unreachable
+    from `compare_baselines` as it stands — a ranking short enough to give
+    top_k 0 is also too short for Spearman to be defined — so this is a guard
+    rather than a live fix.
+
+  Checked and clean, with what was run: `spearman` and `_ranks` against
+  scipy over 800 random vectors (exact match on ranks, 5e-5 on rho, and the
+  four undefined cases agreeing with scipy's `nan`); `compare_baselines`
+  invariants over 300 random cases; the budget projection against real sweeps
+  at 1, 3 and 12 layers (pass counts exact, 0.88x-1.02x on time); the lens
+  normed check across fp32/bf16/fp16 on CUDA and fp32/bf16 on CPU (correct top
+  token and a ~0 floor in all five); and React hook ordering across all four
+  panels, checked per component with brace depth rather than by grepping
+  returns — the first pass flagged ten violations that were all `useEffect`
+  cleanups or a nested component.
+
 - **Nine defects found by an adversarial audit of this branch before it was
   pushed.** Six independent lenses over the diff, every candidate attacked by
   one reviewer trying to reproduce it and one trying to refute it, keeping only
