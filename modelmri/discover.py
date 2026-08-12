@@ -46,6 +46,11 @@ SKIP = {
     ".cache",
     "$RECYCLE.BIN",
     "System Volume Information",
+    # Agent worktrees are full COPIES of the repo, so scanning them listed the
+    # same adapter_template.py three times with three different paths -- a
+    # picker that appears to have found three models when it has found one.
+    ".claude",
+    ".worktrees",
 }
 
 WEIGHTS = (".safetensors", ".bin", ".pth")

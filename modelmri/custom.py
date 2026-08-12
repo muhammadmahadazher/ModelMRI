@@ -371,6 +371,54 @@ def load_from_adapter(path: Path):
 # resolution. There the exception is a library talking about this machine to
 # somebody who was not asking about this machine, and it carried an absolute
 # weights path plus a site-packages frame into the browser. Measured.
+def nearby_model_classes(weights: Path) -> list[tuple[str, str]]:
+    """`nn.Module` subclasses defined in .py files beside a checkpoint.
+
+    Returns (file name, class name) pairs. Read with `ast`, never imported:
+    importing an arbitrary module to find out what it contains means executing
+    it, and "this file is not something I will execute" is the rule the whole
+    adapter contract rests on. Reading the text costs nothing and cannot bite.
+
+    The point is the sentence it lets the refusal say. A state_dict genuinely
+    cannot be loaded on its own -- but "write an adapter" is a poor answer when
+    the class is one file away, and this is how the tool notices.
+    """
+    import ast
+
+    out: list[tuple[str, str]] = []
+    try:
+        siblings = sorted(weights.parent.glob("*.py"))
+    except OSError:
+        return out
+
+    for f in siblings[:40]:  # a folder, not a source tree
+        if f.name.startswith("_") or f.name.endswith("_adapter.py"):
+            continue
+        try:
+            tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, SyntaxError, ValueError):
+            # A file that will not parse is not a candidate, and is also not
+            # this function's problem to report.
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for base in node.bases:
+                # nn.Module, torch.nn.Module, Module -- match the attribute
+                # name so an aliased import still counts.
+                name = (
+                    base.attr
+                    if isinstance(base, ast.Attribute)
+                    else base.id
+                    if isinstance(base, ast.Name)
+                    else ""
+                )
+                if name == "Module":
+                    out.append((f.name, node.name))
+                    break
+    return out
+
+
 def load_torchscript(path: Path):
     """Load a TorchScript archive, or explain why a plain checkpoint can't be."""
     import torch
@@ -419,12 +467,36 @@ def load_torchscript(path: Path):
     kind = type(obj).__name__
     if isinstance(obj, dict):
         keys = list(obj)[:4]
+        # BEFORE refusing, look for the half that is missing. The class
+        # is very often in the same folder as the weights -- that is how
+        # people lay a project out -- and telling somebody to go and write an
+        # adapter while their model class sits next to the checkpoint is the
+        # tool failing to look.
+        nearby = nearby_model_classes(path)
+        found = ""
+        if nearby:
+            listed = ", ".join(f"{cls} in {fn}" for fn, cls in nearby[:3])
+            first_file, first_cls = nearby[0]
+            found = (
+                f"\n\nThere is a model class next to it: {listed}. "
+                f"An adapter that uses it is six lines:\n\n"
+                f"    import torch\n"
+                f"    from {first_file[:-3]} import {first_cls}\n\n"
+                f"    def load():\n"
+                f"        m = {first_cls}()\n"
+                f'        m.load_state_dict(torch.load("{path.name}", '
+                f'map_location="cpu", weights_only=True))\n'
+                f"        return m.eval()\n\n"
+                f"Save that beside them and point ModelMRI at it. If the "
+                f"forward pass takes anything other than one tensor, add an "
+                f"example_input() returning what it does take."
+            )
         raise AdapterError(
             f"{path.name} is a state_dict ({len(obj)} tensors, e.g. "
             f"{', '.join(map(str, keys))}), which is weights without an "
             "architecture — nothing can reconstruct your model class from it. "
             "Write a six-line adapter that builds the model and loads these "
-            "weights into it; see examples/adapter_template.py."
+            "weights into it; see examples/adapter_template.py." + found
         )
     raise AdapterError(
         f"{path.name} contains a {kind}, not a model. Point ModelMRI at a "
@@ -870,6 +942,12 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
         "site-packages",
         "dist",
         "build",
+        # Agent worktrees are full copies of the repo, so scanning them listed
+        # the SAME adapter three times under three paths -- a panel that looks
+        # like it found three models when it found one, and the reader has to
+        # read three long paths to work out they are the same file.
+        ".claude",
+        ".worktrees",
         ".tox",
         ".idea",
         # Test suites are full of `def load()` in fixtures and docstrings, and
