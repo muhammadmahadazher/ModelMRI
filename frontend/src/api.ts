@@ -57,6 +57,11 @@ export interface SessionState {
   generation?: string;
   n_tokens?: number;
   n_slices?: number;
+  /** A recorded activation-patching trace, when the file carries one. A `.mri`
+   *  used to hold attention and the logit lens only, so the one finding in
+   *  this tool that is causal rather than correlational was the one you could
+   *  not send anybody. */
+  patch?: { available: boolean; clean: string; corrupt: string };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -153,11 +158,19 @@ export interface LoadProgress {
   bytes_done: number;
   bytes_total: number;
   elapsed_s: number;
+  /** Seconds left at the average rate so far. `null` means the server does
+   *  not have enough signal to say — which is a real answer, not zero. */
+  eta_s: number | null;
   error: string | null;
 }
 
 export const getLoadProgress = () =>
   fetch("/api/model/progress").then((r) => json<LoadProgress>(r));
+
+/** A download in flight, which is NOT the same slot as a model load — the
+ *  picker can be pulling one model while the page behind it loads another. */
+export const getPullProgress = () =>
+  fetch("/api/pull/progress").then((r) => json<LoadProgress>(r));
 
 export const getAttentionMeta = () =>
   fetch("/api/attention/meta").then((r) => json<AttentionMeta>(r));
@@ -753,6 +766,8 @@ export interface VLADataset {
   image_shape: number[];
   n_episodes: number;
   episodes: VLAEpisode[];
+  cameras?: string[];
+  video_key?: string;
 }
 
 export interface VLAFrame {
@@ -790,11 +805,16 @@ export const loadVLA = (repo?: string) =>
     body: JSON.stringify(repo && repo.trim() ? { repo: repo.trim() } : {}),
   }).then((r) => json<VLAStatus>(r));
 
-export const getVLAEpisodes = () =>
-  fetch("/api/vla/episodes").then((r) => json<VLADataset>(r));
+export const getVLAEpisodes = (camera?: string) =>
+  fetch(
+    camera ? `/api/vla/episodes?camera=${encodeURIComponent(camera)}` : "/api/vla/episodes",
+  ).then((r) => json<VLADataset>(r));
 
-export const getVLAFrame = (episode: number, t: number) =>
-  fetch(`/api/vla/frame?episode=${episode}&t=${t}`).then((r) => json<VLAFrame>(r));
+export const getVLAFrame = (episode: number, t: number, camera?: string) =>
+  fetch(
+    `/api/vla/frame?episode=${episode}&t=${t}` +
+      (camera ? `&camera=${encodeURIComponent(camera)}` : ""),
+  ).then((r) => json<VLAFrame>(r));
 
 export const analyseVLA = (episode: number, t: number) =>
   fetch("/api/vla/analyse", {
@@ -1324,6 +1344,8 @@ export interface PatchSite {
 }
 
 export interface PatchTrace {
+  /** True when this came out of a `.mri` rather than off a live model. */
+  recorded?: boolean;
   clean: PatchSide;
   corrupt: PatchSide;
   gap: number;

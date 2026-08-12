@@ -7,6 +7,7 @@ introspection is unavailable in Ollama mode (ModelMRI says so in the UI).
 
 from __future__ import annotations
 
+import errno as errno_mod
 import http.client
 import json
 import os
@@ -59,21 +60,44 @@ def _relayed(message: str) -> Refusal:
     return Refusal(f"ollama: {message}")
 
 
-def _unreachable(host: str, err: BaseException) -> Refusal:
-    """The daemon is not answering. Written once; raised from two streams.
+def _cause(err: BaseException) -> str:
+    """Why a connection failed, with nothing from this machine in it.
 
-    `err.reason` when there is one rather than `err`: URLError's own str wraps
-    it in "<urlopen error ...>", which is machinery talking to itself. The
-    reason is the part a reader can act on — "Connection refused" means Ollama
-    is not running, a name-resolution failure means OLLAMA_HOST points
-    somewhere wrong — and against an http host it is an errno sentence, never
-    a path from this machine. Anything without a `.reason` (a bare
-    ConnectionResetError, a BadStatusLine) already reads as that errno
-    sentence, so its own str is used.
+    This used to be `getattr(err, "reason", None) or err`, interpolated whole,
+    and the docstring argued it was safe because a reason "is an errno
+    sentence, never a path from this machine". That is true of the errno case
+    and false of every other one. Measured against an https OLLAMA_HOST:
+
+        ollama unreachable at https://ollama.internal: ('CA bundle
+        C:/Users/<name>/.../site-packages/certifi/cacert.pem',) ...
+
+    which is a Refusal, so it is relayed to the browser at 409 by design --
+    the argument was sound for the case it considered and there was a second
+    case.
+
+    The errno is kept, because it is the part a reader can act on
+    (ECONNREFUSED means Ollama is not running; a resolution failure means
+    OLLAMA_HOST points somewhere wrong) and a number with a fixed name cannot
+    carry a path. `os.strerror` is the operating system's own fixed sentence
+    for that number. Anything without an errno -- an SSL failure, a bad status
+    line -- gives its class, on the same rule the rest of this project
+    follows: the class, never the text.
     """
-    reason = getattr(err, "reason", None) or err
+    inner = getattr(err, "reason", None) or err
+    number = getattr(inner, "errno", None)
+    if isinstance(number, int):
+        name = errno_mod.errorcode.get(number, str(number))
+        try:
+            return f"{name} ({os.strerror(number)})"
+        except (ValueError, OverflowError):
+            return name
+    return type(inner).__name__
+
+
+def _unreachable(host: str, err: BaseException) -> Refusal:
+    """The daemon is not answering. Written once; raised from two streams."""
     return Refusal(
-        f"ollama unreachable at {host}: {reason}. Start Ollama, or set "
+        f"ollama unreachable at {host}: {_cause(err)}. Start Ollama, or set "
         f"OLLAMA_HOST if it listens somewhere else."
     )
 
@@ -132,7 +156,14 @@ def resolve(name: str, timeout: float = 10.0) -> dict:
             "found": False,
             "bytes": 0,
             "name": tag,
-            "error": f"could not reach the Ollama registry: {err}",
+            # The class, never the text. This is returned as data and
+            # server.py spreads it into a 200 body, so there is no except arm
+            # anywhere to sanitise it: measured, an SSL failure put the CA
+            # bundle's absolute path in that body.
+            "error": (
+                f"could not reach the Ollama registry ({_cause(err)}). "
+                "The full error is in the terminal running `modelmri serve`."
+            ),
         }
 
     layers = doc.get("layers") or []
@@ -334,10 +365,17 @@ def pull(name: str, host: str | None = None):
                     raise _relayed(msg["error"])
                 total = msg.get("total") or 0
                 done = msg.get("completed") or 0
+                # The RAW counts as well as the friendly ones. The route
+                # publishes these to the progress tracker, and a percentage
+                # cannot be turned back into "3.1 of 9.6 GB, four minutes
+                # left" -- which is the thing somebody staring at a ten
+                # minute download actually wants.
                 yield {
                     "status": msg.get("status", ""),
                     "percent": round(100 * done / total, 1) if total else None,
                     "total_gb": round(total / 1e9, 2) if total else None,
+                    "bytes_done": done,
+                    "bytes_total": total,
                 }
     except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
         # WHAT A SEPARATE PROCESS DYING ACTUALLY RAISES, MEASURED.

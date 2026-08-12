@@ -21,6 +21,8 @@ interface Props {
   onModelChange: () => Promise<void>;
   /** A shared `.mri` is open: the attention below is a recording. */
   replay?: boolean;
+  /** The recorded patching trace that `.mri` carries, if it carries one. */
+  sessionPatch?: { available: boolean; clean: string; corrupt: string };
 }
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
@@ -30,7 +32,12 @@ const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
 // meant the UI could not honestly name them.
 const DECODE = { max_new_tokens: 256, temperature: 0.7 };
 
-export default function Playground({ model, onModelChange, replay }: Props) {
+export default function Playground({
+  model,
+  onModelChange,
+  replay,
+  sessionPatch,
+}: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -245,6 +252,16 @@ export default function Playground({ model, onModelChange, replay }: Props) {
 
   return (
     <>
+      {/* This was the only region on the page with no card and no header: a
+          model button, a prompt and a Generate floating on the background
+          above five panels that all had both. It is the part of the tool
+          somebody uses FIRST, and it looked the least finished. */}
+      <div className="panel workbench">
+        <div className="sect">
+          <span className="dot d-run" />
+          <h2 className="h-run">RUN — A PROMPT THROUGH A MODEL</h2>
+          <span className="rule" />
+        </div>
       <div className="row">
         <button className="model-btn glass" onClick={() => setPickerOpen(true)} disabled={busy !== ""}>
           <span className="model-btn-label">model</span>
@@ -256,20 +273,6 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           {isLoadedPick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load"}
         </button>
       </div>
-
-      <ModelPicker
-        open={pickerOpen}
-        current={pick}
-        onClose={() => setPickerOpen(false)}
-        onPick={(id, src) => {
-          setPick(id);
-          setSource(src);
-          setPickerOpen(false);
-          // A refusal is about one model. Keeping it on screen after a
-          // different pick is an assertion that is no longer true.
-          setOversize(null);
-        }}
-      />
 
       {source === "ollama" && (
         <div className="hint" style={{ marginTop: -6 }}>
@@ -339,7 +342,7 @@ export default function Playground({ model, onModelChange, replay }: Props) {
         <span className="meta">{meta}</span>
       </div>
 
-      <div className="panel output">
+      <div className="output">
         {output === "" && busy !== "generating" ? (
           <span style={{ color: "var(--color-mute)" }}>
             Output appears here — Generate loads the model automatically if
@@ -404,6 +407,21 @@ export default function Playground({ model, onModelChange, replay }: Props) {
           );
         })()}
       </div>
+      </div>
+
+      <ModelPicker
+        open={pickerOpen}
+        current={pick}
+        onClose={() => setPickerOpen(false)}
+        onPick={(id, src) => {
+          setPick(id);
+          setSource(src);
+          setPickerOpen(false);
+          // A refusal is about one model. Keeping it on screen after a
+          // different pick is an assertion that is no longer true.
+          setOversize(null);
+        }}
+      />
 
       {epoch > 0 && introspectable && (
         <AttentionPanel epoch={epoch} replay={replay} />
@@ -414,7 +432,13 @@ export default function Playground({ model, onModelChange, replay }: Props) {
       {/* Patching needs no generation — it runs its own two prompts — but it
           does need a live HuggingFace model to re-run, which is exactly what a
           recording is not. */}
+      {/* On a live model, whenever there is something to trace. On a
+          recording, only when the file actually carries a trace — a panel
+          whose one button can only apologise is worse than no panel. */}
       {introspectable && !replay && <PatchPanel epoch={epoch} />}
+      {replay && sessionPatch?.available && (
+        <PatchPanel epoch={epoch} recorded={sessionPatch} />
+      )}
       {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel
           epoch={epoch}
@@ -511,8 +535,13 @@ function LoadBar({
         <span className="mid loadbar-id">{loading}</span>
         <span className="spacer" />
         <span className="meta">
-          {pct !== null && `${gb(done)} / ${gb(total)} · `}
+          {pct !== null && `${gb(done)} / ${gb(total)} · ${gb(total - done)} left · `}
           {(p?.elapsed_s ?? 0).toFixed(0)}s
+          {/* Only when the server is willing to estimate. It withholds the
+              number until there is enough history to divide by, because a
+              countdown that opens with "4 hours" and settles at "40 seconds"
+              is one the reader learns to ignore. */}
+          {p?.eta_s != null && ` · ~${remaining(p.eta_s)} left`}
         </span>
         {/* The whole reason this component was revisited. A minutes-long
             download with no way out is a trap, and this one could run for
@@ -534,3 +563,13 @@ function LoadBar({
 
 const gb = (n: number) =>
   n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
+
+/** A duration somebody can act on. Seconds under a minute, then minutes, then
+ *  hours and minutes — "312 minutes" is a number you have to do arithmetic on
+ *  before it means anything. */
+export function remaining(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
+}

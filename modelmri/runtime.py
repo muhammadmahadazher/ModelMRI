@@ -49,6 +49,36 @@ from .saes import SAEHandle, SAEStatus
 log = logging.getLogger("modelmri")
 
 
+def _load_failed(err: BaseException) -> str:
+    """What the progress meter is allowed to say when a load breaks.
+
+    The exception's CLASS, never its message. The progress snapshot is served
+    verbatim by /api/model/progress -- `Snapshot.to_dict` is `asdict(self)` --
+    and the load meter polls it once a second, so anything written here is a
+    response body. Pasting the exception's text there put a torch message,
+    with an absolute path and a site-packages frame in it, into a 200: past
+    the 500 arm that returns a fixed sentence precisely to stop that, because
+    the leak was not on the route anybody had hardened.
+
+    Measured before the fix, from `POST /api/model/load` failing and the very
+    next `GET /api/model/progress`:
+
+        "error": "RuntimeError: CUDA out of memory. Tried to allocate 2.00
+                  GiB. Loading C:/Users/<name>/.../model.safetensors
+                  ... site-packages/torch/nn/modules/module.py, line 1518"
+
+    The class name is kept because it is genuinely useful and carries nothing
+    about the machine. Callers log the real exception, since dropping the text
+    without recording it would trade a leak for an erasure, and an erasure is
+    the worse bug -- the same rule `_internal` in server.py follows, and the
+    one the float32-on-CPU arm below already states in its own comment.
+    """
+    return (
+        f"{type(err).__name__} — the load failed. The full error is in the "
+        "terminal running `modelmri serve`."
+    )
+
+
 def _require_causal_lm(hf_id: str) -> None:
     """Refuse a repo the playground cannot run, and say what it is.
 
@@ -380,6 +410,7 @@ class ModelRuntime:
         # interpreted by another model's weights -- which does not crash, it
         # just quietly reports numbers about nothing.
         self.epoch = 0
+        self._last_patch: dict = {}
         # Base vs instruction-tuned for an Ollama model, from Ollama itself.
         # None until asked, and None again on any HF load.
         self._ollama_instruct: bool | None = None
@@ -673,7 +704,11 @@ class ModelRuntime:
                 progress.TRACKER.finish(error=message)
                 raise BadRequest(message) from err
             except BaseException as err:
-                progress.TRACKER.finish(error=f"{type(err).__name__}: {err}")
+                # The OSError arm above is careful to publish only an authored
+                # sentence. This one pasted the exception's own text into the
+                # same snapshot, which is the browser-facing one.
+                log.exception("load of %s failed", hf_id, exc_info=err)
+                progress.TRACKER.finish(error=_load_failed(err))
                 raise
             progress.TRACKER.stage("device", f"moving to {self.accel.name}")
             try:
@@ -681,11 +716,23 @@ class ModelRuntime:
             except Exception as err:
                 # Out of VRAM, or a driver that says yes then fails: keep the
                 # tool usable instead of dying on the user's first click.
+                #
+                # Two sinks here and BOTH are served verbatim: the snapshot by
+                # /api/model/progress, and `accel.reason` by /api/accelerator
+                # -- devices.py calls that field "shown in the UI" and means
+                # it. So the class, never the text, in either.
+                log.warning(
+                    "moving %s onto %s failed", hf_id, self.device, exc_info=err
+                )
                 if self.accel.kind == "cpu":
-                    progress.TRACKER.finish(error=str(err))
+                    progress.TRACKER.finish(error=_load_failed(err))
                     raise
+                rejected = self.accel.name
                 self.accel = devices.detect(prefer="cpu")
-                self.accel.reason = f"fell back to CPU: {type(err).__name__}: {err}"
+                self.accel.reason = (
+                    f"fell back to CPU: {rejected} rejected this model "
+                    f"({type(err).__name__})"
+                )
                 self.device = self.accel.torch_device
                 progress.TRACKER.stage("device", "GPU rejected the model, using CPU")
                 try:
@@ -790,11 +837,21 @@ class ModelRuntime:
         """
         with self._lock:
             if self.replay is not None:
+                # A recording that CARRIES a trace can serve it. The refusal
+                # below is still right for one that does not -- patching means
+                # running the model again with an activation replaced, and a
+                # `.mri` holds activations rather than weights -- but refusing
+                # a file that already holds the answer was the format failing
+                # to be worth sending.
+                recorded = self.replay.patch
+                if recorded.get("grids"):
+                    return {**recorded, "recorded": True}
                 raise Refusal(
-                    "This is a recording, not a live model. Patching means "
-                    "running the model again with an activation replaced, and "
-                    "a `.mri` holds activations rather than weights — there is "
-                    "nothing here to re-run."
+                    "This is a recording, and it does not carry a patching "
+                    "trace. Patching means running the model again with an "
+                    "activation replaced, and a `.mri` holds activations "
+                    "rather than weights — there is nothing here to re-run. "
+                    "Whoever exported it can run the trace and share it again."
                 )
             if self.backend == "ollama":
                 raise Refusal(
@@ -811,7 +868,7 @@ class ModelRuntime:
             n_layers = int(self.model.config.num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
-                return patch.trace(
+                result = patch.trace(
                     self.model,
                     self.tokenizer,
                     blocks,
@@ -819,6 +876,17 @@ class ModelRuntime:
                     corrupt,
                     device=self.device,
                 )
+                # Kept so a `.mri` can carry it. Tagged with the epoch, which
+                # moves on every load, unload and generation: a trace measured
+                # against a different model or a different run must not ride
+                # along with an export and be read as belonging to it.
+                self._last_patch = {
+                    **result,
+                    "clean": clean,
+                    "corrupt": corrupt,
+                    "epoch": self.epoch,
+                }
+                return result
             except patch.PatchError as err:
                 # A pair this measurement cannot be taken on, not a failure of
                 # the code. Every one of these names what to change.
@@ -1779,7 +1847,25 @@ class ModelRuntime:
             n_heads=n_heads,
             note=note,
             scope=scope,
+            # The causal result, when one was measured against THIS run. A
+            # `.mri` carried attention and the logit lens, so the one finding
+            # in this tool that is causal rather than correlational was the
+            # one you could not send anybody.
+            patch=self._patch_for_export(),
         )
+
+    def _patch_for_export(self) -> dict:
+        """The last patch trace, if it belongs to the state being exported.
+
+        The epoch moves on every load, unload and generation. Without that
+        check a trace measured on an earlier prompt -- or on a model since
+        swapped out -- would be written into the file beside a different
+        run's tokens, and nothing downstream could tell.
+        """
+        last = self._last_patch
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k != "epoch"}
 
     def open_session(self, data: bytes) -> dict:
         """Open a `.mri`. Replaces any session already open; leaves the model."""
@@ -1803,6 +1889,13 @@ class ModelRuntime:
             "n_tokens": len(self.replay.tokens),
             "n_slices": len(self.replay.attention),
             "slices": sorted(self.replay.attention),
+            # So the panel can offer the recorded trace instead of a button
+            # that can only refuse.
+            "patch": {
+                "available": self.replay.has_patch(),
+                "clean": self.replay.patch.get("clean", ""),
+                "corrupt": self.replay.patch.get("corrupt", ""),
+            },
         }
 
     # ---------------- SAE features ----------------

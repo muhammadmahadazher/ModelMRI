@@ -236,10 +236,36 @@ class Snapshot:
     bytes_done: int = 0
     bytes_total: int = 0  # 0 means "unknown", the UI shows an indeterminate bar
     elapsed_s: float = 0.0
+    # Seconds left at the average rate so far. None means "not enough signal
+    # to say", which is a real answer and not a zero.
+    eta_s: float | None = None
     error: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _eta(done: int, total: int, elapsed: float) -> float | None:
+    """Seconds remaining at the average rate so far, or None.
+
+    The AVERAGE rate, deliberately, not an instantaneous one. hf_xet writes
+    blobs in large infrequent jumps — a 71.6 second gap was measured during a
+    perfectly healthy download — so an instantaneous estimate swings between
+    "12 seconds" and "four hours" on the same transfer, and a number that
+    jumps like that teaches the reader to ignore it.
+
+    None until there is something to divide: no total (the UI shows an
+    indeterminate bar), nothing transferred, or under two seconds of history.
+    A countdown that starts wrong is worse than one that starts late.
+    """
+    if not total or done <= 0 or elapsed < 2.0:
+        return None
+    if done >= total:
+        return 0.0
+    rate = done / elapsed
+    if rate <= 0:
+        return None
+    return round((total - done) / rate, 1)
 
 
 class _Tracker:
@@ -275,7 +301,53 @@ class _Tracker:
             snap = Snapshot(**asdict(self._snap))
         if snap.active:
             snap.elapsed_s = round(time.monotonic() - self._t0, 1)
+        snap.eta_s = _eta(snap.bytes_done, snap.bytes_total, snap.elapsed_s)
         return snap
+
+    def start_external(
+        self, name: str, *, stage: str = "weights", detail: str = ""
+    ) -> None:
+        """Track a long job that reports its OWN byte counts.
+
+        `start` spawns a watcher thread that polls the HuggingFace cache on
+        disk, because that is the only way to see what hf_hub is doing. An
+        Ollama pull streams its own `completed`/`total` per chunk, so there is
+        nothing to watch — and a watcher pointed at the HF cache during an
+        Ollama pull would publish an unrelated directory's size as this job's
+        progress, which is the "5.0 GB / 2.5 GB" failure again in a new place.
+        """
+        self._t0 = time.monotonic()
+        self.cancelled.clear()
+        with self._lock:
+            self._gen += 1
+            self._snap = Snapshot(active=True, hf_id=name, stage=stage, detail=detail)
+        self._stop = None
+
+    def publish(
+        self,
+        *,
+        bytes_done: int | None = None,
+        bytes_total: int | None = None,
+        stage: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Write a job's own numbers into the snapshot.
+
+        Ignored once the job is no longer the active one, on the same rule as
+        `_publish`: a finished job's last chunk must not land on top of the
+        next one's.
+        """
+        with self._lock:
+            if not self._snap.active:
+                return
+            if bytes_done is not None:
+                self._snap.bytes_done = max(0, int(bytes_done))
+            if bytes_total is not None:
+                self._snap.bytes_total = max(0, int(bytes_total))
+            if stage:
+                self._snap.stage = stage
+            if detail:
+                self._snap.detail = detail
 
     def start(self, hf_id: str) -> None:
         self._t0 = time.monotonic()
@@ -440,3 +512,19 @@ class _Tracker:
 
 
 TRACKER = _Tracker()
+
+# A SECOND SLOT, because a pull and a load are different jobs that genuinely
+# overlap: you can download one model while another is loaded, and the picker
+# that starts the download is a sheet over the page that starts the load.
+#
+# Sharing one tracker was tried and is exactly the bug this module already
+# documents fixing once. Measured: an Ollama pull of gemma3:1b was in flight,
+# a page load loaded gpt2, and `/api/model/progress` answered
+#
+#     {"hf_id": "gpt2", "bytes_done": 394812192, "bytes_total": 815310432,
+#      "stage": "ready", "active": false}
+#
+# — one job's name against another job's byte counts, with the pull still
+# running and its updates silently dropped because the generation had moved
+# on. Same shape as the "5.0 GB / 2.5 GB" report that started all of this.
+PULLS = _Tracker()

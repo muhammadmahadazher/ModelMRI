@@ -6,6 +6,7 @@ import {
   getHubAuth,
   getHubModels,
   getOllama,
+  getPullProgress,
   getOllamaSuggested,
   HubAuth,
   HubModel,
@@ -13,10 +14,51 @@ import {
   hubSignOut,
   OllamaResolved,
   OllamaState,
+  LoadProgress,
   OllamaSuggestion,
   pullOllama,
   resolveOllama,
 } from "./api";
+import { remaining } from "./Playground";
+
+/** What a pull is doing, right now. Bytes, a bar, and a time — the three
+ *  things somebody watching a download wants and the picker used to answer
+ *  with the word "Pulling…". */
+function PullProgress({ p }: { p: LoadProgress | null }) {
+  if (!p || !p.active) return null;
+  const pct = p.bytes_total > 0 ? (100 * p.bytes_done) / p.bytes_total : null;
+  const gb = (n: number) =>
+    n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
+  return (
+    <div className="pull-progress" role="status" aria-live="polite">
+      <div className={`pull-track ${pct === null ? "indeterminate" : ""}`}>
+        <div
+          className="pull-fill"
+          style={pct === null ? undefined : { width: `${pct}%` }}
+        />
+      </div>
+      <span className="meta">
+        {pct !== null
+          ? `${gb(p.bytes_done)} of ${gb(p.bytes_total)} · ${gb(
+              p.bytes_total - p.bytes_done,
+            )} left`
+          : p.detail || "starting"}
+        {` · ${p.elapsed_s.toFixed(0)}s`}
+        {p.eta_s != null && ` · ~${remaining(p.eta_s)} left`}
+      </span>
+    </div>
+  );
+}
+
+/** Is THIS row the thing currently downloading?
+ *
+ *  Either because this tab clicked Pull, or because the server says a pull of
+ *  that name is in flight — which is what makes the bar survive a refresh and
+ *  show up in a second tab. */
+function isPulling(busy: string, p: LoadProgress | null, name: string): boolean {
+  if (busy === `pull:${name}`) return true;
+  return Boolean(p?.active && p.hf_id === name);
+}
 
 interface Props {
   open: boolean;
@@ -61,6 +103,10 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
   const [models, setModels] = useState<HubModel[] | null>(null);
   const [ollama, setOllama] = useState<OllamaState | null>(null);
   const [busy, setBusy] = useState("");
+  // A pull runs inside this sheet, and the sheet covers the load meter on the
+  // page behind it. Without this, the one place you can start a nine gigabyte
+  // download was also the one place you could not watch it.
+  const [pulling, setPulling] = useState<LoadProgress | null>(null);
   const [err, setErr] = useState("");
   // A pull the size guard refused, held with its model so "anyway" retries
   // the right one.
@@ -211,6 +257,40 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     };
   }, [open]);
 
+  // ABOVE `if (!open) return null` — see below. Polled while the sheet is
+  // OPEN, not while this tab happens to be the one
+  // that started a pull. A download lives on the server: reload the page or
+  // open a second tab and the bytes keep arriving, so a bar that only exists
+  // in the tab that clicked is a bar that vanishes exactly when somebody
+  // refreshes to check on it.
+  useEffect(() => {
+    if (!open) {
+      setPulling(null);
+      return;
+    }
+    let live = true;
+    const tick = () => {
+      void getPullProgress()
+        .then((p) => live && setPulling(p))
+        // A failed poll is not a failed pull. Keep the last numbers rather
+        // than blanking the bar, which would read as "it stopped".
+        .catch(() => undefined);
+    };
+    tick();
+    const id = window.setInterval(tick, 700);
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, [open]);
+
+  // EVERY hook above this line, without exception. This early return is
+  // why: a hook placed below it does not run when the sheet is closed, so
+  // opening the sheet renders MORE hooks than the previous render did and
+  // React tears the tree down (#310) rather than showing it. Symptom is a
+  // picker that never appears, which reads like a dead button rather than
+  // like a crash. tests/ui_check.py waits for `.sheet` and is what caught
+  // it; it has now caught it twice, in two different components.
   if (!open) return null;
 
   async function doSignIn() {
@@ -226,6 +306,7 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
       setBusy("");
     }
   }
+
 
   async function doPull(name: string, confirm = false) {
     setBusy(`pull:${name}`);
@@ -543,6 +624,9 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                               : "Pull"}
                       </button>
                     </div>
+                    {isPulling(busy, pulling, resolved.name) && (
+                      <PullProgress p={pulling} />
+                    )}
                     {resolved.warning && (
                       <div className="hint err pad">{resolved.warning}</div>
                     )}
@@ -602,6 +686,9 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                       >
                         {busy === `pull:${s.name}` ? "Pulling…" : "Pull"}
                       </button>
+                      {isPulling(busy, pulling, s.name) && (
+                        <PullProgress p={pulling} />
+                      )}
                     </div>
                   ))}
               </>

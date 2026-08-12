@@ -51,6 +51,70 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   words.
 
 
+- **A `.mri` carries the causal result, and `modelmri inspect` reads one
+  without a browser.** The format held attention, the logit lens, the prompt
+  and the generation — so the one finding in this tool that is *causal* rather
+  than correlational, "the answer is decided at layer 15, position 4", was the
+  one finding you could not send anybody. Open a recording that carries a
+  trace and the patching panel draws it, marked as recorded rather than
+  measured on your machine, with the pair it was measured on: a grid without
+  its prompts is unreadable. A recording that carries none says so instead of
+  offering a button that can only refuse.
+
+  Additive, so the format version does not move and files written before this
+  still open. The section is validated like `attention` rather than trusted —
+  a `.mri` is meant to be forwarded, so `parse` runs on bytes a stranger sent,
+  and a ragged grid, a string where a number belongs, an infinity or a
+  40,000 x 40,000 claim all stop there rather than in whoever's browser opened
+  it. Malformed is **refused, not dropped**: a damaged file presented as an
+  intact one that simply has no patching is the failure that module exists to
+  avoid. A 12x8 trace over three components adds under 4 KB.
+
+  `modelmri inspect file.mri` prints the model, the machine it ran on, the
+  shape, what was captured, the patching components and the prompt, or
+  `--json` for the lot untruncated. Held to the same rule as `open` — no
+  torch, no transformers, no server — because 26 seconds of imports to read a
+  54 KB file reads as a hang and somebody pressed ctrl-c. Measured at 0.185 s.
+
+- **A download you can watch.** `POST /api/ollama/pull` consumed the daemon's
+  progress stream with a loop whose entire body was `last = update`, so a nine
+  gigabyte pull showed the word "Pulling…" and nothing else until it finished
+  — while exact `completed`/`total` counts arrived the whole time. The data was
+  there; nobody published it. The picker now shows bytes, a bar and a time,
+  driven against the real daemon: 10.8 to 187.5 of 522.6 MB with the estimate
+  converging 166 s to 90 s.
+
+  The estimate is the **average** rate, not an instantaneous one. hf_xet writes
+  blobs in large infrequent jumps — 71.6 seconds of silence measured during a
+  perfectly healthy download — so an instantaneous figure swings between "12
+  seconds" and "four hours" on one transfer. It is withheld entirely until
+  there is something to divide: no total, nothing transferred, or under two
+  seconds of history. A countdown that starts wrong is worse than one that
+  starts late.
+
+  A pull gets its **own** progress slot. Sharing the model loader's was tried
+  and reproduced this project's oldest bug: mid-pull of `gemma3:1b`, a page
+  that loaded gpt2 made `/api/model/progress` answer with gpt2's name against
+  gemma3's byte counts, the pull still running and its updates silently
+  dropped. The bar also follows the server rather than the tab that clicked,
+  so refreshing the page to check on a download no longer makes it look
+  stopped.
+
+- **Every camera in a LeRobot dataset, not the first one.** `next(...)` kept
+  one video feature and discarded the rest, so a two-camera SO-100 recording
+  or a four-camera ALOHA one was presented as though it had a single view —
+  the others were not merely unselectable, they were invisible. All are
+  listed, the panel offers a picker when there is a choice, and switching
+  re-reads the episode table because the routing is stored per camera.
+
+- **`MODELMRI_MODELS_HOME`** moves where downloaded models land, for anyone
+  who does not want them wherever an ambient `HF_HOME` points. Opt-in, and
+  only opt-in: an `HF_HOME` somebody configured is theirs, and silently
+  relocating a cache shared with transformers and datasets would strand every
+  model they have. When it is set, the previous location joins the discovery
+  roots, so models already downloaded stay visible rather than appearing to
+  have vanished.
+
 ### Changed
 
 - **The lint gate is written down instead of inherited.** There was no
@@ -82,7 +146,88 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   and `zip`'s default was to truncate — which in `hub.py` would have marked
   gated models unusable on no evidence, silently.
 
+- **The workbench is a panel, and resting panels use their width.** The model
+  picker, the prompt and Generate were a bare fragment, so each became a direct
+  child of the page grid and inherited the gap meant to separate *instruments*
+  — three of those stacked inside one logical group. It was the region a reader
+  uses first and the only one on the page with no card, no header and no
+  grouping, sitting above five panels that had all three.
+
+  `max-width: 46ch` on a resting panel is the right measure for prose and the
+  wrong one for a panel: three fifths of every resting card sat empty, and
+  because it clamped the control rows too, the folder input was too narrow to
+  show its own placeholder and a Windows path broke across four lines. The
+  measure belongs to the prose now, and the space beside it carries a diagram
+  of the *shape* of that panel's output — unlabelled and carrying no numbers on
+  purpose, because a decorative chart holding invented data is the worst thing
+  this project could put on screen.
+
 ### Fixed
+
+- **The robot panel showed episode 0's video for every one of 206 episodes.**
+  Measured on `lerobot/pusht`: episodes 0, 5 and 20 returned byte-identical
+  images, while the state vector printed underneath each one was correctly
+  that episode's. The picture and the numbers disagreed and nothing said so —
+  and the attention heatmap was then computed on a frame the reader was not
+  looking at.
+
+  `episodes()` read `video_from_timestamp`. No LeRobot v3.0 dataset has a
+  column by that name — it is `videos/<camera>/from_timestamp`, namespaced per
+  camera — and `.get(name, 0.0)` turned the miss into a start time of zero for
+  all of them. It reads the real column now and **refuses** when it is absent,
+  because a missing routing column means frames cannot be located and
+  defaulting is precisely what made this invisible.
+
+  Two more assumptions of the same shape were underneath. The video file was
+  `sorted(rglob("*.mp4"))[0]` — the first mp4 anywhere in the snapshot — so
+  with two cameras it was whichever key sorts first (the panel could show the
+  wrist view while labelling it the overhead one) and with two chunks every
+  episode past the first decoded from the wrong file entirely. The row offset
+  summed earlier episodes' lengths where the dataset states it outright in
+  `dataset_from_index`. Verified across all 206: the stated offsets and the
+  summed ones agree, and each video span matches `length / fps` to within
+  0.15 s.
+
+- **Six places published a library's own text to the browser.** `Refusal` and
+  `BadRequest` carry sentences authored for the reader and are relayed
+  deliberately; everything else is a library talking about a machine, and
+  library text routinely carries absolute paths and site-packages frames. None
+  of the six was on a route anybody had hardened.
+
+  `POST /api/model/load` correctly answers a fixed sentence at 500 — and the
+  same failure was written into the progress snapshot, which
+  `GET /api/model/progress` returns verbatim at 200 once a second because the
+  load meter polls it. Measured: a torch OOM put an absolute weights path and a
+  `module.py` frame into that body. `/api/ollama/resolve` returns its error as
+  *data* on a 200, so no except arm sanitises it, and an SSL failure published
+  the CA bundle's path. `ollama._unreachable` interpolated `err.reason` whole,
+  under a docstring arguing a reason "is an errno sentence, never a path from
+  this machine" — true of the case it considered, and there was a second one.
+  `custom.py` pasted torch's text into the checkpoint reader's refusal, and
+  `attribute.py` reported a failed mask check as the exception's full text.
+
+  All six now name the exception's **class** and log the rest, which is the
+  rule this codebase already stated one arm away: "only their exception
+  CLASSES are interpolated (never their text)". The boundary is written down —
+  the reader's *own* adapter code failing is not a leak, it is the entire
+  content of "why did my adapter not work", and those four messages still
+  relay in full.
+
+- **The focus ring was a hard rectangle around rounded controls.** The rule
+  said `border-radius: inherit`, meaning "keep the shape you already have",
+  and `inherit` does not mean that — it takes the *parent's* radius, so every
+  control in a plain flex row had its own overwritten with 0. `outline` has
+  followed the element's own radius since Chrome 94 / Firefox 88 / Safari
+  16.4, so the correct value there is none at all.
+
+- **146 of pusht's 206 episodes were unreachable.** The episode dropdown was
+  `.slice(0, 60)` and said nothing about it — the same shape as reading only
+  the first parquet shard. State and action were printed with `toFixed(0)`,
+  which reads fine on pusht (pixel coordinates in the hundreds) and prints
+  every value of a normalised dataset as `0`; precision now follows the
+  vector's magnitude, chosen once per vector so two axes of one measurement do
+  not appear in two formats. Two strings hardcoded "SmolVLA" in a panel whose
+  whole point is that any checkpoint with a vision tower works.
 
 - **The load meter reported 5.0 GB of a 2.5 GB model, and a load that stopped
   returning took every later load down with it.** Reported from the app while

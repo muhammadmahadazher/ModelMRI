@@ -17,10 +17,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, custom
+from . import __version__, custom, paths
 from .custom import AdapterError, CustomHandle
 from .errors import BadRequest, Refusal
-from .runtime import DEFAULT_MODEL, ModelRuntime
+from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
@@ -223,6 +223,10 @@ def create_app(
 
     runtime = ModelRuntime()
     app.state.runtime = runtime
+    # The store is created here rather than at import: this is the process
+    # that downloads, and it is the last moment before anything can.
+    paths.ensure_models_home()
+
     app.state.vla = VLAHandle()
     app.state.vla_reader = None
     app.state.custom = CustomHandle()
@@ -231,8 +235,6 @@ def create_app(
     else:
         # Platform data dir, but keep using an existing ~/.modelmri database
         # rather than starting an empty one beside it and losing the history.
-        from . import paths
-
         db_path = str(paths.trace_db_path())
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
@@ -358,6 +360,19 @@ def create_app(
 
         return TRACKER.snapshot().to_dict()
 
+    @app.get("/api/pull/progress")
+    def pull_progress() -> dict:
+        """A download in flight, by name. Separate from the load meter.
+
+        Two slots because the two jobs overlap: the picker starts a pull, and
+        the page behind it can load something else while that pull runs. One
+        slot meant whichever started last owned the numbers, and the other's
+        name was left attached to them.
+        """
+        from .progress import PULLS
+
+        return PULLS.snapshot().to_dict()
+
     @app.get("/api/paths")
     def where() -> dict:
         """Every directory this program reads or writes.
@@ -366,8 +381,6 @@ def create_app(
         without you reading its source. Nothing here creates a directory —
         asking is not writing.
         """
-        from . import paths
-
         return paths.describe()
 
     @app.get("/api/accelerator")
@@ -519,10 +532,37 @@ def create_app(
             )
 
         def run() -> dict:
-            last = {}
-            for update in _ollama.pull(req.name):
-                last = update
-            return {"pulled": req.name, "last": last}
+            # THE UPDATES USED TO BE THROWN AWAY. This loop existed already
+            # and did `last = update` and nothing else, so a nine gigabyte
+            # pull sat on "Pulling…" with no bytes, no percentage and no end
+            # in sight until it finished -- while the daemon was streaming
+            # exact `completed`/`total` counts the whole time. The data was
+            # there; nobody published it.
+            #
+            # It goes into the same tracker the HuggingFace loads use, so
+            # there is one meter for both rather than a second one that can
+            # disagree with the first.
+            from .progress import PULLS
+
+            PULLS.start_external(
+                req.name, stage="weights", detail="pulling from the Ollama registry"
+            )
+            try:
+                last = {}
+                for update in _ollama.pull(req.name):
+                    last = update
+                    PULLS.publish(
+                        bytes_done=update.get("bytes_done"),
+                        bytes_total=update.get("bytes_total"),
+                        detail=update.get("status") or None,
+                    )
+                PULLS.finish()
+                return {"pulled": req.name, "last": last}
+            except BaseException as err:
+                # The class, never the text -- the snapshot is served verbatim
+                # by /api/model/progress. Same rule as the load path.
+                PULLS.finish(error=_load_failed(err))
+                raise
 
         try:
             return await asyncio.to_thread(run)
@@ -1061,9 +1101,17 @@ def create_app(
         return await asyncio.to_thread(reader.summary)
 
     @app.get("/api/vla/episodes")
-    async def vla_episodes():
+    async def vla_episodes(camera: str | None = None):
+        # The camera is part of the question, not a property of the dataset:
+        # episode routing (which mp4, which span inside it) is stored per
+        # camera, so switching views has to re-read the episode table.
+        def read() -> dict:
+            reader = _reader()
+            reader.use_camera(camera)
+            return reader.summary()
+
         try:
-            return await asyncio.to_thread(lambda: _reader().summary())
+            return await asyncio.to_thread(read)
         except ImportError as err:
             # See /api/vla/dataset: ImportError alone, because vla_data.py's
             # own sentences are Refusals now and a library's OSError is not
@@ -1077,9 +1125,14 @@ def create_app(
             return _internal(err, "/api/vla/episodes")
 
     @app.get("/api/vla/frame")
-    async def vla_frame(episode: int = 0, t: int = 0):
+    async def vla_frame(episode: int = 0, t: int = 0, camera: str | None = None):
+        def read():
+            reader = _reader()
+            reader.use_camera(camera)
+            return reader.frame(episode, t)
+
         try:
-            sample = await asyncio.to_thread(lambda: _reader().frame(episode, t))
+            sample = await asyncio.to_thread(read)
             return asdict(sample)
         except ImportError as err:
             # See /api/vla/dataset: ImportError alone, because vla_data.py's

@@ -44,9 +44,19 @@ function cell(v: number): string {
     : `color-mix(in oklab, var(--crimson-500) ${a * 100}%, transparent)`;
 }
 
-export default function PatchPanel({ epoch }: { epoch: number }) {
-  const [clean, setClean] = useState(CLEAN_DEFAULT);
-  const [corrupt, setCorrupt] = useState(CORRUPT_DEFAULT);
+export default function PatchPanel({
+  epoch,
+  recorded,
+}: {
+  epoch: number;
+  /** Set when a `.mri` is open and carries a trace: the prompts it was
+   *  measured on, so the panel shows the recording's own pair rather than
+   *  the defaults and offers to draw it instead of a button that can only
+   *  refuse. */
+  recorded?: { clean: string; corrupt: string };
+}) {
+  const [clean, setClean] = useState(recorded?.clean || CLEAN_DEFAULT);
+  const [corrupt, setCorrupt] = useState(recorded?.corrupt || CORRUPT_DEFAULT);
   const [data, setData] = useState<PatchTrace | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -93,7 +103,16 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
 
   return (
     <div className="panel patch" key={epoch} ref={scanRef}>
-      <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
+      {/* The house header, which this panel was not using: a colour-coded dot,
+          letterspaced mono caps and the ruler rule that runs to the edge — and
+          that recolours when a cell is pinned, same as the attention panel's
+          does when a token is. Without it this panel read as a different
+          application bolted onto the page. */}
+      <div className="sect">
+        <span className="dot d-patch" />
+        <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
+        <span className="rule" />
+      </div>
       <p className="meta">
         Two prompts that differ in one fact. Every other panel asks what
         mattered by taking something away; this moves an activation from the
@@ -121,8 +140,8 @@ export default function PatchPanel({ epoch }: { epoch: number }) {
       </div>
 
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className="violet" onClick={() => void run()} disabled={busy}>
-          {busy ? "Patching every site…" : "Trace it"}
+        <button className="cta" onClick={() => void run()} disabled={busy}>
+          {busy ? "Patching every site…" : recorded ? "Show the recorded trace" : "Trace it"}
         </button>
         <span className="meta">
           the two prompts have to split into the same number of tokens

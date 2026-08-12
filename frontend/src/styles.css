@@ -352,8 +352,8 @@ main > * {
 
 .hero {
   position: relative;
-  margin: 6px -22px 8px;
-  padding: 26px 22px 30px;
+  margin: 6px -22px 0;
+  padding: 26px 22px 14px;
   overflow: hidden;
   text-align: center;
 }
@@ -585,6 +585,9 @@ main > * {
   margin-left: 8px;
   font-size: 11px;
   text-decoration: underline;
+  /* `all: unset` drops it; the focus ring follows the element's own shape, so
+     the radius has to be here rather than on the ring. */
+  border-radius: var(--r-chip);
   /* opacity: 0.75 composited the already mid-tone green down to 3.32:1,
      under the 4.5:1 AA floor for 11px text -- and this is the only control
      for signing out. Full opacity keeps it at 5.35:1. */
@@ -843,6 +846,7 @@ button.model-btn:hover:not(:disabled) {
 }
 /* the active panel's rule picks up its own accent */
 .panel:has(.tok.pin) .sect .rule,
+.panel:has(.patch-grid td.clears) .sect .rule,
 .panel:has(.feat-row.sel) .sect .rule {
   background-image:
     repeating-linear-gradient(90deg, var(--acc-strong) 0 1px, transparent 1px 40px),
@@ -860,8 +864,10 @@ button.model-btn:hover:not(:disabled) {
 }
 .h-attn { color: var(--color-attn); } .d-attn { background: var(--color-attn); }
 .h-feat { color: var(--color-feat); } .d-feat { background: var(--color-feat); }
+.h-patch { color: var(--color-cobalt); } .d-patch { background: var(--color-cobalt); }
 .h-agent { color: var(--color-agent); } .d-agent { background: var(--color-agent); }
 .h-vla { color: var(--color-vla); } .d-vla { background: var(--color-vla); }
+.h-run { color: var(--color-mute); } .d-run { background: var(--color-mute); }
 
 /* ---------- VLA ---------- */
 .pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
@@ -920,6 +926,9 @@ button.green:disabled {
   font: 500 13px var(--font-sans);
   color: var(--color-mute);
   padding: 8px 14px;
+  /* Same reason as .linkish: unset removed it, and the ring copies the
+     element rather than the other way round. */
+  border-radius: var(--r-ctrl);
   transition: background-color var(--dur-micro) var(--ease-hover),
     border-color var(--dur-micro) var(--ease-hover),
     color var(--dur-micro) var(--ease-hover);
@@ -1052,6 +1061,29 @@ input[type="range"]:focus-visible::-moz-range-thumb {
   box-shadow: 0 0 0 3px var(--sf-ground), 0 0 0 6px var(--acc);
 }
 input[type="range"]:focus-visible { outline: none; }
+/* A range control takes the colour of the panel it steers. The global accent
+   is violet, which is the features panel's colour, so the robot panel's frame
+   scrubber was the one violet thing in a green card. */
+.panel.vla input[type="range"] { accent-color: var(--color-vla); }
+.panel:has(.h-patch) input[type="range"] { accent-color: var(--color-cobalt); }
+
+/* ---------- the workbench ---------- */
+.workbench {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+/* The output is the result, not another instrument: an inset well inside the
+   card rather than a second card on top of it. */
+.workbench .output {
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: color-mix(in oklab, var(--ink) 3%, transparent);
+  padding: 14px 16px;
+  margin-top: 2px;
+}
+.workbench textarea { margin: 0; }
+.workbench .row { gap: 10px; align-items: center; }
 
 /* ---------- output & meta ---------- */
 .output {
@@ -1230,12 +1262,100 @@ input[type="range"]:focus-visible { outline: none; }
    will cost before spending it, because the alternative — quietly opening a
    dataset and decoding video on page load — is 396 MB the visitor never asked
    for. Deliberately calm: no scan, no shimmer, nothing that reads as loading. */
+/* A resting panel is prose plus one control, and prose wants a 46ch measure.
+   Holding the whole panel to 46ch was the wrong way to get one: it left three
+   fifths of every panel empty and made the tool look like it had been built
+   for a narrower window. The measure now belongs to the column, and the space
+   beside it carries a sketch of what the panel will show. */
 .resting {
+  position: relative;
   display: grid;
   justify-items: start;
+  align-content: start;
   gap: 12px;
   padding: 22px 0 6px;
-  max-width: 46ch;
+  padding-right: 380px;
+  min-height: 200px;
+}
+.resting > p,
+.resting > .hint,
+.resting > label { max-width: 46ch; }
+.resting > .meta { max-width: 64ch; }
+.resting > .sketch {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 340px;
+  max-width: none;
+}
+/* Below the breakpoint the sketch is the first thing to go: it is the part
+   that carries no words. */
+@media (max-width: 900px) {
+  .resting { padding-right: 0; min-height: 0; }
+  .resting > .sketch { display: none; }
+}
+
+/* The sketch itself. Muted, unlabelled, and drawn once — see RestingSketch.tsx
+   for why it must never read as a measurement. */
+.sketch {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  max-width: 340px;
+  opacity: 0.92;
+}
+.sketch svg { width: 100%; height: auto; overflow: visible; }
+.sketch-cap {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  opacity: 0.75;
+  text-align: center;
+}
+.sk-custom { --sk-ink: var(--color-cobalt); }
+.sk-vla    { --sk-ink: var(--color-vla); }
+.sk-agent  { --sk-ink: var(--color-agent); }
+.sk-patch  { --sk-ink: var(--color-cobalt); }
+
+.sk-axis, .sk-tick { stroke: var(--line); stroke-width: 1; }
+.sk-frame {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 4;
+}
+.sk-bar, .sk-step, .sk-cell { fill: var(--sk-ink, var(--color-mute)); }
+.sk-blob {
+  fill: color-mix(in oklab, var(--sk-ink, var(--color-mute)) 26%, transparent);
+  stroke: var(--sk-ink, var(--color-mute));
+  stroke-width: 1;
+}
+.sk-cell.hot { fill: var(--crimson-500); }
+
+/* One pass, then still. A sketch that loops is one the eye stops seeing. */
+.sk-bar, .sk-step, .sk-blob { transform-box: fill-box; }
+.sk-bar {
+  transform-origin: 50% 100%;
+  animation: skRise var(--dur-large) var(--ease-out-soft) both;
+}
+.sk-step {
+  transform-origin: 0% 50%;
+  animation: skRun var(--dur-large) var(--ease-out-soft) both;
+}
+.sk-cell { animation: skFade var(--dur-large) var(--ease-out-soft) both; }
+.sk-blob {
+  transform-origin: 50% 50%;
+  animation: skPop 520ms var(--ease-out) both;
+}
+@keyframes skRise { from { transform: scaleY(0.03); opacity: 0; } }
+@keyframes skRun  { from { transform: scaleX(0.02); opacity: 0; } }
+@keyframes skFade { from { opacity: 0; } }
+@keyframes skPop  { from { transform: scale(0.4); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .sk-bar, .sk-step, .sk-cell, .sk-blob { animation: none; }
 }
 .resting p {
   margin: 0;
@@ -2338,9 +2458,16 @@ button.ghost.sm.stop:hover:not(:disabled) {
 :focus-visible:focus-visible {
   outline: 3px solid var(--acc);
   outline-offset: 2px;
-  /* `all: unset` also drops the radius, which left square rings on round
-     controls. Inheriting it keeps the ring concentric with the shape. */
-  border-radius: inherit;
+  /* NO border-radius here. `inherit` was meant to read "keep the shape you
+     already have" and does not: it takes the PARENT's radius. Every control
+     in a plain flex row therefore had its own radius overwritten with 0, and
+     the ring came out as a hard rectangle around a rounded button -- the
+     model picker being the obvious one.
+     `outline` has followed the element's own border-radius since Chrome 94 /
+     Firefox 88 / Safari 16.4, so the correct value here is none at all. The
+     real problem the old comment was aiming at is that `all: unset` drops the
+     radius, and that belongs in the rules that unset it -- all nine now set
+     their own. */
 }
 
 /* Pointer users should not see it; keyboard users must. */
@@ -2364,7 +2491,6 @@ input[type="range"]:focus-visible { outline: none; }
    nothing and every RECOVERED cell computed to rgba(0,0,0,0) — the whole
    positive half of a diverging scale, invisible, while the negative half
    rendered because it happened to carry a literal fallback. */
-.h-patch { color: var(--color-cobalt); }
 .patch-inputs { display: grid; gap: 8px; margin-bottom: 10px; }
 .patch-inputs label { display: grid; gap: 3px; }
 .patch-inputs input {
@@ -2462,4 +2588,45 @@ input[type="range"]:focus-visible { outline: none; }
   font: inherit;
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+
+/* ---------- a pull, while it is happening ----------
+   The picker is a sheet, and a sheet covers the load meter on the page behind
+   it — so the one place you can start a nine gigabyte download was the one
+   place you could not watch it. Same shapes as .loadbar, at sheet scale. */
+.pull-progress {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  margin: 8px 0 2px;
+  animation: staggerIn var(--dur-small) var(--ease-out-soft) both;
+}
+.pull-track {
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--ink) 12%, transparent);
+  overflow: hidden;
+}
+.pull-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--acc);
+  transition: width var(--dur-medium) var(--ease-out-soft);
+}
+/* No total yet — the daemon reports the manifest before it reports bytes.
+   A bar that sits at zero reads as stalled; one that moves reads as working,
+   and says nothing it does not know. */
+.pull-track.indeterminate .pull-fill {
+  width: 34%;
+  animation: pullSweep 1150ms var(--ease-standard) infinite;
+}
+@keyframes pullSweep {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(330%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pull-track.indeterminate .pull-fill { animation: none; width: 100%; opacity: 0.35; }
+  .pull-progress { animation: none; }
 }

@@ -232,7 +232,13 @@ export default function App() {
       </div>
 
       <SessionBar session={session} onChange={setSession} />
-      <Playground key={resetKey} model={model} onModelChange={refresh} replay={session.open} />
+      <Playground
+        key={resetKey}
+        model={model}
+        onModelChange={refresh}
+        replay={session.open}
+        sessionPatch={session.patch}
+      />
       {/* The viewer has no machine behind it. Panels that can only ever say
           "install ModelMRI" are worse than absent — the one thing this page
           does, it should do without three dead ends around it. */}

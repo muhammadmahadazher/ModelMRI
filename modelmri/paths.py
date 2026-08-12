@@ -295,6 +295,123 @@ def hf_hub_cache() -> Path:
     return base / "huggingface" / "hub"
 
 
+# What HF_HOME said before ModelMRI pointed it somewhere else. Kept so
+# discovery can still see models that are already downloaded: redirecting new
+# downloads must not hide the old ones, or somebody with 50 GB cached opens
+# the picker and finds it empty.
+_INHERITED: list[Path] = []
+
+
+def models_home() -> Path | None:
+    """Where ModelMRI downloads models, when you have asked for somewhere.
+
+    None means "wherever HuggingFace would put them anyway", which is the
+    default and stays the default: a tool that silently relocates a cache
+    other tools share would strand every model you already have.
+
+    Set `MODELMRI_MODELS_HOME` to keep the weights somewhere you choose —
+    beside the project, on a bigger disk, off a synced drive. This exists
+    because an ambient `HF_HOME` had quietly put 50 GB of weights inside a
+    Google Drive folder on the machine this was written on, and nothing in
+    the tool said so. Saying so is `modelmri where`'s job; moving them is
+    this variable's.
+    """
+    if explicit := _env_path("MODELMRI_MODELS_HOME"):
+        return explicit
+    if root := override():
+        return root / "models"
+    return None
+
+
+def adopt_models_home() -> dict:
+    """Point HuggingFace's downloader at the store, IF one was configured.
+
+    Called before anything imports huggingface_hub, whose cache constants are
+    module-level and computed on import, so this has to win that race. Every
+    reader inside ModelMRI re-reads the environment at call time and follows.
+
+    Does nothing at all unless `MODELMRI_MODELS_HOME` or `MODELMRI_HOME` is
+    set. An `HF_HOME` somebody configured deliberately is theirs, and
+    overriding it by default would be this tool deciding it knows better about
+    a directory shared with transformers, datasets and every other library in
+    the ecosystem.
+
+    When it does act, the previous location is not discarded — it goes into
+    the discovery roots, so models already downloaded stay visible and
+    loadable rather than appearing to have vanished.
+    """
+    target = models_home()
+    if target is None:
+        return {"adopted": False, "reason": "no MODELMRI_MODELS_HOME set"}
+
+    previous = os.environ.get("HF_HOME") or None
+    previous_hub = os.environ.get("HF_HUB_CACHE") or None
+    for raw in (previous, previous_hub):
+        if not raw or not raw.strip():
+            continue
+        path = _expand(raw)
+        if path is not None and path not in _INHERITED:
+            _INHERITED.append(path)
+
+    os.environ["HF_HOME"] = str(target)
+    # HF_HUB_CACHE wins over HF_HOME inside huggingface_hub, so a stale one
+    # would send the download straight back to where it came from.
+    os.environ.pop("HF_HUB_CACHE", None)
+    return {
+        "adopted": True,
+        "target": str(target),
+        "previous": previous,
+        "inherited": [str(p) for p in _INHERITED],
+    }
+
+
+def inherited_roots() -> list[Path]:
+    """Caches that existed before ModelMRI took over the download location.
+
+    Search-only. Nothing is written here.
+    """
+    return list(_INHERITED)
+
+
+def ensure_models_home() -> Path | None:
+    """Create the store and make it ignore itself. Called before downloading.
+
+    Deliberately not part of `adopt_models_home`: that runs for every command
+    including `modelmri inspect`, which reads one file and exits, and a
+    read-only command that creates a directory is a side effect nobody asked
+    for.
+    """
+    target = models_home()
+    if target is None:
+        return None
+    try:
+        _protect(target)
+    except OSError:
+        # Not a reason to refuse to run — it is a reason to have said so, and
+        # `modelmri where` prints the location either way.
+        pass
+    return target
+
+
+def _protect(store: Path) -> None:
+    """Make the model store ignore itself.
+
+    The default store lives in the working directory, and a working directory
+    is very often a git repository. Multi-gigabyte weights staged by an
+    absent-minded `git add -A` is a mistake that is genuinely hard to undo
+    once pushed, so the store carries its own `.gitignore` saying `*`. That
+    works regardless of whether the surrounding project has one, and needs
+    nobody to remember anything.
+    """
+    store.mkdir(parents=True, exist_ok=True)
+    marker = store.parent / ".gitignore"
+    if not marker.exists():
+        marker.write_text(
+            "# ModelMRI's local model store. Weights do not belong in git.\n*\n",
+            encoding="utf-8",
+        )
+
+
 def hf_home() -> Path:
     """The HuggingFace root — the parent of `hub/`, and where LeRobot sits."""
     if home_env := _env_path("HF_HOME"):
@@ -323,6 +440,8 @@ def describe() -> dict:
         "data": str(data_dir()),
         "config": str(config_dir()),
         "cache": str(cache_dir()),
+        "models_home": str(models_home()) if models_home() else None,
+        "inherited_caches": [str(p) for p in inherited_roots()],
         "hf_home": str(hf_home()),
         "hf_hub_cache": str(hf_hub_cache()),
         # The files, not just the directories that contain them. Reporting
