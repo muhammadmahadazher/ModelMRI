@@ -203,15 +203,23 @@
       shadow is the clearest tell of an unconsidered surface. ────────── */
 :root {
   --e0: none;
+  /* ELEVATION YOU CAN ACTUALLY SEE. These were 4.5-6% opacity, which on a
+     cream ground is arithmetically present and visually nothing: every panel
+     read as a flat white rectangle with a hairline, and three rounds of
+     "the UI looks the same" were all describing this one number.
+
+     A panel is a plate resting on paper. Plates cast shadows. The ambient
+     layer carries most of the weight, the contact layer keeps the edge from
+     floating, and the ring stays faint so the border does the outlining. */
   --e1:
-    0 0 0 1px rgb(var(--sh) / 0.045),
-    0 1px 1.5px -0.5px rgb(var(--sh) / 0.05),
-    0 3px 6px -2px rgb(var(--sh) / 0.05);
+    0 0 0 1px rgb(var(--sh) / 0.07),
+    0 1px 2px -0.5px rgb(var(--sh) / 0.13),
+    0 6px 14px -4px rgb(var(--sh) / 0.14);
   --e2:
-    0 0 0 1px rgb(var(--sh) / 0.05),
-    0 1px 2px -0.5px rgb(var(--sh) / 0.06),
-    0 4px 8px -3px rgb(var(--sh) / 0.06),
-    0 10px 18px -6px rgb(var(--sh) / 0.06);
+    0 0 0 1px rgb(var(--sh) / 0.08),
+    0 1px 2px -0.5px rgb(var(--sh) / 0.14),
+    0 6px 12px -4px rgb(var(--sh) / 0.15),
+    0 18px 32px -10px rgb(var(--sh) / 0.16);
   --e3:
     0 0 0 1px rgb(var(--sh) / 0.06),
     0 1px 2px -1px rgb(var(--sh) / 0.07),
@@ -756,14 +764,53 @@ button.model-btn:hover:not(:disabled) {
 
 /* ---------- plates ---------- */
 .panel {
-  background: var(--color-card);
+  /* Not a flat fill. A plate catches more light at its top edge than its
+     bottom, and two thirds of a percent of lightness is enough to read as a
+     surface rather than a rectangle -- while staying well inside the paper
+     palette. */
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--color-card) 97%, white) 0%,
+      var(--color-card) 42%
+    );
   border: 1px solid var(--hair);
   border-radius: var(--r-panel);
   padding: var(--sp-5);
-  box-shadow: var(--e1);
+  /* The inset rim is the specular line along the top bevel. It is what makes
+     the shadow below read as depth instead of as a grey smudge. */
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.55),
+    var(--e1);
   position: relative;
   overflow: hidden;
   animation: panelIn var(--dur-medium) var(--ease-out) both;
+  transition:
+    box-shadow var(--dur-medium) var(--ease-hover),
+    transform var(--dur-medium) var(--ease-hover);
+}
+/* Answering to the cursor. A panel that never responds is furniture; one that
+   lifts a single pixel is an instrument you are holding. */
+.panel:hover {
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    var(--e2);
+  transform: translateY(-1px);
+}
+:root[data-theme="dark"] .panel,
+html[data-theme="dark"] .panel {
+  background: var(--color-card);
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.045),
+    var(--e1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .panel {
+    background: var(--color-card);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 0.045),
+      var(--e1);
+  }
 }
 @keyframes rise {
   from { opacity: 0; transform: translateY(10px); }
@@ -2629,4 +2676,108 @@ input[type="range"]:focus-visible { outline: none; }
 @media (prefers-reduced-motion: reduce) {
   .pull-track.indeterminate .pull-fill { animation: none; width: 100%; opacity: 0.35; }
   .pull-progress { animation: none; }
+}
+
+
+/* ── MOTION THAT IS STILL HAPPENING WHEN YOU LOOK ────────────────────────
+   `panelIn` runs 240ms on mount. By the time a reader has focused on the
+   page it finished, so the honest description of this page's motion was
+   "none". A scroll-driven timeline ties the reveal to the reader instead of
+   to the clock: panels rise as they are scrolled to, every session, at
+   whatever pace the reader moves.
+
+   `animation-timeline: view()` needs no JavaScript, no observer and no
+   per-component wiring, and browsers without it keep the mount animation
+   above -- which is exactly what they have today, so the fallback is the
+   current behaviour rather than a broken one. Elements already on screen at
+   load compute their progress as complete, so nothing above the fold hides.
+   ──────────────────────────────────────────────────────────────────────── */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    main > .panel,
+    main > * > .panel {
+      animation: panelRise linear both;
+      animation-timeline: view();
+      /* Finishes well before the panel is centred, so a reader is never
+         reading text that is still moving. */
+      animation-range: entry 2% cover 22%;
+    }
+    @keyframes panelRise {
+      from {
+        opacity: 0;
+        transform: translateY(30px) scale(0.988);
+      }
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    /* The measurement rule draws itself as its panel arrives -- the gesture
+       of an instrument calibrating, on the element that already carries the
+       measurement metaphor. */
+    .sect .rule {
+      animation: ruleDraw linear both;
+      animation-timeline: view();
+      animation-range: entry 4% cover 26%;
+      transform-origin: 0 50%;
+    }
+    @keyframes ruleDraw {
+      from { transform: scaleX(0); opacity: 0; }
+      to { transform: none; opacity: 1; }
+    }
+  }
+}
+
+
+/* ── THE GROUND IS PAPER, NOT A HEX VALUE ───────────────────────────────
+   A flat fill behind flat cards is why the whole page read as a form. This
+   is one inline SVG turbulence tile at very low alpha: invisible as a
+   pattern, and the reason the cream stops looking like #f5f2ec and starts
+   looking like a surface something is resting on. Fixed attachment so it
+   does not slide against the panels and become noticeable as texture.
+
+   Under `screen` in dark mode rather than `multiply`, because darkening an
+   already-dark ground makes mud. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.42;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.055'/%3E%3C/svg%3E");
+}
+:root[data-theme="dark"] body::before,
+html[data-theme="dark"] body::before {
+  mix-blend-mode: screen;
+  opacity: 0.3;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) body::before {
+    mix-blend-mode: screen;
+    opacity: 0.3;
+  }
+}
+/* Everything the reader interacts with sits above the tile. */
+main,
+header,
+.topbar,
+footer {
+  position: relative;
+  z-index: 1;
+}
+
+
+/* Whose credential it is, when it is not ours. Deliberately NOT link-styled:
+   there is nothing here to click, and a control that cannot act is what made
+   the sign-out button read as broken in the first place. */
+.hub-source {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+  margin-left: 8px;
+  cursor: help;
 }

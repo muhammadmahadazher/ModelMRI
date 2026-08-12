@@ -32,12 +32,51 @@ export default function AgentsPanel() {
   // conditional.
   const scanRef = useScanOnData(doc?.id ?? null);
 
+  // THE EMPTY STATE USED TO BE A DEAD END. This ran once on mount with `[]`
+  // deps and there was no other path to `setList` reachable from the empty
+  // branch -- so the panel told you to go and run `record_demo.py`, you ran
+  // it, the trace was delivered and stored correctly, and the panel kept
+  // rendering "no traces yet" until the whole page was reloaded. Nothing in
+  // the UI said so. It was instructing you to do the one thing whose result
+  // it could not display.
+  //
+  // A recorder is something you leave switched on in another terminal, so the
+  // list has to be able to arrive later. Polled while there is nothing to
+  // show, and on regaining focus -- which is the actual gesture, since you
+  // ran the command in a different window and came back.
   useEffect(() => {
-    void getTraces().then((l) => {
-      setList(l);
-      if (l.length) void getTrace(l[0].id).then(setDoc);
-    });
-  }, []);
+    let live = true;
+    const load = () =>
+      void getTraces()
+        .then((l) => {
+          if (!live) return;
+          setList(l);
+          // Only auto-open the newest when nothing is open, so a refresh
+          // never yanks the reader off the trace they are reading.
+          setDoc((current) => {
+            if (current || !l.length) return current;
+            void getTrace(l[0].id).then((d) => live && setDoc(d));
+            return current;
+          });
+        })
+        // A failed poll is not an empty store. Keeping the last list is the
+        // difference between "nothing recorded" and "the server blinked".
+        .catch(() => undefined);
+
+    load();
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    // Slow on purpose: this is a "did anything arrive while I was away"
+    // check, not a live feed, and it stops once something has.
+    const id = window.setInterval(() => {
+      if (!list || list.length === 0) load();
+    }, 4000);
+    return () => {
+      live = false;
+      window.removeEventListener("focus", onFocus);
+      window.clearInterval(id);
+      };
+  }, [list]);
 
   /** One row per agent, not per run.
    *

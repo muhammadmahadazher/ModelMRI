@@ -363,12 +363,43 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
               <span className="pill accel gpu" title={`token source: ${auth.source}`}>
                 <i className="accel-dot" />
                 {auth.user}
-                <button
-                  className="linkish"
-                  onClick={() => void hubSignOut().then(setAuth)}
-                >
-                  sign out
-                </button>
+                {/* Only for a token this tool owns. `sign_out` deletes
+                    ModelMRI's own file and deliberately nothing else -- it has
+                    no business removing huggingface-cli's token or unsetting a
+                    parent process's environment variable, both of which are
+                    shared with every other library in the ecosystem.
+
+                    Offering the button regardless is what made it look broken:
+                    the click deleted nothing, the server honestly answered
+                    signed_in:true from the surviving source, and the pill
+                    re-rendered identically with no feedback of any kind. On
+                    the machine this was reported from, ModelMRI's own token
+                    file did not exist at all. Where the credential is not
+                    ours, name whose it is and how to remove it. */}
+                {auth.source === "modelmri" ? (
+                  <button
+                    className="linkish"
+                    onClick={() =>
+                      void hubSignOut()
+                        .then(setAuth)
+                        .catch((e) => setErr(errorText(e)))
+                    }
+                    title="Remove the token ModelMRI stored"
+                  >
+                    sign out
+                  </button>
+                ) : (
+                  <span
+                    className="hub-source"
+                    title={
+                      auth.source === "env"
+                        ? "This token comes from your environment. Unset HF_TOKEN and restart the server to sign out."
+                        : "This token belongs to the HuggingFace CLI. Run `hf auth logout` to sign out."
+                    }
+                  >
+                    via {auth.source === "env" ? "HF_TOKEN" : "huggingface-cli"}
+                  </span>
+                )}
               </span>
             ) : (
               <button className="ghost sm" onClick={() => setShowSignIn((s) => !s)}>

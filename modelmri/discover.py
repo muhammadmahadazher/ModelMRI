@@ -49,6 +49,65 @@ SKIP = {
 }
 
 WEIGHTS = (".safetensors", ".bin", ".pth")
+
+# STANDALONE CHECKPOINTS, and what is honestly true of each one.
+#
+# Only `.gguf` used to be matched here, so a directory of somebody's own
+# training output scanned to nothing at all -- the exact "why isn't my model
+# here" this module's docstring says it exists to avoid. Finding a file is not
+# the same as supporting it, so every entry carries the reason it will or will
+# not open, and `loadable` is False wherever the loader would refuse.
+#
+# `.pt` and `.pth` are the same pickle container and say nothing about their
+# contents: a TorchScript archive, a bare state_dict, or a whole pickled
+# model. The loader tells them apart by reading the file; the scanner cannot,
+# so the note covers both cases rather than guessing one.
+LOOSE_WEIGHTS: dict[str, tuple[bool, str]] = {
+    ".gguf": (
+        False,
+        "GGUF - run it through Ollama; transformers cannot open it",
+    ),
+    # `loadable` is False for both, and that is not pessimism. A `.pt`/`.pth`
+    # is one of three unrelated things and none of them can be inspected as a
+    # bare file: a TorchScript archive loads but cannot be hooked (PyTorch
+    # removes the hooks on RecursiveScriptModule), a state_dict is weights
+    # with no model to put them in, and a pickled module executes code on
+    # load. All three want the same answer -- an adapter -- so the note says
+    # that rather than offering a button that will refuse.
+    ".pt": (
+        False,
+        "PyTorch checkpoint - needs an adapter with a load() that builds the "
+        "model; TorchScript archives run but cannot be instrumented",
+    ),
+    ".pth": (
+        False,
+        "PyTorch checkpoint - needs an adapter with a load() that builds the "
+        "model; TorchScript archives run but cannot be instrumented",
+    ),
+    ".onnx": (
+        False,
+        "ONNX - not readable yet; ModelMRI hooks PyTorch modules and an "
+        "ONNX graph has none. Export the PyTorch model instead",
+    ),
+    ".ckpt": (
+        False,
+        "Lightning checkpoint - weights only; point ModelMRI at an adapter "
+        "that builds your model and loads this into it",
+    ),
+    ".h5": (
+        False,
+        "Keras weights - this tool instruments PyTorch modules",
+    ),
+    ".msgpack": (
+        False,
+        "Flax weights - this tool instruments PyTorch modules",
+    ),
+    ".pkl": (
+        False,
+        "a pickle - it can execute arbitrary code on load, so ModelMRI will "
+        "not open it. Load it yourself in an adapter",
+    ),
+}
 MAX_DEPTH = 6
 BUDGET_S = 6.0
 
@@ -320,19 +379,24 @@ def scan(root: str | Path, budget_s: float = BUDGET_S) -> tuple[list[Found], boo
             return  # a model dir has no models inside it
 
         for e in entries:
-            if e.is_file() and e.name.endswith(".gguf"):
+            suffix = Path(e.name).suffix.lower()
+            if e.is_file() and suffix in LOOSE_WEIGHTS:
                 if e.path in seen:
                     continue
                 seen.add(e.path)
+                loadable, note = LOOSE_WEIGHTS[suffix]
                 out.append(
                     Found(
                         id=e.path,
                         name=e.name,
                         path=e.path,
-                        kind="gguf",
+                        # The extension IS the kind here. A `.pth` and a
+                        # `.onnx` fail for different reasons and the panel
+                        # should be able to say which.
+                        kind=suffix.lstrip("."),
                         size_gb=_size_of([Path(e.path)]),
-                        loadable=False,
-                        note="GGUF - run it through Ollama; transformers cannot open it",
+                        loadable=loadable,
+                        note=note,
                     )
                 )
             elif e.is_dir(follow_symlinks=False) and e.name not in SKIP:
