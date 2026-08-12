@@ -686,6 +686,25 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   gap: 10px;
   align-items: center;
 }
+/* Search over every recorded step. The box is wide because the useful queries
+   are long — a filter plus the words you actually remember. */
+.trace-search input {
+  flex: 1;
+  min-width: 0;
+}
+.search-hits { margin-bottom: 14px; }
+.search-hits .ranking-list li.err .mid { color: var(--color-pop); }
+
+/* The truncation marker. Deliberately NOT styled like the payload around it:
+   it is metadata about what is missing, and the whole point is that it cannot
+   be mistaken for something the tool printed. */
+.clipped {
+  display: block;
+  color: var(--color-mute);
+  font-style: italic;
+  opacity: 0.85;
+}
+
 .hint.ok {
   color: var(--color-ink);
   border-left: 3px solid var(--color-agent);

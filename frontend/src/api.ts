@@ -1067,9 +1067,17 @@ export interface TraceStep {
   kind: "llm_call" | "tool_call" | "subagent" | "mcp_call" | "user_turn" | "error";
   name: string;
   started_ms: number;
-  duration_ms: number;
+  /** Null when the step was recorded without one. Not 0 — "not recorded" and
+   *  "took no measurable time" are different facts, and the column used to
+   *  flatten them together. */
+  duration_ms: number | null;
   input: string;
   output: string;
+  /** Characters `traces._clip` did not store. 0 when nothing was cut. Shown
+   *  as a marker, because a truncated tool output that reads as a complete
+   *  one is how you debug the wrong thing for an hour. */
+  truncated_in?: number;
+  truncated_out?: number;
   tokens_in: number | null;
   tokens_out: number | null;
   error: boolean;
@@ -1094,6 +1102,43 @@ export interface TraceDoc {
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
+/** One step that matched a search, with the run it belongs to. */
+export interface SearchHit {
+  step_id: string;
+  trace_id: string;
+  trace_name: string;
+  kind: TraceStep["kind"];
+  name: string;
+  started_ms: number;
+  duration_ms: number | null;
+  input: string;
+  output: string;
+  truncated_by: number;
+  error: boolean;
+  seq: number;
+}
+
+export interface SearchResult {
+  /** Which engine answered. FTS5 matches whole words; the substring scan
+   *  matches inside them and gets slower as the store grows. Named because a
+   *  feature that quietly becomes a different feature is worse than one that
+   *  says it degraded. */
+  engine: "fts5" | "substring-scan";
+  results: SearchHit[];
+  note: string;
+  query: Record<string, unknown>;
+}
+
+/** Search every recorded step on this machine.
+ *
+ *  Free text plus filters — `kind:tool_call`, `error:true`, `duration>2000`,
+ *  `name:pytest`. A filter binds only with no space after the colon, so a
+ *  pasted log line like "error: connection refused" stays plain text. */
+export const searchTraces = (q: string) =>
+  fetch(`/api/traces/search?q=${encodeURIComponent(q)}`).then((r) =>
+    json<SearchResult>(r),
+  );
 
 /** What `adopt` gives back once the panels are pointed at a recorded step. */
 export interface Adopted {

@@ -57,6 +57,28 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   scores are fifty times smaller and nearly uniform. The ranking survives,
   which is the outcome you want and not the guaranteed one.
 
+- **Search every recorded step, from a pip install.** Free text plus
+  allow-listed filters — `kind:tool_call`, `error:true`, `duration>2000`,
+  `name:pytest` — over every trace on the machine. Results are steps rather
+  than runs, because what somebody is looking for is the tool call that
+  failed, not the hour it happened in, and clicking one opens that run with
+  the step selected.
+
+  Backed by SQLite FTS5, which is compiled into essentially every CPython
+  build — Langfuse needs ClickHouse for this and Braintrust built a bespoke
+  columnar store. "Essentially every" is not "every", so a build without FTS5
+  degrades to a substring scan and the response **names the engine that
+  answered**, rather than quietly becoming a slower, differently-matching
+  feature. Filters are an allow-list of five column names, never string
+  interpolation; every value is a bound parameter.
+
+  A filter binds only with no space after the colon, so a pasted log line —
+  `error: connection refused`, the single most likely thing anybody types into
+  a search box — stays plain text. With loose binding it parsed as
+  `error:connection` and was refused. And an unparseable filter is named
+  rather than dropped: `error:maybe` silently matching nothing looks exactly
+  like a trace with no failures.
+
 - **A recorded agent step opens in the mechanistic panels.** The two halves of
   this tool have sat beside each other doing nothing for one another: a
   timeline of agent steps on one side, attention and ablation and patching on
@@ -153,6 +175,28 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   probe built its hook with no donor, so the resample arm indexed `None` inside
   a forward pass. Found by driving the browser, not by a unit test — the
   estimator had only ever been called with the default baseline.
+
+- **A truncated tool output read as a complete one.** `traces._clip` caps
+  payloads at 20,000 characters and appends `… [+N]`, and the inspector
+  rendered that suffix as if the agent had produced it — so a clipped result
+  ended mid-sentence with a bracketed number after it and nothing saying the
+  rest existed. Parsed out server-side now and rendered as a marker that names
+  how much is missing and why there is a cap at all.
+
+- **`duration_ms` could not say "not recorded".** The column was
+  `INTEGER NOT NULL DEFAULT 0`, so a step recorded bare was indistinguishable
+  from one that took no measurable time — the same class as the
+  `.get(name, 0.0)` above. It is nullable now, absence survives the round
+  trip, and the inspector prints "duration not recorded" instead of `0ms`.
+  SQLite cannot relax `NOT NULL` with `ALTER TABLE`, so existing stores get a
+  real table rebuild.
+
+- **The trace store's lock is now reentrant.** Several helpers touch the
+  connection while their caller already holds it, and with a plain `Lock` the
+  honest fix — every method takes the lock — self-deadlocks. The alternative
+  was a list of remembered exemptions in the test that guards this, which is
+  precisely how the 0.10 data race survived review. An `RLock` serialises
+  other threads identically and lets the invariant have no exceptions.
 
 - **An empty `t.sqlite` was committed at the repo root.** A trace store left
   behind by a test run; the test itself writes to a temp directory, and nothing

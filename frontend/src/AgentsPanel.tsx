@@ -7,6 +7,8 @@ import {
   errorText,
   getTrace,
   getTraces,
+  SearchResult,
+  searchTraces,
   TraceDoc,
   TraceStep,
   TraceSummary,
@@ -39,6 +41,9 @@ export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
   const [adopted, setAdopted] = useState<Adopted | null>(null);
   const [adoptErr, setAdoptErr] = useState("");
   const [adopting, setAdopting] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SearchResult | null>(null);
+  const [searchErr, setSearchErr] = useState("");
   // Above every conditional return. This panel returns early for its empty
   // and loading states, so a hook placed after that ran on some renders and
   // not others — React error #310, and the whole page blank. Hooks are not
@@ -205,6 +210,32 @@ with trace("my-agent"):
   // remove them rather than leaving a red "1 error" nobody recognises.
   const demos = list.filter((t) => t.demo).length;
 
+  async function search(text: string) {
+    setQ(text);
+    setSearchErr("");
+    if (!text.trim()) {
+      setHits(null);
+      return;
+    }
+    try {
+      setHits(await searchTraces(text));
+    } catch (e) {
+      // The parser's own sentence — it names the bad filter and the values it
+      // accepts, which is more use than "search failed".
+      setSearchErr(errorText(e));
+      setHits(null);
+    }
+  }
+
+  /** Open the run a hit belongs to, with that step selected. */
+  async function openHit(traceId: string, stepId: string) {
+    const d = await getTrace(traceId);
+    setDoc(d);
+    setSel(d.steps.find((s) => s.id === stepId) ?? null);
+    setAdopted(null);
+    setAdoptErr("");
+  }
+
   async function adopt(step: TraceStep) {
     if (!doc) return;
     setAdopting(true);
@@ -243,7 +274,7 @@ with trace("my-agent"):
   }
 
   const maxMs = doc
-    ? Math.max(...doc.steps.map((s) => s.started_ms + s.duration_ms), 1)
+    ? Math.max(...doc.steps.map((s) => s.started_ms + (s.duration_ms ?? 0)), 1)
     : 1;
   const nLanes = Math.max(...lanes.map((l) => l.lane), 0) + 1;
 
@@ -269,6 +300,60 @@ with trace("my-agent"):
         <b>modelmri-record</b> and its steps land here. Independent of the model
         loaded above — an agent usually calls a hosted API, not this process.
       </p>
+
+      {/* Search is over STEPS, not runs — what somebody is looking for is the
+          tool call that failed, not the hour it happened in. */}
+      <div className="row trace-search" style={{ marginBottom: 10 }}>
+        <input
+          className="sm"
+          value={q}
+          placeholder="search every step — try  error:true  or  kind:tool_call  or  duration>2000"
+          onChange={(e) => void search(e.target.value)}
+          spellCheck={false}
+        />
+        {hits && (
+          <span className="meta">
+            {hits.results.length} step{hits.results.length === 1 ? "" : "s"} ·{" "}
+            {/* Which engine answered. A feature that quietly becomes a
+                different feature is worse than one that says it degraded. */}
+            <code>{hits.engine}</code>
+          </span>
+        )}
+      </div>
+      {searchErr && <div className="hint err">{searchErr}</div>}
+      {hits && (
+        <div className="search-hits">
+          {hits.results.length === 0 ? (
+            <div className="hint">nothing matched. {hits.note}</div>
+          ) : (
+            <>
+              <ol className="ranking-list">
+                {hits.results.map((h) => (
+                  <li key={h.step_id} className={h.error ? "err" : ""}>
+                    <button
+                      className="ghost sm"
+                      onClick={() => void openHit(h.trace_id, h.step_id)}
+                      title="Open this run with that step selected"
+                    >
+                      {h.kind} · {h.name || "unnamed"}
+                    </button>
+                    <span className="mid">{h.trace_name}</span>
+                    <span className="meta">
+                      {h.duration_ms == null
+                        ? "duration not recorded"
+                        : `${h.duration_ms}ms`}
+                      {h.error && " · FAILED"}
+                      {h.truncated_by > 0 &&
+                        ` · ${h.truncated_by.toLocaleString()} chars not stored`}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <div className="hint">{hits.note}</div>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
@@ -379,7 +464,7 @@ with trace("my-agent"):
                 className={`tl-block ${step.error ? "err" : ""} ${sel?.id === step.id ? "sel" : ""}`}
                 style={{
                   left: `${(step.started_ms / maxMs) * 100}%`,
-                  width: `${Math.max((step.duration_ms / maxMs) * 100, 0.8)}%`,
+                  width: `${Math.max(((step.duration_ms ?? 0) / maxMs) * 100, 0.8)}%`,
                   top: lane * 36 + 4,
                   background: KIND_COLOR[step.kind],
                 }}
@@ -408,21 +493,46 @@ with trace("my-agent"):
                   {sel.kind}
                 </span>
                 <span className="meta">
-                  {sel.name} · step {sel.seq} · {sel.duration_ms}ms
+                  {sel.name} · step {sel.seq} ·{" "}
+                  {/* Null is not zero. A step recorded without a duration
+                      used to render as "0ms", which reads as an instant
+                      call rather than as a fact nobody wrote down. */}
+                  {sel.duration_ms == null
+                    ? "duration not recorded"
+                    : `${sel.duration_ms}ms`}
                   {sel.tokens_in != null && ` · ${sel.tokens_in}→${sel.tokens_out} tok`}
                   {sel.error && " · FAILED"}
                 </span>
               </div>
+              {/* The clip marker is a marker, not characters the agent
+                  produced. It used to render inside the payload as "… [+18412]"
+                  where it read as part of the tool's own output — a truncated
+                  result that looks complete is how you debug the wrong thing
+                  for an hour. */}
               {sel.input && (
                 <pre className="io">
                   <span className="io-l">IN</span>
                   {sel.input}
+                  {(sel.truncated_in ?? 0) > 0 && (
+                    <span className="clipped">
+                      {"\n"}— {sel.truncated_in!.toLocaleString()} characters not
+                      stored (payloads are capped at 20,000 so one runaway tool
+                      output cannot fill your disk)
+                    </span>
+                  )}
                 </pre>
               )}
               {sel.output && (
                 <pre className="io">
                   <span className="io-l">OUT</span>
                   {sel.output}
+                  {(sel.truncated_out ?? 0) > 0 && (
+                    <span className="clipped">
+                      {"\n"}— {sel.truncated_out!.toLocaleString()} characters
+                      not stored (payloads are capped at 20,000 so one runaway
+                      tool output cannot fill your disk)
+                    </span>
+                  )}
                 </pre>
               )}
               {/* The join. Every other panel on this page reads whatever the

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import uuid
@@ -39,7 +40,11 @@ CREATE TABLE IF NOT EXISTS step (
   kind TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT '',
   started_ms INTEGER NOT NULL,
-  duration_ms INTEGER NOT NULL DEFAULT 0,
+  -- Nullable on purpose. `NOT NULL DEFAULT 0` made a step recorded bare
+  -- indistinguishable from one that genuinely took no measurable time, which
+  -- is the same shape as the `.get(name, 0.0)` that made 206 robot episodes
+  -- show the same video. NULL means "not recorded" and renders as that.
+  duration_ms INTEGER,
   input TEXT NOT NULL DEFAULT '',
   output TEXT NOT NULL DEFAULT '',
   tokens_in INTEGER,
@@ -80,7 +85,14 @@ class TraceStore:
     """One SQLite file; safe for the single-process server (per-call cursors)."""
 
     def __init__(self, path: str | Path) -> None:
-        self._lock = threading.Lock()
+        # RLock, not Lock. Every method that touches the connection takes
+        # it — `test_traces_concurrency` asserts exactly that, and the reason
+        # is that the 0.10 data race was an ABSENCE nobody noticed. Some of
+        # those methods are helpers called by others that already hold it, and
+        # with a plain Lock that self-deadlocks; the alternative is a list of
+        # remembered exemptions, which is how the original bug survived review.
+        # A reentrant lock serialises other threads identically.
+        self._lock = threading.RLock()
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         # WAL needs a shared-memory file and byte-range locking, which SQLite
         # documents as unsupported on network filesystems. An NFS-mounted Linux
@@ -135,7 +147,230 @@ class TraceStore:
                         f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
                     )
                     log.info("added %s.%s to the trace store", table, column)
+            self._relax_duration()
             self._db.commit()
+        self._build_index()
+
+    def _relax_duration(self) -> None:
+        """Drop `NOT NULL` from step.duration_ms on a store that still has it.
+
+        SQLite cannot relax a constraint with ALTER TABLE, so this is the
+        documented rebuild: new table, copy, drop, rename. Runs once — after it
+        the PRAGMA reports notnull=0 and the check below is false forever.
+
+        Called with the lock already held.
+        """
+        with self._lock:
+            columns = list(self._db.execute("PRAGMA table_info(step)"))
+            if not columns:
+                return
+            duration = next((c for c in columns if c[1] == "duration_ms"), None)
+            if duration is None or not duration[3]:  # c[3] is `notnull`
+                return
+
+            names = ", ".join(c[1] for c in columns)
+            log.info("rebuilding the step table to make duration_ms nullable")
+            # Foreign keys off for the swap: `step` references `trace`, and the
+            # drop would otherwise be refused or cascade. Restored immediately —
+            # __init__ turned them on and the rest of the class relies on it.
+            self._db.execute("PRAGMA foreign_keys=OFF")
+            try:
+                self._db.executescript(
+                    f"""
+                    CREATE TABLE step_new AS SELECT {names} FROM step;
+                    DROP TABLE step;
+                    """
+                )
+                # `CREATE TABLE AS SELECT` keeps the data and loses every
+                # constraint, which is exactly what is wanted here — the schema
+                # below re-declares the real table and the copy fills it.
+                self._db.executescript(_SCHEMA)
+                self._db.execute(
+                    f"INSERT INTO step({names}) SELECT {names} FROM step_new"
+                )
+                self._db.execute("DROP TABLE step_new")
+                self._db.commit()
+            finally:
+                self._db.execute("PRAGMA foreign_keys=ON")
+
+    def _build_index(self) -> None:
+        """Create the FTS5 index, or record that this build has no FTS5.
+
+        FTS5 is compiled into essentially every CPython SQLite, which is what
+        makes full-text search over every trace a `pip install` rather than a
+        ClickHouse container. "Essentially every" is not "every", so a build
+        without it degrades to a substring scan and the response says which
+        engine answered — the same degrade-and-say-so shape as the WAL guard
+        above, rather than a feature that silently becomes a different feature.
+
+        Not backfilled on every start: `INSERT INTO ... SELECT` runs only when
+        the index is empty and the step table is not.
+        """
+        with self._lock:
+            try:
+                self._db.executescript(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS step_fts USING fts5(
+                      input, output, name, content='step', content_rowid='rowid'
+                    );
+                    """
+                )
+                indexed = self._db.execute(
+                    "SELECT count(*) FROM step_fts"
+                ).fetchone()[0]
+                stored = self._db.execute("SELECT count(*) FROM step").fetchone()[0]
+                if stored and not indexed:
+                    self._db.execute(
+                        "INSERT INTO step_fts(rowid, input, output, name)"
+                        " SELECT rowid, input, output, name FROM step"
+                    )
+                self._db.commit()
+                self.fts = True
+            except sqlite3.Error as err:
+                log.info(
+                    "SQLite full-text search unavailable (%s); trace search "
+                    "will scan for substrings instead, which is slower and "
+                    "matches inside words",
+                    err,
+                )
+                self.fts = False
+
+    def _retract_from_index(self, trace_id: str | None = None) -> None:
+        """Tell FTS5 to forget rows that are about to be deleted.
+
+        External-content FTS5 keeps its own copy of the terms and is not
+        notified by a DELETE on the content table. The documented retraction is
+        an insert of the special 'delete' command carrying the OLD values, so
+        this reads them back out of `step` while they still exist.
+
+        Called with the lock held. Never raises: an index that drifts is a
+        search that returns a stale hit, and losing a whole import over that
+        would be the worse trade.
+        """
+        with self._lock:
+            if not getattr(self, "fts", False):
+                return
+            where = "WHERE trace_id=?" if trace_id else ""
+            args = (trace_id,) if trace_id else ()
+            try:
+                self._db.execute(
+                    "INSERT INTO step_fts(step_fts, rowid, input, output, name)"
+                    f" SELECT 'delete', rowid, input, output, name FROM step {where}",
+                    args,
+                )
+            except sqlite3.Error as err:
+                log.info("could not retract trace search entries (%s)", err)
+
+    def _publish_to_index(self, trace_id: str) -> None:
+        """Add one trace's steps to the index. Lock held; never raises."""
+        with self._lock:
+            if not getattr(self, "fts", False):
+                return
+            try:
+                self._db.execute(
+                    "INSERT INTO step_fts(rowid, input, output, name)"
+                    " SELECT rowid, input, output, name FROM step WHERE trace_id=?",
+                    (trace_id,),
+                )
+            except sqlite3.Error as err:
+                log.info("could not index trace %s for search (%s)", trace_id, err)
+
+    def search(self, raw: str, limit: int = 100) -> dict:
+        """Steps matching a query, newest first, with the engine named.
+
+        Results are STEPS rather than runs, because the thing somebody is
+        looking for is the tool call that failed, not the hour it happened in.
+        """
+        from . import trace_query
+
+        query = trace_query.parse(raw)
+        if query.is_empty:
+            return {
+                "engine": "fts5" if self.fts else "substring-scan",
+                "query": query.to_dict(),
+                "results": [],
+                "note": "type something to search",
+            }
+
+        clauses, params = trace_query.where(query)
+        engine = "fts5" if (self.fts and query.text) else "substring-scan"
+
+        if engine == "fts5":
+            sql = (
+                "SELECT s.id, s.trace_id, t.name, s.kind, s.name, s.started_ms,"
+                " s.duration_ms, s.input, s.output, s.error, s.seq"
+                " FROM step_fts f JOIN step s ON s.rowid = f.rowid"
+                " JOIN trace t ON t.id = s.trace_id"
+                " WHERE step_fts MATCH ?"
+            )
+            args: list = [_fts_match(query.text)]
+        else:
+            sql = (
+                "SELECT s.id, s.trace_id, t.name, s.kind, s.name, s.started_ms,"
+                " s.duration_ms, s.input, s.output, s.error, s.seq"
+                " FROM step s JOIN trace t ON t.id = s.trace_id"
+                " WHERE 1=1"
+            )
+            args = []
+            if query.text:
+                sql += " AND (s.input LIKE ? OR s.output LIKE ? OR s.name LIKE ?)"
+                like = f"%{query.text}%"
+                args += [like, like, like]
+
+        if clauses:
+            sql += f" AND {clauses}"
+            args += params
+        sql += " ORDER BY s.started_ms DESC LIMIT ?"
+        args.append(int(limit))
+
+        # UNDER THE LOCK, like every other reader in this class. The two that
+        # were not are what produced short rows and intermittent 500s from
+        # /api/traces in 0.10; a new query path is a fresh chance to repeat
+        # exactly that bug.
+        with self._lock:
+            try:
+                rows = self._db.execute(sql, args).fetchall()
+            except sqlite3.Error as err:
+                # A malformed FTS5 expression is the caller's query, not a
+                # server fault — `foo(` and `NEAR/` both land here.
+                raise BadRequest(
+                    "that search could not be run as a full-text query. Try "
+                    "plain words, or quote a phrase."
+                ) from err
+
+        results = []
+        for r in rows:
+            text_in, clipped_in = _unclip(r[7])
+            text_out, clipped_out = _unclip(r[8])
+            results.append(
+                {
+                    "step_id": r[0],
+                    "trace_id": r[1],
+                    "trace_name": r[2],
+                    "kind": r[3],
+                    "name": r[4],
+                    "started_ms": r[5],
+                    "duration_ms": r[6],
+                    "input": text_in,
+                    "output": text_out,
+                    "truncated_by": clipped_in + clipped_out,
+                    "error": bool(r[9]),
+                    "seq": r[10],
+                }
+            )
+
+        return {
+            "engine": engine,
+            "query": query.to_dict(),
+            "results": results,
+            "note": (
+                "Full-text matching is by whole word, so a multi-word query is "
+                "a contiguous phrase."
+                if engine == "fts5"
+                else "Scanning for substrings — matches inside words, and gets "
+                "slower as the store grows."
+            ),
+        }
 
     def import_trace(self, doc: dict) -> str:
         """Store one trace document; returns the trace id.
@@ -173,7 +408,7 @@ class TraceStore:
                     f"invalid step kind: {s.get('kind')!r} — "
                     f"use one of {', '.join(sorted(VALID_KINDS))}"
                 )
-            timings.append((_ms(s, "started_ms", i), _ms(s, "duration_ms", i)))
+            timings.append((_ms(s, "started_ms", i), _ms_or_none(s, "duration_ms", i)))
 
         trace_id = str(doc.get("id") or uuid.uuid4().hex[:12])
         with self._lock:
@@ -186,6 +421,12 @@ class TraceStore:
                     json.dumps(doc.get("meta", {})),
                 ),
             )
+            # The FTS index is an external-content table over `step`, so it
+            # does not learn about deletes on its own. Retract the old rows
+            # BEFORE they go, using the values still in the table: an index
+            # holding text whose step no longer exists returns hits that
+            # cannot be opened.
+            self._retract_from_index(trace_id)
             self._db.execute("DELETE FROM step WHERE trace_id=?", (trace_id,))
             for seq, s in enumerate(steps):
                 self._db.execute(
@@ -215,6 +456,7 @@ class TraceStore:
                         json.dumps(s.get("meta") or {}),
                     ),
                 )
+            self._publish_to_index(trace_id)
             self._db.commit()
         return trace_id
 
@@ -240,7 +482,7 @@ class TraceStore:
             rows = self._db.execute(
                 "SELECT t.id, t.name, t.started_at,"
                 " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id),"
-                " (SELECT COALESCE(MAX(s.started_ms + s.duration_ms),0) FROM step s"
+                " (SELECT COALESCE(MAX(s.started_ms + COALESCE(s.duration_ms,0)),0) FROM step s"
                 "   WHERE s.trace_id=t.id),"
                 " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
                 " t.meta"
@@ -267,6 +509,9 @@ class TraceStore:
     def delete(self, trace_id: str) -> bool:
         """Remove one trace and its steps. False when it was not there."""
         with self._lock:
+            # ON DELETE CASCADE removes the steps, and the index does not see
+            # a cascade any more than it sees a plain delete.
+            self._retract_from_index(trace_id)
             cur = self._db.execute("DELETE FROM trace WHERE id=?", (trace_id,))
             self._db.commit()
         return cur.rowcount > 0
@@ -278,14 +523,32 @@ class TraceStore:
         sample the docs tell people to look at.
         """
         with self._lock:
+            # Retract everything first: `keep_demo` decides which traces
+            # survive, but the cheap correct move is to empty the index and
+            # re-publish what remains, rather than reproducing the WHERE twice.
+            self._retract_from_index()
             if keep_demo:
                 cur = self._db.execute(
                     "DELETE FROM trace WHERE COALESCE(json_extract(meta,'$.demo'), 0) = 0"
                 )
             else:
                 cur = self._db.execute("DELETE FROM trace")
+            self._reindex_all()
             self._db.commit()
         return cur.rowcount
+
+    def _reindex_all(self) -> None:
+        """Re-publish every surviving step. Lock held; never raises."""
+        with self._lock:
+            if not getattr(self, "fts", False):
+                return
+            try:
+                self._db.execute(
+                    "INSERT INTO step_fts(rowid, input, output, name)"
+                    " SELECT rowid, input, output, name FROM step"
+                )
+            except sqlite3.Error as err:
+                log.info("could not rebuild the trace search index (%s)", err)
 
     def get_trace(self, trace_id: str) -> dict | None:
         # Same rule as list_traces, and for the same reason: one connection
@@ -314,8 +577,14 @@ class TraceStore:
                 "name": r[3],
                 "started_ms": r[4],
                 "duration_ms": r[5],
-                "input": r[6],
-                "output": r[7],
+                # The clip marker is lifted out of the payload rather than
+                # rendered as characters the agent produced. A truncated tool
+                # output that reads as a complete one is how you debug the
+                # wrong thing for an hour.
+                "input": _unclip(r[6])[0],
+                "output": _unclip(r[7])[0],
+                "truncated_in": _unclip(r[6])[1],
+                "truncated_out": _unclip(r[7])[1],
                 "tokens_in": r[8],
                 "tokens_out": r[9],
                 "error": bool(r[10]),
@@ -354,6 +623,53 @@ def _ms(step: dict, field: str, index: int) -> int:
         ) from err
 
 
+def _ms_or_none(step: dict, field: str, index: int) -> int | None:
+    """Same, but an ABSENT field stays absent instead of becoming 0.
+
+    `duration_ms INTEGER NOT NULL DEFAULT 0` made a step recorded bare
+    indistinguishable from one that genuinely took no measurable time, which
+    is the same class as the `.get(name, 0.0)` that made 206 robot episodes
+    show one video. A missing duration is now None all the way to the screen,
+    where it renders as "not recorded" rather than a zero-width bar.
+
+    An explicit 0 is still 0 — the caller said so.
+    """
+    if step.get(field) is None:
+        return None
+    return _ms(step, field, index)
+
+
 def _clip(value: object, limit: int = 20_000) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     return text if len(text) <= limit else text[:limit] + f"… [+{len(text) - limit}]"
+
+
+# What `_clip` appends. Parsed back out on read so the UI can render it as a
+# marker instead of showing it as characters the agent produced — a truncated
+# tool output that reads as a complete one is how you debug the wrong thing
+# for an hour.
+_CLIPPED = re.compile(r"… \[\+(\d+)\]$")
+
+
+def _fts_match(text: str) -> str:
+    """Free text as an FTS5 phrase, with the operator syntax neutralised.
+
+    FTS5 has its own query language — `AND`, `NEAR`, `*`, `^`, `:` — and a
+    person pasting an error message into a search box is not writing one.
+    Wrapping the whole thing in double quotes makes it a literal phrase, and
+    doubling any embedded quote keeps that true for text that contains them.
+    """
+    return '"' + (text or "").replace('"', '""') + '"'
+
+
+def _unclip(text: str) -> tuple[str, int]:
+    """(text without the marker, characters not stored).
+
+    Returns 0 when nothing was clipped. The stored text keeps its 20,000
+    characters; only the marker is lifted out, because the marker is metadata
+    about the payload rather than part of it.
+    """
+    match = _CLIPPED.search(text or "")
+    if not match:
+        return text, 0
+    return text[: match.start()], int(match.group(1))

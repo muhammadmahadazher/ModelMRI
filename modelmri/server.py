@@ -1211,6 +1211,31 @@ def create_app(
         docs point at it."""
         return {"deleted": traces.clear(keep_demo=keep_demo)}
 
+    # BEFORE /api/traces/{trace_id}. FastAPI matches in definition order,
+    # so with this below it the literal path `search` was captured as a
+    # trace id and every query answered "trace not found".
+    @app.get("/api/traces/search")
+    async def search_traces(q: str = "", limit: int = 100):
+        """Full-text search over every recorded step on this machine.
+
+        Free text plus allow-listed filters — `kind:tool_call`, `error:true`,
+        `duration>2000`, `name:pytest`. Results are steps rather than runs,
+        because what somebody is looking for is the tool call that failed, not
+        the hour it happened in.
+
+        The response names the engine that answered. FTS5 is compiled into
+        essentially every CPython SQLite, which is what makes this a `pip
+        install` rather than a ClickHouse container — but "essentially every"
+        is not "every", and a build without it degrades to a substring scan
+        and says so instead of quietly becoming a different feature.
+        """
+        try:
+            return await asyncio.to_thread(traces.search, q, min(int(limit), 500))
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/search")
+
     @app.get("/api/traces/{trace_id}")
     def trace_get(trace_id: str):
         doc = traces.get_trace(trace_id)
