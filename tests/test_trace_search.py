@@ -395,3 +395,89 @@ def test_search_results_carry_the_truncation_marker(tmp_path):
     )
     hit = s.search("findme")["results"]
     assert hit and hit[0]["truncated_by"] > 0
+
+
+# ------------------------------------- regressions from the pre-push audit
+
+
+def test_an_upgraded_store_gets_its_existing_traces_indexed(tmp_path):
+    """THE blocking bug. `count(*) FROM step_fts` reads THROUGH an
+    external-content table to `step`, so `indexed` equalled `stored` on every
+    store an earlier version wrote and the backfill never ran — once, ever.
+    Search then answered engine "fts5" with an empty list for every trace the
+    user already had, and nothing in the payload dissented."""
+    path = tmp_path / "old.sqlite"
+    old = sqlite3.connect(str(path))
+    old.executescript(
+        """
+        CREATE TABLE trace (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+          started_at TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}');
+        CREATE TABLE step (id TEXT PRIMARY KEY, trace_id TEXT NOT NULL,
+          parent_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+          started_ms INTEGER NOT NULL, duration_ms INTEGER NOT NULL DEFAULT 0,
+          input TEXT NOT NULL DEFAULT '', output TEXT NOT NULL DEFAULT '',
+          tokens_in INTEGER, tokens_out INTEGER,
+          error INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
+        INSERT INTO trace VALUES('t1','yesterday','2026-08-01T00:00:00Z','{}');
+        INSERT INTO step VALUES('s1','t1',NULL,'tool_call','pytest',0,7,
+          'the flaky migration test','17 passed',NULL,NULL,0,0);
+        """
+    )
+    old.commit()
+    old.close()
+
+    store = TraceStore(path)
+    hits = store.search("flaky")
+    assert [h["step_id"] for h in hits["results"]] == ["s1"], hits
+
+
+def test_reimporting_changed_text_does_not_leave_the_old_words_findable(tmp_path):
+    """`INSERT OR REPLACE INTO trace` cascade-deletes the steps, so retracting
+    after it read an empty table and every old term survived — bound to rowids
+    SQLite then reused."""
+    store = TraceStore(tmp_path / "t.sqlite")
+    doc = {
+        "id": "t1", "name": "run", "started_at": "2026-01-01T00:00:00Z",
+        "steps": [{"id": "s1", "kind": "tool_call", "name": "x",
+                   "input": "zebra", "output": ""}],
+    }
+    store.import_trace(doc)
+    assert store.search("zebra")["results"]
+
+    doc["steps"][0]["input"] = "giraffe omega"
+    store.import_trace(doc)
+    assert store.search("zebra")["results"] == []
+    assert len(store.search("giraffe")["results"]) == 1
+
+
+def test_results_are_ordered_by_the_real_clock_not_offset_within_a_run(tmp_path):
+    """`step.started_ms` is milliseconds since that trace's own start, so
+    ordering by it ranked hits by how deep into their run they happened. A step
+    nine minutes into last month's run outranked one a second into today's, and
+    the LIMIT then dropped today entirely — a full page of stale hits that
+    looks complete."""
+    store = TraceStore(tmp_path / "t.sqlite")
+    store.import_trace({
+        "id": "old", "name": "yesterday", "started_at": "2026-08-01T00:00:00Z",
+        "steps": [{"id": "o1", "kind": "tool_call", "name": "pytest",
+                   "input": "pytest", "started_ms": 540000}],
+    })
+    store.import_trace({
+        "id": "new", "name": "today", "started_at": "2026-08-13T00:00:00Z",
+        "steps": [{"id": "n1", "kind": "tool_call", "name": "pytest",
+                   "input": "pytest", "started_ms": 1000}],
+    })
+    got = [h["trace_name"] for h in store.search("pytest")["results"]]
+    assert got == ["today", "yesterday"], got
+
+
+def test_every_hit_carries_the_time_it_happened(tmp_path):
+    store = TraceStore(tmp_path / "t.sqlite")
+    store.import_trace({
+        "id": "t1", "name": "run", "started_at": "2026-08-13T09:00:00Z",
+        "steps": [{"id": "s1", "kind": "tool_call", "name": "x",
+                   "input": "needle"}],
+    })
+    assert store.search("needle")["results"][0]["trace_started_at"] == (
+        "2026-08-13T09:00:00Z"
+    )

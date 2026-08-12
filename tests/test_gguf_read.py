@@ -116,14 +116,56 @@ def test_an_unknown_ggml_type_reports_no_size(tmp_path):
     assert g.unknown_types == [199]
 
 
-def test_unknown_tensors_are_excluded_from_the_rollup_and_counted(tmp_path):
+def test_parameters_count_every_tensor_even_unsized_ones(tmp_path):
+    """Regression. `elements` is read from `dims` BEFORE the ggml type is
+    consulted, so it is as known for an unknown type as for F32. Excluding
+    those made a 1.44B model with MXFP4 bulk tensors report 131,072
+    parameters — wrong by 11,009x — while only an unrelated
+    `unmeasured_tensors` field dissented."""
     p = build(
         tmp_path,
         tensors=[("known", 1, [100], 0), ("mystery", 199, [100], 0)],
     )
     s = gguf_read.read(p).summary()
-    assert s["parameters"] == 100  # only the measurable one
+    assert s["parameters"] == 200  # both — shapes do not depend on the type
+    assert s["measured_parameters"] == 100
     assert s["unmeasured_tensors"] == 1
+
+
+def test_byte_totals_are_withheld_when_any_tensor_could_not_be_sized(tmp_path):
+    """A partial average printed as the file's headline is the confidently
+    wrong number this module's docstring calls worse than an absent one."""
+    p = build(
+        tmp_path,
+        tensors=[("known", 1, [100], 0), ("mystery", 199, [100], 0)],
+    )
+    s = gguf_read.read(p).summary()
+    assert s["tensor_bytes"] is None
+    assert s["effective_bpw"] is None
+    assert s["dominant_type"] is None
+    assert s["by_type_covers_whole_file"] is False
+    assert "199" in s["why_unmeasured"]
+
+
+def test_a_fully_unknown_file_does_not_report_zero_parameters(tmp_path):
+    """Rule 1: unknown must not collapse into 0. The old code reported
+    `parameters: 0` and `tensor_bytes: 0` for a file it understood nothing
+    about, in the same dict where effective_bpw correctly refused."""
+    p = build(tmp_path, tensors=[("a", 199, [256, 8], 0), ("b", 201, [128], 0)])
+    s = gguf_read.read(p).summary()
+    assert s["parameters"] == 256 * 8 + 128
+    assert s["measured_parameters"] == 0
+    assert s["tensor_bytes"] is None
+    assert s["effective_bpw"] is None
+
+
+def test_a_fully_measured_file_still_reports_everything(tmp_path):
+    p = build(tmp_path, tensors=[("a", 12, [256], 0), ("b", 1, [256], 0)])
+    s = gguf_read.read(p).summary()
+    assert s["by_type_covers_whole_file"] is True
+    assert s["why_unmeasured"] is None
+    assert s["tensor_bytes"] == 144 + 512
+    assert s["dominant_type"] is not None
 
 
 # ------------------------------------------------------------------ roll-ups

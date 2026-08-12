@@ -1148,6 +1148,9 @@ export interface SearchHit {
   truncated_by: number;
   error: boolean;
   seq: number;
+  /** The run's wall clock. `started_ms` is milliseconds since that run's own
+   *  start, so it cannot order hits across runs — results are sorted by this. */
+  trace_started_at: string;
 }
 
 export interface SearchResult {

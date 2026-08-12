@@ -358,8 +358,18 @@ def instrument_transformers() -> bool:
             if inputs is None and args:
                 inputs = args[0]
             n_prompt = int(inputs.shape[-1]) if inputs is not None else 0
-            sequence = result[0] if hasattr(result, "__getitem__") else None
-            ids = [int(i) for i in sequence.tolist()] if sequence is not None else []
+            # `result[0]` assumed a bare [B, S] tensor. With
+            # `return_dict_in_generate=True` the return is a
+            # GenerateDecoderOnlyOutput whose [0] is the whole `sequences`
+            # tensor, so `.tolist()` gave a nested list and int() raised —
+            # swallowed by the except below, leaving a step with no ids, no
+            # input and no output. Adopt then refused it saying the model was
+            # "not on this machine" about a local gpt2 in the same process.
+            # The old `hasattr(result, "__getitem__")` guard was inert: both
+            # types satisfy it.
+            sequences = getattr(result, "sequences", result)
+            row = sequences[0]
+            ids = [int(i) for i in row.tolist()]
             config = getattr(self, "config", None)
             model_id = str(
                 getattr(config, "_name_or_path", "") or getattr(config, "name_or_path", "")
@@ -374,15 +384,18 @@ def instrument_transformers() -> bool:
         except Exception:
             # Instrumentation must never break the thing it instruments. A
             # step with no meta is simply one that cannot be adopted, which is
-            # the same state a hosted call is in.
+            # the same state a hosted call is in — but it is NOT the same as a
+            # call that produced nothing, so the payloads below say which.
             meta = {}
 
         tok = getattr(self, "_modelmri_tokenizer", None)
         step(
             "llm_call",
             name=meta.get("model", "") or "transformers",
-            input=_decode_span(tok, meta, 0, meta.get("n_prompt_tokens", 0)),
-            output=_decode_span(tok, meta, meta.get("n_prompt_tokens", 0), None),
+            input=_decode_span(tok, meta, 0, meta.get("n_prompt_tokens", 0))
+            or "<generation recorded, but its token ids could not be read>",
+            output=_decode_span(tok, meta, meta.get("n_prompt_tokens", 0), None)
+            or "<generation recorded, but its token ids could not be read>",
             duration_ms=(t.now_ms() - started),
             tokens_in=meta.get("n_prompt_tokens") or None,
             tokens_out=(

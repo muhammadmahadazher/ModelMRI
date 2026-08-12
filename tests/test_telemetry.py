@@ -137,6 +137,61 @@ def test_prompt_time_is_kept_apart_from_the_decode_rate():
     assert t.tokens_per_s > 5 / ((t.prompt_ms + t.decode_ms) / 1000)
 
 
+def test_the_true_token_count_wins_over_the_stream_chunk_count():
+    """Regression. A TextIteratorStreamer yields one chunk per token PLUS a
+    final flush from TextStreamer.end(), so counting chunks is always one too
+    many. Measured on real gpt2: 8 new tokens reported as 9, and 40 as 41."""
+    with telemetry.Run("cpu") as run:
+        for _ in range(9):  # 8 tokens + the flush chunk
+            run.token()
+    t = run.finish(prompt_tokens=5, generated_tokens=8)
+    assert t.generated_tokens == 8
+    assert t.context_used == 13  # not 14
+
+
+def test_the_rate_divides_by_intervals_not_tokens():
+    """`first` is stamped when the FIRST token arrives, so the decode window
+    spans n-1 gaps. Dividing by n inflated the rate by n/(n-1), which is
+    unbounded as n approaches 1 — a synthetic true 20 tok/s read 36,630 at
+    n=1."""
+    import time
+
+    with telemetry.Run("cpu") as run:
+        run.token()
+        for _ in range(4):
+            time.sleep(0.01)
+            run.token()
+    t = run.finish(prompt_tokens=1, generated_tokens=5)
+    # 4 intervals over the decode window, not 5.
+    assert t.tokens_per_s == pytest.approx(4 / (t.decode_ms / 1000), rel=1e-6)
+
+
+def test_a_single_token_has_no_rate_rather_than_an_enormous_one():
+    with telemetry.Run("cpu") as run:
+        run.token()
+    t = run.finish(prompt_tokens=5, generated_tokens=1)
+    assert t.tokens_per_s is None
+    assert any("no interval" in n for n in t.notes)
+
+
+def test_a_fallback_count_is_labelled_approximate():
+    """When the worker delivered no ids there is no true count, so the stream
+    count is used AND said to be a stream count."""
+    with telemetry.Run("cpu") as run:
+        run.token()
+        run.token()
+    t = run.finish(prompt_tokens=1)
+    assert any("approximate" in n for n in t.notes)
+
+
+def test_a_true_count_is_not_labelled_approximate():
+    with telemetry.Run("cpu") as run:
+        run.token()
+        run.token()
+    t = run.finish(prompt_tokens=1, generated_tokens=2)
+    assert not any("approximate" in n for n in t.notes)
+
+
 def test_a_run_that_streamed_nothing_has_no_rate():
     with telemetry.Run("cpu") as run:
         pass

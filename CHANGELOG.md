@@ -202,6 +202,60 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **Nine defects found by an adversarial audit of this branch before it was
+  pushed.** Six independent lenses over the diff, every candidate attacked by
+  one reviewer trying to reproduce it and one trying to refute it, keeping only
+  what survived both. 20 candidates, 10 verified, 9 confirmed. The blocking one:
+
+  - **Trace search returned nothing for every trace you already had.**
+    `SELECT count(*) FROM step_fts` does not count index rows — `step_fts` is
+    an external-content table, so an unqualified scan reads through to `step`
+    and returns the CONTENT count. On any store an earlier version wrote,
+    `indexed` therefore equalled `stored`, the backfill never ran, and it never
+    ran on any later start either. Search answered `engine: "fts5"` with an
+    empty list while a filter-only query (which takes the substring path)
+    returned the same traces, so the store visibly contained what the search
+    box said did not exist. Now counts `step_fts_docsize` and backfills with
+    FTS5's own idempotent `'rebuild'`. Verified on a 40-trace store written in
+    the old shape: 0 hits before, 40 after.
+
+  - **Tokens/sec was fabricated and the token count was always one too many.**
+    A `TextIteratorStreamer` yields one chunk per token *plus* a final flush
+    from `TextStreamer.end()`, and the rate divided that inflated count by a
+    window spanning only `n-1` intervals. Measured on gpt2: 8 real tokens
+    reported as 9, and at `max_new_tokens=1` a machine doing 31 tok/s reported
+    308. The count now comes from `generate`'s own output ids, the rate divides
+    by intervals, and a single token reports no rate at all rather than an
+    unbounded one.
+
+  - **Trace search promised "newest first" and sorted by offset-within-run.**
+    `step.started_ms` is milliseconds since that run's own start, so a step
+    nine minutes into last month's run outranked one a second into today's —
+    and the LIMIT then dropped today entirely. A full page of stale hits that
+    looks complete, which is worse than an empty one. Now orders by
+    `trace.started_at`, and every hit carries it.
+
+  - **The GGUF summary averaged the tensors it happened to understand.**
+    Element counts are read from `dims` before the ggml type is consulted, so
+    they are as known for an unknown type as for F32 — but `parameters` was
+    summed over sized tensors only. A 1.44B model whose bulk tensors use a type
+    newer than this table (llama.cpp is at 39; shipping gpt-oss GGUFs use
+    MXFP4) reported 131,072 parameters, wrong by 11,009x. Parameters now count
+    every tensor; byte totals and bits-per-weight are withheld entirely, with
+    the reason, when anything could not be sized.
+
+  Five more, each reproduced: `import_trace` retracted from the search index
+  *after* `INSERT OR REPLACE` had already cascade-deleted the rows, leaving
+  stale terms bound to reused rowids; `adopt_step` cleared every derived cache
+  except `_feats`, so the previous generation's SAE activations were served
+  against the adopted tokens; the recorder's `result[0]` assumed a bare tensor
+  and silently recorded nothing under `return_dict_in_generate=True`;
+  `fit.py`'s architecture guards read the top-level config only, so a nested
+  multimodal `text_config` escaped the sliding-window refusal and overstated KV
+  by 5.8x; and `adopt_step` treated a recorded `n_prompt_tokens` of 0 as
+  absent, disabling the id-verification guard it exists for.
+
+
 - **The logit lens double-normed its final row on every bfloat16 load.** The
   check that decides whether the last hidden state is already normalised
   compared *logits* with `allclose(atol=1e-3, rtol=1e-3)`. Measured on gpt2,

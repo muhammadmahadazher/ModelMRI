@@ -164,6 +164,7 @@ class Run:
         self,
         *,
         prompt_tokens: int,
+        generated_tokens: int | None = None,
         n_layers: int = 0,
         n_heads: int = 0,
         dtype_bytes: int = 2,
@@ -177,11 +178,22 @@ class Run:
         ended = self.ended if self.ended is not None else time.perf_counter()
         prompt_ms = (self.first - self.started) * 1000 if self.first else None
         decode_ms = (ended - self.first) * 1000 if self.first else None
-        rate = (
-            self.tokens / (decode_ms / 1000)
-            if decode_ms and decode_ms > 0 and self.tokens
-            else None
-        )
+
+        # `self.tokens` counts STREAM CHUNKS, and a TextIteratorStreamer yields
+        # one per token PLUS a final flush from `TextStreamer.end()` — so it is
+        # always one too many. The caller passes the real count from
+        # `generate`'s own output ids; the counter is only a fallback for a
+        # caller that has none, and it is stated as approximate when used.
+        counted = self.tokens if generated_tokens is None else int(generated_tokens)
+
+        # Divide by the INTERVALS, not the tokens. `self.first` is stamped when
+        # the first token arrives, so the decode window spans n-1 gaps; using n
+        # inflated the rate by n/(n-1), which is unbounded as n approaches 1.
+        # Measured against a synthetic true 20.00 tok/s: 36,630 tok/s at n=1,
+        # 39.6 at n=2, 26.4 at n=4, 20.1 at n=64 — the n/(n-1) curve exactly.
+        rate = None
+        if decode_ms and decode_ms > 0 and counted >= 2:
+            rate = (counted - 1) / (decode_ms / 1000)
 
         mem = budget.free_memory(self.device_kind)
         peak = budget._peak_allocated(self.device_kind)
@@ -194,7 +206,7 @@ class Run:
             except Exception:
                 reserved = None
 
-        total = prompt_tokens + self.tokens
+        total = prompt_tokens + counted
         limit, source = context
         fraction = (total / limit) if limit else None
 
@@ -219,12 +231,25 @@ class Run:
             )
         if limit is None and source:
             notes.append(source)
-        if self.tokens == 0:
-            notes.append("no tokens were streamed, so there is no decode rate")
+        if counted == 0:
+            notes.append("no tokens were generated, so there is no decode rate")
+        elif counted == 1:
+            # One token gives no interval to measure a rate over, and the
+            # near-zero divisor used to produce numbers like 308 tok/s on a
+            # machine doing 31.
+            notes.append(
+                "only one token was generated, so there is no interval to "
+                "measure a rate over"
+            )
+        if generated_tokens is None and counted:
+            notes.append(
+                "token count is approximate — taken from the stream rather "
+                "than from the model's output ids"
+            )
 
         return Telemetry(
             prompt_tokens=prompt_tokens,
-            generated_tokens=self.tokens,
+            generated_tokens=counted,
             prompt_ms=prompt_ms,
             decode_ms=decode_ms,
             tokens_per_s=rate,

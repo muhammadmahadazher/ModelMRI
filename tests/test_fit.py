@@ -305,3 +305,49 @@ def test_grade_handles_measuring_less_than_predicted(model_dir):
 
 def test_plan_is_json_safe(model_dir):
     json.dumps(fit.plan(model_dir, seq_len=64, budget_bytes=10**10).to_dict())
+
+
+# ------------------------------------- regression from the pre-push audit
+
+
+def test_a_nested_text_config_is_refused_like_a_flat_one():
+    """Multimodal configs nest the language model under `text_config`.
+    `need()` fell through to it for layer/head counts, but the guards read the
+    top level only — so a nested gemma-3 was NOT refused for its sliding
+    window, and its KV came out 5.8x too big at 32k while the identical FLAT
+    config was correctly refused."""
+    nested = {
+        "model_type": "gemma3",
+        "text_config": {
+            "model_type": "gemma3_text",
+            "num_hidden_layers": 26,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 1,
+            "hidden_size": 1152,
+            "head_dim": 256,
+            "sliding_window": 512,
+        },
+    }
+    with pytest.raises(fit.UnsupportedArchitecture, match="sliding-window"):
+        fit.kv_geometry(nested, None)
+
+
+def test_nested_geometry_is_read_from_the_text_config():
+    nested = {
+        "model_type": "qwen2_vl",
+        "text_config": {
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "hidden_size": 1536,
+            "head_dim": 128,
+        },
+    }
+    geo = fit.kv_geometry(nested, None)
+    assert geo.n_layers == 28 and geo.n_kv_heads == 2 and geo.head_dim == 128
+
+
+def test_a_nested_mla_config_is_refused_too():
+    nested = {"model_type": "wrapper", "text_config": dict(CONFIG, kv_lora_rank=512)}
+    with pytest.raises(fit.UnsupportedArchitecture, match="latent attention"):
+        fit.kv_geometry(nested, None)

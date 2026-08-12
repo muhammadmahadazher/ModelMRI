@@ -152,7 +152,17 @@ class Gguf:
     def summary(self) -> dict:
         """Architecture, size, and where the bits actually went."""
         known = [t for t in self.tensors if t.bytes is not None]
-        elements = sum(t.elements for t in known)
+        unmeasured = len(self.tensors) - len(known)
+
+        # Parameters come from EVERY tensor. `elements` is read from `dims`
+        # before the ggml type is consulted, so it is exactly as known for an
+        # unknown type as for F32 — excluding those was the bug. A file whose
+        # bulk tensors use a type this table has not seen (llama.cpp is at 39
+        # while this stops at 30; shipping gpt-oss GGUFs use MXFP4 for their
+        # FFN weights) reported 131,072 parameters for a 1.44B model, wrong by
+        # 11,009x, with only an unrelated `unmeasured_tensors` field dissenting.
+        elements = sum(t.elements for t in self.tensors)
+        measured_elements = sum(t.elements for t in known)
         payload = sum(t.bytes or 0 for t in known)
         by_type: dict[str, dict] = {}
         for t in known:
@@ -182,17 +192,43 @@ class Gguf:
 
         meta = self.metadata
         arch = str(meta.get("general.architecture", "") or "")
+
+        # Everything derived from BYTES is refused outright when any tensor
+        # could not be sized. The module already refuses per tensor — `bytes`
+        # and `bpw` are None for an unknown type — and then this method threw
+        # that discipline away by averaging over the leftovers and printing the
+        # result as the file's headline. A partial average presented as a whole
+        # one is the confidently-wrong number the docstring says is worse than
+        # an absent one.
+        whole = unmeasured == 0
+        why = (
+            None
+            if whole
+            else (
+                f"{unmeasured} of {len(self.tensors)} tensors use a ggml type "
+                f"this reader does not know ({', '.join(str(t) for t in self.unknown_types)}), "
+                "so their size is unknown and any byte total or bits-per-weight "
+                "over this file would be an average of the parts that happened "
+                "to be recognised."
+            )
+        )
         return {
             "architecture": arch or None,
             "name": meta.get("general.name"),
             "quantisation_label": meta.get("general.file_type_name"),
+            # Exact regardless: element counts come from `dims`, not the type.
             "parameters": elements,
-            "tensor_bytes": payload,
+            "measured_parameters": measured_elements,
+            "tensor_bytes": payload if whole else None,
             "effective_bpw": (
-                round(payload * 8 / elements, 3) if elements else None
+                round(payload * 8 / measured_elements, 3)
+                if whole and measured_elements
+                else None
             ),
             "by_type": by_type,
-            "dominant_type": headline,
+            "by_type_covers_whole_file": whole,
+            "dominant_type": headline if whole else None,
+            "why_unmeasured": why,
             "higher_precision_tensors": outliers[:12],
             "context_length": meta.get(f"{arch}.context_length") if arch else None,
             "block_count": meta.get(f"{arch}.block_count") if arch else None,
@@ -202,12 +238,18 @@ class Gguf:
                 meta.get(f"{arch}.attention.head_count_kv") if arch else None
             ),
             "tokenizer": meta.get("tokenizer.ggml.model"),
-            "unmeasured_tensors": len(self.tensors) - len(known),
+            "unmeasured_tensors": unmeasured,
             "means": (
                 "Bits per weight is bytes x 8 / elements, computed per tensor "
                 "from the file's own table. It is not the quantisation label, "
                 "which is a preset name — the tensors listed as higher "
                 "precision sit above the headline and are excluded from it."
+                if whole
+                else
+                "Parameter count is exact — element counts are read from the "
+                "tensor shapes and do not depend on the quantisation type. "
+                "Byte totals and bits-per-weight are withheld: see "
+                "why_unmeasured."
             ),
         }
 

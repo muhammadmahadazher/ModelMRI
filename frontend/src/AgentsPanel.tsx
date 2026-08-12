@@ -337,7 +337,12 @@ with trace("my-agent"):
                     >
                       {h.kind} · {h.name || "unnamed"}
                     </button>
-                    <span className="mid">{h.trace_name}</span>
+                    <span className="mid">
+                      {h.trace_name}
+                      {h.trace_started_at && (
+                        <span className="meta"> · {h.trace_started_at.slice(0, 10)}</span>
+                      )}
+                    </span>
                     <span className="meta">
                       {h.duration_ms == null
                         ? "duration not recorded"

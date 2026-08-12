@@ -1021,8 +1021,21 @@ class ModelRuntime:
                 steer_handle.remove()
 
         cfg = getattr(self.model, "config", None)
+        n_prompt = int(inputs["input_ids"].shape[1])
+        # From `generate`'s own output ids, NOT from counting stream chunks.
+        # A TextIteratorStreamer yields one chunk per token plus a final flush
+        # from `TextStreamer.end()`, so the chunk count is always one too many —
+        # measured: 8 real tokens reported as 9, and at max_new_tokens=1 the
+        # inflated count divided by a near-zero decode window produced 308
+        # tok/s on a machine doing 31. None when the worker did not deliver
+        # ids, which reports the count as approximate rather than inventing it.
+        produced = result.get("ids")
+        generated = (
+            int(produced.shape[1]) - n_prompt if produced is not None else None
+        )
         self.last_telemetry = run.finish(
-            prompt_tokens=int(inputs["input_ids"].shape[1]),
+            prompt_tokens=n_prompt,
+            generated_tokens=generated,
             n_layers=int(getattr(cfg, "num_hidden_layers", 0) or 0),
             n_heads=int(getattr(cfg, "num_attention_heads", 0) or 0),
             dtype_bytes=2 if self.accel.dtype in ("float16", "bfloat16") else 4,
@@ -1557,7 +1570,21 @@ class ModelRuntime:
             # The prompt's ids, not the whole recorded sequence: the recording
             # holds prompt + generation, and re-tokenising the prompt can only
             # reproduce the prompt half.
-            n_prompt = int(meta.get("n_prompt_tokens") or len(retokenised))
+            # `or` treated a recorded 0 as absent, so an empty prompt fell
+            # back to len(retokenised) — also 0 — and the id-verification guard
+            # below degenerated to `[] != []` and never fired. The step then
+            # adopted with n_prompt_tokens 0, and every panel's
+            # `max(0, min(n_prompt - 1, size - 1))` collapsed to position 0
+            # while the response claimed the ids had been verified.
+            recorded_n = meta.get("n_prompt_tokens")
+            n_prompt = len(retokenised) if recorded_n is None else int(recorded_n)
+            if n_prompt <= 0:
+                raise Refusal(
+                    "this step recorded a prompt of zero tokens, so there is "
+                    "nothing to verify the recorded ids against and no position "
+                    "for the panels to attribute at. Re-record it with a "
+                    "non-empty prompt."
+                )
             if [int(t) for t in retokenised.tolist()] != recorded_ids[:n_prompt]:
                 raise Refusal(
                     f"re-tokenising this step's prompt gives {len(retokenised)} "
@@ -1580,6 +1607,14 @@ class ModelRuntime:
             self._attn_variants = {}
             self._attn_tokens = None
             self._last_patch = {}
+            # `_feats` too. Every other rebase path clears it; this one did
+            # not, and `_compute_features` guards its cache on
+            # `last_ids_epoch == epoch` — which adopt satisfies — so the
+            # PREVIOUS generation's [S, d_sae] activations were returned
+            # against the adopted tokens. Reproduced: 6 adopted tokens against
+            # a cached (2, 16), with features_summary publishing 6 tokens and
+            # 2 rows of activations belonging to a different sequence.
+            self._feats = None
 
         return {
             "adopted": True,

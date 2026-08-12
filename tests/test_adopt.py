@@ -174,6 +174,7 @@ def runtime():
     rt._attn_variants = {"live": ["stale"]}
     rt._attn_tokens = ["stale"]
     rt._last_patch = {"stale": True}
+    rt._feats = "stale-activations"
     rt.tokenizer = FakeTokenizer(["the", "capital", "of", "France", "is", "Paris"])
     return rt
 
@@ -207,6 +208,21 @@ def test_adopting_clears_everything_derived_from_the_previous_generation(runtime
     assert runtime._attn_tokens is None
     assert runtime._last_patch == {}
     assert runtime.last_user_span is None
+    # `_feats` was the one this missed. `_compute_features` guards its cache on
+    # `last_ids_epoch == epoch`, which adopt satisfies, so the previous
+    # generation's [S, d_sae] activations were served against the adopted
+    # tokens — 6 tokens published beside 2 rows from a different sequence.
+    assert runtime._feats is None
+
+
+def test_a_step_that_recorded_a_zero_length_prompt_is_refused(runtime):
+    """`or` treated a recorded 0 as absent, so the id check degenerated to
+    `[] != []` and never fired, and every panel's
+    `max(0, min(n_prompt - 1, size - 1))` collapsed to position 0 while the
+    response claimed the ids were verified."""
+    step = _step(input_ids=[0, 1, 2], n_prompt_tokens=0, prompt="")
+    with pytest.raises(Refusal, match="zero tokens"):
+        runtime.adopt_step(step)
 
 
 def test_a_hosted_api_step_is_refused_with_an_explanation(runtime):

@@ -215,15 +215,30 @@ class TraceStore:
                     );
                     """
                 )
+                # `count(*) FROM step_fts` does NOT count index rows. This is
+                # an external-content table, so an unqualified scan reads
+                # through to `step` and returns the CONTENT count — which made
+                # `indexed` equal `stored` on every store an earlier version
+                # wrote, so `stored and not indexed` was false and the backfill
+                # never ran. Once. Ever. The search box then answered
+                # `engine: "fts5"` with an empty list for every trace the user
+                # already had, and nothing in the payload dissented.
+                #
+                # `step_fts_docsize` is the shadow table that holds one row per
+                # INDEXED document, so it is the count that means what this
+                # check needs it to mean.
                 indexed = self._db.execute(
-                    "SELECT count(*) FROM step_fts"
+                    "SELECT count(*) FROM step_fts_docsize"
                 ).fetchone()[0]
                 stored = self._db.execute("SELECT count(*) FROM step").fetchone()[0]
                 if stored and not indexed:
+                    # 'rebuild' rather than an INSERT..SELECT: it is FTS5's own
+                    # idempotent resync from the content table, so running it
+                    # against a partially-populated index cannot double-index.
                     self._db.execute(
-                        "INSERT INTO step_fts(rowid, input, output, name)"
-                        " SELECT rowid, input, output, name FROM step"
+                        "INSERT INTO step_fts(step_fts) VALUES('rebuild')"
                     )
+                    log.info("backfilled the trace search index (%d steps)", stored)
                 self._db.commit()
                 self.fts = True
             except sqlite3.Error as err:
@@ -298,7 +313,7 @@ class TraceStore:
         if engine == "fts5":
             sql = (
                 "SELECT s.id, s.trace_id, t.name, s.kind, s.name, s.started_ms,"
-                " s.duration_ms, s.input, s.output, s.error, s.seq"
+                " s.duration_ms, s.input, s.output, s.error, s.seq, t.started_at"
                 " FROM step_fts f JOIN step s ON s.rowid = f.rowid"
                 " JOIN trace t ON t.id = s.trace_id"
                 " WHERE step_fts MATCH ?"
@@ -307,7 +322,7 @@ class TraceStore:
         else:
             sql = (
                 "SELECT s.id, s.trace_id, t.name, s.kind, s.name, s.started_ms,"
-                " s.duration_ms, s.input, s.output, s.error, s.seq"
+                " s.duration_ms, s.input, s.output, s.error, s.seq, t.started_at"
                 " FROM step s JOIN trace t ON t.id = s.trace_id"
                 " WHERE 1=1"
             )
@@ -320,7 +335,18 @@ class TraceStore:
         if clauses:
             sql += f" AND {clauses}"
             args += params
-        sql += " ORDER BY s.started_ms DESC LIMIT ?"
+        # `step.started_ms` is NOT a clock. The recorder writes it as
+        # milliseconds since that trace's own start
+        # (`int((time.monotonic() - t0) * 1000)`), so ordering by it ranked hits
+        # by how deep into their run they happened. A step nine minutes into a
+        # run from last month outranked one a second into today's, the
+        # docstring promised "newest first", and the LIMIT then dropped the
+        # newest matches — a full page of stale hits with today's run silently
+        # absent, which is worse than an empty list because it looks complete.
+        #
+        # `trace.started_at` is the real clock, and was already joined here and
+        # unused. `list_traces` has always ordered by it.
+        sql += " ORDER BY t.started_at DESC, s.started_ms ASC LIMIT ?"
         args.append(int(limit))
 
         # UNDER THE LOCK, like every other reader in this class. The two that
@@ -356,6 +382,9 @@ class TraceStore:
                     "truncated_by": clipped_in + clipped_out,
                     "error": bool(r[9]),
                     "seq": r[10],
+                    # So a hit can say WHEN it happened, and the panel can
+                    # re-sort. A result row carried no wall-clock at all.
+                    "trace_started_at": r[11],
                 }
             )
 
@@ -412,6 +441,21 @@ class TraceStore:
 
         trace_id = str(doc.get("id") or uuid.uuid4().hex[:12])
         with self._lock:
+            # BEFORE the trace row is replaced. `INSERT OR REPLACE` on `trace`
+            # deletes the old row, and with `foreign_keys=ON` that CASCADES to
+            # `step` — so doing this after the REPLACE meant the retraction
+            # read an already-empty table and every old term survived in the
+            # index, bound to rowids SQLite then reused. Re-importing a trace
+            # with changed text made a search for the NEW word return a step
+            # whose stored input was the OLD one, and freed rowids leaked terms
+            # onto later, unrelated traces.
+            #
+            # The FTS index is external-content over `step`, so it learns about
+            # a delete only when told, and it can only be told while the values
+            # are still there to read. `delete()` and `clear()` already do this
+            # in the right order; this was the one site that did not.
+            self._retract_from_index(trace_id)
+            self._db.execute("DELETE FROM step WHERE trace_id=?", (trace_id,))
             self._db.execute(
                 "INSERT OR REPLACE INTO trace(id, name, started_at, meta) VALUES(?,?,?,?)",
                 (
@@ -421,13 +465,6 @@ class TraceStore:
                     json.dumps(doc.get("meta", {})),
                 ),
             )
-            # The FTS index is an external-content table over `step`, so it
-            # does not learn about deletes on its own. Retract the old rows
-            # BEFORE they go, using the values still in the table: an index
-            # holding text whose step no longer exists returns hits that
-            # cannot be opened.
-            self._retract_from_index(trace_id)
-            self._db.execute("DELETE FROM step WHERE trace_id=?", (trace_id,))
             for seq, s in enumerate(steps):
                 self._db.execute(
                     "INSERT INTO step(id, trace_id, parent_id, kind, name, started_ms,"

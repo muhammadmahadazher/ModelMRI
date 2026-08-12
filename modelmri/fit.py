@@ -298,6 +298,33 @@ def _reject_unsupported(config: dict) -> None:
         )
 
 
+def _merged(config: dict) -> dict:
+    """One config with `text_config` folded in, so every guard sees it.
+
+    Multimodal configs (gemma-3, qwen2-vl, llava) nest the language model under
+    `text_config`. `need()` already fell through to it for layer and head
+    counts, but `_reject_unsupported`, `num_key_value_heads` and `head_dim` all
+    read the top level only — so a nested gemma-3 was NOT refused for its
+    sliding window, and its KV was overstated 5.8x at 32k and 6.5x at 128k,
+    while `longest_context` returned ~3.4k tokens for a model that holds 131k.
+    The identical FLAT config was correctly refused, which is the tell that the
+    guard was reading the wrong dict rather than the wrong rule.
+
+    Nested keys win: they describe the language model, which is what the KV
+    cache belongs to.
+    """
+    nested = config.get("text_config")
+    if not isinstance(nested, dict):
+        return config
+    merged = dict(config)
+    merged.update(nested)
+    # `model_type` too — it is what `_reject_unsupported` matches on, and the
+    # outer one names the wrapper ("gemma3") rather than the decoder.
+    if nested.get("model_type"):
+        merged["model_type"] = nested["model_type"]
+    return merged
+
+
 def kv_geometry(config: dict, header: dict | None = None) -> KVGeometry:
     """The four numbers the KV formula needs, each read rather than assumed.
 
@@ -305,6 +332,7 @@ def kv_geometry(config: dict, header: dict | None = None) -> KVGeometry:
     default for `num_key_value_heads` would turn a GQA model into an MHA one
     and multiply the predicted cache by the group size, silently.
     """
+    config = _merged(config)
     _reject_unsupported(config)
 
     def need(key: str, *alts: str) -> int:
