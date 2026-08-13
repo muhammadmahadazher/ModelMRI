@@ -50,7 +50,7 @@ no torch. See [sharing what you found](guides/attention.md#sharing-what-you-foun
 1. **Pick a model.** The picker opens on **On this machine**, which lists
    everything already on your disk: the HuggingFace cache, any folder with a
    `config.json` and weights, and any `.gguf` file. Nothing there? Switch to
-   **HuggingFace** and search — `Qwen/Qwen3-0.6B` is a good first choice at
+   **HuggingFace** and search — `Qwen/Qwen3-1.7B` is a good first choice at
    about 1.5 GB.
 
 2. **Type a prompt and press Generate.** The model loads automatically if it
