@@ -85,6 +85,15 @@ vla-lite = [
     "pillow>=10",
     "pyarrow>=15",
 ]
+# Only for measuring quantisation damage, which has to dequantise real weights.
+# `modelmri.gguf_read` reads a GGUF's header with the stdlib and needs none of
+# this — reading the table describing tensors and unpacking the tensors
+# themselves are different jobs, and only the second one earns a dependency.
+gguf = [
+    "gguf>=0.10",
+    "numpy>=1.24",
+    "safetensors>=0.4",
+]
 
 [dependency-groups]
 # playwright belongs here, not in an ad-hoc `uv run pip install`: uv run
