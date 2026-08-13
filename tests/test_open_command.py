@@ -141,14 +141,27 @@ def test_the_viewer_serves_and_hands_over_the_file(tmp_path):
     else:
         pytest.fail("the viewer never came up")
 
+    # The served name DERIVES from the file. It used to be fixed at
+    # `session.mri` for everything, so the URL said nothing about what was open
+    # and an attribution graph was served under the name "session" -- which is
+    # exactly the confusion the graph work exists to avoid. Asserted against
+    # the source file's stem rather than a literal, so the test fails if the
+    # derivation is dropped and does not have to be edited when it changes.
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    conn.request("GET", "/session.mri")
+    conn.request("GET", f"/{mri.stem}.mri")
     resp = conn.getresponse()
-    assert resp.status == 200
+    assert resp.status == 200, f"the viewer does not serve /{mri.stem}.mri"
     served = resp.read()
     assert served == mri.read_bytes(), "the served file is not the one named"
     # And it round-trips, so what the page will parse is a real session.
     assert session.parse(served).tokens == ["a", "b"]
+
+    # The old fixed name must NOT still answer: two URLs for one file is two
+    # things to keep working, and the point of deriving it was that the URL
+    # says what is open.
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/session.mri")
+    assert conn.getresponse().status == 404
 
 
 def test_a_file_that_is_not_a_session_never_starts_a_server(tmp_path):
