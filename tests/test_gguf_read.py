@@ -377,3 +377,39 @@ def test_the_result_is_json_safe(tmp_path):
         tensors=[("a", 12, [256], 0), ("b", 199, [10], 0)],
     )
     json.dumps(gguf_read.read(p).to_dict())
+
+
+# ------------------------------------------- the scanner lists it at all
+
+
+def test_the_scanner_lists_gguf_files(tmp_path, monkeypatch):
+    """"Click any .gguf the scanner already found" was not true: find_torchscript
+    globbed only .pt/.pth/.torchscript, so the format most local users actually
+    have was never listed."""
+    from modelmri import custom
+
+    p = build(tmp_path, tensors=[("a", 12, [256], 0)])
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path.resolve()])
+    rows = custom.find_torchscript()
+    assert [r["name"] for r in rows] == [p.name]
+    assert rows[0]["kind"] == "gguf"
+
+
+def test_checkpoint_kind_reads_the_magic_bytes_not_the_extension(tmp_path):
+    """A GGUF is not a zip, so the archive logic would have called it
+    unreadable. Decided by its first four bytes instead."""
+    from modelmri.custom import checkpoint_kind
+
+    p = build(tmp_path, tensors=[("a", 1, [4], 0)])
+    assert checkpoint_kind(p) == "gguf"
+
+    # And a file that merely claims the extension is not promoted.
+    fake = tmp_path / "liar.gguf"
+    fake.write_bytes(b"PK\x03\x04" + b"\0" * 32)
+    assert checkpoint_kind(fake) != "gguf"
+
+
+def test_a_missing_file_is_unreadable_not_gguf(tmp_path):
+    from modelmri.custom import checkpoint_kind
+
+    assert checkpoint_kind(tmp_path / "absent.gguf") == "unreadable"

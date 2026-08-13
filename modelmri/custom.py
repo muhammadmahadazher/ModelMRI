@@ -1055,11 +1055,20 @@ def checkpoint_kind(path: Path) -> str:
     directory is a read of the file's index -- no unpickling, no import, and
     nothing from the file is run.
 
-    Returns "torchscript" | "checkpoint" | "legacy" | "unreadable". Never
-    raises: this labels a row in a candidate list, and a file that cannot be
-    inspected is still a file worth showing with an honest label on it.
+    Returns "gguf" | "torchscript" | "checkpoint" | "legacy" | "unreadable".
+    Never raises: this labels a row in a candidate list, and a file that cannot
+    be inspected is still a file worth showing with an honest label on it.
     """
     import zipfile
+
+    # GGUF is not a zip and never will be, so it is decided by its magic bytes
+    # before the archive logic below gets a chance to call it unreadable.
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) == b"GGUF":
+                return "gguf"
+    except OSError:
+        return "unreadable"
 
     try:
         # Explicitly, because `is_zipfile` answers False for a path that does
@@ -1111,7 +1120,12 @@ def find_torchscript(limit: int = 40) -> list[dict]:
     for base in allowed_roots():
         if not base.is_dir():
             continue
-        for pattern in ("*.pt", "*.pth", "*.torchscript"):
+        # `.gguf` is here because the scanner used to find the format most
+        # people running models locally actually have and then not list it at
+        # all — so the panel that exists to say "here is what is on your disk"
+        # was silently omitting most of it. It still cannot be RUN, and
+        # `checkpoint_kind` labels it so, but it can now be READ.
+        for pattern in ("*.pt", "*.pth", "*.torchscript", "*.gguf"):
             for path in sorted(base.rglob(pattern)):
                 if len(out) >= limit:
                     return out

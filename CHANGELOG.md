@@ -83,6 +83,27 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   tokenizers report 1000000000000000019884624838656) rather than turned into a
   confident 0.0% of context.
 
+- **The GGUF reader has a panel now, and the scanner actually lists them.**
+  "Click any `.gguf` the scanner already found" was not true: `find_torchscript`
+  globbed only `.pt`, `.pth` and `.torchscript`, so the format most people
+  running models locally actually have was never in the list at all. It globs
+  `*.gguf` too, and `checkpoint_kind` decides by the file's magic bytes rather
+  than by extension — a GGUF is not a zip, so the archive logic would have
+  called it unreadable.
+
+  Clicking one opens a reader rather than attempting a load: the headline
+  numbers, a by-quantisation-type table, the tensors sitting above the
+  headline, a sortable and filterable table of all of them, and every metadata
+  key behind a disclosure. Read is deliberately a different verb from load —
+  transformers cannot run a quantised GGUF, and one button for both would
+  promise something that can only refuse.
+
+  Driven in a browser against a real 0.52 GB qwen3-0.6B blob: 311 tensors,
+  751,632,384 parameters, 5.499 effective bpw, and the table showing where that
+  comes from — Q4_K 4.5 bpw across 155 tensors and 294.0 MB, Q6_K 6.562 across
+  15 and 163.8 MB, F16 16 across 28 and 58.7 MB. An unsized tensor renders
+  "unknown type", never a dash that could be read as zero.
+
 - **Open a GGUF and read what is inside it.** The scanner has always found
   `.gguf` files — the format most people running models on their own machine
   actually have — and then refused them with a note. It still cannot *run*

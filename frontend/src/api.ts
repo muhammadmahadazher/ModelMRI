@@ -1339,6 +1339,67 @@ export interface CustomStatus {
   roots: string[];
 }
 
+/** One tensor from a GGUF's own table. */
+export interface GgufTensor {
+  name: string;
+  ggml_type: number;
+  type_name: string;
+  dims: number[];
+  elements: number;
+  /** Null when the ggml type is one the reader does not know. Not 0 — an
+   *  unknown type has an unknown size, and a guess corrupts every roll-up. */
+  bytes: number | null;
+  bpw: number | null;
+  offset: number;
+}
+
+export interface GgufSummary {
+  architecture: string | null;
+  name: string | null;
+  quantisation_label: string | null;
+  /** Exact regardless of quantisation: element counts come from the tensor
+   *  shapes and do not depend on the ggml type. */
+  parameters: number;
+  measured_parameters: number;
+  /** Null when any tensor could not be sized — a byte total over the parts
+   *  that happened to be recognised is not the file's byte total. */
+  tensor_bytes: number | null;
+  effective_bpw: number | null;
+  by_type: Record<
+    string,
+    { tensors: number; elements: number; bytes: number; bpw: number | null }
+  >;
+  by_type_covers_whole_file: boolean;
+  dominant_type: string | null;
+  why_unmeasured: string | null;
+  context_length: number | null;
+  block_count: number | null;
+  embedding_length: number | null;
+  head_count: number | null;
+  head_count_kv: number | null;
+  tokenizer: string | null;
+  higher_precision_tensors: { name: string; type: string; bpw: number }[];
+  unmeasured_tensors: number;
+  means: string;
+}
+
+export interface GgufReport {
+  path: string;
+  version: number;
+  tensor_count: number;
+  metadata: Record<string, unknown>;
+  tensors: GgufTensor[];
+  unknown_types: number[];
+  summary: GgufSummary;
+}
+
+/** Read a GGUF's header. Nothing is loaded and no GPU is touched — a few
+ *  hundred milliseconds and well under a megabyte for a multi-gigabyte file. */
+export const readGguf = (path: string) =>
+  fetch(`/api/gguf?path=${encodeURIComponent(path)}`).then((r) =>
+    json<GgufReport>(r),
+  );
+
 export interface CustomCandidate {
   path: string;
   name: string;
@@ -1349,7 +1410,7 @@ export interface CustomCandidate {
   /** What the file actually is, read from its archive index rather than
    *  guessed from `.pt` vs `.pth` — which are the same container and say
    *  nothing about the contents. */
-  kind?: "torchscript" | "checkpoint" | "legacy" | "unreadable";
+  kind?: "gguf" | "torchscript" | "checkpoint" | "legacy" | "unreadable";
 }
 
 export interface CustomRun {

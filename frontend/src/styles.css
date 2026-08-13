@@ -3108,3 +3108,59 @@ button.model-btn:hover:not(:disabled) {
   cursor: help;
   text-decoration: underline dotted;
 }
+
+/* ---------- GGUF reader ----------
+   A tensor table wants to read as instrument output, not as a web table:
+   monospace, tight rows, and the numbers right-aligned so magnitudes line up.
+   The unknown-type rows are tinted because "this reader could not size it" is
+   the one cell a reader must not skim past. */
+.gguf { margin: 4px 0 18px; }
+.gguf-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin: 12px 0;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in oklab, var(--color-ink) 12%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--color-card) 97%, white);
+}
+.gguf-stat { display: flex; flex-direction: column; gap: 2px; }
+.gguf-stat b {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  color: var(--color-ink);
+}
+.gguf-stat .meta { font-size: 10.5px; }
+.gguf-bpw { border-left: 3px solid var(--color-custom); padding-left: 12px; }
+
+.gguf-scroll { max-height: 420px; overflow: auto; margin-top: 6px; }
+.gguf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.gguf-table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--color-mute);
+  padding: 5px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--color-ink) 14%, transparent);
+  position: sticky;
+  top: 0;
+  background: var(--color-paper);
+  cursor: pointer;
+  user-select: none;
+}
+.gguf-table th.sorted { color: var(--color-ink); }
+.gguf-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid color-mix(in oklab, var(--color-ink) 6%, transparent);
+}
+.gguf-table td:nth-child(n + 4) { text-align: right; }
+.gguf-table tr.sel td { background: color-mix(in oklab, var(--color-custom) 8%, transparent); }
+.gguf-table tr.err td { background: color-mix(in oklab, var(--color-pop) 8%, transparent); }
+.gguf-meta { margin-top: 14px; }
+.gguf-meta summary { cursor: pointer; font-size: 11.5px; color: var(--color-mute); }
+.gguf-val { word-break: break-all; max-width: 60ch; }
