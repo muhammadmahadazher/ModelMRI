@@ -8,6 +8,48 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#6, completed: direct logit attribution, sited inside the ablation panel.**
+  `GET /api/attention/direct` decomposes the predicted token's logit across
+  every head and MLP, as signed bars from a centre line. On gpt2 predicting
+  ` Paris`, the MLPs dominate — L10 +2.41, L9 +1.65, L11 +1.24 — ahead of any
+  individual head.
+
+  It lives inside the ablation block rather than in its own panel because the
+  two measurements **disagree, and that is the point**: the ranking says what
+  breaks when a head is removed, this says what a head put into the logit
+  directly, and a head can be near zero here and still decide the answer by
+  feeding a later head. In a separate panel either number would read as the
+  whole story.
+
+  **The reconstruction residual is mandatory.** Direct attribution is exact
+  only if the final normalisation is linear, and it is not. TransformerLens
+  makes it exact by folding LayerNorm into the weights, which changes the model
+  you are studying and cannot be checked from the output. Here the model is
+  untouched, the norm is frozen at the scale a hook recorded from the real
+  pass, and the gap is measured and shown: 1.11% on the reference run. Without
+  it the chart is a fabricated 100%.
+
+  **The residual is also the floor.** A component contributing less than the
+  reconstruction error cannot be distinguished from that error, so it is
+  labelled unreadable rather than small — "direct-path attribution cannot see
+  indirect effects", not "this head contributed nothing".
+
+  Contributions are signed, and shift-corrected against each component's own
+  vocabulary mean for the reason `ablate.py` gives for using KL: softmax
+  ignores a constant added to every logit.
+
+### Fixed
+
+- **The frozen-norm reconstruction is verified before any number is reported**,
+  and the check caught two real bugs in this feature while it was being built.
+  The first version decomposed `hidden_states[-1]`, which is **already
+  normalised** — the trap `lens.py` documents at length, and the reconstruction
+  missed by 0.716. The second used a 1e-3 absolute tolerance and refused gpt2
+  on a bfloat16 load: it differed by 0.347 at a magnitude of 199, which is
+  better than one representable bf16 step, so the check was measuring the dtype
+  rather than the model. `lens.py` records finding that same bug in its own
+  agreement check. The tolerance is now derived from the dtype's own precision.
+
 - **#5, completed: a tuned lens, trained on your own text, shown beside the
   plain one — never instead.** `POST /api/lens/tune` fits a per-layer affine
   translator on the Belrose objective (minimising KL(final ‖ head(norm(A·h+b))))

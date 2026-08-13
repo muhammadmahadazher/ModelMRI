@@ -3705,3 +3705,55 @@ main > [id^="sec-"] {
   border-left: 2px solid var(--sem-error);
   padding-left: var(--sp-3);
 }
+
+/* ── direct logit attribution ─────────────────────────────────────────
+   Signed bars from a centre line, because a component pushing AGAINST the
+   chosen token is half the mechanism and a magnitude would hide it. */
+
+.direct { margin-top: var(--sp-4); border-top: 1px solid var(--hair-soft); padding-top: var(--sp-3); }
+.direct-head { font-family: var(--font-mono); font-size: 12px; margin-bottom: var(--sp-2); }
+.dla-bars { display: grid; gap: 1px; }
+.dla-row {
+  display: grid;
+  grid-template-columns: 76px 1fr 68px;
+  align-items: center;
+  gap: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+/* Under the reconstruction residual. Dimmed rather than hidden: the reader
+   asked for them, and an invisible row reads as an absent one. */
+.dla-row.faint { opacity: 0.42; }
+.dla-name { color: var(--color-mute); }
+.dla-track {
+  position: relative;
+  height: 11px;
+  background: color-mix(in oklab, var(--color-ink) 5%, transparent);
+  border-radius: 3px;
+}
+/* The centre line is zero. Both directions are measured from it. */
+.dla-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--hair);
+}
+.dla-track i { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; }
+.dla-track i.pos { background: var(--sem-vla); }
+.dla-track i.neg { background: var(--sem-error); }
+.dla-val { text-align: right; color: var(--color-ink); }
+.hint.residual { border-left: 2px solid var(--acc); padding-left: var(--sp-3); }
+.linkish {
+  background: none;
+  border: 0;
+  padding: var(--sp-2) 0;
+  color: var(--color-mute);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linkish:hover { color: var(--color-ink); }

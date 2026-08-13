@@ -892,6 +892,27 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.get("/api/attention/direct")
+    async def direct_attribution(position: int | None = None, top_k: int = 40):
+        """Direct logit attribution, beside the ablation ranking.
+
+        Sited here rather than in its own panel because the two answer related
+        questions and disagree, and a reader needs to see that: the ranking
+        says what breaks when a head is removed, this says what a head put
+        into the logit directly, and a head can be near zero here and still
+        carry the answer through a later head.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.direct_attribution, position, top_k
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/direct")
+
     @app.get("/api/lens/tuned")
     def tuned_lens_status() -> dict:
         """Whether a translator has been fitted for the loaded model."""

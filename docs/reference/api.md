@@ -142,6 +142,44 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Direct logit attribution
+
+`GET /api/attention/direct?position=&top_k=40`
+
+Of the logit the model gave the token it predicted, how much came straight from
+each head and MLP down the residual stream. Sited inside the ablation panel
+because the two **disagree**: the ranking says what breaks when a head is
+removed, this says what a head contributed directly, and a head can be near
+zero here and still decide the answer by feeding a later head.
+
+**The reconstruction residual is not optional.** Direct attribution is exact
+only if the final normalisation is linear, and it is not. TransformerLens makes
+it exact by folding LayerNorm into the weights — which changes the model you
+are studying, and once folded nothing in the output says what the folding cost.
+Here the model is untouched, the normalisation is frozen at the scale a hook
+recorded from the real pass, and the gap is measured and returned: on gpt2
+predicting ` Paris`, the components sum to 14.974 against a real 15.141, a
+residual of **1.11%**. A chart without that number is claiming a decomposition
+it does not have.
+
+**The residual is also the floor.** A component contributing less than the
+reconstruction error cannot be told from the reconstruction error, so those are
+flagged `unreadable: true` rather than rendered as small. That is not a claim
+that the component does not matter.
+
+Every contribution is **shift-corrected** against its own vocabulary mean:
+softmax ignores a constant added to every logit, so a component that lifts the
+whole vocabulary equally reports zero.
+
+Contributions are **signed** — a component can push against the token the model
+chose, and folding that into a magnitude would hide half the mechanism.
+
+The affine form is **verified before anything is reported**: the reconstruction
+is compared against the model's own normalisation, with the tolerance derived
+from the model dtype's representable step rather than a chosen epsilon. A model
+whose norm is something else — a learned gate, a different centring — is
+refused rather than attributed through the wrong transform.
+
 ## The two lenses
 
 `GET /api/lens?top_k=5&kind=plain|tuned|both`

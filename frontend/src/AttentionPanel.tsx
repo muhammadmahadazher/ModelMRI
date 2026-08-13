@@ -18,6 +18,7 @@ import {
   rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
+import DirectPanel from "./DirectPanel";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
@@ -620,6 +621,12 @@ export default function AttentionPanel({
               the block rather than the top because it answers a question you
               ask AFTER reading a number, not before. */}
           <ReceiptLine receipt={ranked?.receipt} />
+          {/* Inside this block on purpose. Direct attribution answers a
+              related question and disagrees with the ranking above — a head
+              can contribute nothing directly and still decide the answer by
+              feeding a later head. In its own panel either number would read
+              as the whole story. */}
+          {!replay && <DirectPanel epoch={epoch} />}
         </div>
       )}
       {/* The server's own sentence, unwrapped. Several of the things this

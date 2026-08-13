@@ -1686,6 +1686,46 @@ export interface LensRow {
   entropy: number;
 }
 
+/** One component's direct push on the predicted token, in logits. */
+export interface DirectContribution {
+  name: string;
+  kind: "embed" | "head" | "mlp";
+  layer: number | null;
+  head: number | null;
+  /** Signed, and already shift-corrected against this component's own
+   *  vocabulary mean — a component that lifts the whole vocabulary equally
+   *  has changed nothing, because softmax ignores a constant. */
+  logits: number;
+  /** Under the reconstruction residual: this component's direct effect cannot
+   *  be told from the error the approximation already makes. NOT a claim that
+   *  the component does not matter. */
+  unreadable: boolean;
+}
+
+export interface DirectAttribution {
+  token: string;
+  token_id: number;
+  position: number;
+  real_logit: number;
+  bias: number;
+  /** The gap between every component summed and the logit the model really
+   *  produced — what freezing the normalisation scale cost on this run. The
+   *  panel must show it: without it the chart claims a decomposition it does
+   *  not have. */
+  residual: number;
+  residual_share: number;
+  norm_kind: string;
+  components: DirectContribution[];
+  n_unreadable: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const getDirectAttribution = (topK = 40) =>
+  fetch(`/api/attention/direct?top_k=${topK}`).then((r) =>
+    json<DirectAttribution>(r),
+  );
+
 /** What a translator was fitted to, and what it bought on held-out text. */
 export interface TunedLensInfo {
   corpus_label?: string;

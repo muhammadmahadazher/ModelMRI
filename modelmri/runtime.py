@@ -2005,6 +2005,51 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def direct_attribution(self, position: int | None = None, top_k: int = 40) -> dict:
+        """How many logits each head and MLP put behind the predicted token.
+
+        A different question from `ablate_heads`, and they disagree: a head can
+        contribute nothing directly and still decide the answer by feeding a
+        later head. The response says so rather than leaving a near-zero bar to
+        be read as "this head does not matter".
+        """
+        from . import dla
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Direct attribution means running the "
+                    "model, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there are no components here to "
+                    "attribute a logit across."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.last_ids is None:
+                raise Refusal(
+                    "Generate something first — attribution reads that run."
+                )
+
+            # The last PROMPT token by default, for the same reason
+            # `ablate_heads` uses it: that is where the model answers the
+            # question, before any of its own output feeds back in.
+            size = int(self.last_ids.shape[0])
+            at = (
+                max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+                if position is None
+                else max(0, min(int(position), size - 1))
+            )
+            out = dla.attribute(
+                self.model, self.tokenizer, self.last_ids, position=at, top_k=top_k
+            ).to_dict()
+            out["receipt"] = self.receipt(
+                "direct_attribution", position=at, top_k=top_k
+            )
+            return out
+
     def logit_lens(self, top_k: int = 5, kind: str = "plain") -> dict:
         """What the model was about to say at every layer, not just the last.
 
