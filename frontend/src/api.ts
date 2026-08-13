@@ -1464,6 +1464,66 @@ export const loadGguf = (path: string, dtype?: string, confirm = false) =>
     body: JSON.stringify({ path, dtype, confirm }),
   }).then((r) => json<ModelStatus>(r));
 
+/** One position's disagreement between two models on the same token ids. */
+export interface PositionDiff {
+  index: number;
+  token: string;
+  /** Nats. The same quantity `ablate` reports for a head. */
+  kl: number;
+  top_a: string;
+  top_b: string;
+  p_a: number;
+  p_b: number;
+  flipped: boolean;
+  /** top-1 minus top-2 on each side. */
+  margin_a: number;
+  margin_b: number;
+  /** A flip where the reference model's own margin was under 0.05 — a tie
+   *  being broken rather than an answer being changed. */
+  contested: boolean;
+}
+
+export interface QuantBehaviour {
+  model_a: string;
+  model_b: string;
+  prompt: string;
+  tokens: string[];
+  positions: PositionDiff[];
+  flips: PositionDiff[];
+  /** null, not an empty list, when either model returned no attention. */
+  attention: { layer: number; mean_abs_diff: number }[] | null;
+  attention_means: string | null;
+  notes: string[];
+  summary: {
+    positions: number;
+    flips: number;
+    contested_flips: number;
+    decisive_flips: number;
+    mean_kl: number;
+    median_kl: number;
+    max_kl: number;
+    max_kl_at: { index: number; token: string };
+    worst_layer: { layer: number; mean_abs_diff: number } | null;
+    means: string;
+  };
+}
+
+/** What quantisation cost this model's behaviour, on one prompt.
+ *
+ *  Expensive and destructive: it loads two models one after the other and
+ *  unloads whatever is currently held to make room. */
+export const compareQuantisation = (
+  quantised: string,
+  original: string,
+  prompt: string,
+  attention = true,
+) =>
+  fetch("/api/quantdiff/behaviour", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ quantised, original, prompt, attention }),
+  }).then((r) => json<QuantBehaviour>(r));
+
 export interface CustomCandidate {
   path: string;
   name: string;

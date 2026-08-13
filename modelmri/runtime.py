@@ -2427,6 +2427,64 @@ class ModelRuntime:
             self._ollama_instruct = None
             return self.status()
 
+    def compare_quantisation(
+        self, quantised: str, original: str, prompt: str, *, want_attention: bool = True
+    ) -> dict:
+        """What quantisation cost this model's behaviour, on one prompt.
+
+        UNLOADS whatever is currently held first. Two models never sit in
+        memory at once — and the currently-loaded one is a third, so it has to
+        go too. On the 8 GB card this was written on, keeping it would mean the
+        comparison only runs for models small enough to fit three times, which
+        excludes every model anyone would want to compare.
+
+        Blocking — call from a worker thread.
+        """
+        from . import behavdiff
+
+        with self._load_slot("quantisation comparison"):
+            # Before the slot does anything else: the caller's model is dead
+            # weight for this measurement and its memory is what makes the
+            # measurement possible.
+            if self.model is not None:
+                log.info("unloading %s to make room for the comparison", self.hf_id)
+                self.epoch += 1
+                self.model = None
+                self.tokenizer = None
+                self.hf_id = None
+                self.backend = None
+                self.gguf = None
+                self.replay = None
+                self.last_ids = None
+                self.last_user_span = None
+                self._attn_variants.clear()
+                self._attn_tokens = None
+                self.sae = None
+                self._feats = None
+                self._steer = None
+                gc.collect()
+                self._empty_accel_cache()
+
+            progress.TRACKER.start_external(
+                "quantisation comparison", stage="load", detail="first model"
+            )
+            try:
+                result = behavdiff.compare_behaviour(
+                    quantised,
+                    original,
+                    prompt,
+                    dtype=self.accel.dtype,
+                    device=self.device,
+                    device_kind=self.accel.kind,
+                    want_attention=want_attention,
+                    on_stage=progress.TRACKER.stage,
+                )
+            except BaseException as err:
+                progress.TRACKER.finish(error=_load_failed(err))
+                raise
+            progress.TRACKER.finish()
+            return result.to_dict()
+
     def load_sae(self, repo: str, hook: str) -> SAEStatus:
         """Load an SAE and validate it against the current model. Blocking."""
         if self.backend == "ollama":

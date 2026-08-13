@@ -3134,6 +3134,43 @@ button.model-btn:hover:not(:disabled) {
 .gguf-stat .meta { font-size: 10.5px; }
 .gguf-bpw { border-left: 3px solid var(--color-custom); padding-left: 12px; }
 
+/* The behaviour half of the quantisation damage report. */
+.gguf-diff {
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklab, var(--color-ink) 12%, transparent);
+  border-left: 3px solid var(--color-feat);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--color-card) 97%, white);
+}
+.gguf-diff .row { gap: 8px; flex-wrap: wrap; }
+.gguf-damage { margin-top: 10px; }
+.gguf-damage .gguf-head { margin-top: 0; }
+
+/* One bar per layer, height relative to the worst layer in this run. A
+   sparkline rather than a table: the question it answers is "where in depth",
+   which is a shape, and thirty numbers in a column is not one. */
+.gguf-layers {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 44px;
+  margin: 12px 0 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--color-ink) 5%, transparent);
+}
+.gguf-layer {
+  flex: 1 1 0;
+  min-width: 2px;
+  height: var(--h, 0%);
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+  background: var(--color-feat);
+  transition: opacity var(--dur-micro) var(--ease-hover);
+}
+.gguf-layer:hover { opacity: 0.65; }
+
 /* The standing caveat on a GGUF-derived model. Deliberately page-level and
    above the fold rather than inside the reader: the claim is about every
    number on the page, so it cannot live in the one panel you navigate away

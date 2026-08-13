@@ -8,6 +8,56 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#36, the other half: what quantisation cost your model's BEHAVIOUR.** The
+  weight half shipped last release and answers how far the numbers moved.
+  This answers the question people actually have -- whether the model still
+  says the same thing -- and the join between them is the point. A tensor can
+  move a long way in RMS and change no answer; a tensor can barely move and
+  flip the argmax at the one position that mattered.
+
+  Three measurements over one identical token sequence: per-position KL
+  between the two next-token distributions (`ablate.kl_nats`, so it is the
+  same quantity a head ranking reports), every position where the argmax
+  flipped with **both** candidates and both probabilities, and per-layer mean
+  attention divergence so damage can be located in depth rather than totalled.
+
+  Measured on `SmolLM2-135M-Instruct-Q4_K_M.gguf` against
+  `HuggingFaceTB/SmolLM2-135M-Instruct`, RTX 4060 / bfloat16, "The capital of
+  France is":
+
+  | | |
+  |---|---|
+  | positions | 5 |
+  | median KL / max KL | 0.0357 / 0.0641 nats |
+  | answers actually changed | **0** |
+  | ties broken | 1 |
+  | most divergent attention | layer 22 of 30 |
+
+  That split is the feature. A naive report says "1 of 5 tokens changed",
+  which sounds like real damage. The one flip sits at a **0.038 margin** --
+  the original ranked `,` at 0.322 against ` is` at 0.319 -- so quantisation
+  broke a coin-flip, it did not change the model's mind. A flip is called
+  CONTESTED when the reference model's own top-1 beat its top-2 by under 0.05,
+  and both counts are reported rather than netted into one that has quietly
+  decided for the reader. The final answer, ` Paris`, is unchanged.
+
+  **Two models never sit in memory at once.** Load, capture to CPU, tear down,
+  load, capture, compare -- and the currently-held model is unloaded first,
+  because it is a third. On an 8 GB card the alternative is a comparison that
+  only runs when the model fits three times, which excludes every model worth
+  comparing.
+
+  Refusals where a number would otherwise be meaningless: different
+  tokenisations (a GGUF carries its own tokeniser, and the refusal names the
+  first position where they diverge), different vocabulary sizes (a KL over
+  different supports is undefined), and the same file on both sides. Missing
+  attention is `null` and noted, never 0 -- a zero would read as "identical".
+
+  And it says what it is not: this measures the quantiser through
+  HuggingFace's kernels, not llama.cpp's end-to-end damage, which uses its
+  own. One prompt is one sample, so the prompt travels with every response and
+  the per-position series is returned whole rather than averaged.
+
 - **Run a GGUF through the whole stack, and see what it costs first.** The
   reader could tell you what was inside a GGUF and then nothing could open it.
   `gguf_load.py` dequantises one into an ordinary torch module, so the logit

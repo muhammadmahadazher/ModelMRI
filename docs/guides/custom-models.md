@@ -187,6 +187,44 @@ apart they are, point `quantdiff` at both — it is a library module
 (`modelmri/quantdiff.py`), not a route, so it is used from Python rather than
 from the UI.
 
+### And what it cost the answers
+
+Reading a GGUF tells you how it was quantised. Loading it tells you what that
+did. Underneath the tensor table there is a second control: name the
+full-precision original and a prompt, and you get the behaviour half of the
+damage report.
+
+Measured on `SmolLM2-135M-Instruct-Q4_K_M.gguf` against
+`HuggingFaceTB/SmolLM2-135M-Instruct` on an RTX 4060 at bfloat16, prompt "The
+capital of France is" -- 5 positions, median KL 0.0357 nats, worst 0.0641,
+and:
+
+> **0 answers actually changed. 1 tie broken.**
+
+One position's argmax did flip, at ` France` -- but the original ranked `,` at
+0.322 against ` is` at 0.319, a margin of 0.038. Quantisation broke a
+coin-flip; it did not change the model's mind. A report saying "1 of 5 tokens
+changed" would be true and misleading, so flips are split into **contested**
+(the reference model's own top-1 beat its top-2 by under 0.05) and
+**decisive**, and you get both numbers.
+
+The bar chart under the table is per-layer attention divergence -- where the
+damage sits in depth, rather than only how much of it there is.
+
+Two models never sit in memory together: the first is loaded, its outputs are
+captured to the CPU, it is torn down, then the second is built. Whatever model
+you already had loaded is unloaded first, because it would be a third.
+
+Three things it refuses rather than guessing at, each because the number would
+otherwise be meaningless: two models that tokenise the prompt differently (the
+refusal names the first position where they diverge -- a GGUF carries its own
+tokeniser, and a re-converted file can carry a different one), two different
+vocabulary sizes, and the same file on both sides.
+
+It measures the quantiser through HuggingFace's kernels. llama.cpp has its own
+for these types, so this is not the end-to-end damage of the runtime you would
+deploy on. And one prompt is one sample.
+
 ## What this is not
 
 - **It is not a training monitor.** One forward pass, on demand. For loss

@@ -231,7 +231,23 @@ def allowed_roots() -> list[Path]:
 
 
 def resolve_under_roots(path: str | Path) -> Path:
-    """Resolve `path`, or raise if it escapes the allowed roots."""
+    """Resolve `path` to an existing FILE, or raise if it escapes the roots."""
+    return _under_roots(path, want="file")
+
+
+def resolve_dir_under_roots(path: str | Path) -> Path:
+    """The same boundary, for a directory.
+
+    A full-precision checkpoint is a directory of safetensors, so the
+    quantisation comparison needs to name one. Splitting the check by kind
+    rather than relaxing `resolve_under_roots` to accept both: a caller that
+    wants a file and is handed a directory has a bug, and the two messages say
+    different things about what to do next.
+    """
+    return _under_roots(path, want="dir")
+
+
+def _under_roots(path: str | Path, *, want: str) -> Path:
     try:
         p = Path(path).expanduser().resolve(strict=False)
     except OSError as err:
@@ -258,8 +274,10 @@ def resolve_under_roots(path: str | Path) -> Path:
 
     if not p.exists():
         raise AdapterError(f"{p} does not exist")
-    if not p.is_file():
+    if want == "file" and not p.is_file():
         raise AdapterError(f"{p} is not a file")
+    if want == "dir" and not p.is_dir():
+        raise AdapterError(f"{p} is not a directory")
     return p
 
 

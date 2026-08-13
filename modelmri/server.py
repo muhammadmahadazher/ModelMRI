@@ -159,6 +159,14 @@ class GgufLoad(BaseModel):
     confirm: bool = False
 
 
+class QuantCompare(BaseModel):
+    quantised: str
+    original: str
+    prompt: str = "The capital of France is"
+    # Off makes the run cheaper when only the token-level answer is wanted.
+    attention: bool = True
+
+
 class SAELoadRequest(BaseModel):
     repo: str = DEFAULT_SAE_REPO
     hook: str = DEFAULT_SAE_HOOK
@@ -1356,6 +1364,44 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf/load")
+
+    @app.post("/api/quantdiff/behaviour")
+    async def quantdiff_behaviour(body: QuantCompare):
+        """What quantisation cost the model's behaviour, on one prompt.
+
+        Expensive: it loads two models, one after the other, and UNLOADS
+        whatever is currently held to make room. Per-position KL between the
+        two next-token distributions, every position where the argmax flipped
+        with both candidates, and per-layer attention divergence.
+
+        One prompt is one sample. The prompt is in the response for that
+        reason, and the per-position series is returned whole rather than
+        averaged — an average hides the one position where the answer changed,
+        which is the position the feature exists to find.
+        """
+        try:
+            q = await asyncio.to_thread(custom.resolve_under_roots, body.quantised)
+            # The original may be a directory (a checkpoint) or a hub id, so it
+            # is resolved only when it looks like a local path. A hub id is not
+            # a filesystem read and does not belong to the roots gate.
+            original = body.original
+            if Path(original).exists():
+                original = str(
+                    await asyncio.to_thread(custom.resolve_dir_under_roots, original)
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.compare_quantisation(
+                    str(q), original, body.prompt, want_attention=body.attention
+                )
+            )
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/quantdiff/behaviour")
 
     @app.get("/api/traces/search")
     async def search_traces(q: str = "", limit: int = 100):
