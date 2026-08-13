@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, behavdiff, custom, gguf_read, paths
+from . import __version__, behavdiff, custom, gguf_read, otel, paths
 from .custom import AdapterError, CustomHandle
 
 # Every browser-facing handler below answers `str(err)` for these types, and
@@ -1226,6 +1226,63 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/attention")
+
+    @app.post("/api/otel/v1/traces")
+    async def otel_ingest(request: Request):
+        """Accept an OTLP/HTTP JSON export, so an already-instrumented team
+        does not need this project to write a provider integration.
+
+        Point any OpenTelemetry exporter at it:
+
+            OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5900/api/otel
+            OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+
+        JSON only. OTLP's common wire format is protobuf, and reading it would
+        cost either a generated stub set or the OpenTelemetry SDK as a
+        dependency -- which `modelmri-record` exists without on purpose. A
+        protobuf body is refused with a sentence naming the limit rather than
+        mis-parsed into a trace that looks real.
+        """
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+        if content_type == "application/x-protobuf":
+            return JSONResponse(
+                {
+                    "error": (
+                        "this endpoint reads OTLP/HTTP with a JSON body and "
+                        "does not speak protobuf. Set "
+                        "OTEL_EXPORTER_OTLP_PROTOCOL=http/json on the "
+                        "exporter, or put a collector in front that converts. "
+                        "Protobuf would mean a generated stub set or the "
+                        "OpenTelemetry SDK as a dependency, and this package "
+                        "is stdlib-only where it counts."
+                    )
+                },
+                status_code=415,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "this request body is not JSON"}, status_code=422
+            )
+        try:
+            doc = await asyncio.to_thread(otel.ingest, payload)
+            trace_id = await asyncio.to_thread(traces.import_trace, doc)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/otel/v1/traces")
+        # partialSuccess with rejectedSpans 0 is what an OTLP client expects
+        # from a healthy collector, so an exporter pointed here sees a normal
+        # answer rather than a shape it has to special-case.
+        return {
+            "partialSuccess": {},
+            "id": trace_id,
+            "spans": len(doc.get("steps") or []),
+            "semconv": (doc.get("meta") or {}).get("semconv"),
+        }
 
     @app.post("/api/traces/import")
     async def traces_import(doc: dict):

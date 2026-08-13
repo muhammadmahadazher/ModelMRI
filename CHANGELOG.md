@@ -8,6 +8,50 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#42, completed: point any OpenTelemetry exporter at ModelMRI.**
+  `POST /api/otel/v1/traces` reads an OTLP/HTTP JSON export, so a team that is
+  already instrumented gets the agents panel without this project writing an
+  integration for their stack:
+
+      OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5900/api/otel
+      OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+
+  **Which vocabulary a span spoke is recorded, never assumed.** There is no
+  single spelling for the prompt: OpenLLMetry writes `gen_ai.prompt`,
+  OpenInference writes `input.value`, the semantic conventions write
+  `gen_ai.input.messages`, the Vercel AI SDK writes `ai.prompt`. Each field is
+  tried in order and **the key that matched is stored in `meta.otel_keys`**, so
+  a reader can tell which vocabulary a step was read through rather than
+  trusting that it was read at all. A span that does not say which semconv
+  generation it was written against is recorded as `unstated` and the trace
+  carries a note saying so — `gen_ai.*` left the main semconv repo on
+  2026-06-12 and the names have churned since, so "I do not know" is a real
+  and common answer here, and the honest one.
+
+  An operation with no ModelMRI step kind is filed as `tool_call` with the
+  original kept in `meta.otel_operation`, rather than being invented into a
+  closer-sounding fit. A span whose end equals its start reads back as unknown
+  duration, not as a measured zero. Protobuf bodies are refused with a 415 that
+  names the limit and the one-line fix, instead of being mis-parsed into a
+  trace that looks real.
+
+### Fixed
+
+- **`modelmri serve` failed on first run for every new user.** `paths.data_dir()`
+  answers where the trace database belongs and creates nothing — `paths.ensure`
+  is the creator, by design — and none of the three `TraceStore` call sites
+  called it. On a machine with no legacy `~/.modelmri`, opening the database
+  raised `unable to open database file` inside `create_app`, before the server
+  printed its URL. It survived this long because every machine it had been run
+  on had already been an older version's machine. `TraceStore` now creates its
+  own parent directory, which is the moment of writing the design intends.
+
+- **An OTLP span id is only unique within its trace**, but `step.id` is the
+  primary key of the whole table, so two different exports reusing a span id
+  collided. Step ids imported from OTLP are namespaced by their trace.
+
+### Added
+
 - **#53, completed: a graph travels in a `.mri` and renders in the viewer.**
   `modelmri open graph.pt` now writes a forwardable `.mri` and serves it in
   the same viewer as every other finding, and `modelmri inspect` reports a

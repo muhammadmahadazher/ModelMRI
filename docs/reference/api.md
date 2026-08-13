@@ -138,6 +138,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/telemetry` | Read Telemetry |
 | `POST` | `/api/gguf/load` | Load Gguf |
+| `POST` | `/api/otel/v1/traces` | Otel Ingest |
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 

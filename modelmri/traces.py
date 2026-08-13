@@ -98,6 +98,24 @@ class TraceStore:
         # remembered exemptions, which is how the original bug survived review.
         # A reentrant lock serialises other threads identically.
         self._lock = threading.RLock()
+        # `paths.data_dir()` deliberately does not create anything -- it answers
+        # where a thing belongs, and `paths.ensure` creates at the moment of
+        # writing. Opening this file IS that moment: sqlite creates the database
+        # but not the directory holding it, and no caller was ensuring it. On a
+        # machine with no legacy `~/.modelmri` -- which is every NEW user, and
+        # anyone pointing MODELMRI_HOME at a fresh path -- `modelmri serve` died
+        # on `unable to open database file` before printing its URL. It survived
+        # this long because every machine it ran on had already been an older
+        # version's machine.
+        parent = Path(path).parent
+        if str(parent):
+            try:
+                parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # A read-only or otherwise unusable location. Left to sqlite to
+                # report against the real path, which names the actual problem
+                # better than a mkdir failure one level up would.
+                pass
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         # WAL needs a shared-memory file and byte-range locking, which SQLite
         # documents as unsupported on network filesystems. An NFS-mounted Linux

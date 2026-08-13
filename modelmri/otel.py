@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .errors import BadRequest, Refusal
@@ -556,3 +557,300 @@ def send(
         reject_message=reject_message,
         epoch_fallback=_epoch_ns(doc.get("started_at")) == 0,
     )
+
+
+# ---------------------------------------------------------------- ingest
+
+
+# What a foreign `gen_ai.operation.name` becomes. The inverse of OPERATION,
+# plus the spellings other producers actually emit. Anything not here keeps
+# its own name in `meta.otel_operation` and is filed as `tool_call` -- "an
+# operation ran" -- because VALID_KINDS is closed and inventing a closer fit
+# would be filing somebody's span under a claim they never made.
+OPERATION_TO_KIND = {
+    "chat": "llm_call",
+    "text_completion": "llm_call",
+    "generate_content": "llm_call",
+    "embeddings": "tool_call",
+    "execute_tool": "tool_call",
+    "invoke_agent": "subagent",
+    "create_agent": "subagent",
+}
+
+# Where other producers put the prompt, the completion and the token counts.
+# One tuple per field, tried in order, because there is no single spelling:
+# OpenLLMetry writes `gen_ai.prompt`, OpenInference writes `input.value`, the
+# semconv writes `gen_ai.input.messages`, the Vercel AI SDK writes `ai.prompt`.
+# First hit wins AND the key that matched is recorded, so a reader can tell
+# which vocabulary a step was read through rather than trusting that it was
+# read at all.
+INPUT_KEYS = (
+    "gen_ai.input.messages",
+    "gen_ai.prompt",
+    "input.value",
+    "llm.input_messages",
+    "ai.prompt",
+)
+OUTPUT_KEYS = (
+    "gen_ai.output.messages",
+    "gen_ai.completion",
+    "output.value",
+    "llm.output_messages",
+    "ai.response.text",
+)
+TOKENS_IN_KEYS = (
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.prompt_tokens",
+    "llm.token_count.prompt",
+    "ai.usage.promptTokens",
+)
+TOKENS_OUT_KEYS = (
+    "gen_ai.usage.output_tokens",
+    "gen_ai.usage.completion_tokens",
+    "llm.token_count.completion",
+    "ai.usage.completionTokens",
+)
+MODEL_KEYS = ("gen_ai.request.model", "gen_ai.response.model", "llm.model_name")
+
+
+def _flat(attributes: list | None) -> dict:
+    """OTLP's `[{key, value: {...Value}}]` as a plain dict.
+
+    Every wrapper shape is unwrapped, because a foreign producer picks them
+    and an attribute this does not understand is an attribute that silently
+    is not there.
+    """
+    out: dict = {}
+    for attr in attributes or []:
+        if not isinstance(attr, dict):
+            continue
+        key, value = attr.get("key"), attr.get("value")
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        for wrapper, cast in (
+            ("stringValue", str),
+            ("intValue", int),
+            ("doubleValue", float),
+            ("boolValue", bool),
+        ):
+            if wrapper in value:
+                try:
+                    out[key] = cast(value[wrapper])
+                except (TypeError, ValueError):
+                    # A producer that wrote a non-numeric intValue. Kept as
+                    # its text rather than dropped or zeroed.
+                    out[key] = str(value[wrapper])
+                break
+        else:
+            if "arrayValue" in value:
+                out[key] = json.dumps(value["arrayValue"])
+    return out
+
+
+def _first(attrs: dict, keys: tuple, cast=None):
+    """The first key present, and which one it was. `(None, None)` if absent."""
+    for key in keys:
+        if key in attrs:
+            value = attrs[key]
+            if cast is not None:
+                try:
+                    value = cast(value)
+                except (TypeError, ValueError):
+                    continue
+            return value, key
+    return None, None
+
+
+def ingest(payload: dict) -> dict:
+    """A foreign OTLP/HTTP JSON body as a trace document.
+
+    Takes what OpenLLMetry, OpenInference, the Vercel AI SDK or a plain
+    OpenTelemetry SDK actually send, so a team that is already instrumented
+    does not need this project to write a provider integration for them.
+
+    **Which vocabulary a span spoke is recorded, never assumed.** A span this
+    tool wrote carries `modelmri.semconv.generation`; a foreign one usually
+    carries nothing, and that is stored as "unstated" rather than backfilled
+    with our own pin. `gen_ai.*` left the main semantic-conventions repo on
+    2026-06-12 and the names have churned since, so "I do not know which
+    generation this is" is a real and common answer, and the honest one.
+    """
+    if not isinstance(payload, dict):
+        raise BadRequest("an OTLP body is a JSON object carrying `resourceSpans`")
+    resource_spans = payload.get("resourceSpans")
+    if not isinstance(resource_spans, list) or not resource_spans:
+        raise BadRequest(
+            "this body has no `resourceSpans`, so it is not OTLP/HTTP JSON."
+        )
+
+    spans: list[dict] = []
+    service = ""
+    for resource in resource_spans:
+        if not isinstance(resource, dict):
+            continue
+        res_attrs = _flat((resource.get("resource") or {}).get("attributes"))
+        service = service or str(res_attrs.get("service.name") or "")
+        for scope in resource.get("scopeSpans") or []:
+            if not isinstance(scope, dict):
+                continue
+            for span in scope.get("spans") or []:
+                if isinstance(span, dict):
+                    spans.append(span)
+
+    if not spans:
+        raise BadRequest("this OTLP body carries no spans")
+
+    # The trace starts when its earliest span does; every step's `started_ms`
+    # is an offset from that, which is what the timeline lays out.
+    starts = []
+    for span in spans:
+        try:
+            starts.append(int(span.get("startTimeUnixNano") or 0))
+        except (TypeError, ValueError):
+            continue
+    base_ns = min([s for s in starts if s > 0], default=0)
+
+    notes: list[str] = []
+    generations: set[str] = set()
+    unmapped: set[str] = set()
+    steps: list[dict] = []
+
+    ordered = sorted(spans, key=lambda s: str(s.get("startTimeUnixNano") or "0"))
+    for seq, span in enumerate(ordered):
+        attrs = _flat(span.get("attributes"))
+        generations.add(str(attrs.get("modelmri.semconv.generation") or "unstated"))
+
+        operation = str(attrs.get("gen_ai.operation.name") or "")
+        kind = OPERATION_TO_KIND.get(operation)
+        if kind is None:
+            kind = "tool_call"
+            if operation:
+                unmapped.add(operation)
+
+        try:
+            start_ns = int(span.get("startTimeUnixNano") or 0)
+            end_ns = int(span.get("endTimeUnixNano") or 0)
+        except (TypeError, ValueError):
+            start_ns = end_ns = 0
+
+        # An end equal to the start is how OTLP is forced to express "unknown",
+        # so it reads back as unknown rather than as a measured zero -- unless
+        # the span explicitly says a duration WAS recorded, which is the one
+        # case where zero is a measurement.
+        duration = None
+        if end_ns > start_ns:
+            duration = (end_ns - start_ns) // 1_000_000
+        elif attrs.get("modelmri.duration.recorded") is True:
+            duration = 0
+
+        text_in, in_key = _first(attrs, INPUT_KEYS)
+        text_out, out_key = _first(attrs, OUTPUT_KEYS)
+        tokens_in, _ = _first(attrs, TOKENS_IN_KEYS, cast=int)
+        tokens_out, _ = _first(attrs, TOKENS_OUT_KEYS, cast=int)
+        model, _ = _first(attrs, MODEL_KEYS)
+
+        # `step.id` is the PRIMARY KEY of the whole table, and an OTLP span id
+        # is only unique WITHIN its trace -- so importing two traces that share
+        # one is a UNIQUE constraint failure and a 500, which is exactly what
+        # happened the first time this ran against a second body. Namespaced by
+        # the OTLP trace id, which also keeps it deterministic: re-importing
+        # the same export produces the same ids rather than duplicating it.
+        #
+        # One body can carry spans from several traces, so the pair is taken
+        # per span rather than once for the request.
+        otel_trace = str(span.get("traceId") or "")
+        raw_span = str(span.get("spanId") or "")
+
+        def _key(sid: str) -> str:
+            return f"{otel_trace}:{sid}" if sid else ""
+
+        meta: dict = {"otel_span_id": raw_span, "otel_trace_id": otel_trace}
+        if model:
+            meta["model"] = str(model)
+        if operation:
+            meta["otel_operation"] = operation
+        if in_key or out_key:
+            # Which spelling matched. Two producers write the prompt four
+            # different ways, and a reader deserves to know which one this
+            # step was read through.
+            meta["otel_keys"] = {"input": in_key, "output": out_key}
+
+        steps.append(
+            {
+                "id": _key(raw_span) or f"{otel_trace or 'otlp'}:span-{seq}",
+                # The same scheme, or the tree breaks: a parent named by its
+                # bare span id would point at nothing.
+                "parent_id": _key(str(span.get("parentSpanId") or "")) or None,
+                "kind": kind,
+                "name": str(span.get("name") or operation or "span"),
+                "started_ms": max(0, (start_ns - base_ns) // 1_000_000),
+                "duration_ms": duration,
+                "input": "" if text_in is None else str(text_in),
+                "output": "" if text_out is None else str(text_out),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "error": (span.get("status") or {}).get("code") == STATUS_ERROR,
+                "seq": seq,
+                "meta": meta,
+            }
+        )
+
+    if unmapped:
+        notes.append(
+            "these operations have no ModelMRI step kind and were filed as "
+            "tool_call, with the original kept in meta.otel_operation: "
+            + ", ".join(sorted(unmapped))
+        )
+    if generations == {"unstated"}:
+        notes.append(
+            "no span said which semantic-convention generation it was written "
+            "against, so the attribute names were matched by trying several "
+            "spellings in order. gen_ai.* left the main semconv repo on "
+            "2026-06-12 and has churned since, so a span that does not say "
+            "which vocabulary it speaks cannot be read as though it did."
+        )
+
+    started_at = (
+        datetime.fromtimestamp(base_ns / 1e9, tz=timezone.utc).isoformat()
+        if base_ns
+        else datetime.now(timezone.utc).isoformat()
+    )
+    # A DETERMINISTIC trace id, derived from the OTLP trace ids in the body.
+    #
+    # Without one, `import_trace` mints a fresh uuid per call while the step
+    # ids stay deterministic -- so exporting the same run twice collided on
+    # `step.id`, which is the table's primary key, and answered 500. With one,
+    # `import_trace`'s existing INSERT OR REPLACE does the right thing: the
+    # same export twice is the SAME trace, replaced, which is also what a
+    # collector receiving a retry should do.
+    #
+    # Truncated to the width the store's own ids use. One body can carry spans
+    # from several OTLP traces, so the id covers all of them rather than
+    # whichever happened to be first.
+    otel_trace_ids = sorted(
+        {str(s.get("traceId") or "") for s in spans if s.get("traceId")}
+    )
+    trace_key = hashlib.sha256("|".join(otel_trace_ids).encode()).hexdigest()[:12]
+    if len(otel_trace_ids) > 1:
+        notes.append(
+            f"this body carried {len(otel_trace_ids)} OTLP traces and they are "
+            "imported as one ModelMRI trace, because that is what arrived in "
+            "one export."
+        )
+
+    return {
+        "id": trace_key,
+        "name": service or "imported OTLP trace",
+        "started_at": started_at,
+        "meta": {
+            "source": "otlp",
+            "service": service,
+            # Stored and shown in the agents panel. Plural because one body can
+            # carry spans from several producers.
+            "semconv": ", ".join(sorted(generations)),
+            "spans": len(steps),
+            "otel_trace_ids": otel_trace_ids,
+            "notes": notes,
+        },
+        "steps": steps,
+    }
