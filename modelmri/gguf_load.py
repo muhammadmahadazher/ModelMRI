@@ -581,9 +581,18 @@ def load(
 
     import torch
 
-    _require_gguf()
+    # `plan` FIRST, `_require_gguf` after. The other order put a check on an
+    # optional dependency in front of plain argument validation, so
+    # `dtype="float64"` on a machine without `modelmri[gguf]` reported "install
+    # the gguf extra" instead of "unknown dtype" -- true, but not the thing
+    # that was wrong, and the user fixes it and hits the real error second.
+    #
+    # It also made the answer depend on which extras happened to be installed:
+    # the same request returned 422 here and 409 in CI, which is how this was
+    # found. `plan` needs nothing beyond the stdlib header reader.
     kind = device_kind or (device.split(":")[0] if device else "cpu")
     p = plan(target, dtype=dtype, device_kind=kind)
+    _require_gguf()
 
     if p.verdict == "will not fit":
         raise Refusal(

@@ -176,10 +176,34 @@ def test_an_unknown_dtype_is_a_422_not_an_invented_number(tmp_path):
 
 
 def test_the_load_route_rejects_an_unknown_dtype_too(tmp_path):
+    """422 whether or not the optional `gguf` extra is installed.
+
+    This originally asserted the same thing and passed locally while failing
+    on all four CI cells, because `load()` called `_require_gguf()` before
+    `plan()`: with the extra absent the answer was 409 "install
+    modelmri[gguf]" — true, but not what was wrong with the request, and the
+    caller fixes that and meets the real error second. An argument error must
+    not depend on which extras are present.
+    """
     p = _gguf(tmp_path, elements=1_000)
     custom.add_root(str(tmp_path))
     r = _client().post("/api/gguf/load", json={"path": str(p), "dtype": "float64"})
-    assert r.status_code == 422
+    assert r.status_code == 422, r.text
+    assert "unknown dtype" in r.json()["error"]
+
+
+def test_a_bad_argument_beats_a_missing_optional_dependency(tmp_path, monkeypatch):
+    """Pinned directly, so it holds on a machine that HAS the extra too."""
+    from modelmri import gguf_load
+    from modelmri.errors import BadRequest, Refusal
+
+    def no_gguf():
+        raise Refusal("install modelmri[gguf]")
+
+    monkeypatch.setattr(gguf_load, "_require_gguf", no_gguf)
+    p = _gguf(tmp_path, elements=1_000)
+    with pytest.raises(BadRequest, match="unknown dtype"):
+        gguf_load.load(p, dtype="float64", device="cpu")
 
 
 def test_a_companion_file_is_refused_by_the_route_with_a_sentence(tmp_path):
