@@ -8,6 +8,56 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#17, completed: receipts on every number.** Each measurement now carries a
+  machine-readable record of what produced it — model, resolved HF revision
+  sha, dtype, device, attention implementation, seed, tokenizer hash, prompt
+  hash, ModelMRI version and the exact request — returned on every measurement
+  route and written into the `.mri`.
+
+  Every panel already printed its setup in prose for whoever was looking at the
+  screen at the time. None of that survived an export, and none of it could be
+  checked by anything. This is what makes `modelmri verify` (#18) possible at
+  all: you cannot re-run a measurement whose setup you have to infer.
+
+  **It does not guess.** Three fields can genuinely fail to resolve, and each
+  answers `null` with a sentence saying why rather than a plausible default. The
+  revision is read from the local cache and never the network, so it works
+  air-gapped; `refs/main` is consulted first, and when several revisions are
+  cached with no ref to disambiguate them the answer is "naming one would be a
+  guess" rather than the newest directory. The tokenizer hash covers the full
+  fast-tokenizer definition where there is one and SAYS SO when it could only
+  reach the vocabulary — two tokenizers with the same vocabulary and different
+  normalisers produce different token ids, so the two hashes must not be
+  compared. A `seed` of `null` means the measurement was not seeded, which is
+  not seed `0`.
+
+  Receipts carry no filesystem paths and no usernames. `hf_id` is an absolute
+  path for a model loaded from a folder, and the `.mri`'s own `model_id` field
+  had already shipped that leak once; the reduction happens in `stamp` rather
+  than only at export, so it holds for every route and not just the one writing
+  a file. Any absolute path inside `request` is reduced the same way — found by
+  the leak test rather than by review, after `rank_features` put a local SAE
+  directory in its receipt.
+
+  A collapsed one-line "measured by" strip appears under the head ranking,
+  feature ranking, patching grid and logit lens, expanding to the full record.
+  A measurement whose revision could not be established is marked, because a
+  finding that cannot be re-run against the same weights is the single fact
+  there most worth noticing.
+
+### Fixed
+
+- **A patch trace could be exported into a `.mri` describing a different
+  prompt.** `_patch_for_export` guards on the epoch, and its docstring says the
+  guard exists so that "a trace measured on an earlier prompt" is not written
+  beside a different run's tokens — but the epoch moves on load and unload and
+  deliberately NOT on generation, so the guard never fired for the case it
+  describes. Measured: patching "The Eiffel Tower is in the city of", then
+  generating "Bananas are yellow because", produced a file whose tokens and
+  attention were the bananas and whose patch section was the Eiffel Tower, with
+  nothing downstream able to tell. `adopt_step` clears it on the same rebase;
+  the generate path was the one rebase that did not.
+
 - **A section navigator, because the page is now nine panels deep.** Every
   panel was reachable only by scrolling past the ones above it. A rail in the
   left gutter lists the sections, marks the one being read, and jumps; ⌘K /

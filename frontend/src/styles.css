@@ -3549,3 +3549,101 @@ main > [id^="sec-"] {
 @media (prefers-reduced-motion: reduce) {
   .palette-scrim, .palette { animation: none; }
 }
+
+/* ── receipts ─────────────────────────────────────────────────────────
+   What produced the number above. One line by default, everything on
+   click. The ratio is the design: provenance that costs a third of a
+   panel's height gets deleted by whoever next needs the space, and
+   provenance nobody can see is not provenance. */
+
+.receipt {
+  margin-top: var(--sp-3);
+  border-top: 1px dashed var(--hair);
+  padding-top: var(--sp-2);
+}
+.receipt-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 3px 0;
+  background: none;
+  border: 0;
+  color: var(--color-mute);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+}
+.receipt-line:hover { color: var(--color-ink); }
+.receipt-line:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.receipt-tag {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+  flex: none;
+}
+.receipt-glance {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A finding whose revision is unknown cannot be re-run against the same
+   weights. That is the single fact here most worth noticing, so it is
+   marked rather than left as an absence the reader has to spot. */
+.receipt-warn {
+  flex: none;
+  color: var(--sem-error);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 9.5px;
+}
+.receipt-caret { margin-left: auto; flex: none; opacity: 0.6; }
+
+.receipt-full {
+  margin: var(--sp-2) 0 0;
+  display: grid;
+  gap: 2px 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  animation: receipt-open var(--dur-small) var(--ease-out);
+}
+.receipt-full > div {
+  display: grid;
+  /* Fixed label column so the values line up into a readable second column
+     rather than stepping raggedly with each label's length. */
+  grid-template-columns: 92px 1fr;
+  gap: var(--sp-2);
+  padding: 2px 0;
+}
+.receipt-full dt {
+  color: var(--color-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.receipt-full dd {
+  margin: 0;
+  color: var(--color-ink);
+  /* A 40-character commit and a "not established" sentence share this
+     column; both must wrap inside the panel rather than widen it. */
+  overflow-wrap: anywhere;
+}
+.receipt-args dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.receipt-args code {
+  background: color-mix(in oklab, var(--color-ink) 7%, transparent);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+@keyframes receipt-open {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .receipt-full { animation: none; }
+}

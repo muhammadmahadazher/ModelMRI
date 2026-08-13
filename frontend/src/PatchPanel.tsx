@@ -1,5 +1,6 @@
 import { CSSProperties, useState } from "react";
 import { errorText, patchTrace, PatchTrace } from "./api";
+import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
 
 /** Activation patching — where in the model the answer is decided.
@@ -267,6 +268,7 @@ export default function PatchPanel({
               </li>
             ))}
           </ul>
+          <ReceiptLine receipt={data.receipt} />
         </>
       )}
     </div>

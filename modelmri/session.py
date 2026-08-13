@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from . import receipts as _receipts_mod
 from .errors import BadRequest, Refusal
 
 FORMAT = "modelmri-session"
@@ -447,6 +448,15 @@ class Session:
     #
     # Its `provenance` is not optional: see `_graph`.
     graph: dict = field(default_factory=dict)
+    # What produced each number in this file: model, revision, dtype, device,
+    # attention implementation, seed, tokenizer and prompt hashes. Optional and
+    # additive like `patch` and `graph`, so the format version does not move
+    # and an older reader ignores the key.
+    #
+    # This is what makes a finding auditable after it has left the machine
+    # that took it. Every panel already printed its setup in prose for whoever
+    # was looking at the screen at the time; none of that survived an export.
+    receipts: list = field(default_factory=list)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -504,6 +514,7 @@ def build(
     scope: str = "",
     patch: dict | None = None,
     graph: dict | None = None,
+    receipts: list | None = None,
 ) -> bytes:
     """Serialise one analysis into a gzipped `.mri`."""
     from . import __version__
@@ -565,6 +576,14 @@ def build(
                 "saying so is the confusion this section exists to prevent."
             )
         doc["graph"] = graph
+    # Same additive rule. Written through the same validator the READER uses,
+    # not straight from the caller: a writer laxer than the reader is how you
+    # build files nobody can open, and `_graph` records that lesson two
+    # sections above. This also means a receipt is bounded on the way out, so
+    # a hostile `request` block cannot be smuggled into a file this tool signs
+    # its own name to.
+    if receipts:
+        doc["receipts"] = _receipts_mod.parse(receipts)
     # allow_nan=False. The default emits a bare `NaN`/`Infinity` token, which
     # is not JSON: Python reads it back, the viewer's `JSON.parse` does not.
     # `modelmri open` printed "forwardable" for a file it could not itself
@@ -717,4 +736,8 @@ def parse(data: bytes) -> Session:
         n_heads=counts["n_heads"],
         patch=_patch(doc),
         graph=_graph(doc),
+        # Validated in `receipts.parse` rather than here: the rules belong
+        # beside the writer that produces them, and this module already has
+        # more section validators than is comfortable.
+        receipts=_receipts_mod.parse(doc.get("receipts")),
     )

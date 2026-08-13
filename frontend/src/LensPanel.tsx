@@ -1,5 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { errorText, getLens, LensRow } from "./api";
+import { errorText, getLens, LensRow, Receipt } from "./api";
+import ReceiptLine from "./ReceiptLine";
 
 /** Logit lens — the answer for every model that has no sparse autoencoder.
  *
@@ -15,12 +16,17 @@ export default function LensPanel({ epoch }: { epoch: number }) {
   const [rows, setRows] = useState<LensRow[] | null>(null);
   const [final, setFinal] = useState("");
   const [settled, setSettled] = useState<number | null>(null);
+  const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => {
     setRows(null);
     setErr("");
+    // The receipt names the prompt this lens was read on, so it goes when the
+    // rows do -- leaving it would caption a cleared table with the setup of a
+    // run that is no longer on screen.
+    setReceipt(null);
   }, [epoch]);
 
   async function run() {
@@ -31,6 +37,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
       setRows(d.layers);
       setFinal(d.final);
       setSettled(d.settled_at);
+      setReceipt(d.receipt ?? null);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -115,6 +122,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
             · a probe, not features: it reads which token the stream points at,
             not which concepts are active · entropy falls as the model commits
           </div>
+          <ReceiptLine receipt={receipt} />
         </>
       )}
     </div>

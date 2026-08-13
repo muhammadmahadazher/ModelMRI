@@ -41,6 +41,7 @@ from . import (
     patch,
     paths,
     progress,
+    receipts,
     session,
     telemetry,
 )
@@ -427,6 +428,14 @@ class ModelRuntime:
         # just quietly reports numbers about nothing.
         self.epoch = 0
         self._last_patch: dict = {}
+        # One receipt per measurement that has run, keyed by the operation, so
+        # `export_session` can put the setup of every number in the `.mri`
+        # beside the number. Each carries the epoch it was taken under and is
+        # filtered on that at export -- the same rule `_last_patch` keeps, and
+        # for the same reason: a receipt describing the model that WAS loaded,
+        # riding along with an export of the one that is, would be a lie told
+        # in the one field a reader is meant to be able to trust.
+        self._receipts: dict[str, dict] = {}
         # Base vs instruction-tuned for an Ollama model, from Ollama itself.
         # None until asked, and None again on any HF load.
         self._ollama_instruct: bool | None = None
@@ -907,6 +916,16 @@ class ModelRuntime:
                 # moves on every load, unload and generation: a trace measured
                 # against a different model or a different run must not ride
                 # along with an export and be read as belonging to it.
+                # Both prompts are hashed into the receipt, not just the clean
+                # one: a patching result is a statement about a PAIR, and the
+                # single `prompt_sha256` every other receipt carries would
+                # describe half of what was measured.
+                result["receipt"] = self.receipt(
+                    "patch_trace",
+                    prompt=clean,
+                    clean_sha256=receipts.digest(clean),
+                    corrupt_sha256=receipts.digest(corrupt),
+                )
                 self._last_patch = {
                     **result,
                     "clean": clean,
@@ -1098,6 +1117,26 @@ class ModelRuntime:
         self._attn_variants.clear()  # recomputed on demand
         self._attn_tokens = None
         self._feats = None
+        # A receipt describes a measurement taken against a PARTICULAR
+        # generation -- its prompt hash and token count are two of its fields
+        # -- so a new generation invalidates every one of them. The epoch
+        # cannot carry this on its own: the epoch moves on load and unload and
+        # deliberately NOT on generation, so a receipt from the previous
+        # prompt would still match and would be exported beside these tokens.
+        self._receipts.clear()
+        # The patch trace has exactly the same problem, and had it before this
+        # commit. `_patch_for_export` guards on the epoch and its docstring
+        # says the guard is there so that "a trace measured on an earlier
+        # prompt ... would not be written into the file beside a different
+        # run's tokens" -- but the epoch does not move on generation, so that
+        # guard never fired for the case it describes. MEASURED, not argued:
+        # patching "The Eiffel Tower is in the city of", then generating
+        # "Bananas are yellow because", produced a `.mri` whose tokens and
+        # attention were the bananas and whose patch section was the Eiffel
+        # Tower, with nothing downstream able to tell. `adopt_step` clears it
+        # on the same rebase for the same reason; the generate path was the
+        # one rebase that did not.
+        self._last_patch = {}
 
     # ---------------- attention ----------------
 
@@ -1433,7 +1472,7 @@ class ModelRuntime:
                 extra = self._resample_donors(ids, layers)
 
             try:
-                return ablate.rank_heads(
+                ranked = ablate.rank_heads(
                     self.model,
                     self._block,
                     ids,
@@ -1444,11 +1483,61 @@ class ModelRuntime:
                     decode=lambda t: self.tokenizer.decode([t]),
                     **extra,
                 )
+                # The corpus is part of a resample measurement -- `corpus.py`
+                # says so at length -- so its label rides in the receipt, and
+                # only for the baseline that actually drew from it.
+                ranked["receipt"] = self.receipt(
+                    "ablate_heads",
+                    layer=layer,
+                    baseline=baseline,
+                    position=position,
+                    corpus=extra.get("corpus"),
+                )
+                return ranked
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
                 raise Refusal(
                     str(err)
                 ) from err  # leak-ok: authored, see test_no_machine_leaks
+
+    def receipt(
+        self,
+        op: str,
+        *,
+        seed: int | None = None,
+        prompt: str | None = None,
+        **request,
+    ) -> dict:
+        """Stamp what produced a number, file it, and hand it back.
+
+        Returns the receipt as a plain dict so a caller can attach it to its
+        own result without importing the dataclass.
+
+        A FAILING RECEIPT NEVER FAILS A MEASUREMENT. The provenance is worth
+        a great deal and it is still worth strictly less than the number it
+        describes -- a tokenizer that will not serialise, or a cache directory
+        that has been evicted mid-run, must not turn a completed ablation
+        sweep into a 500. The individual fields already answer None with a
+        reason for the cases that can be anticipated; this catches the ones
+        that cannot, and records the failure in the receipt itself rather than
+        returning an empty dict that reads as "no provenance was collected".
+        """
+        try:
+            stamped = receipts.stamp(
+                self, op, request=request, seed=seed, prompt=prompt
+            ).to_dict()
+        except Exception as err:  # pragma: no cover - defensive
+            log.warning("receipt for %s could not be taken", op, exc_info=err)
+            stamped = {
+                "op": op,
+                "request": {},
+                "could_not_stamp": (
+                    f"the setup of this measurement could not be read back "
+                    f"({type(err).__name__}), so this number travels without one"
+                ),
+            }
+        self._receipts[op] = {**stamped, "epoch": self.epoch}
+        return stamped
 
     def _resample_donors(self, ids, layers: list[int]) -> dict:
         """Capture `RESAMPLE_DRAWS` donor activations, or refuse saying why.
@@ -1797,6 +1886,9 @@ class ModelRuntime:
             rankings[name] = self.ablate_heads(layer, name)["ranked"]
         out = ablate.compare_baselines(rankings, top=5)
         out["rankings"] = rankings
+        out["receipt"] = self.receipt(
+            "compare_baselines", layer=layer, baselines=list(ablate.BASELINES)
+        )
         return out
 
     def attribute_tokens(self, position: int | None = None) -> dict:
@@ -1968,6 +2060,7 @@ class ModelRuntime:
                 "list would be a list about the template."
             )
         out["span_note"] = note
+        out["receipt"] = self.receipt("attribute_tokens", position=position)
         return out
 
     def rank_features(
@@ -2195,6 +2288,18 @@ class ModelRuntime:
             f"over the vocabulary, and it is why the line to grey out on is "
             f"the resolution and not noise_floor_kl."
         )
+        # The SAE is as much a part of this measurement as the model is: the
+        # same prompt through a different SAE ranks different features, so a
+        # receipt that named only the model would describe half the setup.
+        sae = self.sae
+        out["receipt"] = self.receipt(
+            "rank_features",
+            position=position,
+            scope=scope,
+            top_k=top_k,
+            sae_repo=getattr(sae, "repo", None) if sae else None,
+            sae_hook=getattr(sae, "hook", None) if sae else None,
+        )
         return out
 
     # ---------------- sessions (.mri) ----------------
@@ -2274,7 +2379,24 @@ class ModelRuntime:
             # in this tool that is causal rather than correlational was the
             # one you could not send anybody.
             patch=self._patch_for_export(),
+            receipts=self._receipts_for_export(),
         )
+
+    def _receipts_for_export(self) -> list[dict]:
+        """Every measurement's setup, for the ones this export describes.
+
+        Filtered on the epoch for the same reason `_patch_for_export` is: a
+        receipt naming the model that WAS loaded, written into a file about
+        the one that is, would be a falsehood in the single field the format
+        exists to make trustworthy. A receipt from a superseded epoch is
+        dropped rather than relabelled -- it describes a real measurement, it
+        just does not describe THIS one.
+        """
+        return [
+            {k: v for k, v in receipt.items() if k != "epoch"}
+            for receipt in self._receipts.values()
+            if receipt.get("epoch") == self.epoch
+        ]
 
     def _patch_for_export(self) -> dict:
         """The last patch trace, if it belongs to the state being exported.

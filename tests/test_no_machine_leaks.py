@@ -18,6 +18,7 @@ portability bugs found by audit, before they shipped.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -405,3 +406,67 @@ def test_no_handler_publishes_an_unlisted_exceptions_text():
         "a handler publishes a non-authored exception's text to the browser; "
         "use _internal(err, route) instead:\n" + "\n".join(offenders)
     )
+
+
+# --------------------------------------------------------------- receipts
+#
+# A receipt is the part of a finding MOST likely to leave this machine: it is
+# designed to travel inside a `.mri` so a stranger can audit where a number
+# came from. `ModelRuntime.hf_id` is a Hub id for a Hub model and an ABSOLUTE
+# PATH for one loaded from a local folder, and `export_session` carries a
+# comment recording that the same leak shipped once already through the
+# `.mri`'s own `model_id` -- uncaught, because no test had loaded a folder
+# model. These load one.
+
+
+class _FakeTokenizer:
+    """Enough of a tokenizer to be fingerprinted, with no backend."""
+
+    def get_vocab(self):
+        return {"a": 0, "b": 1}
+
+
+class _FakeRuntime:
+    """A runtime that loaded a model from a directory on this machine."""
+
+    def __init__(self, hf_id):
+        self.hf_id = str(hf_id)
+        self.model = None
+        self.tokenizer = _FakeTokenizer()
+        self.device = "cpu"
+        self.last_prompt = "the capital of France is"
+        self.last_ids = None
+
+
+def test_a_receipt_for_a_folder_model_carries_its_name_not_its_path(tmp_path):
+    """The leak `export_session` already had to fix, one layer lower.
+
+    Reduced in `receipts.stamp` rather than only at export, so it holds for
+    every route that hands back a receipt and not just the one writing a file.
+    """
+    from modelmri import receipts
+
+    folder = tmp_path / "Users" / "a-real-persons-name" / "my-net"
+    folder.mkdir(parents=True)
+
+    receipt = receipts.stamp(_FakeRuntime(folder), "ablate_heads")
+    assert receipt.model == "my-net"
+    assert str(tmp_path) not in json.dumps(receipt.to_dict())
+
+
+def test_no_field_of_a_receipt_is_an_absolute_path(tmp_path):
+    """Not just `model` — every field, including the notes, which are prose
+    and therefore the easiest place for a path to end up unnoticed."""
+    from modelmri import receipts
+
+    folder = tmp_path / "home" / "someone" / "checkpoint-4000"
+    folder.mkdir(parents=True)
+
+    receipt = receipts.stamp(
+        _FakeRuntime(folder),
+        "rank_features",
+        request={"sae_repo": str(folder / "sae"), "top_k": 8},
+        prompt="a prompt",
+    )
+    found = _paths_in(receipt.to_dict(), [])
+    assert not found, f"a receipt carried absolute paths: {found}"

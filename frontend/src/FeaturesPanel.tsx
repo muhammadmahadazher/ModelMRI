@@ -20,6 +20,7 @@ import {
   SAEStatus,
   setSteer,
 } from "./api";
+import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
@@ -1069,6 +1070,10 @@ function FeatureRanking({
       <div className={a.removal_verified ? "hint" : "hint err"}>
         {a.removal_check}
       </div>
+      {/* The SAE is as much a part of this measurement as the model, and the
+          receipt names both -- the same prompt through a different SAE ranks
+          different features. */}
+      <ReceiptLine receipt={a.receipt} />
     </div>
   );
 }

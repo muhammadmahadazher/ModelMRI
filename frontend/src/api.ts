@@ -211,6 +211,32 @@ export interface HeadScore {
   draws?: number;
 }
 
+/** What produced one number: the setup, stamped onto the measurement rather
+ *  than printed on the page. Every field that can genuinely fail to resolve is
+ *  nullable AND paired with a note saying why, because "no revision" and
+ *  "several revisions were cached so naming one would be a guess" send the
+ *  reader to different places. Optional on every response: a `.mri` written
+ *  before receipts existed carries none, and an older file must read as
+ *  "no provenance recorded" rather than failing to open. */
+export interface Receipt {
+  op: string;
+  request?: Record<string, unknown>;
+  tool_version?: string | null;
+  model?: string | null;
+  revision?: string | null;
+  revision_note?: string | null;
+  dtype?: string | null;
+  device?: string | null;
+  attn_implementation?: string | null;
+  /** null is "not seeded", which is NOT the same as seed 0. */
+  seed?: number | null;
+  tokenizer_sha256?: string | null;
+  tokenizer_note?: string | null;
+  prompt_sha256?: string | null;
+  n_prompt_tokens?: number | null;
+  measured_at?: string | null;
+}
+
 export interface Ablation {
   baseline: string;
   position: number;
@@ -226,6 +252,7 @@ export interface Ablation {
    *  scores differently against a different corpus. */
   corpus?: string;
   draws?: number;
+  receipt?: Receipt | null;
 }
 
 /** One pair of baselines, and how far apart they rank the same heads. */
@@ -736,6 +763,7 @@ export interface FeatureAblation {
   n_clearing_control: number;
   control_means: string;
   means: string;
+  receipt?: Receipt | null;
 }
 
 /** Rank the SAE's features by how far removing one moves the answer.
@@ -1665,6 +1693,7 @@ export const getLens = (topK = 5) =>
       n_layers: number;
       final: string;
       settled_at: number | null;
+      receipt?: Receipt | null;
     }>(r),
   );
 
@@ -1771,6 +1800,7 @@ export interface PatchTrace {
   passes: number;
   seconds: number;
   notes: string[];
+  receipt?: Receipt | null;
 }
 
 export const patchTrace = (clean: string, corrupt: string) =>

@@ -142,6 +142,55 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Receipts
+
+Every measurement route returns a `receipt` alongside its numbers: what
+produced them, in a shape a machine can read. `/api/attention/ablate`,
+`/api/attention/attribute`, `/api/attention/baselines`, `/api/features/ablate`,
+`/api/lens` and `/api/patch` all carry one, and `session/export` writes the
+set of them into the `.mri`.
+
+```json
+{
+  "op": "ablate_heads",
+  "request": {"layer": 0, "baseline": "zero", "position": 4},
+  "tool_version": "0.10.1",
+  "model": "gpt2",
+  "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+  "revision_note": "the commit `refs/main` resolves to in the local cache",
+  "dtype": "bfloat16",
+  "device": "cuda:0",
+  "attn_implementation": "eager",
+  "seed": null,
+  "tokenizer_sha256": "11e818f948f43497",
+  "tokenizer_note": "the full fast-tokenizer definition",
+  "prompt_sha256": "bbaff4d2ecd5892d",
+  "n_prompt_tokens": 9,
+  "measured_at": "2026-08-13T16:27:55+00:00"
+}
+```
+
+Three fields can genuinely fail to resolve, and each answers `null` **with a
+note saying why** rather than a plausible default — a receipt that quietly
+reports the wrong revision is worse than one that reports no revision, because
+the first is trusted and the second is questioned:
+
+- `revision` is read from the local cache, never the network, so it works
+  air-gapped. `refs/main` is consulted first; if several revisions are cached
+  and no ref says which was loaded, the answer is `null` and `revision_note`
+  says naming one would be a guess.
+- `tokenizer_sha256` covers the full fast-tokenizer definition where there is
+  one — vocabulary, merges, normaliser, pre-tokeniser. Where there is not,
+  `tokenizer_note` says the hash is vocabulary-only, because two tokenizers
+  with the same vocabulary and different normalisers produce different token
+  ids and the two hashes must not be compared.
+- `seed` is `null` when the measurement was not seeded. That is not seed `0`.
+
+Receipts carry **no filesystem paths and no usernames**: the model name is
+reduced to its basename when it was loaded from a folder, and any absolute
+path in `request` is reduced the same way. `tests/test_no_machine_leaks.py`
+enforces it.
+
 ## Streaming
 
 `GET /ws/generate` (WebSocket). Send `{"prompt": "..."}` and receive

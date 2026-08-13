@@ -18,6 +18,7 @@ import {
   rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
+import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
@@ -615,6 +616,10 @@ export default function AttentionPanel({
               <span className="meta">{agree.means}</span>
             </div>
           )}
+          {/* The setup that produced this ranking. It sits at the bottom of
+              the block rather than the top because it answers a question you
+              ask AFTER reading a number, not before. */}
+          <ReceiptLine receipt={ranked?.receipt} />
         </div>
       )}
       {/* The server's own sentence, unwrapped. Several of the things this
