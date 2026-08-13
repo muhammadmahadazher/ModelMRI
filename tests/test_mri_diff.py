@@ -1,0 +1,362 @@
+"""A regression check that cannot fail is a green tick that means nothing.
+
+Most of this file builds a second `.mri` that differs from the first in one
+specific way and checks that `diff` names that way and exits non-zero. The rest
+is about what it REFUSES to compare — two files that are not about the same run
+produce numbers that look like a regression and are a category error.
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+
+import pytest
+
+from modelmri import mri_diff, session
+from modelmri.errors import BadRequest
+
+
+def _doc(raw: bytes) -> dict:
+    return json.loads(gzip.decompress(raw))
+
+
+def _pack(doc: dict) -> bytes:
+    return gzip.compress(json.dumps(doc).encode())
+
+
+def _mri(**over) -> bytes:
+    kw = dict(
+        model_id="gpt2",
+        device="cpu",
+        dtype="float32",
+        n_params=124_439_808,
+        tokens=["The", " capital", " of", " France", " is", " Paris"],
+        prompt="The capital of France is",
+        generation=" Paris",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=1,
+        n_prompt=5,
+        ranking={
+            "baseline": "zero",
+            "noise_floor_kl": 0.0,
+            "ranked": [
+                {"layer": 0, "head": 0, "kl": 0.9},
+                {"layer": 0, "head": 1, "kl": 0.2},
+            ],
+        },
+        patch={
+            "grids": {"resid": [[0.5, -0.5], [0.1, 0.2]]},
+            "sites": [],
+            "clean": "The capital of France is",
+            "corrupt": "The capital of Italy is",
+        },
+        receipts=[
+            {
+                "op": "generate",
+                "dtype": "float32",
+                "device": "cpu",
+                "revision": "a" * 40,
+                "request": {"greedy": True, "temperature": 0.0},
+            }
+        ],
+    )
+    kw.update(over)
+    return session.build(**kw)
+
+
+@pytest.fixture
+def pair(tmp_path):
+    """Two identical files, for a test to move one of them."""
+    a, b = tmp_path / "a.mri", tmp_path / "b.mri"
+    raw = _mri()
+    a.write_bytes(raw)
+    b.write_bytes(raw)
+    return a, b
+
+
+def _by_name(report) -> dict:
+    return {d.name: d for d in report.deltas}
+
+
+# ------------------------------------------------------------- nothing moved
+
+
+def test_two_identical_files_report_no_change(pair):
+    a, b = pair
+    report = mri_diff.diff(a, b)
+    assert report.changed == []
+    assert report.exit_code() == 0
+    assert _by_name(report)["head ranking"].status == mri_diff.SAME
+
+
+def test_diff_needs_no_torch():
+    """It has to be usable as a CI step, and a job that installs torch to
+    check a regression is a job nobody adds. Both sides are already measured;
+    comparing them is arithmetic."""
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from modelmri import mri_diff; "
+            "print('torch' in sys.modules, 'transformers' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert out.stdout.strip() == "False False"
+
+
+# ---------------------------------------------------------------- it catches
+
+
+def test_a_changed_generation_is_caught_and_shows_both(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["generation"] = " Berlin"
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["generation"]
+    assert delta.status == mri_diff.CHANGED
+    assert "Paris" in delta.detail and "Berlin" in delta.detail
+
+
+def test_a_changed_generation_fails_at_any_threshold(pair):
+    """There is no magnitude at which "the model now says something else" is
+    within tolerance."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["generation"] = " Berlin"
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert report.exit_code(fail_over=999.0) == 1
+
+
+def test_a_moved_head_score_is_caught_with_both_numbers(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["ranking"]["ranked"][0]["kl"] = 0.5  # was 0.9
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["head ranking"]
+    assert delta.status == mri_diff.CHANGED
+    assert delta.measured["moved"][0]["head"] == "L0H0"
+    assert delta.measured["moved"][0]["from"] == 0.9
+
+
+def test_a_reordered_ranking_names_what_entered_and_left(pair):
+    """ "Which head carries this answer" is what a reader acts on, so the
+    headline is the order when it moved, not the magnitude."""
+    # Eight heads, so the top five is a real subset and membership can
+    # actually change. With the two-head default every head is in the top k
+    # whatever the order, and the reorder would show up as a score move.
+    a, b = pair
+    doc_a = _doc(a.read_bytes())
+    doc_a["ranking"]["ranked"] = [
+        {"layer": 0, "head": h, "kl": 1.0 - h * 0.1} for h in range(8)
+    ]
+    a.write_bytes(_pack(doc_a))
+
+    doc_b = _doc(b.read_bytes())
+    # Exactly reversed: heads 0 and 1 fall out of the top five, 6 and 7 enter.
+    doc_b["ranking"]["ranked"] = [
+        {"layer": 0, "head": h, "kl": 0.3 + h * 0.1} for h in range(8)
+    ]
+    b.write_bytes(_pack(doc_b))
+
+    delta = _by_name(mri_diff.diff(a, b))["head ranking"]
+    assert delta.status == mri_diff.CHANGED
+    assert "entered" in delta.detail
+    assert "L0H7" in delta.measured["entered_top_k"]
+    assert "L0H0" in delta.measured["left_top_k"]
+
+
+def test_a_patching_site_changing_sign_is_the_finding(pair):
+    """A cell that recovered the clean answer and now pushes away from it is a
+    different causal story, however small the numbers are."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["patch"]["grids"]["resid"][0][0] = -0.5  # was +0.5
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["patching"]
+    assert delta.status == mri_diff.CHANGED
+    assert delta.measured["sites_changed_sign"] >= 1
+    assert "changed sign" in delta.detail
+
+
+def test_an_attention_change_is_judged_against_the_files_own_precision(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    key = next(iter(doc["attention"]))
+    doc["attention"][key]["scale"] = doc["attention"][key]["scale"] * 3
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["attention"]
+    assert delta.floor is not None and delta.floor > 0
+    assert "quantisation" in delta.measured["floor_from"]
+
+
+# ------------------------------------------------------------- the threshold
+
+
+def test_fail_over_lets_a_small_move_pass_and_stops_a_large_one(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["ranking"]["ranked"][0]["kl"] = 0.4  # a 0.5 nat move
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert report.exit_code(fail_over=1.0) == 0, "0.5 nats is under 1.0"
+    assert report.exit_code(fail_over=0.05) == 1, "and over 0.05"
+    assert report.exit_code() == 1, "with no threshold, past the floor fails"
+
+
+# ------------------------------------------------- what it refuses to compare
+
+
+def test_two_different_prompts_are_refused_not_diffed(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["tokens"] = doc["tokens"][:-1]
+    b.write_bytes(_pack(doc))
+
+    with pytest.raises(BadRequest, match="not about the same run"):
+        mri_diff.diff(a, b)
+
+
+def test_a_different_shape_is_refused(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["n_heads"] = 2
+    b.write_bytes(_pack(doc))
+
+    with pytest.raises(BadRequest, match="head count"):
+        mri_diff.diff(a, b)
+
+
+def test_a_sampled_run_is_refused(pair):
+    """Two `.mri` at temperature > 0 differ for reasons that are not the
+    model. The `generate` receipt records it, so this is checked."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["receipts"][0]["request"]["greedy"] = False
+    doc["receipts"][0]["request"]["temperature"] = 0.7
+    b.write_bytes(_pack(doc))
+
+    with pytest.raises(BadRequest, match="sampled"):
+        mri_diff.diff(a, b)
+
+
+def test_a_file_with_no_sampling_record_is_noted_not_assumed_greedy(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["receipts"] = []
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert any("does not record whether" in n for n in report.notes)
+
+
+def test_a_dtype_difference_is_labelled_rather_than_silently_diffed(pair):
+    """`patch.py` records bf16 moving the reference gap from 4.000 to 4.467
+    and changing the reference token itself."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["receipts"][0]["dtype"] = "bfloat16"
+    doc["meta"]["dtype"] = "bfloat16"
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert any("float32" in n and "bfloat16" in n for n in report.notes)
+
+
+def test_a_different_commit_is_noted(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["receipts"][0]["revision"] = "b" * 40
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert any("different commits" in n for n in report.notes)
+
+
+# ------------------------------------------- a missing block is not a zero
+
+
+def test_a_missing_ranking_is_not_comparable_rather_than_unchanged(pair):
+    """The 0.10 bug class exactly: an absent section read as a default. A
+    missing ranking must not report as "same"."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc.pop("ranking", None)
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["head ranking"]
+    assert delta.status == mri_diff.NOT_COMPARABLE
+    assert "not a zero" in delta.detail
+
+
+def test_a_missing_patch_is_not_comparable(pair):
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc.pop("patch", None)
+    b.write_bytes(_pack(doc))
+
+    assert _by_name(mri_diff.diff(a, b))["patching"].status == (mri_diff.NOT_COMPARABLE)
+
+
+def test_nothing_comparable_is_not_a_failure(pair):
+    """A pair this tool cannot compare is not a regression, and exiting
+    non-zero for it would make `diff` unusable in CI."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc.pop("ranking", None)
+    doc.pop("patch", None)
+    b.write_bytes(_pack(doc))
+
+    report = mri_diff.diff(a, b)
+    assert report.exit_code() == 0
+
+
+def test_rankings_from_different_baselines_are_not_compared(pair):
+    """`ablate.py` measures the baselines agreeing only weakly (Spearman
+    0.34-0.47 on gpt2 layer 0), so a cross-baseline diff measures the
+    baseline."""
+    a, b = pair
+    doc = _doc(b.read_bytes())
+    doc["ranking"]["baseline"] = "resample"
+    b.write_bytes(_pack(doc))
+
+    delta = _by_name(mri_diff.diff(a, b))["head ranking"]
+    assert delta.status == mri_diff.NOT_COMPARABLE
+    assert "different baselines" in delta.detail
+
+
+# ------------------------------------------------------------------- output
+
+
+def test_a_missing_file_says_so(tmp_path, pair):
+    a, _ = pair
+    with pytest.raises(BadRequest, match="could not be read"):
+        mri_diff.diff(a, tmp_path / "nope.mri")
+
+
+def test_the_report_survives_json(pair):
+    a, b = pair
+    report = mri_diff.diff(a, b)
+    round_tripped = json.loads(json.dumps(report.to_dict(), allow_nan=False))
+    assert round_tripped["totals"]["same"] >= 1
+    assert {d["name"] for d in round_tripped["deltas"]} >= {"generation", "attention"}
+
+
+def test_the_rendered_report_names_the_units_of_the_threshold(pair):
+    a, b = pair
+    text = mri_diff.render(mri_diff.diff(a, b), fail_over=0.05)
+    assert "own units" in text and "nats" in text

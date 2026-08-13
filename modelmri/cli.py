@@ -10,6 +10,35 @@ from pathlib import Path
 from . import __version__
 
 
+def diff_sessions(
+    path_a, path_b, *, fail_over: float | None = None, as_json: bool = False
+) -> int:
+    """Compare two `.mri` and exit non-zero when something moved.
+
+    Like `inspect` and unlike `verify`, this pays for NO torch: a `.mri` is
+    gzipped JSON, both sides are already measured, and comparing them is
+    arithmetic. That is what makes it usable as a CI step -- a job that has to
+    install torch to check a regression is a job nobody adds.
+    """
+    import json
+
+    from . import mri_diff
+    from .errors import BadRequest, Refusal
+
+    try:
+        report = mri_diff.diff(path_a, path_b)
+    except (BadRequest, Refusal) as err:
+        print(f"modelmri: {err}", file=sys.stderr)
+        return 2
+
+    print(
+        json.dumps(report.to_dict(), indent=2, allow_nan=False)
+        if as_json
+        else mri_diff.render(report, fail_over)
+    )
+    return report.exit_code(fail_over)
+
+
 def run_sweep(
     prompts_path,
     *,
@@ -987,6 +1016,24 @@ def main() -> None:
         help="emit the summary as JSON instead of text",
     )
 
+    differ = sub.add_parser(
+        "diff",
+        help="Compare two .mri of the same prompt and exit non-zero when "
+        "something moved",
+    )
+    differ.add_argument("a", help="the baseline .mri")
+    differ.add_argument("b", help="the .mri to check against it")
+    differ.add_argument(
+        "--fail-over",
+        type=float,
+        default=None,
+        metavar="X",
+        help="exit 1 only when a metric moved by more than X, in that "
+        "metric's own units. Omit to fail on anything past the files' own "
+        "noise floor.",
+    )
+    differ.add_argument("--json", action="store_true", help="emit JSON")
+
     sweeper = sub.add_parser(
         "sweep",
         help="Run one measurement over many prompts and report the "
@@ -1174,6 +1221,10 @@ def main() -> None:
         return
     elif args.command == "inspect":
         raise SystemExit(inspect_session(args.file, as_json=args.json))
+    elif args.command == "diff":
+        raise SystemExit(
+            diff_sessions(args.a, args.b, fail_over=args.fail_over, as_json=args.json)
+        )
     elif args.command == "sweep":
         raise SystemExit(
             run_sweep(

@@ -302,6 +302,7 @@ command says so.
 | `modelmri traces` | List agent runs recorded here, newest first. Instant. | — |
 | `modelmri open FILE.mri` | Open an analysis somebody sent you, in a browser. No model, no GPU, ~0.3s. | — |
 | `modelmri inspect FILE.mri` | Print what a `.mri` holds and exit — model, shape, what was captured, the prompt. `--json` for the lot. ~0.2s. | — |
+| `modelmri diff A.mri B.mri` | **Compare two analyses of the same prompt** and exit non-zero when something moved. `--fail-over X` for CI. No torch — instant. | — |
 | `modelmri sweep PROMPTS` | **Run one measurement over many prompts** and report each head as median, IQR, n and top-k rate instead of one number. `--metric`, `--layer`, `--jsonl`, `--out-dir`. | a model |
 | `modelmri verify FILE.mri` | **Re-run the measurements in a `.mri` on this machine** and report, per number, whether it came back the same. `--json` for CI. Loads the model. | the file's model |
 | `modelmri doctor` | What this machine can and cannot run, and why. Run it before you file a bug. | — |
@@ -389,6 +390,36 @@ Three rules it enforces rather than documents: never a mean without a spread;
 a prompt that could not be measured is a **row** carrying the reason, never a
 gap; and a token-position sweep is never aggregated across prompts, because
 position 3 is a different word in every one of them.
+
+**Did my quantisation change the model?**
+
+```bash
+modelmri diff baseline.mri after-quantising.mri --fail-over 0.05
+```
+
+```
+baseline.mri → after-quantising.mri
+
+  = generation: same
+  ≠ head ranking: changed
+      the top 5 changed: L0H4 entered and L0H7 left. 12 of 12 heads moved
+      past the 0.00e+00 noise floor.
+  = attention: same
+  ≠ patching: changed
+      3 patching sites changed sign — a site that recovered the clean answer
+      and now pushes away from it is a different causal story.
+```
+
+Exit 1, in the pull request that did it. Nothing else in the category has a
+regression concept for model internals; the state of the art for this question
+is a Reddit thread. It imports **no torch** — both sides are already measured
+and comparing them is arithmetic — so it is a CI step you would actually add.
+[The guide has a workflow you can paste.](docs/guides/regression-ci.md)
+
+It refuses rather than guesses: two different prompts exit 2 instead of being
+diffed into numbers that look like a regression, a sampled run is refused
+because it differs for reasons that are not the model, and a section one file
+lacks reports **"not comparable"**, never "same".
 
 A `.mri` is one analysis without the model — attention, the logit lens, the
 generation, and the activation-patching trace if you ran one. It is how you

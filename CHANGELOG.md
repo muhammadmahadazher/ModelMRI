@@ -8,6 +8,41 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#19, completed: `modelmri diff a.mri b.mri`, with a CI exit code.** Compares
+  two saved analyses of the same prompt — which heads moved in the ablation
+  ranking, which patching sites changed sign, whether the model still says the
+  same thing — and exits non-zero when something moved. A repo can check in a
+  baseline `.mri` and have the pull request that changed the model say so.
+  `docs/guides/regression-ci.md` has a workflow to paste.
+
+  **It imports no torch and no transformers.** Both sides are already measured
+  and comparing them is arithmetic, so this stays instant on a cold cache. A
+  regression check that has to install torch is a check nobody adds; the test
+  suite pins the property in a subprocess rather than trusting it.
+
+  **The floor is not invented.** `session._quantise` stores each attention
+  matrix as uint8 against its own maximum, so a comparison of two files cannot
+  be finer than the coarser of their two scales, and the ranking is judged
+  against the larger of the two recorded noise floors. There is no epsilon in
+  the module that somebody chose. `--fail-over X` is in each metric's own units
+  — nats for the ranking and patching, attention weight for attention — and
+  omitting it fails on anything past the files' own floor.
+
+  **A changed generation fails at any threshold**, because there is no
+  magnitude at which "the model now says something else" is within tolerance.
+
+  What it refuses: two different prompts (different tokens, `n_prompt`,
+  `n_layers` or `n_heads`) exit 2 rather than being diffed into numbers that
+  look like a regression; a sampled run is refused, checked against the
+  `generate` receipt's `greedy` flag rather than assumed; and a dtype or commit
+  difference is reported as a note, since `patch.py` records bf16 moving a
+  reference gap from 4.000 to 4.467 and changing the reference token itself.
+
+  **A missing block is never a zero.** A section one file lacks reports "not
+  comparable" naming which side lacked it — never "same". That is precisely the
+  0.10 bug class, where an absent value read as a default showed 206 robot
+  episodes as one video.
+
 - **#16, completed: `modelmri sweep`.** Runs one measurement over a set of
   prompts and reports each head as **median, IQR, n and how often it reached
   the top five** instead of as a number. Headless — a `ModelRuntime` directly,

@@ -137,7 +137,7 @@ def _receipt_for(parsed, op: str) -> dict:
     return {}
 
 
-def _dequantise(block: dict) -> list[list[float]]:
+def dequantise(block: dict) -> list[list[float]]:
     """A stored attention matrix back to floats, at the file's own precision."""
     raw = base64.b64decode(block["q"])
     scale = float(block["scale"])
@@ -145,7 +145,7 @@ def _dequantise(block: dict) -> list[list[float]]:
     return [[raw[r * side + c] * scale for c in range(side)] for r in range(side)]
 
 
-def _max_abs_diff(a, b) -> float | None:
+def max_abs_diff(a, b) -> float | None:
     """Largest cell-wise gap between two equally shaped grids, or None."""
     if len(a) != len(b):
         return None
@@ -302,7 +302,7 @@ def _check_attention(parsed, runtime, blocked: str) -> Check:
     first = runtime.attention(probe_layer, probe_head)["matrix"]
     runtime._attn_variants.clear()
     again = runtime.attention(probe_layer, probe_head)["matrix"]
-    spread = _max_abs_diff(first, again)
+    spread = max_abs_diff(first, again)
     if spread is None:
         return Check(
             "attention",
@@ -325,7 +325,7 @@ def _check_attention(parsed, runtime, blocked: str) -> Check:
         # One block dequantised at a time. The stored cube can be every layer
         # and head, and holding all of them as Python floats alongside the
         # model is how this would become the memory-heaviest command here.
-        stored = _dequantise(block)
+        stored = dequantise(block)
         here = runtime.attention(layer, head)["matrix"]
         if len(here) != len(stored):
             return Check(
@@ -335,7 +335,7 @@ def _check_attention(parsed, runtime, blocked: str) -> Check:
                 f"is {len(here)}x{len(here)} — a different number of tokens is "
                 f"a different measurement.",
             )
-        gap = _max_abs_diff(here, stored)
+        gap = max_abs_diff(here, stored)
         if gap is None:
             return Check(
                 "attention",
@@ -450,8 +450,8 @@ def _check_patch(parsed, runtime, blocked: str) -> Check:
                 f"the `{component}` grid is {len(grid)} rows in the file and "
                 f"{len(here)} here, so the two describe different runs.",
             )
-        gap = _max_abs_diff(here, grid)
-        spread = _max_abs_diff(here, again)
+        gap = max_abs_diff(here, grid)
+        spread = max_abs_diff(here, again)
         if gap is None or spread is None:
             return Check(
                 "patching",
