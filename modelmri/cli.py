@@ -151,6 +151,100 @@ def list_models() -> int:
     return 0
 
 
+def export_trace(
+    trace_id: str | None,
+    *,
+    endpoint: str,
+    headers: list[str],
+    service_name: str = "modelmri",
+    dry_run: bool = False,
+) -> int:
+    """Hand one recorded run to the collector the team already runs.
+
+    Prints the semconv generation it targeted. That is not decoration: the
+    `gen_ai.*` conventions were moved out of the main semantic-conventions
+    repo on 2026-06-12 into one with no releases and no tags, so "which
+    vocabulary do these spans speak" is a real question a consumer will have,
+    and the answer has to travel with the spans and be visible at the moment
+    of sending.
+    """
+    import json
+
+    from . import otel, paths
+    from .errors import BadRequest, Refusal
+    from .traces import TraceStore
+
+    db = paths.trace_db_path()
+    if not db.exists():
+        print(f"No trace database yet ({db}).")
+        print("  Record one:  uv run python examples/record_demo.py")
+        return 1
+
+    store = TraceStore(db)
+    if not trace_id:
+        rows = store.list_traces()
+        if not rows:
+            print(f"No traces recorded yet ({db})")
+            return 1
+        trace_id = rows[0]["id"]
+        print(f"No id given, so: the most recent, {rows[0]['name']!r} ({trace_id})")
+
+    doc = store.get_trace(trace_id)
+    if doc is None:
+        print(f"No trace with id {trace_id!r}. `modelmri traces` lists them.")
+        return 1
+
+    try:
+        extra = _parse_headers(headers)
+        if dry_run:
+            body = otel.to_otlp(doc, service_name=service_name)
+            print(json.dumps(body, indent=2))
+            spans = body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            print(
+                f"\n{len(spans)} spans, semconv {otel.SEMCONV_GENERATION}, "
+                "nothing sent (--dry-run)"
+            )
+            return 0
+        result = otel.send(doc, endpoint, headers=extra, service_name=service_name)
+    except (Refusal, BadRequest) as err:
+        print(f"{err}")
+        return 1
+
+    print(f"{result.spans} spans -> {result.endpoint}  (HTTP {result.status})")
+    print(f"  semconv generation: {result.semconv}")
+    if result.undated_spans:
+        # Said out loud rather than left in an attribute nobody reads. OTLP
+        # has no way to express "the end time is unknown", so these went as
+        # zero-length spans, and a zero-length span on a waterfall reads as an
+        # instantaneous operation -- a claim about something nobody measured.
+        print(
+            f"  {result.undated_spans} of {result.spans} had no recorded "
+            f"duration and were sent as zero-length, marked "
+            f"`modelmri.duration.recorded=false`. OTLP cannot say "
+            f'"unknown" for an end time.'
+        )
+    return 0
+
+
+def _parse_headers(pairs: list[str]) -> dict[str, str]:
+    """`K=V` strings into a dict, refusing the ones that are not.
+
+    A silently dropped auth header is a 401 several minutes later against a
+    hosted collector, so a malformed one stops here with the offending text.
+    """
+    from .errors import BadRequest
+
+    out: dict[str, str] = {}
+    for raw in pairs or []:
+        if "=" not in raw:
+            raise BadRequest(f"--header wants K=V, got {raw!r}")
+        key, _, value = raw.partition("=")
+        if not key.strip():
+            raise BadRequest(f"--header has an empty name in {raw!r}")
+        out[key.strip()] = value.strip()
+    return out
+
+
 def list_traces() -> int:
     """Agent runs recorded on this machine, newest first.
 
@@ -567,6 +661,41 @@ def main() -> None:
     )
     sub.add_parser("traces", help="List agent runs recorded on this machine")
 
+    export = sub.add_parser(
+        "export",
+        help="Send a recorded run to an OTLP collector (Langfuse, Phoenix, "
+        "Grafana, Honeycomb)",
+    )
+    export.add_argument(
+        "trace_id",
+        nargs="?",
+        help="which run; omit for the most recent",
+    )
+    export.add_argument(
+        "--otlp",
+        required=True,
+        metavar="ENDPOINT",
+        help="OTLP/HTTP endpoint, e.g. http://localhost:4318 (port 4317 is "
+        "gRPC and is not spoken)",
+    )
+    export.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="extra request header, repeatable — for a hosted collector's auth token",
+    )
+    export.add_argument(
+        "--service-name",
+        default="modelmri",
+        help="service.name on the exported resource (default: modelmri)",
+    )
+    export.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the OTLP body and send nothing",
+    )
+
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
 
     # `pip install` cannot run this for you: a wheel is an archive and pip does
@@ -663,6 +792,16 @@ def main() -> None:
         raise SystemExit(list_models())
     elif args.command == "traces":
         raise SystemExit(list_traces())
+    elif args.command == "export":
+        raise SystemExit(
+            export_trace(
+                args.trace_id,
+                endpoint=args.otlp,
+                headers=args.header,
+                service_name=args.service_name,
+                dry_run=args.dry_run,
+            )
+        )
     elif args.command == "uninstall":
         raise SystemExit(uninstall(yes=args.yes, models=args.models))
     elif args.command == "where":

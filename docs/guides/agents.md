@@ -117,6 +117,51 @@ Traces still open when the process exits are flushed by an `atexit` hook. A
 crash or a `SIGTERM` is exactly the run you most wanted to look at, and
 delivery is idempotent so the hook and the normal exit path can't double-write.
 
+## Sending a run to your own collector
+
+If your team already runs Langfuse, Phoenix, Grafana or Honeycomb, a run does
+not have to stay here:
+
+```bash
+modelmri export --otlp http://localhost:4318
+```
+
+That takes the most recent run; name one to pick it (`modelmri traces` lists
+them). `--header "Authorization=Bearer ..."` for a hosted collector, and
+`--dry-run` prints the body and sends nothing.
+
+It speaks **OTLP/HTTP with a JSON body**, over the standard library. Port 4318
+is the usual one; 4317 is gRPC and is not spoken. A collector configured for
+protobuf only is refused with a sentence rather than approximated — supporting
+it would mean either generated stubs or the OpenTelemetry SDK, and
+`modelmri-record` is dependency-free on purpose because it gets imported into
+other people's agents.
+
+To export as runs finish rather than by hand:
+
+```python
+with rec.trace("nightly", deliver_otlp="http://localhost:4318"):
+    ...
+```
+
+Off by default, and it exports the redacted document. It runs after the normal
+delivery and cannot affect it: a collector being down must not cost you the
+trace.
+
+**Which vocabulary the spans speak is printed and stamped.** The `gen_ai.*`
+conventions left the main semantic-conventions repo on 2026-06-12 for one with
+no releases and no tags, so every span carries
+`modelmri.semconv.generation` and the CLI prints it. When the vocabulary
+moves, old exports stay readable because they say what they were written
+against.
+
+One thing to know when reading the result. A step recorded without a duration
+has no end time, and OTLP has no way to express that — `endTimeUnixNano` is
+required. Those spans go as zero-length, which on a waterfall looks
+instantaneous. They are marked `modelmri.duration.recorded=false` and the CLI
+tells you how many there were.
+
+
 ## What it does not do yet
 
 - No streaming-response capture for the Anthropic wrapper — only the completed

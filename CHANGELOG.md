@@ -8,6 +8,58 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#51 Emit OTLP, version-stamped.** `modelmri export --otlp
+  http://localhost:4318` hands a recorded run to whatever the team already
+  runs -- Langfuse, Phoenix, Grafana, Honeycomb -- and `modelmri-record` gains
+  an opt-in `deliver_otlp=` that is **off by default**.
+
+  This is not an "ahead" feature and is not sold as one. Every competitor in
+  the tracing category ingests; a local tool that cannot hand its traces
+  onward is a dead end for anyone with an existing collector.
+
+  Three things make it honest rather than merely working.
+
+  **One table, both directions.** `otel.FIELDS` is the single mapping between
+  a recorded step and its OTLP attributes, and `to_otlp` and `from_otlp` both
+  read it. Two hand-written mappings drift -- one gains a key, the other does
+  not, and a column disappears through a round trip while both functions still
+  look correct alone. The test round-trips a document and compares over
+  `FIELDS` itself, so the table is what is under test.
+
+  **The vocabulary is stamped on every span.** `gen_ai.*` was deprecated out
+  of the main semantic-conventions repo on 2026-06-12 into a repo with no
+  releases, no tags and nothing marked stable. That objection is real and does
+  not go away. What makes it survivable is that every span carries
+  `modelmri.semconv.generation` and the CLI prints it, so a consumer can
+  always tell which vocabulary a span speaks. The stamp is a date, not a
+  version, because there is no released version to cite.
+
+  **JSON only, stdlib only.** OTLP/HTTP with a JSON body over `urllib`. No
+  OpenTelemetry SDK, which is what keeps `modelmri-record` importable into
+  somebody else's agent -- it still declares `dependencies = []`. A collector
+  that accepts protobuf only is refused with a sentence naming the limit
+  rather than approximated.
+
+  Absences survive the wire. A missing token count is **omitted**, never sent
+  as 0 -- `gen_ai.usage.input_tokens: 0` is a claim that the call used none. A
+  step with no recorded duration is the harder case: OTLP requires an end time
+  and cannot say "unknown", so it goes as a zero-length span, which on a
+  waterfall reads as an instantaneous operation. It is marked
+  `modelmri.duration.recorded=false` and the CLI prints how many spans carry
+  it, which is the most the format allows.
+
+  Verified against a real HTTP collector, not a mock: valid 32/16-hex ids,
+  times as strings (proto3's JSON mapping), parent links preserved, auth
+  headers delivered, and every refusal path exercised -- 415 (protobuf),
+  unreachable host, a bare `localhost:4317` (that is gRPC), and a malformed
+  `--header`.
+
+  `deliver_otlp=` needs `modelmri` importable, and says so if it is not rather
+  than silently doing nothing. It runs after the normal delivery and cannot
+  affect it: a collector being down must not cost you the trace. It exports
+  the **redacted** document -- shipping raw payloads to a third party while
+  the local copy is scrubbed would be the redactor working backwards.
+
 - **#36, the other half: what quantisation cost your model's BEHAVIOUR.** The
   weight half shipped last release and answers how far the numbers moved.
   This answers the question people actually have -- whether the model still

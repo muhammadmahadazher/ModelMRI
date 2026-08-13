@@ -58,10 +58,12 @@ class _Trace:
         endpoint: str,
         redactor: Redactor | None,
         meta: dict | None = None,
+        deliver_otlp: str | None = None,
     ) -> None:
         self.name = name
         self.endpoint = endpoint
         self.redactor = redactor
+        self.deliver_otlp = deliver_otlp
         self.meta = dict(meta or {})
         self.delivered = False
         self.id = uuid.uuid4().hex[:12]
@@ -100,6 +102,7 @@ def trace(
     *,
     redact: Redactor | None | bool = True,
     meta: dict | None = None,
+    deliver_otlp: str | None = None,
 ) -> Iterator[None]:
     """Record everything inside this block as one trace, then deliver it.
 
@@ -112,6 +115,19 @@ def trace(
                   environment, a ticket id. `{"demo": True}` marks a scripted
                   sample so the viewer can label it instead of letting it pass
                   for something you actually recorded.
+
+    deliver_otlp  an OTLP/HTTP endpoint to ALSO send this run to, e.g.
+                  "http://localhost:4318". Off by default and deliberately so:
+                  this package gets imported into other people's agents, and a
+                  recorder that starts talking to the network because it can
+                  is a recorder nobody should install.
+
+                  It needs `modelmri` importable — the OTLP mapping lives
+                  there in one table so emit and ingest cannot drift, and
+                  copying it here would be the second copy that drifts. This
+                  package keeps `dependencies = []`; if modelmri is absent the
+                  export is skipped and says so, and the normal delivery is
+                  untouched either way.
     """
     redactor: Redactor | None
     if redact is True:
@@ -121,7 +137,7 @@ def trace(
     else:
         redactor = redact
 
-    t = _Trace(name, endpoint, redactor, meta)
+    t = _Trace(name, endpoint, redactor, meta, deliver_otlp)
     # If the interpreter dies mid-run -- a crash, a SIGTERM, a notebook kernel
     # restart -- the finally below never runs and the whole trace is lost,
     # which is exactly the run you most wanted to look at.
@@ -515,6 +531,7 @@ def _deliver(t: _Trace) -> None:
             t.endpoint, data=body, headers={"Content-Type": "application/json"}
         )
         urllib.request.urlopen(req, timeout=3)
+        _deliver_otlp(t, doc)
         return
     except Exception:  # noqa: S110 - the disk fallback below is the handling
         # Not narrowed to OSError: `endpoint` is caller-supplied, so a typo in
@@ -539,6 +556,10 @@ def _deliver(t: _Trace) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in t.name)[:60]
         (out / f"{safe}-{stamp}-{t.id}.json").write_text(json.dumps(doc, indent=1))
+        # The local server was unreachable; the collector may not be, and a
+        # trace that reached one of the two is better than a trace that
+        # reached neither.
+        _deliver_otlp(t, doc)
     except Exception as err:
         # Catches everything rather than the OSError family a write can be
         # expected to raise, because recording must never crash the host app —
@@ -547,6 +568,41 @@ def _deliver(t: _Trace) -> None:
         # this trace is gone; saying so costs one line and is the difference
         # between a lost run and a mystery.
         _complain(f"modelmri-record: trace {t.name!r} could not be saved: {err}")
+
+
+def _deliver_otlp(t: _Trace, doc: dict) -> None:
+    """Also hand this run to an OTLP collector, if the caller asked.
+
+    Runs AFTER the normal delivery and cannot affect it: an export is a
+    convenience, and a collector being down must not cost somebody the trace
+    itself. Everything here is caught for the same reason the rest of this
+    module catches everything — recording must never crash the host app.
+
+    The document handed over is the REDACTED one. Exporting the raw payloads
+    to a third-party collector while the local copy is scrubbed would be the
+    redactor working exactly backwards.
+    """
+    if not t.deliver_otlp:
+        return
+    try:
+        from modelmri import otel  # type: ignore[import-not-found]
+    except Exception:
+        # Named rather than silent: the caller asked for an export and did not
+        # get one, and "nothing happened" is the worst possible answer to that.
+        _complain(
+            f"modelmri-record: deliver_otlp was set but `modelmri` is not "
+            f"importable, so trace {t.name!r} was not exported. The OTLP "
+            f"mapping lives there in one table; this package stays "
+            f"dependency-free. `pip install modelmri` to enable it."
+        )
+        return
+    try:
+        otel.send(doc, t.deliver_otlp, service_name=t.name or "modelmri")
+    except Exception as err:
+        _complain(
+            f"modelmri-record: trace {t.name!r} was recorded but the OTLP "
+            f"export to {t.deliver_otlp} failed: {err}"
+        )
 
 
 # Traces still open when the process ends. Flushed by the atexit hook below.
