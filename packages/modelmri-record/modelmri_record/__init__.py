@@ -619,17 +619,22 @@ def _deliver_otlp(t: _Trace, doc: dict) -> None:
         # on the way out. An export is a convenience; it does not get to be
         # the slowest thing in somebody's shutdown.
         otel.send(doc, t.deliver_otlp, service_name=t.name or "modelmri", timeout=3.0)
-    except BaseException as err:
-        # BaseException, not Exception. A KeyboardInterrupt landing inside the
-        # send would otherwise escape through `_deliver`'s own handler and out
-        # into the host app's `finally` -- from a line that exists to be
-        # optional. Re-raised for the two that must not be swallowed.
+    except (KeyboardInterrupt, SystemExit) as err:
+        # Named explicitly rather than caught as BaseException. These two must
+        # NOT be swallowed -- a ctrl-c during the export is the user asking to
+        # stop, not an export failure -- but they are still worth a line,
+        # because otherwise the traceback the user sees comes from a delivery
+        # that exists to be optional and reads as the recorder crashing.
+        _complain(
+            f"modelmri-record: OTLP export of {t.name!r} interrupted "
+            f"({type(err).__name__}); the trace itself was already recorded."
+        )
+        raise
+    except Exception as err:
         _complain(
             f"modelmri-record: trace {t.name!r} was recorded but the OTLP "
             f"export to {t.deliver_otlp} failed: {type(err).__name__}: {err}"
         )
-        if isinstance(err, (KeyboardInterrupt, SystemExit)):
-            raise
 
 
 # Traces still open when the process ends. Flushed by the atexit hook below.

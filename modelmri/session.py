@@ -223,7 +223,12 @@ def _graph(doc: dict) -> dict:
                 # Non-finite reaches `toFixed`/`toExponential` as NaN and
                 # renders as "NaN"; worse, `json.dumps` writes a bare `NaN`
                 # token that the viewer's own `JSON.parse` rejects outright.
-                if value == value and value not in (float("inf"), float("-inf")):
+                #
+                # `math.isfinite`, not `value == value`: the identity trick is
+                # a correct NaN test and an obscure one, it misses both
+                # infinities, and CodeQL reads it as a comparison of identical
+                # values. One call says what it means and covers all three.
+                if math.isfinite(value):
                     clean_summary[key] = value
             elif isinstance(value, str):
                 clean_summary[key] = value[:MAX_GRAPH_TEXT]

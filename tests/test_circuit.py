@@ -634,6 +634,9 @@ def test_the_numpy_exec_gadget_does_not_execute(tmp_path):
     try:
         circuit.read(path)
     except (Refusal, BadRequest):
+        # Refusing is one acceptable outcome and so is reading the file with
+        # the gadget stubbed out. The assertion below is the whole test:
+        # EXECUTING is the failure, and neither branch above is one.
         pass
     assert not marker.exists(), "the numpy gadget executed"
 
@@ -788,3 +791,45 @@ def test_a_non_finite_weight_never_writes_an_unopenable_file(tmp_path):
     g = circuit.read(path)
     with pytest.raises(_session.SessionError, match="non-finite"):
         circuit.to_session(g)
+
+
+@pytest.mark.parametrize(
+    "value,kept",
+    [
+        (1.5, True),
+        (0, True),
+        (True, True),
+        ("x", True),
+        (float("nan"), False),
+        (float("inf"), False),
+        (float("-inf"), False),
+    ],
+)
+def test_a_hostile_summary_value_is_filtered_on_the_way_in(value, kept):
+    """The read side, tested the way it is actually reached: a hand-built file
+    with `allow_nan=True`, which is what a stranger's `.mri` can contain.
+    `build` refuses to WRITE one, so this cannot be reached through `build`.
+
+    `math.isfinite` covers NaN and both infinities in one call. The first
+    version used `value == value`, which is a correct NaN test that misses
+    both infinities — and CodeQL reads it as comparing identical values.
+    """
+    import gzip as _gzip
+    import json as _json
+
+    from modelmri import session as _session
+
+    doc = {
+        "format": "modelmri-session",
+        "format_version": 1,
+        "tokens": ["a"],
+        "graph": {
+            "n_nodes": 4,
+            "edges": [],
+            "provenance": {"measured_by": "another tool"},
+            "summary": {"d": value},
+        },
+    }
+    blob = _gzip.compress(_json.dumps(doc).encode())
+    summary = _session.parse(blob).graph["summary"]
+    assert ("d" in summary) is kept
