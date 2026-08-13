@@ -63,19 +63,43 @@ Type a prompt, watch it stream, then hover any token — arcs show which earlier
 144 heat maps and no reason to open any of them is a browsing tool. **Rank heads** zeroes each head in a layer, runs the model again, and measures how far the answer moves — so the dropdown arrives ordered and the top head is already selected.
 
 ```
-gpt2 · "The capital of France is" · zero-ablation · bf16
+Qwen3-1.7B · "The capital of France is" · answer " Paris" · zero-ablation · bf16
 
-Rank heads → L0 H7  KL 0.898   p(" the") 0.098 → 0.057
-             L0 H10 KL 0.535
-             L0 H9  KL 0.412
+Rank heads → L0 H3  KL 1.954   p(" Paris") 0.539 → 0.029   changes the answer
+             L0 H9  KL 0.096   p(" Paris") 0.539 → 0.345
+             L0 H1  KL 0.054   p(" Paris") 0.539 → 0.475
+             L0 H5  KL 0.044
+             L0 H11 KL 0.035
+             18 forward passes · 5.6 s · noise floor 0.0
 ```
 
-The setup line is not decoration. The same three heads on the same model score
-0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
-generation — a KL depends on the prompt, the dtype and the sequence, so a
-figure quoted without them cannot be checked by anyone.
+One head in the first layer carries most of it: removing L0 H3 alone takes
+`" Paris"` from 0.539 to 0.029 and the model answers something else. The next
+head down moves it by a twentieth as much.
 
-A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-0.6B is 450. What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
+The setup line is not decoration. Measured on gpt2, its own top three heads
+score 0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
+generation — the same heads, the same model, three different sets of numbers. A
+KL depends on the model, the prompt, the dtype and the sequence, so a figure
+quoted without them cannot be checked by anyone.
+
+**Three baselines, and how much they disagree is itself a property of the
+model.** Zeroing a head is one choice; replacing it with its own mean is
+another; replacing it with what it really computes on a different sentence
+(`resample`, eight draws) is the only one that keeps the model on its own
+distribution. On `Qwen3-1.7B` layer 0 they broadly agree — Spearman 0.81 to
+0.91, and the top five differ by at most one head. On `gpt2` layer 0 they do
+not: Spearman 0.34 to 0.47, and the top five disagree on two or three. The
+panel reports that number so the choice of baseline is visible rather than
+silently deciding the ranking.
+
+Resampling also shows its own spread, because one donor is a coin flip. Head 3
+on `Qwen3-1.7B` scored between **3.016 and 5.904** across the eight draws
+around a median of 4.540, and head 10 on `gpt2` ranged 0.027 to 0.335 — a
+twelvefold spread. A single draw could have reported any number in those
+ranges as the head's importance.
+
+A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-1.7B is 450 (28 layers x 16 heads). What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
 
 Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
 
@@ -105,8 +129,20 @@ Three grids, because *where* and *through what* are different questions — and 
 | `gpt2` | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
 | `Qwen2.5-0.5B-Instruct` | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
 | `gemma-3-270m-it` | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
+| `Qwen3-1.7B` | +0.967 · L3 · `el` | +0.651 · L20 · `of` | **+0.444 · L22 · `of`** |
 
-The MLP peak sits on a **subject** token in an early layer in all three — `um`, `os` and `osseum` are all pieces of "Colosseum" — while the attention peak sits on the **last** token, late. Early MLP writes the fact; late attention carries it to where the prediction is made. The residual grid contains both and shows only the destination.
+Across the first three, the MLP peak sat on a **subject** token in an early
+layer — `um`, `os` and `osseum` are all pieces of "Colosseum" — while the
+attention peak sat on the **last** token, late. That was a tidy story, and
+`Qwen3-1.7B` breaks it: its MLP peak is at **layer 22 on the final token**, and
+its residual peak moved the other way, to **layer 3 on a subject token**.
+
+Three models is not a result. The generalisation is left here with the model
+that falsifies it rather than quietly rewritten, because the shape of this
+table is the actual finding: *where a fact lives is a property of the
+architecture, not of transformers*. Run it on yours — the panel does this on
+whatever you have loaded, and the answer is not knowable from the first
+three.
 
 The score is **signed**, and it is the one ranking here that is not a KL: a patch can push the answer further away, and 5 of 132 sites did. It is also not capped at 1.0 — a single site can overshoot, and `gemma-3-270m-it` reads 1.010.
 
