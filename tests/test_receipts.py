@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 
 import pytest
 
@@ -480,6 +481,20 @@ def gpt2_runtime():
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
 
+    # SKIP RATHER THAN DOWNLOAD. torch is a core dependency, so CI installs it
+    # and this fixture would otherwise fetch ~500 MB of gpt2 weights on every
+    # job of a 3-OS x 4-Python matrix. `revision_of` answers None for a model
+    # that is not in the local cache, which is exactly the question here.
+    from modelmri import receipts as _receipts
+
+    if _receipts.revision_of("gpt2")[0] is None and not os.environ.get(
+        "MODELMRI_TEST_DOWNLOAD"
+    ):
+        pytest.skip(
+            "gpt2 is not in the local model cache — these are real-model "
+            "integration tests. Set MODELMRI_TEST_DOWNLOAD=1 to fetch it."
+        )
+
     from modelmri.runtime import ModelRuntime
 
     runtime = ModelRuntime()
@@ -537,10 +552,19 @@ def test_a_new_generation_drops_the_previous_runs_receipts(gpt2_runtime):
             "Bananas are yellow because", max_new_tokens=3, temperature=0.0
         )
     )
-    assert gpt2_runtime._receipts_for_export() == [], (
+    # The new run stamps its OWN `generate` receipt, so the set is not empty --
+    # it is exactly the new generation and nothing measured against the old
+    # one. Asserting emptiness here would pin the wrong behaviour: a run with
+    # no receipt at all is not the goal, a run with no STALE receipt is.
+    remaining = {r["op"] for r in gpt2_runtime._receipts_for_export()}
+    assert remaining == {"generate"}, (
         "a receipt names the prompt it was taken on, so it cannot survive into "
-        "an export describing a different one"
+        f"an export describing a different one — found {sorted(remaining)}"
     )
+    surviving = next(
+        r for r in gpt2_runtime._receipts_for_export() if r["op"] == "generate"
+    )
+    assert surviving["prompt_sha256"] == receipts.digest("Bananas are yellow because")
 
 
 def test_a_new_generation_drops_the_previous_runs_patch_trace(gpt2_runtime):

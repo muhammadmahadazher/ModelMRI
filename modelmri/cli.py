@@ -9,6 +9,47 @@ import sys
 from . import __version__
 
 
+def verify_session(path, *, as_json: bool = False) -> int:
+    """Re-run a `.mri`'s measurements here and report what came back the same.
+
+    Unlike `inspect` and `open`, this one DOES pay for torch and transformers,
+    and there is no way around it: verifying a measurement means taking the
+    measurement, through the same `ModelRuntime` methods the server calls. A
+    second implementation would be verifying itself.
+
+    Exit 1 only for a real disagreement. A file this machine cannot check is
+    not a failure of the file, and exiting non-zero for it would make `verify`
+    useless in CI the moment somebody ran it on a different accelerator.
+    """
+    import json
+
+    from . import verify as verify_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    runtime = ModelRuntime()
+    try:
+        report = verify_mod.verify(path, runtime)
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+    finally:
+        # The model is several gigabytes and this is a one-shot command, so it
+        # goes back before the process does rather than at interpreter exit.
+        try:
+            runtime.unload()
+        except Exception:  # noqa: S110 - the report is already printed
+            # The process is about to exit and the OS reclaims the memory
+            # regardless. Turning a tidy-up failure into a non-zero exit would
+            # report a verification failure that did not happen.
+            pass
+
+    print(
+        json.dumps(report.to_dict(), indent=2) if as_json else verify_mod.render(report)
+    )
+    return report.exit_code()
+
+
 def inspect_session(path, *, as_json: bool = False) -> int:
     """Describe a `.mri` on the terminal. Returns the exit code.
 
@@ -822,6 +863,18 @@ def main() -> None:
         help="emit the summary as JSON instead of text",
     )
 
+    checker = sub.add_parser(
+        "verify",
+        help="Re-run the measurements in a .mri on this machine and report "
+        "what reproduced",
+    )
+    checker.add_argument("file", help="the .mri to check")
+    checker.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the report as JSON instead of text",
+    )
+
     sub.add_parser(
         "models", help="List the models on this machine, and what will not load"
     )
@@ -969,6 +1022,8 @@ def main() -> None:
         return
     elif args.command == "inspect":
         raise SystemExit(inspect_session(args.file, as_json=args.json))
+    elif args.command == "verify":
+        raise SystemExit(verify_session(args.file, as_json=args.json))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":

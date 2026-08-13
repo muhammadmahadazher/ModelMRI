@@ -302,6 +302,7 @@ command says so.
 | `modelmri traces` | List agent runs recorded here, newest first. Instant. | — |
 | `modelmri open FILE.mri` | Open an analysis somebody sent you, in a browser. No model, no GPU, ~0.3s. | — |
 | `modelmri inspect FILE.mri` | Print what a `.mri` holds and exit — model, shape, what was captured, the prompt. `--json` for the lot. ~0.2s. | — |
+| `modelmri verify FILE.mri` | **Re-run the measurements in a `.mri` on this machine** and report, per number, whether it came back the same. `--json` for CI. Loads the model. | the file's model |
 | `modelmri doctor` | What this machine can and cannot run, and why. Run it before you file a bug. | — |
 | `modelmri where` | Every directory ModelMRI reads or writes, and the variables that move them. | — |
 | `modelmri uninstall` | Remove everything ModelMRI has written here. `--models` takes the weights too. Asks first. | — |
@@ -318,7 +319,46 @@ modelmri serve         # look inside one of them
 ```bash
 modelmri inspect gpt2.mri     # what is in this file?
 modelmri open gpt2.mri        # show me
+modelmri verify gpt2.mri      # do these numbers come back on my machine?
 ```
+
+**Checking a finding instead of trusting it**
+
+```bash
+modelmri verify gpt2.mri
+```
+
+```
+gpt2.mri — measured on gpt2
+  file: bfloat16 on cuda:0    here: bfloat16 on cuda:0
+  commit: 607a30d783df  (same weights)
+
+  ✓ generation: reproduced
+      greedy decoding produced the same 4 tokens.
+  ✓ attention: reproduced
+      all 144 stored head maps match. The worst, 6:9, is off by 2.00e-03
+      against a 3.92e-03 tolerance.
+  ✓ patching: reproduced
+      all 3 grids match to 0.00e+00, inside a 0.00e+00 floor measured by
+      running the same trace twice here.
+  – head ranking: not verifiable
+      this file records that a head ranking ran, but the `.mri` carries
+      attention, patching and the generation — not the ranking itself.
+
+  3 reproduced · 0 differ · 1 not verifiable
+```
+
+Three verdicts and no pass/fail, because bit-exact reproduction across two
+machines is not achievable — kernel selection, cuDNN version and TF32 all move
+the last digits. **Every tolerance above was measured on the machine running
+the command**, never asserted from a constant: each check runs the same
+computation twice locally and takes the spread, and for attention the file
+supplies a second floor of its own, since it stores each map as uint8 against
+that map's maximum. Exit 1 only for a real disagreement — a file this machine
+cannot check is not a broken file.
+
+No hosted platform can offer this. It can hand you its own assertion; it can
+never hand you the re-run.
 
 A `.mri` is one analysis without the model — attention, the logit lens, the
 generation, and the activation-patching trace if you ran one. It is how you

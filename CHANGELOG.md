@@ -8,6 +8,47 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#18, completed: `modelmri verify FILE.mri`.** Re-runs the measurements in a
+  recording on the machine you run it on and reports, per number, whether it
+  came back the same. The other half of #17: a receipt says what produced a
+  number, and this is the thing that acts on one.
+
+  **Three verdicts and no pass/fail.** Bit-exact reproduction across two
+  machines is not achievable — kernel selection, cuDNN version, TF32 and
+  reduction order all move the last digits, and `ablate.py` already records
+  measuring 4.863085746765137 against 4.863086102936881 for the identical
+  computation. So a number is `reproduced`, `differs`, or `not verifiable`,
+  and the last one always says which.
+
+  **Every tolerance is measured, never asserted.** There is not a hardcoded
+  epsilon in the module. Each check establishes its own floor by running the
+  same computation twice on this machine and taking the spread — the technique
+  `ablate.rank_heads` already uses for its noise floor. Attention gets a second
+  floor the file supplies itself: `session._quantise` stores each map as uint8
+  against that map's own maximum, so its `scale` is the finest difference the
+  file can represent, and the per-block tolerance is the larger of the two.
+
+  **It refuses to claim a check it did not run.** A sampled generation is not
+  compared, because a different continuation would be the sampler and not the
+  model. A file whose dtype or resolved commit differs from this machine's
+  blocks every numeric check with a sentence naming both. Attention depends on
+  re-establishing the run, so when the generation cannot be reproduced the
+  attention check says exactly that rather than reporting a difference it
+  cannot attribute; patching runs its own forwards and is checked either way.
+  The head ranking is reported as unverifiable rather than skipped — the `.mri`
+  records that a ranking ran and does not carry it, and silence would read as
+  "it reproduced". Every stored head map is checked, not a sample of one.
+
+  Exit 1 only for a real disagreement. A file this machine cannot check is not
+  a broken file, and exiting non-zero for it would make `verify` useless in CI
+  the moment somebody ran it on a different accelerator.
+
+- **The generation now carries a receipt of its own**, including `temperature`
+  and an explicit `greedy` flag. It is the receipt every other one depends on:
+  each names a prompt, and this says how that prompt was answered. Without it
+  `verify` cannot tell a model that changed from a sampler that rolled
+  differently, and no sampling configuration was recorded anywhere before.
+
 - **#17, completed: receipts on every number.** Each measurement now carries a
   machine-readable record of what produced it — model, resolved HF revision
   sha, dtype, device, attention implementation, seed, tokenizer hash, prompt

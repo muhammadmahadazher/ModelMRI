@@ -1137,6 +1137,25 @@ class ModelRuntime:
         # on the same rebase for the same reason; the generate path was the
         # one rebase that did not.
         self._last_patch = {}
+        # The generation itself gets a receipt, and it is the one every other
+        # receipt depends on: each of them names a prompt, and this says how
+        # that prompt was answered. `temperature` is the field `verify` cannot
+        # work without -- a generation that differs on re-run says nothing
+        # about the model if it was sampled, and the `.mri` recorded no
+        # sampling configuration at all before this.
+        self.receipt(
+            "generate",
+            prompt=prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            # Named rather than left to be inferred from `temperature > 0`,
+            # which is the rule TODAY and is exactly the sort of thing that
+            # changes without the reader of a two-year-old file being told.
+            greedy=temperature <= 0,
+            n_prompt_tokens=self.last_n_prompt_tokens,
+            n_generated_tokens=int(self.last_ids.shape[0])
+            - self.last_n_prompt_tokens,
+        )
 
     # ---------------- attention ----------------
 
