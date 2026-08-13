@@ -197,3 +197,145 @@ def test_paths_are_split_with_the_platform_separator(monkeypatch, tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     monkeypatch.setenv("MODELMRI_MODELS_DIR", f"{a}{os.pathsep}{b}")
     assert paths.models_dirs() == [a, b]
+
+
+# ---------------------------------------------------------------------------
+# What the routes are allowed to publish
+# ---------------------------------------------------------------------------
+#
+# CodeQL flags every `JSONResponse({"error": str(err)})` in server.py as
+# "information exposure through an exception", seven times. It is right to
+# ask: `str(err)` on an arbitrary exception is a stack-trace leak, and this
+# repo has already shipped six of those (see the 0.10 changelog).
+#
+# It is wrong here, but only because of an invariant no comment can hold:
+# every exception those handlers catch carries an AUTHORED sentence. The
+# proof has to be executable, or the next `raise Refusal(str(some_torch_err))`
+# turns the false positive into a true one silently.
+
+# Exception types the browser-facing handlers in server.py catch and stringify.
+_PUBLISHED = {
+    "Refusal",
+    "BadRequest",
+    "AdapterError",
+    "TooBig",
+    "TooCostly",
+    "Unsupported",
+    "SessionError",
+}
+
+# Names a caught exception is bound to in this codebase.
+_CAUGHT = {"err", "e", "exc"}
+
+
+def _raises_embedding_a_caught_exception():
+    """Every raise of a published type whose message embeds `str(err)`.
+
+    Yields (path, lineno, source, marked) — `marked` is whether a `leak-ok`
+    note sits within a few lines, which is this repo's existing convention for
+    a deliberate one.
+    """
+    import ast
+
+    for path in sorted((ROOT / "modelmri").rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+                continue
+            fn = node.exc.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name not in _PUBLISHED:
+                continue
+            embeds = False
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Call)
+                    and getattr(sub.func, "id", "") == "str"
+                    and sub.args
+                    and getattr(sub.args[0], "id", "") in _CAUGHT
+                ):
+                    embeds = True
+                if isinstance(sub, ast.FormattedValue) and isinstance(
+                    sub.value, ast.Name
+                ):
+                    if sub.value.id in _CAUGHT:
+                        embeds = True
+            if embeds:
+                # The WHOLE statement plus a little either side. A `raise`
+                # spanning four lines carries its marker wherever the
+                # interpolation is, not necessarily on the first line —
+                # custom.py puts it on line 3 of 4, and a window anchored to
+                # `lineno` alone reported that deliberate site as unmarked.
+                end = getattr(node, "end_lineno", None) or node.lineno
+                window = "\n".join(lines[max(0, node.lineno - 5) : end + 1])
+                yield path, node.lineno, ast.unparse(node), "leak-ok" in window
+
+
+def test_every_published_exception_that_embeds_another_is_marked():
+    """A foreign exception's text may reach the browser only deliberately.
+
+    Measured at the time of writing: 230 raise sites of published types, 10 of
+    which embed a caught exception's text. Four are custom.py publishing the
+    READER'S OWN adapter code, which is the one case where the text is theirs
+    to see. Six are runtime.py re-raising AblationError / AttributionError /
+    FeatureAblationError / PatchError, all of which are this project's own
+    types carrying authored sentences — see the test below.
+
+    If this fails, either mark the new site `leak-ok` with a reason or stop
+    embedding the exception.
+    """
+    unmarked = [
+        f"{p.relative_to(ROOT)}:{n}  {src[:90]}"
+        for p, n, src, marked in _raises_embedding_a_caught_exception()
+        if not marked
+    ]
+    assert not unmarked, (
+        "unmarked exception text reaching a published error:\n" + "\n".join(unmarked)
+    )
+
+
+def test_the_internal_error_types_never_embed_a_foreign_exception():
+    """The invariant that makes the six `leak-ok` sites in runtime.py safe.
+
+    `raise Refusal(str(err))` publishes whatever `AblationError` was built
+    with. That is fine exactly as long as those four types are always
+    constructed from authored text — so this walks every one of their raise
+    sites and checks. Break it and the CodeQL alert stops being a false
+    positive.
+    """
+    import ast
+
+    internal = {
+        "AblationError",
+        "AttributionError",
+        "FeatureAblationError",
+        "PatchError",
+    }
+    offenders, total = [], 0
+    for path in sorted((ROOT / "modelmri").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+                continue
+            fn = node.exc.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name not in internal:
+                continue
+            total += 1
+            for sub in ast.walk(node):
+                if (
+                    isinstance(sub, ast.Call)
+                    and getattr(sub.func, "id", "") == "str"
+                    and sub.args
+                    and getattr(sub.args[0], "id", "") in _CAUGHT
+                ) or (
+                    isinstance(sub, ast.FormattedValue)
+                    and isinstance(sub.value, ast.Name)
+                    and sub.value.id in _CAUGHT
+                ):
+                    offenders.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert total >= 15, f"only found {total} raise sites — did the types move?"
+    assert not offenders, (
+        "these carry a foreign exception's text and are re-published verbatim "
+        "by runtime.py's `raise Refusal(str(err))`:\n" + "\n".join(offenders)
+    )

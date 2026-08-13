@@ -24,7 +24,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from .errors import BadRequest
-from .traces import VALID_KINDS
+from .step_kinds import VALID_KINDS
 
 # The only column names that can ever reach a statement built from this.
 FIELDS = ("kind", "name", "error", "duration")

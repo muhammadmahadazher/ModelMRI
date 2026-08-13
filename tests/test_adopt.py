@@ -151,7 +151,8 @@ class FakeTokenizer:
 
 @pytest.fixture
 def runtime():
-    torch = pytest.importorskip("torch")  # noqa: F841
+    # No binding: the call is here for its skip, not its value.
+    pytest.importorskip("torch")
     from modelmri.runtime import ModelRuntime
 
     rt = ModelRuntime.__new__(ModelRuntime)

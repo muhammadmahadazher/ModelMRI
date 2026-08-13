@@ -20,11 +20,18 @@ import threading
 import uuid
 from pathlib import Path
 
+from . import trace_query
 from .errors import BadRequest
 
 log = logging.getLogger("modelmri")
 
-VALID_KINDS = {"llm_call", "tool_call", "subagent", "mcp_call", "user_turn", "error"}
+# Re-exported from the leaf module so this name keeps working for anything
+# that already imports it from here. It LIVES in step_kinds.py because both
+# this module and trace_query need it, and having them import each other made
+# a genuine cycle: trace_query imported traces at module scope while traces
+# imported trace_query inside `search()` to break it at runtime. Deferring an
+# import to hide a cycle works until someone moves it back.
+from .step_kinds import VALID_KINDS  # noqa: E402
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trace (
@@ -290,8 +297,6 @@ class TraceStore:
         Results are STEPS rather than runs, because the thing somebody is
         looking for is the tool call that failed, not the hour it happened in.
         """
-        from . import trace_query
-
         query = trace_query.parse(raw)
         if query.is_empty:
             return {

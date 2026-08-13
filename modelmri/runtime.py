@@ -917,7 +917,9 @@ class ModelRuntime:
             except patch.PatchError as err:
                 # A pair this measurement cannot be taken on, not a failure of
                 # the code. Every one of these names what to change.
-                raise BadRequest(str(err)) from err
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""
@@ -1196,7 +1198,9 @@ class ModelRuntime:
                         )
                     )
                 except ablate.AblationError as err:
-                    raise Refusal(str(err)) from err
+                    raise Refusal(
+                        str(err)
+                    ) from err  # leak-ok: authored, see test_no_machine_leaks
             elif variant == "steered":
                 if self._steer is None or self.sae is None:
                     raise Refusal(
@@ -1442,7 +1446,9 @@ class ModelRuntime:
                 )
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
     def _resample_donors(self, ids, layers: list[int]) -> dict:
         """Capture `RESAMPLE_DRAWS` donor activations, or refuse saying why.
@@ -1728,7 +1734,9 @@ class ModelRuntime:
                     **extra,
                 )
             except ablate.AblationError as err:
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
             finally:
                 nullmodel.teardown(twin)
 
@@ -1915,7 +1923,9 @@ class ModelRuntime:
                 )
             except attribute.AttributionError as err:
                 # Not a crash: a measurement this code cannot take honestly.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
         # The ranking timed itself; this adds the answer-reading pass, so
         # passes and elapsed_s still describe the same piece of work and a rate
@@ -2152,7 +2162,9 @@ class ModelRuntime:
                 # where the capture came from, a position where nothing fires.
                 # `except Exception` here would swallow a CUDA out-of-memory
                 # into a 409, which is the bug errors.py exists to stop.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
         # Outside the lock: arithmetic on a dict, and no model touched.
         ranked = out["ranked"]

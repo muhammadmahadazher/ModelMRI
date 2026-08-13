@@ -230,9 +230,14 @@ def _synchronize(device_kind: str) -> None:
         return
     try:
         fn()
-    except Exception:  # noqa: S110 - a sync that fails leaves the timing
-        # slightly optimistic, which the caller already treats as a floor. It
-        # is not a reason to refuse to estimate.
+    except Exception:  # noqa: S110
+        # A sync that fails leaves the timing slightly optimistic, which the
+        # caller already treats as a floor. It is not a reason to refuse to
+        # estimate, so there is nothing to do here but carry on.
+        #
+        # The comment sits INSIDE the block on purpose: CodeQL's empty-except
+        # rule looks for one there and does not see a trailing comment on the
+        # `except` line, so the previous shape read as undocumented.
         pass
 
 
@@ -266,7 +271,10 @@ def free_memory(device_kind: str) -> Memory:
                 return Memory(
                     free_bytes=int(free), total_bytes=int(total), source="torch.xpu"
                 )
-            except Exception:  # noqa: S110 - the Memory below IS the handling
+            except Exception:  # noqa: S110
+                # The `Memory(...)` returned just below IS the handling: it
+                # reports the figure as unmeasured with a reason, which is the
+                # honest outcome when a driver will not answer.
                 pass
         return Memory(
             source="torch.xpu",
