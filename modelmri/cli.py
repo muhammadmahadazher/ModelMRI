@@ -151,6 +151,68 @@ def list_models() -> int:
     return 0
 
 
+def open_graph(target) -> int:
+    """Print what somebody else's attribution graph contains.
+
+    The banner is the feature. A graph ModelMRI did not compute must never be
+    mistakable for one it did, so the provenance -- file, producing tool,
+    model, transcoder set -- prints before any number, and the disclaimer
+    prints whether or not the file named a model.
+
+    Nothing is loaded and no model is touched: this reads a tensor archive
+    with a restricted unpickler and reduces on the tensor.
+    """
+    from . import circuit
+    from .errors import BadRequest, Refusal
+
+    try:
+        graph = circuit.read(target)
+    except (Refusal, BadRequest) as err:
+        print(f"modelmri: {err}", file=sys.stderr)
+        return 2
+
+    p = graph.provenance
+    print(f"ModelMRI {__version__} — reading {p['file']}")
+    print()
+    print("  PROVENANCE")
+    print(f"    produced by   {p['producer']}")
+    print(f"    model         {p['model'] or 'not named in the file'}")
+    print(f"    transcoders   {p['scan'] or 'not named in the file'}")
+    print(f"    {p['measured_by']}")
+    print()
+
+    s = graph.summary()
+    print("  GRAPH")
+    print(f"    nodes         {graph.n_nodes:,}")
+    if graph.prompt:
+        print(f"    prompt        {_clip(graph.prompt)}")
+    print(
+        f"    edges         {s['nonzero_edges']:,} non-zero of "
+        f"{s['possible_edges']:,} possible"
+        + (f"  (density {s['density']})" if s.get("density") is not None else "")
+    )
+    if s.get("max_abs_weight") is not None:
+        print(f"    strongest     {s['max_abs_weight']:.6f}")
+    strongest = graph.edges(limit=5)
+    if strongest:
+        print()
+        print("  STRONGEST EDGES")
+        for e in strongest:
+            print(f"    {e['source']:>6} -> {e['target']:<6}  {e['weight']:+.6f}")
+    for note in graph.notes:
+        print()
+        print(f"  note: {note}")
+    if graph.foreign_classes:
+        # Named because it is the evidence for `producer`, and because it is
+        # the list of classes the reader refused to import.
+        print()
+        print(
+            "  classes named by the file and NOT imported: "
+            f"{', '.join(graph.foreign_classes)}"
+        )
+    return 0
+
+
 def export_trace(
     trace_id: str | None,
     *,
@@ -633,9 +695,11 @@ def main() -> None:
     serve.add_argument("--port", type=int, default=5900)
 
     opener = sub.add_parser(
-        "open", help="Open a shared analysis (.mri) — no model needed"
+        "open",
+        help="Open a shared analysis (.mri) or an attribution graph (.pt) — "
+        "no model needed",
     )
-    opener.add_argument("file", help="the .mri someone sent you")
+    opener.add_argument("file", help="the .mri or circuit-tracer .pt someone sent you")
     opener.add_argument("--host", default="127.0.0.1")
     opener.add_argument("--port", type=int, default=5900)
     opener.add_argument(
@@ -762,6 +826,14 @@ def main() -> None:
         if not target.is_file():
             print(f"modelmri: no such file: {target}", file=sys.stderr)
             raise SystemExit(2)
+
+        # A circuit-tracer attribution graph is a different file entirely, so
+        # it takes its own reader and its own banner. Routed by extension
+        # rather than by sniffing: a `.pt` that turns out not to be a graph is
+        # refused by `circuit.read` with a sentence about what it actually
+        # holds, which is more useful than a gzip error from `session.parse`.
+        if target.suffix.lower() in (".pt", ".pth"):
+            raise SystemExit(open_graph(target))
 
         # Parse before starting anything. Someone who was sent the wrong file
         # should get one sentence, not a server they then have to shut down.

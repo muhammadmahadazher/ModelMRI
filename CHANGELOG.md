@@ -8,6 +8,54 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#53 Open somebody else's circuit-tracer attribution graph.**
+  `modelmri open graph.pt` reads one and prints it behind a banner naming the
+  file, the tool that produced it and the model it was computed on. Nothing
+  outside circuit-tracer's own Neuronpedia flow opens these.
+
+  **The banner is the feature, not chrome.** A graph ModelMRI did not compute
+  must never be mistakable for one it did, so provenance is a required field
+  of the result — `measured_by` is a sentence inside the payload rather than a
+  flag the UI has to remember to interpret, and it prints before any number.
+
+  **Reading a pickle from a stranger.** A `.pt` is a pickle and unpickling
+  runs code. The roadmap said `torch.load(weights_only=True)`; measured, that
+  refuses a real circuit-tracer graph outright, because `cfg` is a
+  `UnifiedConfig` and `logit_targets` are `LogitTarget` objects:
+
+      UnpicklingError: Unsupported global: GLOBAL ...UnifiedConfig was not an
+      allowed global by default
+
+  Refusing means never reading the model name the banner needs;
+  `weights_only=False` means executing whatever the file says. So the
+  unpickler is restricted instead: `find_class` allows torch's tensor-rebuild
+  machinery and answers every other class with an inert stub **this module**
+  defines, so the named module is never imported and none of its code runs.
+  The attributes still arrive, which is how `cfg.model_name` reaches the
+  banner without trusting the file.
+
+  Proved with a control. A `__reduce__` payload that writes a file on unpickle
+  is neutralised by the reader — and the same payload through plain
+  `pickle.loads` fires, so the test cannot pass against a payload that never
+  worked.
+
+  **Nothing materialises the matrix.** A graph is nodes x nodes; at 10,000
+  nodes that is 400 MB, and `.tolist()` on it is several gigabytes of Python
+  floats. `summary()` reduces on the tensor and `edges()` uses `topk` on a
+  flattened view, so a 1,000-node graph — a million possible edges — returns
+  under 20 kB of JSON. The cap is reported, so a pruned graph is never
+  mistaken for a whole one, and a zero edge is dropped rather than reported as
+  an edge of no weight.
+
+  Refusals with the same posture as `session.parse`: a ragged (non-square)
+  adjacency matrix, a non-tensor one, a wrong number of dimensions, a node
+  count above the bound (checked against the shape, before anything squares
+  it), a torch file that is not a dict, and a dict missing the required keys —
+  which names what the file *does* hold. Non-finite weights are reported and
+  not cleaned; an unknown key is noted rather than refused, so a newer
+  circuit-tracer still opens and an unread field is never mistaken for an
+  absent one.
+
 - **#51 Emit OTLP, version-stamped.** `modelmri export --otlp
   http://localhost:4318` hands a recorded run to whatever the team already
   runs -- Langfuse, Phoenix, Grafana, Honeycomb -- and `modelmri-record` gains
