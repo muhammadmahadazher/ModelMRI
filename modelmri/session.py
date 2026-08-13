@@ -103,6 +103,10 @@ MAX_PATCH_CELLS = 2_000_000
 MAX_GRAPH_EDGES = 50_000
 MAX_GRAPH_NODES = 200_000
 
+# Longest string this section may carry. A note or a prompt is a sentence; a
+# 40 MB one is a payload, and it renders into somebody else's browser.
+MAX_GRAPH_TEXT = 4_000
+
 
 def _graph(doc: dict) -> dict:
     """The attribution-graph section of an untrusted file, or nothing.
@@ -124,7 +128,15 @@ def _graph(doc: dict) -> dict:
         raise SessionError("this session's graph section is not a set of fields")
 
     provenance = raw.get("provenance")
-    if not isinstance(provenance, dict) or not provenance.get("measured_by"):
+    # A NON-EMPTY STRING, not merely truthy. All four copies of this guard
+    # were truthiness tests, and `"measured_by": true` passes every one of
+    # them while React renders a boolean as nothing -- so a forwarded graph
+    # rendered under ModelMRI's chrome with a BLANK disclaimer, which is the
+    # exact outcome the guard exists to prevent. `" "` did it too.
+    claim = provenance.get("measured_by") if isinstance(provenance, dict) else None
+    if not isinstance(provenance, dict) or not (
+        isinstance(claim, str) and claim.strip()
+    ):
         raise SessionError(
             "this session carries an attribution graph with no provenance. A "
             "graph ModelMRI did not compute must say who did, so a section "
@@ -185,10 +197,43 @@ def _graph(doc: dict) -> dict:
             if isinstance(v, (str, int, float, bool)) or v is None
         },
     }
-    for key in ("prompt", "summary", "notes"):
-        value = raw.get(key)
-        if value is not None:
-            out[key] = value
+    # These three used to be pass-through, and they are the three the panel
+    # DEREFERENCES BY METHOD CALL: `summary.density.toExponential`,
+    # `summary.max_abs_weight.toFixed`, `notes.map`. The section bounded the
+    # one field the viewer only ever renders as text and left the dangerous
+    # three unbounded, so a hostile `.mri` white-screened the zero-install
+    # viewer -- the one reader that always has a stranger's file.
+    prompt = raw.get("prompt")
+    if isinstance(prompt, str):
+        out["prompt"] = prompt[:MAX_GRAPH_TEXT]
+
+    notes = raw.get("notes")
+    if isinstance(notes, list):
+        out["notes"] = [n[:MAX_GRAPH_TEXT] for n in notes if isinstance(n, str)][:64]
+
+    summary = raw.get("summary")
+    if isinstance(summary, dict):
+        clean_summary: dict = {}
+        for key, value in summary.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, bool):
+                clean_summary[key] = value
+            elif isinstance(value, (int, float)):
+                # Non-finite reaches `toFixed`/`toExponential` as NaN and
+                # renders as "NaN"; worse, `json.dumps` writes a bare `NaN`
+                # token that the viewer's own `JSON.parse` rejects outright.
+                if value == value and value not in (float("inf"), float("-inf")):
+                    clean_summary[key] = value
+            elif isinstance(value, str):
+                clean_summary[key] = value[:MAX_GRAPH_TEXT]
+            elif isinstance(value, dict):
+                clean_summary[key] = {
+                    str(k): v
+                    for k, v in value.items()
+                    if isinstance(v, (str, int, float, bool))
+                }
+        out["summary"] = clean_summary
     return out
 
 
@@ -507,14 +552,29 @@ def build(
     # same shape; a writer that is laxer than the reader is a way to build
     # files nobody can open.
     if graph:
-        if not (graph.get("provenance") or {}).get("measured_by"):
+        _claim = (graph.get("provenance") or {}).get("measured_by")
+        if not (isinstance(_claim, str) and _claim.strip()):
             raise SessionError(
                 "an attribution graph needs provenance saying who computed "
                 "it. ModelMRI did not, and a session that renders one without "
                 "saying so is the confusion this section exists to prevent."
             )
         doc["graph"] = graph
-    return gzip.compress(json.dumps(doc, separators=(",", ":")).encode("utf-8"), 6)
+    # allow_nan=False. The default emits a bare `NaN`/`Infinity` token, which
+    # is not JSON: Python reads it back, the viewer's `JSON.parse` does not.
+    # `modelmri open` printed "forwardable" for a file it could not itself
+    # reopen, because circuit.py deliberately KEEPS non-finite weights and
+    # `topk` sorts NaN to the front of the strongest edges.
+    try:
+        body = json.dumps(doc, separators=(",", ":"), allow_nan=False)
+    except ValueError as err:
+        raise SessionError(
+            "this session contains a non-finite number (nan or inf), which "
+            "cannot be written as JSON. A file carrying one is readable by "
+            "Python and rejected by every browser, so it is refused here "
+            "rather than written as something that will not open."
+        ) from err
+    return gzip.compress(body.encode("utf-8"), 6)
 
 
 def parse(data: bytes) -> Session:

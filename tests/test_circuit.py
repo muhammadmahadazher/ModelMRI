@@ -373,9 +373,10 @@ def test_two_reads_do_not_share_a_foreign_registry(tmp_path, producer):
 
 
 def test_torch_classes_are_allowed_through(tmp_path):
-    """Tensors need torch's own rebuild machinery, so the allow-list cannot be
-    empty — the boundary is "torch and nothing else"."""
-    assert "torch" in circuit._ALLOWED_MODULES
+    """Tensors need torch's own rebuild machinery, so the allowlist cannot be
+    empty. The boundary is a set of exact (module, name) PAIRS — "torch and
+    nothing else" was the boundary that turned out to be code execution."""
+    assert ("torch._utils", "_rebuild_tensor_v2") in circuit._ALLOWED_GLOBALS
     a = torch.arange(9, dtype=torch.float32).reshape(3, 3)
     path = tmp_path / "g.pt"
     torch.save({"adjacency_matrix": a, "input_tokens": torch.zeros(3)}, path)
@@ -544,6 +545,9 @@ def test_building_a_graph_without_provenance_is_refused(tmp_path, producer):
     [
         ({"edges": [{"source": 999, "target": 0, "weight": 1.0}]}, "outside the"),
         ({"edges": [{"source": 0, "target": 1, "weight": "big"}]}, "not a number"),
+        # A non-finite weight is now refused by `build` before `parse` ever
+        # sees it — see test_a_non_finite_weight_never_writes_an_unopenable_file
+        # — so this row asserts the WRITER's refusal, which fires first.
         ({"edges": [{"source": 0, "target": 1, "weight": float("inf")}]}, "non-finite"),
         ({"edges": "not a list"}, "missing or malformed"),
         ({"n_nodes": "many"}, "how many nodes"),
@@ -551,13 +555,17 @@ def test_building_a_graph_without_provenance_is_refused(tmp_path, producer):
 )
 def test_a_malformed_graph_stops_at_the_reader(tmp_path, producer, broken, match):
     """Same posture as the rest of `session.parse`: this runs on bytes a
-    stranger forwarded, and the indices reach a browser as array subscripts."""
+    stranger forwarded, and the indices reach a browser as array subscripts.
+
+    Refused at BUILD or at PARSE — both are "stops before a browser sees it",
+    and which one fires depends on the field. The writer is deliberately as
+    strict as the reader, so some rows never reach `parse` at all.
+    """
     from modelmri import session
     from modelmri.errors import BadRequest as _BadRequest
 
-    blob = _session_bytes(tmp_path, producer, **broken)
     with pytest.raises(_BadRequest, match=match):
-        session.parse(blob)
+        session.parse(_session_bytes(tmp_path, producer, **broken))
 
 
 def test_an_absurd_edge_count_is_refused(tmp_path, producer):
@@ -585,3 +593,198 @@ def test_the_two_implementations_agree_on_the_graph_key(tmp_path, producer):
         assert key in block.group(1), f"the viewer does not read {key}"
     # And the guard that matters must exist on the viewer side too.
     assert "measured_by" in ts
+
+
+# ---------------------------------------------------------------------------
+# The allowlist, after it was found to be arbitrary code execution
+# ---------------------------------------------------------------------------
+#
+# The first version allowed whole module ROOTS -- `module.split(".")[0] in
+# ("torch", "collections", "numpy")` -- and that is remote code execution:
+# `numpy.testing._private.utils.runstring` is a one-line `exec`, and it passes
+# a top-level check on "numpy". A payload built on it wrote a file through
+# `circuit.read`. These tests are that payload, kept.
+
+
+class _NumpyExec:
+    """`__reduce__` through a module the OLD allowlist admitted."""
+
+    target = ""
+
+    def __reduce__(self):
+        from numpy.testing._private.utils import runstring
+
+        return (runstring, (f"open(r'{type(self).target}','w').write('pwned')", {}))
+
+
+def test_the_numpy_exec_gadget_does_not_execute(tmp_path):
+    """The escape that was live in 9f60742. `numpy` was an allowed root, and
+    `numpy.testing._private.utils.runstring` is `exec(astr, dict)`."""
+    marker = tmp_path / "PWNED"
+    _NumpyExec.target = str(marker)
+    path = tmp_path / "evil.pt"
+    torch.save(
+        {
+            "adjacency_matrix": torch.zeros(4, 4),
+            "input_tokens": torch.zeros(3),
+            "cfg": _NumpyExec(),
+        },
+        path,
+    )
+    try:
+        circuit.read(path)
+    except (Refusal, BadRequest):
+        pass
+    assert not marker.exists(), "the numpy gadget executed"
+
+
+def test_the_control_shows_the_numpy_gadget_really_fires(tmp_path):
+    """Without this the test above could pass against a broken payload."""
+    import pickle as _pickle
+
+    marker = tmp_path / "PWNED-control"
+    _NumpyExec.target = str(marker)
+    _pickle.loads(_pickle.dumps(_NumpyExec()))
+    assert marker.exists(), "the control payload did not fire"
+
+
+def test_a_dotted_name_cannot_walk_to_a_real_attribute():
+    """At pickle protocol >= 4 -- which the attacker chooses by writing the
+    PROTO opcode -- `find_class` splits a DOTTED name and walks it. So
+    GLOBAL "torch.serialization" "os.system" handed back the real os.system,
+    and "pickle.loads" handed back the unrestricted loader."""
+    import os
+
+    registry: dict = {}
+    reader = circuit._reader_for(registry)
+    probe = reader.Unpickler.__new__(reader.Unpickler)
+    got = reader.Unpickler.find_class(probe, "torch.serialization", "os.system")
+    assert got is not os.system
+    assert issubclass(got, circuit._Foreign)
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    [
+        ("numpy.testing._private.utils", "runstring"),
+        ("torch.hub", "load"),
+        ("torch.hub", "download_url_to_file"),
+        ("torch.serialization", "load"),
+        ("collections.abc", "Callable"),
+    ],
+)
+def test_a_dangerous_name_under_an_allowed_root_is_stubbed(module, name):
+    """The allowlist is (module, name) PAIRS now. A root is not a boundary."""
+    registry: dict = {}
+    reader = circuit._reader_for(registry)
+    probe = reader.Unpickler.__new__(reader.Unpickler)
+    got = reader.Unpickler.find_class(probe, module, name)
+    assert issubclass(got, circuit._Foreign), f"{module}.{name} resolved for real"
+
+
+def test_the_pairs_a_real_torch_save_needs_do_resolve(tmp_path):
+    """The allowlist has to be small AND sufficient. Measured: float32,
+    integer, bool, float16, bfloat16, non-contiguous and nested containers all
+    round-trip through exactly two pairs."""
+    assert ("torch._utils", "_rebuild_tensor_v2") in circuit._ALLOWED_GLOBALS
+    assert ("collections", "OrderedDict") in circuit._ALLOWED_GLOBALS
+    path = tmp_path / "t.pt"
+    torch.save(
+        {
+            "adjacency_matrix": torch.zeros(4, 4, dtype=torch.float16).float(),
+            "input_tokens": torch.zeros(3, dtype=torch.long),
+        },
+        path,
+    )
+    assert circuit.read(path).n_nodes == 4
+
+
+def test_a_torchscript_archive_is_refused_before_torch_load_sees_it(tmp_path):
+    """`torch.load` dispatches on `_is_torchscript_zip` BEFORE consulting
+    `pickle_module`, and with weights_only=False its guard is inert -- so a
+    `.pt` carrying `constants.pkl` went to `torch.jit.load`, the C++
+    unpickler, with the restricted reader discarded."""
+    import zipfile
+
+    path = tmp_path / "script.pt"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("archive/constants.pkl", b"\x80\x04.")
+        archive.writestr("archive/data.pkl", b"\x80\x04.")
+    with pytest.raises(Refusal, match="TorchScript"):
+        circuit.read(path)
+
+
+def test_a_foreign_class_pickled_with_arguments_still_reads(tmp_path, producer):
+    """`_Foreign` inherited `object.__init__`, which takes no arguments, so
+    anything pickled through `__reduce__`-with-args -- an Enum member, a Path,
+    a datetime -- raised TypeError and the reader blamed the FILE."""
+    import datetime as dt
+
+    path = tmp_path / "dated.pt"
+    torch.save(
+        {
+            "adjacency_matrix": torch.zeros(4, 4),
+            "input_tokens": torch.zeros(3),
+            "cfg": producer.UnifiedConfig(),
+            "when": dt.datetime(2026, 8, 13, tzinfo=dt.timezone.utc),
+        },
+        path,
+    )
+    assert circuit.read(path).n_nodes == 4
+
+
+def test_an_expanded_stride_cannot_demand_a_giant_allocation(tmp_path):
+    """A ~2 KB file: `torch.zeros(1).expand(n, n)` is 2-D, square, and under
+    the old 200,000 bound, and then `isfinite` materialises n^2 bools. The
+    bound is on ELEMENTS now, and checked before any full-tensor op."""
+    path = tmp_path / "huge.pt"
+    n = circuit.MAX_NODES + 1
+    torch.save(
+        {
+            "adjacency_matrix": torch.zeros(1).expand(n, n),
+            "input_tokens": torch.zeros(3),
+        },
+        path,
+    )
+    assert path.stat().st_size < 100_000, "the fixture should be tiny"
+    with pytest.raises(Refusal, match="above the|more than this reads"):
+        circuit.read(path)
+
+
+def test_edges_are_computed_once_per_limit(tmp_path):
+    """`open_graph` used to make five full abs() passes over the matrix for
+    one command, each allocating a nodes^2 temporary."""
+    a = torch.zeros(16, 16)
+    a[1, 2] = 1.0
+    path = tmp_path / "g.pt"
+    torch.save({"adjacency_matrix": a, "input_tokens": torch.zeros(3)}, path)
+    g = circuit.read(path)
+
+    calls = {"n": 0}
+    real = g._edges_uncached
+
+    def counted(**kw):
+        calls["n"] += 1
+        return real(**kw)
+
+    g._edges_uncached = counted
+    g.summary()
+    g.edges()
+    g.to_dict()
+    assert calls["n"] == 1, f"{calls['n']} passes over the matrix, expected 1"
+
+
+def test_a_non_finite_weight_never_writes_an_unopenable_file(tmp_path):
+    """circuit.py keeps non-finite weights on purpose and `topk` sorts NaN to
+    the front, so one reaches the edge list. `json.dumps` would then emit a
+    bare `NaN` token: Python reads it back, every browser rejects it, and
+    `modelmri open` printed "forwardable" for a file it could not reopen."""
+    from modelmri import session as _session
+
+    a = torch.zeros(8, 8)
+    a[1, 2] = float("nan")
+    path = tmp_path / "nan.pt"
+    torch.save({"adjacency_matrix": a, "input_tokens": torch.zeros(3)}, path)
+    g = circuit.read(path)
+    with pytest.raises(_session.SessionError, match="non-finite"):
+        circuit.to_session(g)

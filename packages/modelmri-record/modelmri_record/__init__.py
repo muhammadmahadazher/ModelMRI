@@ -151,7 +151,14 @@ def trace(
                 "kind": "error",
                 "name": type(err).__name__,
                 "started_ms": t.now_ms(),
-                "duration_ms": 0,
+                # None, not 0. This step is synthesised at the moment an
+                # exception escapes the block -- nothing timed it, so there is
+                # no duration to report. A 0 here is a positive claim that the
+                # failure took no measurable time, and it travelled: the OTLP
+                # exporter reads `duration_ms is None` to decide whether to
+                # stamp `modelmri.duration.recorded`, so every exported error
+                # span asserted a duration nobody measured.
+                "duration_ms": None,
                 "output": str(err)[:2000],
                 "error": True,
             }
@@ -231,7 +238,12 @@ def step(
     name: str = "",
     input: object = "",  # noqa: A002 - mirrors the wire field name
     output: object = "",
-    duration_ms: int = 0,
+    # None means NOT MEASURED, and it is the default because most callers use
+    # this as a context manager and let `_StepCtx.__exit__` time it. 0 was the
+    # old default and it is a different claim -- "this took no measurable
+    # time" -- which `traces.py` already made the column nullable to express
+    # and which the OTLP exporter reads to decide what it may assert.
+    duration_ms: int | None = None,
     tokens_in: int | None = None,
     tokens_out: int | None = None,
     error: bool = False,
@@ -556,10 +568,6 @@ def _deliver(t: _Trace) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         safe = "".join(c if c.isalnum() or c in "-_." else "-" for c in t.name)[:60]
         (out / f"{safe}-{stamp}-{t.id}.json").write_text(json.dumps(doc, indent=1))
-        # The local server was unreachable; the collector may not be, and a
-        # trace that reached one of the two is better than a trace that
-        # reached neither.
-        _deliver_otlp(t, doc)
     except Exception as err:
         # Catches everything rather than the OSError family a write can be
         # expected to raise, because recording must never crash the host app —
@@ -568,6 +576,13 @@ def _deliver(t: _Trace) -> None:
         # this trace is gone; saying so costs one line and is the difference
         # between a lost run and a mystery.
         _complain(f"modelmri-record: trace {t.name!r} could not be saved: {err}")
+    # OUTSIDE the try, deliberately. It used to be the last statement inside
+    # it, so a disk write that raised -- read-only mount, permission denied,
+    # no space, a path too long on Windows -- jumped straight to the handler
+    # and the collector was never tried. That is the one state where the trace
+    # reaches neither destination, and it was the state that skipped the
+    # second one. The comment claimed the opposite.
+    _deliver_otlp(t, doc)
 
 
 def _deliver_otlp(t: _Trace, doc: dict) -> None:
@@ -597,12 +612,24 @@ def _deliver_otlp(t: _Trace, doc: dict) -> None:
         )
         return
     try:
-        otel.send(doc, t.deliver_otlp, service_name=t.name or "modelmri")
-    except Exception as err:
+        # The same 3 s the local delivery uses, not otel.send's 30 s default.
+        # This runs in the `finally` of the caller's `with` block and again in
+        # the atexit flush, so a stale address behind a firewall that DROPs
+        # rather than REJECTs would hold the host app for 30 s per live trace
+        # on the way out. An export is a convenience; it does not get to be
+        # the slowest thing in somebody's shutdown.
+        otel.send(doc, t.deliver_otlp, service_name=t.name or "modelmri", timeout=3.0)
+    except BaseException as err:
+        # BaseException, not Exception. A KeyboardInterrupt landing inside the
+        # send would otherwise escape through `_deliver`'s own handler and out
+        # into the host app's `finally` -- from a line that exists to be
+        # optional. Re-raised for the two that must not be swallowed.
         _complain(
             f"modelmri-record: trace {t.name!r} was recorded but the OTLP "
-            f"export to {t.deliver_otlp} failed: {err}"
+            f"export to {t.deliver_otlp} failed: {type(err).__name__}: {err}"
         )
+        if isinstance(err, (KeyboardInterrupt, SystemExit)):
+            raise
 
 
 # Traces still open when the process ends. Flushed by the atexit hook below.

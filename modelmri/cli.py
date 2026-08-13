@@ -241,7 +241,16 @@ def open_graph(target, *, host="127.0.0.1", port=5900, browser=True) -> int:
     from . import circuit as _circuit
 
     blob = _circuit.to_session(graph)
-    tmp = Path(tempfile.gettempdir()) / f"{Path(graph.path).stem}.mri"
+    # `mkdtemp`, not a guessable name in the shared temp root. The old path
+    # was `gettempdir()/<stem>.mri` -- fixed, predictable, world-writable
+    # parent, and `write_bytes` follows symlinks, so another user could
+    # pre-create it as a link and have an arbitrary file overwritten with this
+    # caller's privileges (CWE-377/CWE-59). The file also holds the stranger's
+    # prompt, so a 0700 directory is the right home for it.
+    tmp = (
+        Path(tempfile.mkdtemp(prefix="modelmri-graph-"))
+        / f"{Path(graph.path).stem}.mri"
+    )
     tmp.write_bytes(blob)
     print()
     print(f"  written as {tmp}  ({len(blob) / 1024:.1f} KB) — forwardable")
@@ -312,6 +321,22 @@ def export_trace(
 
     print(f"{result.spans} spans -> {result.endpoint}  (HTTP {result.status})")
     print(f"  semconv generation: {result.semconv}")
+    if result.rejected_spans:
+        # A 200 does not mean accepted. OTLP returns partialSuccess in the
+        # body, and a collector over quota or running a filter uses it to say
+        # it dropped spans while still answering 200 -- so "N spans -> ok"
+        # without reading it is a claim nobody checked.
+        print(
+            f"  the collector REJECTED {result.rejected_spans} of "
+            f"{result.spans}; {result.accepted} accepted"
+            + (f" — {result.reject_message}" if result.reject_message else "")
+        )
+    if result.epoch_fallback:
+        print(
+            "  this trace's start time could not be parsed, so every span "
+            "sits at the epoch (1970) in your collector. The spans are "
+            "correct relative to each other and wrong absolutely."
+        )
     if result.undated_spans:
         # Said out loud rather than left in an attribute nobody reads. OTLP
         # has no way to express "the end time is unknown", so these went as
@@ -339,9 +364,38 @@ def _parse_headers(pairs: list[str]) -> dict[str, str]:
         if "=" not in raw:
             raise BadRequest(f"--header wants K=V, got {raw!r}")
         key, _, value = raw.partition("=")
-        if not key.strip():
+        key, value = key.strip(), value.strip()
+        if not key:
             raise BadRequest(f"--header has an empty name in {raw!r}")
-        out[key.strip()] = value.strip()
+        # `.strip()` only removes the ENDS. An interior newline survived it,
+        # and http.client then either raises ValueError (which escaped as a
+        # traceback rather than a refusal) or -- for newline-space, which its
+        # regex deliberately permits as obs-fold -- puts a folded header on
+        # the wire. Header smuggling through a proxy sitting in front of the
+        # collector is the thing that buys.
+        for text, what in ((key, "name"), (value, "value")):
+            bad = next((c for c in text if ord(c) < 0x20 or ord(c) == 0x7F), None)
+            if bad is not None:
+                raise BadRequest(
+                    f"--header {what} contains a control character "
+                    f"({bad!r}) in {raw!r}. A newline in a header value is "
+                    "how a second header gets smuggled onto the wire."
+                )
+        if not value:
+            # The 401-several-minutes-later this function exists to prevent.
+            raise BadRequest(
+                f"--header {key!r} has an empty value. An empty auth header "
+                "is refused by a collector minutes later and reads as a "
+                "network problem."
+            )
+        if key.lower() == "content-type":
+            # Would override the JSON body's own type and make the collector
+            # parse it as something it is not.
+            raise BadRequest(
+                "--header cannot set Content-Type: this sends OTLP/HTTP with "
+                "a JSON body and the type has to match it."
+            )
+        out[key] = value
     return out
 
 

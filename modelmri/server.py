@@ -1708,7 +1708,10 @@ def create_app(
         g = getattr(replay, "graph", None) if replay is not None else None
         if not g or not g.get("n_nodes"):
             return {"available": False}
-        if not (g.get("provenance") or {}).get("measured_by"):
+        claim = (g.get("provenance") or {}).get("measured_by")
+        # A non-empty string, not merely truthy: `true` passes a truthiness
+        # test and renders as nothing.
+        if not (isinstance(claim, str) and claim.strip()):
             return {
                 "available": False,
                 "error": (

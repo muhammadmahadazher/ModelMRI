@@ -79,7 +79,14 @@ KNOWN = (
 # matrix is never materialised — but a sanity bound: a plausible attribution
 # graph is thousands of nodes, and a header claiming millions is a corrupt or
 # hostile file, and `nodes * nodes` on it overflows into a hang.
-MAX_NODES = 200_000
+# 20,000 nodes is 400M elements -- 1.6 GB at float32 -- and already far past
+# any published attribution graph. 200,000 was the first bound and it permits
+# 4x10^10 elements: a ~2 KB file declaring `size=(200000,200000)` over a
+# one-element storage (which is what `torch.zeros(1).expand(200_000,200_000)`
+# writes) is 2-D, square and under the old limit, and then `torch.isfinite`
+# materialises 40 GB. The comment claimed the bound existed to stop exactly
+# that and the number did not deliver it.
+MAX_NODES = 20_000
 
 # How many edges a summary carries by default. A dense matrix has nodes^2 of
 # them and almost all are ~0; the graph people read is the strong tail.
@@ -96,6 +103,22 @@ class _Foreign:
 
     _origin = "?"
 
+    def __init__(self, *args, **kwargs) -> None:
+        """Accept anything and do nothing with it.
+
+        `object.__init__` takes no arguments, so a foreign class pickled
+        through `__reduce__`-with-args -- Enum members, pathlib.Path,
+        functools.partial, datetime -- raised `TypeError: X() takes no
+        arguments`, which surfaced as "could not be read as a torch archive",
+        blaming the file for the wrong thing. Today's circuit-tracer graphs
+        happen to use NEWOBJ; one new Enum-typed field would have broken the
+        reader with a misleading refusal.
+        """
+        if args:
+            self.__dict__["_args"] = args
+        if kwargs:
+            self.__dict__.update(kwargs)
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<foreign {self._origin} {sorted(self.__dict__)}>"
 
@@ -110,9 +133,65 @@ class _Foreign:
         return out
 
 
-# Modules whose classes are the real pickle machinery for tensors. Everything
-# else is stubbed. Kept narrow and explicit: this is the security boundary.
-_ALLOWED_MODULES = ("torch", "collections", "numpy")
+# EXACT (module, name) pairs that may resolve to a real callable. Everything
+# else -- including anything else under torch or numpy -- becomes an inert
+# stub. This is the security boundary and it is a pair list, not a module list,
+# because a module list does not work.
+#
+# The first version allowed whole roots: `module.split(".")[0] in ("torch",
+# "collections", "numpy")`. That is arbitrary code execution, demonstrated
+# rather than argued:
+#
+#     numpy/testing/_private/utils.py:  def runstring(astr, dict): exec(astr, dict)
+#
+# `numpy.testing._private.utils` passes a top-level check on "numpy", so a
+# GLOBAL naming it plus one REDUCE runs `exec` on attacker text. A payload
+# built that way wrote a file through `circuit.read` on this machine. The same
+# hole admits `torch.hub.load` (clones and imports a GitHub repo) and, at
+# pickle protocol >= 4 where the attacker writes the PROTO opcode,
+# `_getattribute` splits a DOTTED name -- so GLOBAL "torch.serialization"
+# "pickle.loads" hands back the real unrestricted loads and the restriction is
+# gone in one hop.
+#
+# What a real torch.save actually needs was measured, not guessed: float32,
+# integer, bool, float16, bfloat16, non-contiguous tensors, and nested
+# str/int/list/dict/None all round-trip through exactly two pairs.
+_ALLOWED_GLOBALS = frozenset(
+    {
+        ("collections", "OrderedDict"),
+        ("torch._utils", "_rebuild_tensor_v2"),
+        # Not exercised by the files measured, but unambiguously tensor-rebuild
+        # machinery that older and sparser checkpoints do use. Each is a
+        # constructor for tensor data and none of them executes caller text.
+        ("torch._utils", "_rebuild_tensor"),
+        ("torch._utils", "_rebuild_sparse_tensor"),
+        ("torch._utils", "_rebuild_meta_tensor_no_storage"),
+        ("torch._utils", "_rebuild_wrapper_subclass"),
+        ("torch.storage", "_load_from_bytes"),
+        ("torch", "Size"),
+        ("torch", "device"),
+        ("torch", "dtype"),
+    }
+    # The typed storages a legacy checkpoint names directly. Enumerated rather
+    # than pattern-matched so the set stays finite and readable.
+    | {
+        ("torch", f"{t}Storage")
+        for t in (
+            "Float",
+            "Double",
+            "Half",
+            "BFloat16",
+            "Long",
+            "Int",
+            "Short",
+            "Char",
+            "Byte",
+            "Bool",
+            "ComplexFloat",
+            "ComplexDouble",
+        )
+    }
+)
 
 
 class _SafeUnpickler(pickle.Unpickler):
@@ -130,7 +209,11 @@ class _SafeUnpickler(pickle.Unpickler):
     _foreign: dict[str, type] = {}
 
     def find_class(self, module: str, name: str):
-        if module.split(".")[0] in _ALLOWED_MODULES:
+        # A dotted NAME is an attribute walk that pickle protocol >= 4 performs
+        # for us, and the attacker chooses the protocol. `GLOBAL
+        # "torch.serialization" "os.system"` resolves through it, so the dot is
+        # refused before the pair is even consulted.
+        if "." not in name and (module, name) in _ALLOWED_GLOBALS:
             return super().find_class(module, name)
         origin = f"{module}.{name}"
         registry = type(self)._foreign
@@ -202,6 +285,20 @@ class Graph:
             ),
         }
 
+    def _cached_edges(self, limit: int) -> list[dict]:
+        """`edges()` memoised per limit.
+
+        `open_graph` called `summary()` (which calls `edges()`), then
+        `edges()`, then `to_session()` (which calls both again) -- five full
+        `abs()` passes over the matrix for one command. Each pass allocates a
+        nodes^2 temporary, so at the advertised 10,000-node size that was
+        2 GB of transient allocation to print four rows.
+        """
+        cache = self.__dict__.setdefault("_edge_cache", {})
+        if limit not in cache:
+            cache[limit] = self._edges_uncached(limit=limit)
+        return cache[limit]
+
     def summary(self, *, edge_limit: int = DEFAULT_EDGE_LIMIT) -> dict:
         """Shape and strength, reduced ON the tensor.
 
@@ -239,6 +336,9 @@ class Graph:
         }
 
     def edges(self, *, limit: int = DEFAULT_EDGE_LIMIT) -> list[dict]:
+        return self._cached_edges(limit)
+
+    def _edges_uncached(self, *, limit: int = DEFAULT_EDGE_LIMIT) -> list[dict]:
         """The `limit` strongest edges, by absolute weight.
 
         `topk` on a flattened view, so the peak allocation is `limit` rather
@@ -334,6 +434,34 @@ def read(path: str | Path, *, max_nodes: int = MAX_NODES) -> Graph:
     if not target.is_file():
         raise BadRequest(f"no such file: {target}")
 
+    # BEFORE torch.load, because torch.load dispatches on this itself and the
+    # dispatch happens ahead of `pickle_module`. `torch/serialization.py`:
+    #
+    #     if _is_torchscript_zip(opened_zipfile):
+    #         if weights_only: raise RuntimeError(...)
+    #         return torch.jit.load(opened_file, ...)
+    #
+    # `weights_only=False` is required here (see the module docstring), so that
+    # guard is inert and a `.pt` carrying a record named `constants.pkl` would
+    # be handed to the TorchScript loader -- the C++ unpickler, on a stranger's
+    # archive, with the restricted reader discarded. Refused by name instead.
+    import zipfile
+
+    try:
+        if zipfile.is_zipfile(target):
+            with zipfile.ZipFile(target) as archive:
+                names = archive.namelist()
+            if any(n.rsplit("/", 1)[-1] == "constants.pkl" for n in names):
+                raise Refusal(
+                    f"{target.name} is a TorchScript archive, not an "
+                    "attribution graph. torch.load hands those to "
+                    "`torch.jit.load` before any restricted reader can see "
+                    "them, so this refuses rather than opening it."
+                )
+    except zipfile.BadZipFile:
+        # Not a zip; the legacy pickle path below handles it and reports.
+        pass
+
     registry: dict[str, type] = {}
     shim = _reader_for(registry)
 
@@ -403,6 +531,18 @@ def read(path: str | Path, *, max_nodes: int = MAX_NODES) -> Graph:
             "large is a corrupt or hostile header, and squaring it is how a "
             "reader hangs instead of refusing."
         )
+    # Elements, not just the side length -- and BEFORE any full-tensor op.
+    # `isfinite` below allocates a dense bool tensor of this size.
+    if rows * cols > MAX_NODES * MAX_NODES:
+        raise Refusal(
+            f"{target.name}'s adjacency matrix declares {rows * cols:,} "
+            "elements, which is more than this reads."
+        )
+    if not adjacency.is_contiguous():
+        # An expanded or transposed view makes `reshape(-1)` copy the whole
+        # matrix. Made contiguous once, here, rather than silently once per
+        # reduction downstream.
+        adjacency = adjacency.contiguous()
     if not torch.isfinite(adjacency).all():
         notes.append(
             "the adjacency matrix contains non-finite weights (nan or inf); "

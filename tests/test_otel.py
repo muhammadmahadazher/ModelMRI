@@ -81,6 +81,13 @@ def test_every_mapped_field_survives_a_round_trip():
     for field in otel.FIELDS:
         if field.step.startswith("_"):
             continue  # derived, not a column
+        if original.get(field.step) is None:
+            # Correctly OMITTED rather than zeroed — see
+            # test_a_missing_token_count_is_omitted_not_zeroed. An absent
+            # attribute is the intended representation of an absent value, so
+            # demanding it round-trip to a key would be demanding the bug.
+            assert field.key not in _attrs(_spans(otel.to_otlp(doc))[0])
+            continue
         assert got[field.step] == original[field.step], field.key
 
 
@@ -345,3 +352,86 @@ def test_an_unreachable_collector_names_the_port_confusion():
     with pytest.raises(Refusal) as err:
         otel.send(_doc(), "http://127.0.0.1:1", timeout=2)
     assert "4318" in str(err.value) and "4317" in str(err.value)
+
+
+# ---------------------------------------------------------------------------
+# What the first version got wrong
+# ---------------------------------------------------------------------------
+
+
+def test_parent_and_start_survive_the_round_trip():
+    """Both were emitted and never read back, so a round trip destroyed the
+    call tree and stacked every step at t=0. They were invisible to the
+    round-trip test for the same reason they were broken: the test walks
+    FIELDS, and they were not in it."""
+    doc = _doc()
+    doc["steps"].append({**doc["steps"][0], "id": "s2", "parent_id": "s1", "seq": 1})
+    back = otel.from_otlp(otel.to_otlp(doc))
+    assert back[1]["parent_id"] == "s1"
+    assert back[1]["started_ms"] == doc["steps"][1]["started_ms"]
+
+
+def test_the_model_survives_the_round_trip():
+    back = otel.from_otlp(otel.to_otlp(_doc()))
+    assert back[0]["meta"]["model"] == "qwen3"
+
+
+def test_a_step_without_an_id_is_refused_not_given_a_shared_one():
+    """`_hex_id("")` is a constant, so every id-less step got the SAME span id
+    — invalid OTLP, and collectors collapse or orphan them."""
+    doc = _doc()
+    doc["steps"][0]["id"] = ""
+    with pytest.raises(BadRequest, match="no id"):
+        otel.to_otlp(doc)
+
+
+def test_a_naive_timestamp_is_read_as_utc_not_local():
+    """`dt.timestamp()` on a naive datetime uses LOCAL time, so every span
+    shifted by the machine's UTC offset with nothing saying so."""
+    aware = otel._epoch_ns("2026-08-13T10:00:00+00:00")
+    naive = otel._epoch_ns("2026-08-13T10:00:00")
+    assert naive == aware
+
+
+def test_an_unparseable_start_is_reported_not_just_silently_zero(collector):
+    """The docstring claimed it was "said rather than hidden" and nothing said
+    it. 1970 in a collector is discovered days later by someone squinting."""
+    url, _ = collector
+    result = otel.send(_doc(started_at="not a date"), url)
+    assert result.epoch_fallback is True
+    assert otel.send(_doc(), url).epoch_fallback is False
+
+
+def test_partial_success_is_read_from_the_body(collector):
+    """OTLP returns partialSuccess WITH HTTP 200. Reporting `spans` as
+    delivered without reading it claims something never measured."""
+    url, handler = collector
+
+    class Partial(handler):
+        def do_POST(self):  # noqa: N802 - the stdlib's spelling
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = json.dumps(
+                {"partialSuccess": {"rejectedSpans": 1, "errorMessage": "over quota"}}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = HTTPServer(("127.0.0.1", 0), Partial)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        result = otel.send(_doc(), f"http://127.0.0.1:{server.server_port}")
+    finally:
+        server.shutdown()
+    assert result.status == 200
+    assert result.rejected_spans == 1
+    assert result.accepted == 0
+    assert "over quota" in result.reject_message
+
+
+def test_a_full_success_reports_nothing_rejected_rather_than_zero(collector):
+    """None means the collector said nothing; 0 means it said it rejected
+    none. Different answers."""
+    url, _ = collector
+    assert otel.send(_doc(), url).rejected_spans is None

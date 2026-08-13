@@ -265,7 +265,11 @@ export async function viewerFetch(
     // ModelMRI's chrome without saying who computed it is the confusion the
     // section exists to prevent, so an absent provenance is an error rather
     // than a missing caption.
-    if (!g.provenance || !g.provenance.measured_by) {
+    // A non-empty STRING. `measured_by: true` passes a truthiness test and
+    // React renders a boolean as nothing, so the graph would appear under
+    // ModelMRI's chrome with a blank disclaimer.
+    const claim = g.provenance?.measured_by;
+    if (typeof claim !== "string" || !claim.trim()) {
       return {
         status: 422,
         payload: {

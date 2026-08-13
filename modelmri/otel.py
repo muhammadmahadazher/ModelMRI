@@ -107,6 +107,19 @@ FIELDS: tuple[Field, ...] = (
     # The step's real id. The OTLP span id is DERIVED (see `_span_id`), so
     # without this the identity a `.mri` file uses would not survive export.
     Field("id", "modelmri.step.id", "str"),
+    # These three were emitted by `to_otlp` and never read back, so a round
+    # trip silently destroyed the call tree, stacked every step at t=0, and
+    # lost the model. They were invisible to the round-trip test for the
+    # reason they were broken: the test walks FIELDS, and they were not in it.
+    #
+    # `parentSpanId` is a one-way sha256 and cannot be inverted, so the real
+    # parent id has to ride as an attribute of its own -- the span link is for
+    # the collector, this is for us.
+    Field("parent_id", "modelmri.step.parent_id", "str"),
+    # Emitted into startTimeUnixNano as an offset from the trace start, which
+    # `from_otlp` has no way to subtract back out: it sees one span, not the
+    # trace header.
+    Field("started_ms", "modelmri.step.started_ms", "int"),
 )
 
 # Only the key->field direction is needed: `to_otlp` walks FIELDS in order
@@ -241,9 +254,22 @@ def to_otlp(doc: dict, *, service_name: str = "modelmri") -> dict:
                 {"key": "gen_ai.request.model", "value": {"stringValue": str(model)}}
             )
 
+        step_id = str(step.get("id") or "")
+        if not step_id:
+            # `_hex_id("")` is a constant, so every id-less step would get the
+            # SAME span id -- invalid OTLP (span ids must be unique within a
+            # trace) and a collector collapses or orphans them. `to_otlp`
+            # already refuses a trace with no id; a step with none is the same
+            # problem one level down, and deriving a valid-looking id from
+            # nothing is exactly what this package refuses to do elsewhere.
+            raise BadRequest(
+                f"step {step.get('seq', '?')} of trace {tid!r} has no id, so it "
+                "cannot be given a span id. Every step in a recorded trace has "
+                "one; a document without them was not written by this tool."
+            )
         span: dict = {
             "traceId": trace_id(tid),
-            "spanId": span_id(str(step.get("id") or "")),
+            "spanId": span_id(step_id),
             "name": str(step.get("name") or kind or "step"),
             "kind": span_kind,
             "startTimeUnixNano": str(start),
@@ -302,11 +328,24 @@ def _epoch_ns(started_at: Any) -> int:
 
     if not started_at:
         return 0
+    from datetime import timezone
+
     try:
         dt = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, TypeError):
         return 0
-    return int(dt.timestamp() * 1_000_000_000)
+    if dt.tzinfo is None:
+        # `dt.timestamp()` on a naive datetime interprets it as LOCAL time, so
+        # every span shifts by the machine's UTC offset with nothing saying
+        # so. This tool writes offset-aware stamps; an imported trace may not,
+        # and UTC is the only defensible reading of a bare ISO timestamp here.
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        return int(dt.timestamp() * 1_000_000_000)
+    except (OverflowError, OSError, ValueError):
+        # A pre-1970 or absurd date. 0 rather than a crash, and `send` reports
+        # `epoch_fallback` so it is not discovered days later in a timeline.
+        return 0
 
 
 # ---------------------------------------------------------------- ingest
@@ -340,6 +379,13 @@ def from_otlp(body: dict) -> list[dict]:
                 else:
                     step["duration_ms"] = None
                 step["error"] = (span.get("status") or {}).get("code") == STATUS_ERROR
+                # Read back into `meta`, where `to_otlp` took it from, so the
+                # round trip is symmetric rather than one-way.
+                for attr in span.get("attributes") or []:
+                    if attr.get("key") == "gen_ai.request.model":
+                        model = (attr.get("value") or {}).get("stringValue")
+                        if model:
+                            step.setdefault("meta", {})["model"] = model
                 steps.append(step)
     return steps
 
@@ -354,12 +400,36 @@ class Delivery:
     undated_spans: int
     status: int
     semconv: str
+    # What the collector said it REJECTED. OTLP returns
+    # ExportTraceServiceResponse.partialSuccess with HTTP 200, and a collector
+    # over quota or running a filter uses it to say it dropped spans while
+    # still answering 200. Reporting `spans` as delivered without reading this
+    # is claiming something never measured -- "17 spans -> endpoint (HTTP 200)"
+    # when the collector kept none of them.
+    #
+    # None means the response carried no partialSuccess, which is the normal
+    # full-success case. 0 means it said so explicitly. They are different.
+    rejected_spans: int | None = None
+    reject_message: str = ""
+    # Timestamps land at the epoch when the trace header could not be parsed.
+    # Counted so the CLI can say it, because 1970 in a collector is discovered
+    # days later by someone squinting at a timeline.
+    epoch_fallback: bool = False
+
+    @property
+    def accepted(self) -> int:
+        """Spans the collector did not say it rejected."""
+        return self.spans - (self.rejected_spans or 0)
 
     def to_dict(self) -> dict:
         return {
             "endpoint": self.endpoint,
             "spans": self.spans,
+            "accepted": self.accepted,
+            "rejected_spans": self.rejected_spans,
+            "reject_message": self.reject_message,
             "undated_spans": self.undated_spans,
+            "epoch_fallback": self.epoch_fallback,
             "status": self.status,
             "semconv": self.semconv,
         }
@@ -421,9 +491,24 @@ def send(
             **(headers or {}),
         },
     )
+    rejected: int | None = None
+    reject_message = ""
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = int(response.status)
+            # The body is not noise. A 200 can still carry partialSuccess.
+            try:
+                answer = json.loads(response.read() or b"{}")
+                partial = (answer or {}).get("partialSuccess") or {}
+                if partial:
+                    rejected = int(partial.get("rejectedSpans", 0))
+                    reject_message = str(partial.get("errorMessage", ""))
+            except Exception:  # noqa: S110
+                # A collector that answers 200 with something unparseable has
+                # still accepted the spans as far as HTTP is concerned. The
+                # count stays None -- "it said nothing" -- rather than 0,
+                # which would be "it said it rejected none".
+                pass
     except urllib.error.HTTPError as err:
         if err.code == 415:
             raise Refusal(
@@ -445,6 +530,21 @@ def send(
             f"could not reach {url}: {type(err).__name__}. OTLP/HTTP is "
             "usually port 4318 — 4317 is gRPC, which this does not speak."
         ) from err
+    except (TimeoutError, OSError, ValueError) as err:
+        # NOT covered by the arms above, and each is reachable:
+        #
+        # urllib wraps only `h.request(...)` in `except OSError: raise
+        # URLError`. `h.getresponse()` sits OUTSIDE that wrapper, so a
+        # collector that accepts the body and never answers -- the standard
+        # overloaded-collector failure -- raises a bare TimeoutError, which is
+        # a sibling of URLError and not a subclass. Verified against the
+        # installed CPython. `http.client.RemoteDisconnected` takes the same
+        # route, and `putheader` raises ValueError on a header value this
+        # module should have rejected earlier.
+        raise Refusal(
+            f"{url} did not complete the exchange: {type(err).__name__}. "
+            "Nothing was recorded as delivered."
+        ) from err
 
     return Delivery(
         endpoint=url,
@@ -452,4 +552,7 @@ def send(
         undated_spans=undated,
         status=status,
         semconv=SEMCONV_GENERATION,
+        rejected_spans=rejected,
+        reject_message=reject_message,
+        epoch_fallback=_epoch_ns(doc.get("started_at")) == 0,
     )
