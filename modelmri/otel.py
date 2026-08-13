@@ -109,7 +109,10 @@ FIELDS: tuple[Field, ...] = (
     Field("id", "modelmri.step.id", "str"),
 )
 
-_BY_STEP = {f.step: f for f in FIELDS}
+# Only the key->field direction is needed: `to_otlp` walks FIELDS in order
+# (so the attribute order is stable and diffable) while `from_otlp` has to
+# look each attribute up. A step->field index was written here for symmetry
+# and never read, which CodeQL correctly called dead.
 _BY_KEY = {f.key: f for f in FIELDS}
 
 
