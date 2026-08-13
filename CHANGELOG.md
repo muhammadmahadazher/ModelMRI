@@ -8,6 +8,24 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **A section navigator, because the page is now nine panels deep.** Every
+  panel was reachable only by scrolling past the ones above it. A rail in the
+  left gutter lists the sections, marks the one being read, and jumps; ⌘K /
+  CtrlK opens a filterable palette from anywhere, and below the width where
+  the gutter exists the rail gives way to a single button so it never overlaps
+  what it navigates.
+
+  **It reads the page rather than carrying a list of sections.** The set of
+  panels here is not a constant — it is decided at runtime by the viewer and
+  demo builds, by whether anything has been run yet, by whether the model is
+  introspectable, by replay, and by whether an open session carries a graph. A
+  hand-written list would offer entries that jump to nothing and would silently
+  omit whatever panel is added next; discovering them from the DOM means a new
+  panel appears in the rail without anybody editing the navigator. Section
+  colour is taken from the `.dot.d-*` class each section already carries, so
+  the one place a colour is defined stays the one place.
+
+
 - **#42, completed: point any OpenTelemetry exporter at ModelMRI.**
   `POST /api/otel/v1/traces` reads an OTLP/HTTP JSON export, so a team that is
   already instrumented gets the agents panel without this project writing an

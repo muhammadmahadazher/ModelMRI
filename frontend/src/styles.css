@@ -3313,3 +3313,239 @@ button.model-btn:hover:not(:disabled) {
 .gguf-meta { margin-top: 14px; }
 .gguf-meta summary { cursor: pointer; font-size: 11.5px; color: var(--color-mute); }
 .gguf-val { word-break: break-all; max-width: 60ch; }
+
+/* ── section navigator ────────────────────────────────────────────────
+   The page is nine panels deep now and every one of them was reachable
+   only by scrolling past the eight above it. The rail is the table of
+   contents that a document this long should always have had.
+
+   It sits in the gutter beside `main`, which is 980px in a viewport that
+   is usually much wider — the space was already there and empty. Below
+   the width where that gutter stops existing the rail is not shrunk into
+   the content, it is removed, and ⌘K/CtrlK plus the floating button carry
+   the whole feature. A nav that overlaps what it navigates is worse than
+   no nav. */
+
+.secnav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  /* Centre the 980px column, then sit in what is left on the left side.
+     max() keeps it off the very edge on a viewport only just wide enough. */
+  left: max(12px, calc((100vw - 980px) / 2 - 186px));
+  width: 170px;
+  z-index: 40;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.secnav ul {
+  list-style: none;
+  margin: 0 0 var(--sp-2);
+  padding: 0;
+  display: grid;
+  gap: 1px;
+}
+.secnav-item,
+.secnav-find {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: 5px var(--sp-2);
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  color: var(--color-mute);
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color var(--dur-micro) var(--ease-out),
+    background var(--dur-micro) var(--ease-out);
+}
+.secnav-item:hover,
+.secnav-find:hover {
+  color: var(--color-ink);
+  background: color-mix(in oklab, var(--color-ink) 6%, transparent);
+}
+.secnav-item:focus-visible,
+.secnav-find:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+}
+/* The dot is the section's own `.d-*` class, so its colour comes from the
+   one rule that already defines it. Only the geometry is restated here. */
+.secnav-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  /* Dimmed until the section is the one being read, so the rail reads as a
+     single quiet column with one lit entry rather than nine competing
+     colours down the side of the page. */
+  opacity: 0.42;
+  transition:
+    opacity var(--dur-small) var(--ease-out),
+    transform var(--dur-small) var(--ease-out);
+}
+.secnav-item.on {
+  color: var(--color-ink);
+  background: color-mix(in oklab, var(--color-ink) 8%, transparent);
+}
+.secnav-item.on .secnav-dot {
+  opacity: 1;
+  transform: scale(1.5);
+}
+.secnav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.secnav-find {
+  border-top: 1px solid var(--hair-soft);
+  border-radius: 0;
+  padding-top: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+.secnav-find kbd {
+  margin-left: auto;
+  font: inherit;
+  padding: 1px 4px;
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  color: var(--color-mute);
+}
+
+/* Anchored panels must clear the top of the window by more than nothing,
+   or a jump lands the heading flush against the viewport edge. */
+main > [id^="sec-"] {
+  scroll-margin-top: var(--sp-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .secnav-item,
+  .secnav-find,
+  .secnav-dot {
+    transition: none;
+  }
+}
+
+/* Under this width the gutter is gone and the rail would sit on top of the
+   panels. The palette is the whole feature below it — reachable by the
+   keyboard shortcut and by the button, which is why the button is not part
+   of the rail's own layout. */
+@media (max-width: 1360px) {
+  .secnav ul { display: none; }
+  .secnav {
+    top: auto;
+    left: auto;
+    right: var(--sp-4);
+    bottom: var(--sp-4);
+    transform: none;
+    width: auto;
+  }
+  .secnav-find {
+    border-top: 0;
+    margin: 0;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: 999px;
+    background: var(--color-card);
+    box-shadow: var(--e2);
+    border: 1px solid var(--hair);
+  }
+}
+
+/* ── jump-to palette ─────────────────────────────────────────────────── */
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: color-mix(in oklab, var(--color-paper) 62%, transparent);
+  backdrop-filter: blur(3px);
+  display: flex;
+  justify-content: center;
+  /* Not centred vertically: a list that grows downward from a fixed point
+     does not move the input under the reader's eyes as they type. */
+  padding-top: 14vh;
+  animation: palette-in var(--dur-small) var(--ease-out);
+}
+.palette {
+  width: min(520px, calc(100vw - 32px));
+  height: fit-content;
+  background: var(--color-card);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-panel);
+  box-shadow: var(--e3);
+  overflow: hidden;
+  animation: palette-rise var(--dur-medium) var(--ease-out);
+}
+.palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--sp-4);
+  border: 0;
+  border-bottom: 1px solid var(--hair-soft);
+  background: none;
+  color: var(--color-ink);
+  font: 14px/1.4 var(--font-mono);
+  outline: none;
+}
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-2);
+  max-height: 52vh;
+  overflow-y: auto;
+}
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+.palette-row.on {
+  background: color-mix(in oklab, var(--acc) 12%, transparent);
+}
+.palette-row .secnav-dot {
+  opacity: 1;
+  align-self: center;
+}
+.palette-label { flex: none; }
+.palette-detail {
+  color: var(--color-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-empty {
+  padding: var(--sp-4);
+  color: var(--color-mute);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+@keyframes palette-in {
+  from { opacity: 0; }
+}
+@keyframes palette-rise {
+  from { opacity: 0; transform: translateY(-8px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .palette-scrim, .palette { animation: none; }
+}

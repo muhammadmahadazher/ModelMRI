@@ -16,6 +16,7 @@ import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
+import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
@@ -131,6 +132,12 @@ export default function App() {
 
   return (
     <main>
+      {/* Reads the page rather than being told what is on it, so it is right
+          in the viewer build, the demo build and mid-run — three states with
+          three different sets of panels. Placed inside <main> only because
+          that is where React needs it; it positions itself against the
+          viewport. */}
+      <SectionNav />
       <div className="topbar">
         <span className="logomark">
           <span className="ast">✳</span> ModelMRI
