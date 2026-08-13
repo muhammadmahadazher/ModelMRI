@@ -21,9 +21,16 @@ from . import __version__, custom, gguf_read, paths
 from .custom import AdapterError, CustomHandle
 
 # Every browser-facing handler below answers `str(err)` for these types, and
-# each of those lines carries `# codeql[py/stack-trace-exposure]`. The
-# suppression is a claim, so it is worth stating what the claim is and where
-# it is checked.
+# CodeQL flags each one as py/stack-trace-exposure. Those alerts are dismissed
+# as false positives, which is a claim, so here is the claim and where it is
+# checked.
+#
+# NOT suppressed with inline `# codeql[...]` comments: that syntax is a CodeQL
+# CLI convention and GitHub code scanning does not honour it for Python. I
+# tried it, and the only effect was to put all 69 handlers into the diff and
+# turn seven alerts into sixty-nine. Dismissal through the code-scanning API
+# is the mechanism that exists, and unlike a query filter it leaves the rule
+# armed for handlers written later.
 #
 # CodeQL is right in general: `str(err)` on an arbitrary exception publishes a
 # library's internal text, and this repo has already shipped six of those (see
@@ -350,13 +357,9 @@ def create_app(
             # why capacity.guard is shared between them in the first place.
             return JSONResponse({"error": str(err)}, status_code=422)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/model/load")
 
@@ -377,9 +380,7 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.unload)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/model/unload")
 
@@ -439,13 +440,9 @@ def create_app(
         try:
             return hub.sign_in(req.token).to_dict()
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/hub/signin")
 
@@ -464,13 +461,9 @@ def create_app(
                 return await asyncio.to_thread(hub.suggested)
             return await asyncio.to_thread(hub.search, q, limit)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/hub/models")
 
@@ -612,13 +605,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/ollama/pull")
 
@@ -680,9 +669,7 @@ def create_app(
             # lets this handler tell them apart from the next arm.
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             # CUDA out of memory, a streamer timeout, an architecture
             # transformers cannot run eagerly. These were 409s carrying
@@ -704,13 +691,9 @@ def create_app(
             status = await asyncio.to_thread(runtime.load_sae, req.repo, req.hook)
             return asdict(status)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/sae/load")
 
@@ -719,13 +702,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.features_summary, top_k)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/features/summary")
 
@@ -808,13 +787,9 @@ def create_app(
                 runtime.rank_features, position, scope, top_k
             )
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             # A full GPU is not a conflict. `rank_features` translates only
             # FeatureAblationError, so a torch OOM during 262 forward passes —
@@ -827,13 +802,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.feature_detail, feature_id)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/features/{feature_id}")
 
@@ -842,13 +813,9 @@ def create_app(
         try:
             return runtime.set_steering(req.feature_id, req.scale)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/steer")
 
@@ -940,13 +907,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/lens")
 
@@ -1099,9 +1062,7 @@ def create_app(
                 "roots": [str(r) for r in custom.allowed_roots()],
             }
         except AdapterError as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/scan")
 
@@ -1125,13 +1086,9 @@ def create_app(
             status = await asyncio.to_thread(app.state.vla.load, req.repo)
             return status.to_dict()
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/load")
 
@@ -1172,13 +1129,9 @@ def create_app(
             # the reader's to run and not something in a traceback.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/dataset")
         app.state.vla_reader = reader
@@ -1203,13 +1156,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/episodes")
 
@@ -1229,13 +1178,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/frame")
 
@@ -1253,13 +1198,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/analyse")
 
@@ -1272,13 +1213,9 @@ def create_app(
         try:
             return await asyncio.to_thread(app.state.vla.attention, layer, head)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/attention")
 
@@ -1288,13 +1225,9 @@ def create_app(
             trace_id = await asyncio.to_thread(traces.import_trace, doc)
             return {"id": trace_id}
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/import")
 
@@ -1364,17 +1297,11 @@ def create_app(
             target = await asyncio.to_thread(custom.resolve_under_roots, path)
             return await asyncio.to_thread(lambda: gguf_read.read(target).to_dict())
         except AdapterError as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf")
 
@@ -1395,17 +1322,11 @@ def create_app(
                 lambda: runtime.plan_gguf(str(target), dtype=dtype)
             )
         except AdapterError as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf/plan")
 
@@ -1428,17 +1349,11 @@ def create_app(
             )
             return st.to_dict()
         except AdapterError as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf/load")
 
@@ -1460,9 +1375,7 @@ def create_app(
         try:
             return await asyncio.to_thread(traces.search, q, min(int(limit), 500))
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/search")
 
@@ -1478,13 +1391,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attention, layer, head, variant)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention")
 
@@ -1501,13 +1410,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attention_diff, layer, head, a, b)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/diff")
 
@@ -1531,13 +1436,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.ablate_heads, target, baseline)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate")
 
@@ -1556,13 +1457,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.estimate_ablation, target, baseline)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate/estimate")
 
@@ -1591,13 +1488,9 @@ def create_app(
                 return JSONResponse({"error": "no such step"}, status_code=404)
             return await asyncio.to_thread(runtime.adopt_step, step)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/adopt")
 
@@ -1623,13 +1516,9 @@ def create_app(
                 seed,
             )
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/control")
 
@@ -1647,13 +1536,9 @@ def create_app(
                 runtime.compare_baselines, layer if layer is not None else 0
             )
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/baselines")
 
@@ -1692,13 +1577,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.patch_trace, req.clean, req.corrupt)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch")
 
@@ -1737,13 +1618,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attribute_tokens, position)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/attribute")
 
@@ -1762,13 +1639,9 @@ def create_app(
         try:
             blob = await asyncio.to_thread(runtime.export_session, layer, head, note)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/session/export")
         # The basename, sanitised -- never the id itself. `hf_id` is not always
@@ -1811,13 +1684,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.open_session, data)
         except Refusal as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=409
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
-            return JSONResponse(
-                {"error": str(err)}, status_code=422
-            )  # codeql[py/stack-trace-exposure]
+            return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/session/open")
 

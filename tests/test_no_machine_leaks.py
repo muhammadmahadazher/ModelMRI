@@ -222,6 +222,10 @@ _PUBLISHED = {
     "TooCostly",
     "Unsupported",
     "SessionError",
+    # Not an error in the code: the user pressed Stop. Authored like the rest,
+    # and answered at 200 rather than as a failure — see the handler's own
+    # comment in server.py.
+    "LoadCancelled",
 }
 
 # Names a caught exception is bound to in this codebase.
@@ -338,4 +342,66 @@ def test_the_internal_error_types_never_embed_a_foreign_exception():
     assert not offenders, (
         "these carry a foreign exception's text and are re-published verbatim "
         "by runtime.py's `raise Refusal(str(err))`:\n" + "\n".join(offenders)
+    )
+
+
+def test_no_handler_publishes_an_unlisted_exceptions_text():
+    """The other half of the argument for dismissing py/stack-trace-exposure.
+
+    The test above proves the PUBLISHED types carry authored sentences. That
+    is only half of what CodeQL's rule buys: the rule also catches a handler
+    that stringifies something else entirely —
+
+        except Exception as err:
+            return JSONResponse({"error": str(err)}, ...)
+
+    — which is a genuine leak and is exactly the shape this repo shipped six
+    of in 0.10. Dismissing 69 alerts without covering that would trade a real
+    safety net for a green tick, so this walks every `except ... as err` in
+    `server.py` and fails on any whose body stringifies `err` while catching a
+    type not on the published list.
+
+    `_internal(err, ...)` is the correct handler for everything else: it logs
+    the exception to the terminal and answers a fixed authored sentence.
+    """
+    import ast
+
+    server = ROOT / "modelmri" / "server.py"
+    tree = ast.parse(server.read_text(encoding="utf-8"))
+    offenders = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ExceptHandler) or node.name is None:
+            continue
+        caught = set()
+        t = node.type
+        for part in t.elts if isinstance(t, ast.Tuple) else [t]:
+            if part is None:
+                continue
+            caught.add(getattr(part, "id", None) or getattr(part, "attr", None))
+        if caught & _PUBLISHED:
+            continue  # covered by the test above
+        # Does the body stringify the caught exception into a response?
+        for sub in ast.walk(node):
+            stringified = (
+                isinstance(sub, ast.Call)
+                and getattr(sub.func, "id", "") == "str"
+                and sub.args
+                and getattr(sub.args[0], "id", "") == node.name
+            ) or (
+                isinstance(sub, ast.FormattedValue)
+                and isinstance(sub.value, ast.Name)
+                and sub.value.id == node.name
+            )
+            if stringified:
+                offenders.append(
+                    f"server.py:{node.lineno} catches "
+                    f"{', '.join(sorted(c for c in caught if c))} "
+                    f"and publishes its text"
+                )
+                break
+
+    assert not offenders, (
+        "a handler publishes a non-authored exception's text to the browser; "
+        "use _internal(err, route) instead:\n" + "\n".join(offenders)
     )
