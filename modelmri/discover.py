@@ -68,9 +68,22 @@ WEIGHTS = (".safetensors", ".bin", ".pth")
 # model. The loader tells them apart by reading the file; the scanner cannot,
 # so the note covers both cases rather than guessing one.
 LOOSE_WEIGHTS: dict[str, tuple[bool, str]] = {
+    # False, but no longer because a GGUF cannot be run -- `gguf_load.py` runs
+    # one now. False because THIS picker cannot start it: clicking a row calls
+    # /api/model/load with the row's id as a HuggingFace repo id, and a local
+    # file path is not one. The GGUF path is /api/gguf/load and it lives in
+    # the custom-model panel, which is where the note sends people.
+    #
+    # Flipping this to True without routing the click is a worse bug than the
+    # stale sentence it replaced: the row would look ready and fail on a hub
+    # lookup for a filename.
     ".gguf": (
         False,
-        "GGUF - inspectable here, but transformers cannot run it; use Ollama for that",
+        "GGUF - inspectable in the custom-model panel below: the header reads "
+        "instantly, and from there it can be dequantised into a full model for "
+        "the lens, attention and patching. That costs about 3x the file in "
+        "memory and the panel prices it first; for a large one, run it in "
+        "Ollama instead - same file, real bit width, no introspection.",
     ),
     # `loadable` is False for both, and that is not pessimism. A `.pt`/`.pth`
     # is one of three unrelated things and none of them can be inspected as a

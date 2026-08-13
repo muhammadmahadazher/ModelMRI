@@ -359,13 +359,27 @@ def test_the_route_reads_a_real_header(tmp_path, monkeypatch):
 
 
 def test_the_scanner_no_longer_calls_gguf_unopenable():
-    """It cannot RUN one. That is a different claim from having nothing to
-    say about it, and only the first was ever true."""
+    """Two separate claims, and the note has to get both right.
+
+    `loadable` is False because THIS picker cannot start a GGUF: clicking a
+    row calls /api/model/load with the row's id as a HuggingFace repo id, and
+    a local file path is not one. It is no longer False because a GGUF cannot
+    be run — `gguf_load.py` runs one. So the note must send people to the
+    panel that can, and must not repeat the old "transformers cannot load
+    this" line, which was true when it was written and is not now.
+    """
     from modelmri.discover import LOOSE_WEIGHTS
 
     loadable, note = LOOSE_WEIGHTS[".gguf"]
     assert loadable is False
     assert "inspectable" in note
+    # Where it CAN be loaded, and the one-line reason to prefer Ollama for a
+    # large file — the trade is real and the note is the only place it is made.
+    assert "custom-model panel" in note
+    assert "Ollama" in note
+    # The claim that is now false must not come back.
+    assert "cannot run" not in note.lower()
+    assert "cannot load" not in note.lower()
 
 
 def test_the_result_is_json_safe(tmp_path):

@@ -10,21 +10,36 @@ tensor back to full precision on the way in and hands PyTorch ordinary dense
 weights. So the file on disk stops being a useful guide to what the load will
 need, in both directions:
 
-    Qwen3-0.6B-Q4_K_M.gguf, measured on this repo's own machine
-      file on disk                                    0.397 GB
-      resident tensors at bfloat16                    1.192 GB   (3.00x)
-      peak process memory during the load             2.30 GB    (5.8x)
+    Qwen3-0.6B-Q4_K_M.gguf         file 0.397 GB -> resident 1.192 GB (3.00x)
+    SmolLM2-135M-Q4_K_M.gguf       file 0.105 GB -> resident 0.269 GB (2.55x)
 
-The resident figure is `parameters x dtype bytes`, and it is exact — 1.192 GB
-predicted from the header against 1.192 GB weighed afterwards, because element
-counts come from the tensor shapes and do not depend on the quantisation. The
-peak is larger than the resident figure and larger again than the file: the
+Both produced by `scripts/measure_docs.py --gguf FILE`, RTX 4060 / bfloat16,
+transformers 5.13. Run it and you get these back; that is the point.
+
+The resident figure is `parameters x dtype bytes` and it is EXACT — predicted
+from the header against the built module weighed afterwards, error 0.000000 on
+both files, because element counts come from the tensor shapes and do not
+depend on the quantisation at all.
+
+The peak is a different kind of number and this module used to blur them. The
 dequantiser materialises the whole checkpoint in float32 before anything is
-cast, so a `dtype=bfloat16` load still transits through `parameters x 4`.
+cast, so a `dtype=bfloat16` load still transits through `parameters x 4` — but
+that is a PREDICTION, and the process RSS that results is a MEASUREMENT, and
+they are not the same to the digit:
 
-That is the whole preflight. Both numbers are computable from the first few
-megabytes of the file, which means the honest answer — "this will not fit" —
-is available before the download rather than after it.
+    SmolLM2-135M    predicted 0.538 GB    sampled RSS delta 0.585 GB   +8.6%
+    Qwen3-0.6B      predicted 2.384 GB    sampled RSS delta 2.30  GB   -3.5%
+
+Opposite signs, so there is no correction factor to apply — RSS also carries
+the tokeniser and the allocator's own timing, which land differently at 135M
+than at 596M. `Loaded` therefore reports both figures and their signed error
+rather than picking one. For months the docstring here quoted the 2.30 as
+though it were the prediction, and nothing in the repo could reproduce it.
+
+The preflight is still the point: `parameters x 4` is computable from the
+first few hundred kilobytes of the file, so the honest answer — "this will not
+fit" — is available before the download rather than after it. It is a
+projection accurate to about ten percent, which is what a refusal needs.
 
 What a loaded GGUF is NOT is the original model. It is the quantised weights,
 dequantised: every number measured on it is a number about the quantised
@@ -36,10 +51,22 @@ result.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import BadRequest, Refusal
+
+# The only dtypes transformers will build a GGUF into, and what each costs per
+# parameter. A dict `.get(dtype, 4)` sat here first, which is this project's
+# named bug class in its literal form: `dtype="bf16"` -- the spelling everyone
+# actually writes -- scored 4 bytes instead of 2, so the preflight reported
+# double, could refuse a model that fits, and then died inside transformers
+# with an AttributeError this module blamed on transformers. `float64` was
+# worse: a valid torch attribute that under-predicted by 2x and waved the load
+# through. A guard whose whole purpose is to refuse before a twenty-minute OOM
+# must not invent the number it refuses on.
+DTYPE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
 
 # Measured, not assumed: see the module docstring. Transformers' GGUF reader
 # builds the entire dequantised checkpoint as float32 numpy arrays and only
@@ -172,13 +199,33 @@ def find_file(target: str | Path) -> Path:
         raise BadRequest(f"{found.name} is not a .gguf file")
 
     stem = found.stem.lower()
+    # The marker must be a WHOLE token, with `-`, `_` or `.` on both sides.
+    #
+    # Two directions, and the old rule got both wrong. It refused
+    # `llama-mtpx-7b` (marker as a mere substring), and it let
+    # `mmproj_model_f16.gguf` and `Qwen2.5-VL-7B.mmproj-f16.gguf` through
+    # because it only knew `-` as a separator -- both are real spellings, and
+    # both then produced the deep transformers stack trace this table exists
+    # to replace with a sentence.
+    #
+    # Note `mtp-tuned-7b.gguf` IS refused, and that is correct rather than a
+    # false positive: a leading `mtp` token is precisely how llama.cpp names a
+    # multi-token-prediction head. The old comment cited that filename as an
+    # example of something that must be allowed, which was wrong about real
+    # naming, and the test then dodged the claim by testing `mtpc-7b` instead.
+    # What genuinely must pass is a marker that is a PREFIX of a longer token
+    # -- `mtpc`, `mtpx` -- and that is what the token split protects.
+    parts = re.split(r"[-_.]", stem)
     for marker, why in NOT_A_LANGUAGE_MODEL.items():
-        # Bounded by separators so a model legitimately called something like
-        # `mtp-tuned-7b` is not caught by a substring test.
-        if stem == marker or stem.startswith(f"{marker}-") or f"-{marker}" in stem:
+        if marker in parts:
             raise Unsupported(f"{found.name} is {why}")
 
-    if "-of-" in stem:
+    # Anchored to digits. `gguf-split` always emits `-NNNNN-of-NNNNN`, so the
+    # bare substring bought nothing and refused any model whose name happens to
+    # contain `-of-` — mixture-of-experts and chain-of-thought finetunes are
+    # named that way — while telling them to run `gguf-split --merge` on a file
+    # that is not split.
+    if re.search(r"-\d+-of-\d+$", stem):
         raise Unsupported(
             f"{found.name} is one shard of a split GGUF. Transformers loads "
             "single-file GGUFs only — merge the shards with llama.cpp's "
@@ -242,7 +289,14 @@ def plan(
     s = g.summary()
     arch = s["architecture"]
     params = int(s["parameters"])
-    dtype_bytes = {"float32": 4, "bfloat16": 2, "float16": 2}.get(dtype, 4)
+    if dtype not in DTYPE_BYTES:
+        raise BadRequest(
+            f"unknown dtype {dtype!r}. This loads GGUFs as "
+            f"{', '.join(sorted(DTYPE_BYTES))} -- those are what transformers "
+            "will build one into, and the choice is half of the memory figure, "
+            "so it is not something to guess at."
+        )
+    dtype_bytes = DTYPE_BYTES[dtype]
 
     notes: list[str] = []
     supported = supported_architectures()
@@ -354,6 +408,20 @@ def _verdict(
             "model reaches any device.",
         )
 
+    # The float32 transit is host RAM whatever the target device is, so the
+    # band applies to it on every path -- not only the CPU one. Without this a
+    # CUDA load needing 15.9 GB of transit against 16 GB free reported "fits"
+    # while the identical numbers on CPU reported "tight ... may thrash". Same
+    # allocation, same risk, two answers.
+    if host_free is not None and peak > host_free * REFUSE_ABOVE_FRACTION:
+        return (
+            "tight",
+            f"dequantising needs about {_gb(peak)} of host RAM against "
+            f"{_gb(host_free)} free — over {REFUSE_ABOVE_FRACTION:.0%} of what "
+            "is left. It may load and it may thrash. The weights themselves "
+            f"are only {_gb(resident)}; the transit is the larger figure.",
+        )
+
     if device_kind == "cpu":
         if host_free is None:
             return "unknown", "this platform does not report free host memory."
@@ -443,6 +511,15 @@ class Loaded:
     # says.
     measured_resident_bytes: int
     load_seconds: float
+    # Process RSS delta across the load, sampled. None when psutil is absent
+    # -- never 0, which would read as "the dequantiser allocated nothing".
+    #
+    # This exists because the module docstring quoted a measured peak that
+    # nothing in the repo could reproduce: `plan` predicts `parameters x 4`
+    # and the script printed the prediction, so the measured figure survived
+    # only as prose. A number nobody can re-derive is the exact failure this
+    # project is about.
+    measured_peak_host_bytes: int | None = None
 
     @property
     def prediction_error(self) -> float | None:
@@ -452,12 +529,34 @@ class Loaded:
             self.measured_resident_bytes - self.plan.resident_bytes
         ) / self.plan.resident_bytes
 
+    @property
+    def peak_error(self) -> float | None:
+        """How far `parameters x 4` was from the RSS actually observed.
+
+        Signed, and NOT systematically one sign: +8.6% on SmolLM2-135M
+        against -3.5% on Qwen3-0.6B. RSS carries the tokeniser and the
+        allocator's own release timing as well as the float32 arrays, and
+        those land differently at different model sizes, so there is no
+        correction factor to fold into the prediction. Reported rather than
+        hidden -- a prediction that is never checked is a guess with a
+        decimal point.
+        """
+        if self.measured_peak_host_bytes is None or not self.plan.peak_host_bytes:
+            return None
+        return (
+            self.measured_peak_host_bytes - self.plan.peak_host_bytes
+        ) / self.plan.peak_host_bytes
+
     def to_dict(self) -> dict:
         err = self.prediction_error
         return {
             "plan": self.plan.to_dict(),
             "measured_resident_bytes": self.measured_resident_bytes,
             "prediction_error": round(err, 4) if err is not None else None,
+            "measured_peak_host_bytes": self.measured_peak_host_bytes,
+            "peak_error": (
+                round(self.peak_error, 4) if self.peak_error is not None else None
+            ),
             "load_seconds": round(self.load_seconds, 2),
         }
 
@@ -509,6 +608,13 @@ def load(
 
     path = Path(p.path)
     directory, filename = str(path.parent), path.name
+
+    # Sample RSS across the load so the transit prediction can be checked
+    # rather than asserted. A background sampler rather than a before/after
+    # pair, because the float32 arrays are freed as the cast proceeds -- the
+    # high-water mark is in the middle and both endpoints miss it.
+    sampler = _RssSampler()
+    sampler.start()
     t0 = time.perf_counter()
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -526,23 +632,106 @@ def load(
             f"{type(err).__name__}. The header reads fine — architecture, "
             "tensor table and quantisation damage all still work on this file."
         ) from err
+    finally:
+        # In the `finally` so a failed load still stops the thread. A sampler
+        # left running polls forever and holds a reference to the process.
+        sampler.stop()
     load_seconds = time.perf_counter() - t0
 
     if on_stage:
         on_stage("device", f"moving to {device}")
-    model = model.to(device)
+    try:
+        model = model.to(device)
+    except Exception as err:
+        # Was bare, so a CUDA OOM here escaped as a 500 "check the terminal"
+        # -- and this is precisely where the preflight is weakest, because a
+        # "fits" verdict is about free memory rather than a fragmented heap.
+        # The HF path has said this properly for months; so does this now.
+        raise Refusal(
+            f"{filename} dequantised but would not move onto {device}: "
+            f"{type(err).__name__}. The weights are {_gb(p.resident_bytes)} at "
+            f"{dtype} against {_gb(p.device_free_bytes)} free — either "
+            "something else took the memory in between, or the device is too "
+            "fragmented to hand out one block that size."
+        ) from err
     model.eval()
 
     measured = sum(q.numel() * q.element_size() for q in model.parameters())
 
-    tokenizer = AutoTokenizer.from_pretrained(directory, gguf_file=filename)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(directory, gguf_file=filename)
+    except Exception as err:
+        # After the expensive part, so failing here silently wasted the whole
+        # dequantise. Named rather than escaping as a 500.
+        raise Refusal(
+            f"{filename} loaded, but transformers could not build its "
+            f"tokeniser: {type(err).__name__}. The file's tokeniser section "
+            "may use a scheme this transformers does not implement — the "
+            "header still reads."
+        ) from err
     return Loaded(
         model=model,
         tokenizer=tokenizer,
         plan=p,
         measured_resident_bytes=measured,
         load_seconds=load_seconds,
+        measured_peak_host_bytes=sampler.delta(),
     )
+
+
+class _RssSampler:
+    """Process RSS high-water mark over a span, or None if psutil is absent.
+
+    None rather than 0 on every failure path. A 0 here would read as "the
+    dequantiser allocated nothing", which is the opposite of what this module
+    exists to say.
+    """
+
+    INTERVAL_S = 0.02
+
+    def __init__(self) -> None:
+        self._proc = None
+        self._base = 0
+        self._peak = 0
+        self._stop = None
+        self._thread = None
+        try:
+            import psutil
+
+            self._proc = psutil.Process()
+        except Exception:  # noqa: S110 - absence is reported as None, not raised
+            pass
+
+    def start(self) -> None:
+        if self._proc is None:
+            return
+        import threading
+
+        self._base = self._peak = self._proc.memory_info().rss
+        self._stop = threading.Event()
+
+        def watch() -> None:
+            while not self._stop.wait(self.INTERVAL_S):
+                try:
+                    self._peak = max(self._peak, self._proc.memory_info().rss)
+                except Exception:
+                    return
+
+        self._thread = threading.Thread(target=watch, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def delta(self) -> int | None:
+        """Growth over the span, not absolute RSS — the interpreter, torch and
+        whatever else was already resident are not this load's cost."""
+        if self._proc is None:
+            return None
+        return max(0, self._peak - self._base)
 
 
 def blocks_of(model):

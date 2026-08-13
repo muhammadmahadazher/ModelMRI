@@ -120,6 +120,14 @@ export default function App() {
       ? `${model.hf_id} · ${model.device}`
       : "no model loaded";
 
+  // A model built from a GGUF is the QUANTISED weights, dequantised — so every
+  // number in every panel below describes that, not the original of the same
+  // name. The plan block in the reader says so, but it is one panel deep and
+  // disappears when you navigate away, which left the caveat attached to
+  // nothing while the whole page reported on a model it never qualified.
+  // `status.gguf` was already being sent and simply never read.
+  const q = model?.loaded ? model.gguf : null;
+
   return (
     <main>
       <div className="topbar">
@@ -180,6 +188,20 @@ export default function App() {
         )}
         {freed && <span className="pill freed">{freed}</span>}
       </div>
+
+      {q && (
+        <div className="quantised-banner">
+          <span className="pill warn">quantised</span>
+          <span className="meta">
+            Every measurement below describes the dequantised{" "}
+            <code>{q.plan.dtype}</code> weights of this GGUF —{" "}
+            {(q.plan.file_bytes / 1e9).toFixed(2)} GB on disk became{" "}
+            {(q.measured_resident_bytes / 1e9).toFixed(2)} GB resident — not the
+            original model of the same name. Point <code>quantdiff</code> at
+            both to see how far apart they are.
+          </span>
+        </div>
+      )}
 
       <div className="hero">
         <AsciiField modelId={model?.hf_id ?? null} />

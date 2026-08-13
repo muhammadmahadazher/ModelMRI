@@ -125,19 +125,34 @@ and describes a network you never trained.
 Every other local runner shows a GGUF as a quantisation label and a file size.
 Open one here and you get where the bits actually went, computed per tensor
 from the file's own table — measured on `Qwen3-0.6B-Q4_K_M.gguf`, a file
-labelled Q4_K reads **5.245 bits per weight effective**, because 29 of its
-tensors are Q6_K and 113 are F32.
+labelled Q4_K reads **5.245 bits per weight effective**. Almost all of that
+0.745-bit lift above Q4_K's 4.5 comes from the 29 Q6_K tensors; the 113 F32
+tensors are real but tiny, totalling 65,536 elements and 0.003 bits of it.
 
 Then there is a button that loads it. Pressing it gives you the lens, the head
 sweep, the patching grid and attention on a file that used to be readable and
 not runnable. What it does **not** give you is a 4-bit model in memory:
 
-| | Qwen3-0.6B-Q4_K_M | Gemma 4 E2B Q4_0 |
-|---|---|---|
-| file on disk | 0.397 GB | 2.83 GB |
-| parameters | 596,049,920 | 4,628,569,635 |
-| resident at bfloat16 | **1.192 GB** (3.00×) | **9.26 GB** (3.27×) |
-| peak host RAM while loading | **2.30 GB** | **18.51 GB** |
+| | Qwen3-0.6B-Q4_K_M | SmolLM2-135M-Q4_K_M | Gemma 4 E2B Q4_0 † |
+|---|---|---|---|
+| file on disk | 0.397 GB | 0.105 GB | 2.83 GB |
+| parameters | 596,049,920 | 134,515,008 | 4,628,569,635 |
+| resident at bfloat16 | **1.192 GB** (3.00×) | **0.269 GB** (2.55×) | **9.26 GB** (3.27×) |
+| …predicted vs weighed | error 0.000000 | error 0.000000 | — |
+| peak host RAM, predicted | 2.384 GB | 0.538 GB | 18.51 GB |
+| …sampled RSS delta | 2.30 GB (−3.5%) | 0.585 GB (+8.6%) | — |
+
+† The Gemma column is a **projection, not a measurement**: that load was
+refused (see below), so nothing was ever weighed. The other two columns come
+from `python scripts/measure_docs.py --gguf FILE` on an RTX 4060 with
+transformers 5.13, and running it prints exactly these numbers back.
+
+The resident figure is exact — `parameters × dtype bytes`, error 0.000000 on
+both files that loaded. The peak is a projection accurate to about ten
+percent, and note the errors have **opposite signs**: process RSS also carries
+the tokeniser and the allocator's own release timing, which land differently
+at 135M than at 596M. There is no correction factor to apply, so the tool
+reports both figures and their disagreement rather than picking one.
 
 Transformers has no kernels for these quantised types, so it dequantises every
 tensor on the way in — and it materialises the whole checkpoint as float32
@@ -168,7 +183,9 @@ Two things the panel will refuse rather than guess:
 
 And a standing caveat on everything measured afterwards: a loaded GGUF is the
 *quantised* weights, dequantised. It is not the original model. To see how far
-apart they are, point [`quantdiff`](../reference/api.md) at both.
+apart they are, point `quantdiff` at both — it is a library module
+(`modelmri/quantdiff.py`), not a route, so it is used from Python rather than
+from the UI.
 
 ## What this is not
 

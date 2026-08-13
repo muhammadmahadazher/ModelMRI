@@ -101,10 +101,23 @@ def main() -> int:
         out["gguf"] = loaded.to_dict()
         out["load_seconds"] = round(loaded.load_seconds, 2)
         say(
-            f"  prediction error {loaded.prediction_error:+.6f} "
-            f"({loaded.measured_resident_bytes:,} weighed against "
-            f"{plan.resident_bytes:,} predicted)"
+            f"  resident: predicted {plan.resident_bytes:,} B, weighed "
+            f"{loaded.measured_resident_bytes:,} B, "
+            f"error {loaded.prediction_error:+.6f}"
         )
+        # The transit prediction, checked. Printed here rather than asserted in
+        # prose: the docs quoted a measured peak for months that no command in
+        # this repo could reproduce, which is the exact failure the project is
+        # about. Now `--gguf` emits both numbers and their disagreement.
+        if loaded.measured_peak_host_bytes is None:
+            say("  peak:     not sampled (psutil not installed)")
+        else:
+            say(
+                f"  peak:     predicted {plan.peak_host_bytes / 1e9:.3f} GB "
+                f"(params x 4), sampled RSS delta "
+                f"{loaded.measured_peak_host_bytes / 1e9:.3f} GB, "
+                f"error {loaded.peak_error:+.4f}"
+            )
     else:
         t0 = time.perf_counter()
         tok = AutoTokenizer.from_pretrained(args.model)

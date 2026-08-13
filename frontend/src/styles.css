@@ -3134,6 +3134,24 @@ button.model-btn:hover:not(:disabled) {
 .gguf-stat .meta { font-size: 10.5px; }
 .gguf-bpw { border-left: 3px solid var(--color-custom); padding-left: 12px; }
 
+/* The standing caveat on a GGUF-derived model. Deliberately page-level and
+   above the fold rather than inside the reader: the claim is about every
+   number on the page, so it cannot live in the one panel you navigate away
+   from. */
+.quantised-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 auto 6px;
+  max-width: var(--measure, 1100px);
+  padding: 9px 14px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 30%, transparent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--sem-agent) 7%, var(--color-card));
+}
+.quantised-banner .meta { flex: 1 1 320px; line-height: 1.5; }
+
 /* The load preflight. Deliberately the loudest thing in the panel: the
    number people arrive with is the file size, and the number that decides
    whether the load survives is three to six times larger. The arrow between

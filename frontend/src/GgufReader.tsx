@@ -163,7 +163,8 @@ export default function GgufReader({
           these types, so it dequantises everything on the way in and the file
           size stops predicting anything. Measured on this repo's machine, a
           0.397 GB Q4_K_M file became 1.192 GB of bfloat16 tensors after a
-          2.30 GB peak. Saying that before the click is the whole feature. */}
+          2.384 GB predicted transit (sampled RSS 2.30 GB, -3.5%). Saying that
+          before the click is the whole feature. */}
       {planErr && <div className="hint err refusal">{planErr}</div>}
       {plan && (
         <div className={`gguf-plan v-${plan.verdict.replace(/ /g, "-")}`}>
@@ -208,7 +209,12 @@ export default function GgufReader({
             </span>
             <span className="spacer" />
             <button
-              className="primary sm"
+              // `cta`, not `primary` -- there is no `.primary` rule in
+              // styles.css and there never was, so this rendered as a raw
+              // browser-default button. Same class of miss as the `.d-attention`
+              // selector that shipped once before: a class name invented at
+              // the call site and never checked against the stylesheet.
+              className="cta sm"
               hidden={plan.already_loaded}
               disabled={busy || plan.verdict === "will not fit"}
               title={

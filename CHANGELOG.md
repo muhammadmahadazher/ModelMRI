@@ -15,17 +15,35 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
   The number nobody expects comes with it. A 4-bit GGUF does not load as a
   4-bit model — transformers has no kernels for these types, so it dequantises
-  every tensor on the way in. Measured on `Qwen3-0.6B-Q4_K_M.gguf`: **0.397 GB
-  on disk becomes 1.192 GB of bfloat16 tensors, after a 2.30 GB peak.** Three
-  times the file resident, and nearly six times transiently, because the whole
-  checkpoint is materialised as float32 before anything is cast — so asking
-  for bfloat16 does not avoid the float32 transit.
+  every tensor on the way in. **0.397 GB on disk becomes 1.192 GB of bfloat16
+  tensors**, three times the file, because the whole checkpoint is
+  materialised as float32 before anything is cast — so asking for bfloat16
+  does not avoid the float32 transit.
 
-  Both figures are arithmetic on the header, which is a few hundred kilobytes
-  of a multi-gigabyte file, so the answer arrives before the download rather
-  than twenty minutes into it. The resident prediction was exact: 1,192,099,840
-  bytes predicted, 1,192,099,840 weighed, error 0.0 — and the load report
-  carries that comparison rather than assuming it.
+  The resident figure is arithmetic on the header — `parameters × dtype bytes`
+  — and it is exact: 1,192,099,840 bytes predicted, 1,192,099,840 weighed,
+  error 0.000000, and the same on SmolLM2-135M. The load report carries that
+  comparison rather than asserting it.
+
+  The transit figure is a different kind of number and this entry originally
+  blurred them. `parameters × 4` is a *prediction*; the process RSS that
+  results is a *measurement*, and they disagree in both directions:
+
+  | | predicted | sampled RSS delta | error |
+  |---|---|---|---|
+  | Qwen3-0.6B-Q4_K_M | 2.384 GB | 2.30 GB | −3.5% |
+  | SmolLM2-135M-Q4_K_M | 0.538 GB | 0.585 GB | +8.6% |
+
+  Opposite signs, so there is no correction factor to fold in — RSS also
+  carries the tokeniser and the allocator's own release timing. `Loaded` now
+  reports both and their signed error, and `scripts/measure_docs.py --gguf`
+  prints them, which it did not before: the measured peak was quoted in prose
+  that no command in this repo could reproduce. That is the failure this
+  project exists to be about, sitting in the feature about not doing it.
+
+  Everything is still computable before the download from a few hundred
+  kilobytes of header, which is the point — a projection good to about ten
+  percent is what a refusal needs.
 
   Worked example of the refusal, on the machine this was written on: Gemma 4
   E2B is 4.63 **billion** raw parameters behind an "E2B" name, so its 2.83 GB

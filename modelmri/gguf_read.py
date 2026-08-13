@@ -5,10 +5,11 @@ them. That is the format most people running models on their own machine
 actually have — Ollama, LM Studio, llama.cpp and Jan all use it — so the tool
 was finding the majority of local weights and refusing them with a note.
 
-It still cannot *run* one: a quantised GGUF is not something transformers can
-load, and pretending otherwise is the failure this package exists to avoid.
-But "cannot run" and "cannot tell you anything" are different claims, and only
-the first is true. Everything worth knowing is in the header: architecture,
+This module still does not *run* one -- reading a table that describes tensors
+and unpacking the tensors themselves are different jobs, and only the second
+needs a GPU, a dependency and a memory budget. `gguf_load.py` does that half,
+and prices it before it starts. Everything here is in the header alone:
+architecture,
 context length, rope settings, tokeniser, and a full tensor table with each
 tensor's ggml type, shape and byte count.
 

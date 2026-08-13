@@ -250,7 +250,25 @@ def test_a_truncated_matrix_is_caught_not_reshaped():
 
 
 @pytest.mark.parametrize(
-    "data", [b"", b"not gzip at all", gzip.compress(b"\xff\xfe not utf8")]
+    "data",
+    [
+        b"",
+        b"not gzip at all",
+        # `mtime=0` and an explicit id. gzip writes the CURRENT TIME into its
+        # header, so `gzip.compress(...)` evaluated at collection time produced
+        # a different parameter — and therefore a different test id — on every
+        # run. Serially that was invisible churn. Under xdist it is fatal:
+        # each worker collects independently and the ids must agree, so the
+        # whole suite died with "Different tests were collected between gw1
+        # and gw3".
+        #
+        # A test whose identity changes between runs also cannot be selected
+        # with `-k`, cannot be compared across CI runs, and made the suite's
+        # own collected-test count look unstable when nothing had changed.
+        pytest.param(
+            gzip.compress(b"\xff\xfe not utf8", mtime=0), id="gzip-of-non-utf8"
+        ),
+    ],
 )
 def test_garbage_gets_a_reason_not_a_traceback(data):
     with pytest.raises(session.SessionError):

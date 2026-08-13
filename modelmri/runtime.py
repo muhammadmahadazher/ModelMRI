@@ -2366,7 +2366,16 @@ class ModelRuntime:
 
         want = dtype or self.accel.dtype
         with self._load_slot(f"gguf {Path(path).name}"):
-            progress.TRACKER.start(f"loading {Path(path).name}")
+            # start_external, NOT start. `start` spawns a watcher that polls
+            # the HuggingFace cache for a directory named after its argument
+            # and calls HfApi().model_info() on it -- so a local filename went
+            # out as a live hub lookup for a repo called
+            # "loading Qwen3-0.6B-Q4_K_M.gguf", once per load, and the bar then
+            # sat at 0 bytes watching a directory that cannot exist. Nothing
+            # here downloads: the file is already on disk and the cost is CPU.
+            progress.TRACKER.start_external(
+                Path(path).name, stage="dequantise", detail="reading the header"
+            )
             try:
                 loaded = gguf_load.load(
                     path,

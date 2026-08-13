@@ -4,16 +4,18 @@ The single belief this module exists to correct is that a 4-bit GGUF loads as
 a 4-bit model. Transformers has no kernels for these quantised types, so it
 dequantises everything on the way in. Measured on this repo's own machine:
 
-    Qwen3-0.6B-Q4_K_M.gguf   0.397 GB on disk
-                             1.192 GB resident at bfloat16   (3.00x)
-                             2.30  GB peak during the load   (5.8x)
+    Qwen3-0.6B-Q4_K_M.gguf     0.397 GB on disk -> 1.192 GB resident (3.00x)
+    SmolLM2-135M-Q4_K_M.gguf   0.105 GB on disk -> 0.269 GB resident (2.55x)
 
-Both figures are arithmetic on the header — `parameters x dtype bytes` and
-`parameters x 4` — and the first was verified against the built module to
-zero error. So the tests here are about the arithmetic being right and, more
-importantly, about the refusals: a preflight that is optimistic is worse than
-none, because the failure it fails to predict arrives twenty minutes into a
-download.
+The resident figure is `parameters x dtype bytes` and it is exact — error
+0.000000 against the built module on both. The transit figure is
+`parameters x 4`, which is a PREDICTION: sampled RSS came in at -3.5% on the
+first and +8.6% on the second, so it is good to about ten percent and not to
+the digit. The tests below assert the arithmetic, not the sampling.
+
+More important than either: the refusals. A preflight that is optimistic is
+worse than none, because the failure it fails to predict arrives twenty
+minutes into a download.
 
 Nothing here downloads. The load path itself is exercised by
 `scripts/measure_docs.py --gguf` against a real file; what a unit test can
@@ -84,7 +86,14 @@ def test_an_empty_directory_says_so(tmp_path):
     [
         ("mmproj-gemma-4-E2B-it-BF16.gguf", "multimodal projector"),
         ("gemma-4-E2B-it-mmproj.gguf", "multimodal projector"),
+        # Underscore and dot separators. Both are real spellings and both
+        # slipped through the first rule, which only knew about `-`.
+        ("mmproj_model_f16.gguf", "multimodal projector"),
+        ("Qwen2.5-VL-7B.mmproj-f16.gguf", "multimodal projector"),
         ("mtp-gemma-4-E2B-it-BF16.gguf", "multi-token-prediction"),
+        # A leading `mtp` token is how llama.cpp names these, so this is a
+        # refusal rather than a false positive.
+        ("mtp-tuned-7b.gguf", "multi-token-prediction"),
     ],
 )
 def test_the_companion_files_in_a_gguf_repo_are_refused_by_name(tmp_path, name, expect):
@@ -96,10 +105,32 @@ def test_the_companion_files_in_a_gguf_repo_are_refused_by_name(tmp_path, name, 
         gguf_load.find_file(p)
 
 
-def test_a_model_whose_name_merely_contains_the_marker_is_not_refused(tmp_path):
-    """`mtp` bounded by separators, not as a substring — otherwise a model
-    called something like `mtpc-7b` is refused for its spelling."""
-    p = _model(tmp_path, name="mtpc-7b-Q4_K_M.gguf")
+@pytest.mark.parametrize(
+    "name",
+    [
+        # The marker is a PREFIX of a longer token, not a token. This is the
+        # direction that genuinely needs protecting.
+        "mtpc-7b-Q4_K_M.gguf",
+        "llama-mtpx-7b.gguf",
+        "mmprojector-notes-7b.gguf",
+    ],
+)
+def test_a_name_that_merely_starts_with_the_marker_is_not_refused(tmp_path, name):
+    """Token-bounded, not substring. The first rule refused `llama-mtpx-7b`
+    for its spelling."""
+    p = _model(tmp_path, name=name)
+    assert gguf_load.find_file(p) == p
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["mixture-of-experts-8x7b.gguf", "chain-of-thought-7b.gguf"],
+)
+def test_a_name_containing_of_is_not_mistaken_for_a_shard(tmp_path, name):
+    """`gguf-split` emits `-NNNNN-of-NNNNN`, so the digits are the signal. The
+    bare `-of-` substring told mixture-of-experts models to run
+    `gguf-split --merge` on a file that is not split."""
+    p = _model(tmp_path, name=name)
     assert gguf_load.find_file(p) == p
 
 
@@ -132,8 +163,9 @@ def test_resident_is_parameters_times_dtype_not_the_file_size(tmp_path):
 
 def test_the_peak_is_float32_even_when_bfloat16_was_asked_for(tmp_path):
     """Transformers materialises the whole dequantised checkpoint as float32
-    before casting. Measured: a bfloat16 load of a 596M model peaked at
-    2.30 GB against a 2.384 GB float32 prediction and a 1.192 GB result."""
+    before casting, so asking for bfloat16 does not avoid it. The prediction
+    for a 596M model is 2.384 GB against a 1.192 GB result; sampled RSS came
+    in at 2.30 GB, -3.5%."""
     p = _model(tmp_path, elements=1_000_000)
     plan = gguf_load.plan(p, dtype="bfloat16", device_kind="cpu")
     assert plan.peak_host_bytes == 4_000_000

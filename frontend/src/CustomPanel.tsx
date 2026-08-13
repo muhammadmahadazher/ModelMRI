@@ -297,7 +297,10 @@ export default function CustomPanel({
                       key={c.path}
                       className="cand"
                       disabled={busy !== ""}
-                      // A GGUF is READ, never loaded. transformers cannot
+                      // A GGUF is read first and loaded only on request:
+                      // dequantising costs about 3x the file in memory, so the
+                      // reader prices it before offering the button. Older
+                      // copy here said transformers could not
                       // run a quantised one, and offering the same button for
                       // both would promise something that can only refuse.
                       onClick={() =>
@@ -314,7 +317,7 @@ export default function CustomPanel({
                           }`}
                           title={
                             c.kind === "gguf"
-                              ? "Inspectable here — architecture, every metadata key, and a full tensor table with real bits-per-weight. It cannot be RUN: transformers does not load quantised GGUF."
+                              ? "Open it for architecture, every metadata key, and a full tensor table with real bits-per-weight — then load it for the lens, attention and patching. Dequantising costs about 3x the file in memory, and the panel says how much before you commit."
                               : c.kind === "torchscript"
                                 ? "A TorchScript archive — it loads, but PyTorch strips the hooks this panel reads activations through"
                                 : c.kind === "checkpoint"
@@ -327,7 +330,7 @@ export default function CustomPanel({
                           {c.kind === "checkpoint"
                             ? "weights only"
                             : c.kind === "gguf"
-                              ? "read it"
+                              ? "open it"
                               : c.kind}
                         </span>
                       )}
