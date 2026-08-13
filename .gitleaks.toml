@@ -1,64 +1,74 @@
 # Gitleaks configuration.
 #
-# The default ruleset runs unchanged. Everything here is an allowlist, and
-# every entry is a regex matched against the finding's own text — never a path.
-# That distinction is the whole design and it was arrived at the hard way; see
-# "What does not work" below before editing.
+# The default ruleset runs unchanged. Everything here is an allowlist, and the
+# entries that matter are regexes matched against the finding's own text —
+# never a path. That distinction is the whole design and it was arrived at the
+# hard way; see "What does not work" before editing.
 #
 # The standard to hold this file to: after any change, a real key planted in
 # the same file as an allowlisted fixture must still fail the build. There is
-# a procedure for checking that at the bottom, and it has caught two wrong
-# versions of this file already.
+# a procedure at the bottom, and it has caught three wrong versions of this
+# file already.
 #
 # ---------------------------------------------------------------------------
-# What does not work, each verified against gitleaks 8.30.0 on this repo
+# What does not work — each measured, not assumed
 # ---------------------------------------------------------------------------
 #
-# 1. Lookaround. Gitleaks compiles these with Go's RE2, which has no
+# 1. `[[allowlists]]`, the plural form. Gitleaks 8.30 honours it. Gitleaks
+#    8.24.3 — which is what gitleaks-action pins, and therefore what actually
+#    guards this repo — SILENTLY IGNORES IT. No warning, no parse error: the
+#    config loads, the allowlist does nothing, and the build stays red for a
+#    reason the file appears to have handled. Measured side by side on both
+#    binaries. The singular `[allowlist]` below works on both.
+#
+# 2. Lookaround. Gitleaks compiles these with Go's RE2, which has no
 #    backreferences and no lookaround. A pattern using `(?!` or `(?=` does not
 #    merely fail to match — the binary PANICS at startup and the job dies with
-#    a Go stack trace. The first version of this file shipped `\A(?!x)x` as a
+#    a Go stack trace. An early version of this file shipped `\A(?!x)x` as a
 #    placeholder rule and turned a one-finding failure into a total one.
 #
-# 2. `paths`, for scoping. A path in an allowlist excuses the ENTIRE file for
-#    every rule. Adding `matchCondition = "AND"` alongside `regexes` does not
-#    change this — measured by planting a freshly generated RSA private key in
-#    a path-allowlisted file and watching gitleaks report "no leaks found".
-#    An allowlist that turns a rule off for a file is not an allowlist, it is
-#    a hole, and it would have sat in the security workflow looking green.
+# 3. `paths`, for scoping a rule to part of a file. A path in an allowlist
+#    excuses the ENTIRE file for every rule, and `matchCondition = "AND"`
+#    beside `regexes` does not change that. Measured by planting a freshly
+#    generated RSA private key in a path-allowlisted file and watching
+#    gitleaks report "no leaks found". An allowlist that turns a rule off for
+#    a file is not an allowlist, it is a hole, and it would have sat in the
+#    security workflow looking green.
 #
-# 3. `regexTarget = "line"`. The `Line` field is EMPTY for multi-line findings,
-#    which is exactly what a private-key block is. Patterns written against it
-#    silently never fire.
+# 4. `regexTarget = "line"`. The `Line` field is EMPTY for multi-line
+#    findings, which is exactly what a private-key block is. Patterns written
+#    against it silently never fire.
 #
-# 4. Inline `# gitleaks:allow` comments. They do not suppress a finding whose
-#    match spans several lines, which again is every private-key block.
+# 5. Inline `# gitleaks:allow` comments. Also do not suppress a finding whose
+#    match spans several lines.
 #
-# What works is `regexTarget = "match"` against a string that appears in the
-# finding itself and could not appear in a real credential.
+# What works is a singular `[allowlist]` with `regexTarget = "match"`, against
+# strings that appear in the finding and could not appear in a credential.
 
 [extend]
 useDefault = true
 
-[[allowlists]]
+[allowlist]
 description = "Fixtures and identifiers that are provably not credentials"
-# Against the matched text. See note 3 — "line" is empty for exactly the
-# findings this file needs to suppress.
+
+# Matched against the finding's matched text. See note 4 — "line" is empty for
+# exactly the findings this file needs to suppress.
 regexTarget = "match"
+
 regexes = [
   # -- GGUF and HuggingFace tensor names ---------------------------------
   # `token_embd.weight` is the embedding matrix in every GGUF ever written —
   # llama.cpp's own naming — and generic-api-key matches the line on the word
-  # "token", reporting the NEXT tensor name as the secret. It appears in the
-  # reader's tests, in quantdiff's name mapping and in the docs, and it will
-  # keep appearing for as long as this project reads GGUFs.
+  # "token", then reports the NEXT tensor name as the secret. It appears in
+  # the reader's tests, in quantdiff's name mapping and in the docs, and it
+  # will keep appearing for as long as this project reads GGUFs.
   '''token_embd\.weight''',
   '''model\.embed_tokens\.weight''',
 
   # -- the recorder's own redaction tests ---------------------------------
   # packages/modelmri-record/tests/test_record.py builds fake PEM blocks and
   # asserts the recorder strips them. The tests exist to prove secrets get
-  # removed, so the file will always contain something key-shaped.
+  # removed, so that file will always contain something key-shaped.
   #
   # Matched by their bodies rather than by their path, so a real key pasted
   # into that same file still fails: it has a different body.
@@ -71,19 +81,22 @@ regexes = [
   '''\+ body \+''',
 ]
 
-[[allowlists]]
-description = "Local git worktrees — whole copies of this tree"
-# The one place a path exemption is right, because it removes duplicates
-# rather than coverage. Agent runs leave whole checkouts under here, so every
-# finding in them is the same finding already reported against the real file.
-# They are not committed, so the security workflow — which scans git history —
-# never sees them; excluding them only makes a local `gitleaks dir .` agree
-# with the build.
-paths = ['''\.claude/worktrees/''']
+paths = [
+  # Local git worktrees, which are whole copies of this tree. The one place a
+  # path exemption is right, because it removes duplicates rather than
+  # coverage: every finding in them is the same finding already reported
+  # against the real file. They are never committed, so the security workflow
+  # — which scans git history — cannot see them either way; excluding them
+  # only makes a local `gitleaks dir .` agree with the build.
+  '''\.claude/worktrees/''',
+]
 
 # ---------------------------------------------------------------------------
 # Checking a change to this file
 # ---------------------------------------------------------------------------
+#
+# Use the version the workflow pins, not the newest release — note 1 is the
+# whole reason this section names a version at all.
 #
 #   # 1. the tree must be clean
 #   gitleaks dir . --config .gitleaks.toml --no-banner
@@ -91,7 +104,8 @@ paths = ['''\.claude/worktrees/''']
 #   # 2. and the guard must still fire. Append a FRESHLY GENERATED key to an
 #   #    allowlisted file — published examples like AKIAIOSFODNN7EXAMPLE and
 #   #    the usual MIIBOgIBAAJBAKj34... are already ignored by the default
-#   #    ruleset, so planting one proves nothing:
+#   #    ruleset, so planting one proves nothing. That mistake produced one
+#   #    false "the guard is dead" conclusion already:
 #   python -c "import base64,os;print(chr(10).join(base64.b64encode(os.urandom(48)).decode() for _ in range(8)))"
 #   #    wrap it in -----BEGIN RSA PRIVATE KEY----- / -----END ... -----,
 #   #    append to packages/modelmri-record/tests/test_record.py, rescan.

@@ -115,3 +115,12 @@ jobs:
           # allowlists that one string; a scanner that cries wolf gets muted,
           # and a muted scanner is worse than no scanner.
           GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
+          # Pinned so the binary here is the binary .gitleaks.toml was tested
+          # against. This is not hypothetical tidiness: the config's first
+          # working version used `[[allowlists]]`, which 8.30 honours and
+          # 8.24.3 SILENTLY IGNORES -- no warning, no parse error, the
+          # allowlist simply does nothing. The action defaulted to 8.24.3, so
+          # a config verified locally on 8.30 arrived here and did nothing.
+          # Whoever bumps this must re-run the procedure at the bottom of
+          # .gitleaks.toml against the new version.
+          GITLEAKS_VERSION: "8.24.3"
