@@ -30,8 +30,11 @@ def write_safetensors(path, tensors: dict) -> None:
         for dim in shape:
             count *= dim
         span = count * fit.DTYPE_BYTES[dtype]
-        header[name] = {"dtype": dtype, "shape": list(shape),
-                        "data_offsets": [offset, offset + span]}
+        header[name] = {
+            "dtype": dtype,
+            "shape": list(shape),
+            "data_offsets": [offset, offset + span],
+        }
         offset += span
     blob = json.dumps(header).encode()
     path.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * offset)
@@ -75,8 +78,12 @@ def test_weights_are_summed_from_offsets_not_file_size(model_dir):
 
 def test_shards_are_summed(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
-    write_safetensors(tmp_path / "model-00001-of-00002.safetensors", {"a": ("F32", [10])})
-    write_safetensors(tmp_path / "model-00002-of-00002.safetensors", {"b": ("F32", [20])})
+    write_safetensors(
+        tmp_path / "model-00001-of-00002.safetensors", {"a": ("F32", [10])}
+    )
+    write_safetensors(
+        tmp_path / "model-00002-of-00002.safetensors", {"b": ("F32", [20])}
+    )
     w = fit.weights_bytes(tmp_path)
     assert w.disk_bytes == 30 * 4
     assert w.elements == 30
@@ -217,8 +224,9 @@ def test_unsupported_architecture_is_a_refusal_so_the_server_answers_409():
 
 
 def test_kv_cache_matches_the_formula_on_the_page():
-    geo = fit.KVGeometry(n_layers=4, n_heads=8, n_kv_heads=2, head_dim=64,
-                         head_dim_source="test")
+    geo = fit.KVGeometry(
+        n_layers=4, n_heads=8, n_kv_heads=2, head_dim=64, head_dim_source="test"
+    )
     assert fit.kv_cache_bytes(geo, 1024, 2) == 2 * 4 * 2 * 64 * 1024 * 2
 
 

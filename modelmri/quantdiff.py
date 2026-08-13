@@ -155,9 +155,15 @@ class Report:
             "mean_sign_flips": round(
                 sum(t.sign_flips * t.elements for t in self.tensors) / total, 5
             ),
-            "worst_relative_rms": {"name": worst_rel.name, "value": worst_rel.relative_rms},
+            "worst_relative_rms": {
+                "name": worst_rel.name,
+                "value": worst_rel.relative_rms,
+            },
             "worst_cosine": {"name": worst_cos.name, "value": worst_cos.cosine},
-            "worst_sign_flips": {"name": worst_flip.name, "value": worst_flip.sign_flips},
+            "worst_sign_flips": {
+                "name": worst_flip.name,
+                "value": worst_flip.sign_flips,
+            },
             "means": (
                 "Error between the stored weights of the two files, per tensor. "
                 "This is the quantiser's damage, NOT what llama.cpp's kernels "
@@ -171,8 +177,8 @@ class Report:
 
 def _require_gguf():
     try:
-        from gguf.quants import dequantize  # noqa: F401
-        from gguf.constants import GGMLQuantizationType  # noqa: F401
+        from gguf.constants import GGMLQuantizationType
+        from gguf.quants import dequantize
     except Exception as err:
         raise Refusal(
             "measuring quantisation damage needs the `gguf` package to "
@@ -249,7 +255,9 @@ def compare_tensor(quantised, original) -> dict:
     }
 
 
-def compare(quantised_path: str | Path, original_dir: str | Path, *, limit: int = 0) -> Report:
+def compare(
+    quantised_path: str | Path, original_dir: str | Path, *, limit: int = 0
+) -> Report:
     """Damage report between a GGUF and the full-precision original.
 
     `original_dir` holds the HuggingFace checkpoint (safetensors). Streams both
@@ -339,7 +347,10 @@ def compare(quantised_path: str | Path, original_dir: str | Path, *, limit: int 
         )
         if values is None:
             report.not_compared.append(
-                {"name": t.name, "why": f"the installed gguf cannot dequantise {t.type_name}"}
+                {
+                    "name": t.name,
+                    "why": f"the installed gguf cannot dequantise {t.type_name}",
+                }
             )
             continue
 
@@ -361,7 +372,10 @@ def compare(quantised_path: str | Path, original_dir: str | Path, *, limit: int 
         stats = compare_tensor(values, original)
         if stats["cosine"] is None or stats["relative_rms"] is None:
             report.not_compared.append(
-                {"name": t.name, "why": "the original tensor is all zeros; error is undefined"}
+                {
+                    "name": t.name,
+                    "why": "the original tensor is all zeros; error is undefined",
+                }
             )
             continue
         report.tensors.append(

@@ -1030,9 +1030,7 @@ class ModelRuntime:
         # tok/s on a machine doing 31. None when the worker did not deliver
         # ids, which reports the count as approximate rather than inventing it.
         produced = result.get("ids")
-        generated = (
-            int(produced.shape[1]) - n_prompt if produced is not None else None
-        )
+        generated = int(produced.shape[1]) - n_prompt if produced is not None else None
         self.last_telemetry = run.finish(
             prompt_tokens=n_prompt,
             generated_tokens=generated,
@@ -1447,7 +1445,9 @@ class ModelRuntime:
         ]
         return {"donors": donors, "corpus": label}
 
-    def estimate_ablation(self, layer: int | None = None, baseline: str = "zero") -> dict:
+    def estimate_ablation(
+        self, layer: int | None = None, baseline: str = "zero"
+    ) -> dict:
         """What would this sweep cost here? One probe pass, then arithmetic.
 
         Exists because `baseline="resample"` is `RESAMPLE_DRAWS` times the work
@@ -1680,8 +1680,11 @@ class ModelRuntime:
                     # would be a third experiment, not a control.
                     sentences, label = corpus.load()
                     donor_ids = corpus.donor_ids(
-                        self.tokenizer, sentences, at_least=size,
-                        want=ablate.RESAMPLE_DRAWS, device=self.device,
+                        self.tokenizer,
+                        sentences,
+                        at_least=size,
+                        want=ablate.RESAMPLE_DRAWS,
+                        device=self.device,
                     )
                     extra = {
                         "donors": [
@@ -1735,7 +1738,12 @@ class ModelRuntime:
         architecture, so the same lookup rules apply — but they have to be
         applied to it rather than to `self.model`.
         """
-        for path in ("model.layers", "transformer.h", "gpt_neox.layers", "model.decoder.layers"):
+        for path in (
+            "model.layers",
+            "transformer.h",
+            "gpt_neox.layers",
+            "model.decoder.layers",
+        ):
             node = model
             for part in path.split("."):
                 node = getattr(node, part, None)

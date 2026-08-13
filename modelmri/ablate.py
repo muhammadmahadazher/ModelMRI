@@ -214,7 +214,9 @@ def capture_projection_inputs(model: Any, blocks, ids: torch.Tensor, layers: lis
         return hook
 
     for layer in layers:
-        handles.append(out_projection(blocks(layer)).register_forward_pre_hook(make(layer)))
+        handles.append(
+            out_projection(blocks(layer)).register_forward_pre_hook(make(layer))
+        )
     try:
         with torch.no_grad():
             model(ids)
@@ -296,7 +298,7 @@ def spearman(a: list[float], b: list[float]) -> float | None:
     ra, rb = _ranks(a), _ranks(b)
     n = len(ra)
     ma, mb = sum(ra) / n, sum(rb) / n
-    num = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    num = sum((x - ma) * (y - mb) for x, y in zip(ra, rb, strict=True))
     da = math.sqrt(sum((x - ma) ** 2 for x in ra))
     db = math.sqrt(sum((y - mb) ** 2 for y in rb))
     if not da or not db:
@@ -328,7 +330,9 @@ def compare_baselines(rankings: dict[str, list[dict]], top: int = 10) -> dict:
             pairs.append(
                 {
                     "baselines": [left, right],
-                    "spearman": spearman([a[k] for k in shared], [b[k] for k in shared]),
+                    "spearman": spearman(
+                        [a[k] for k in shared], [b[k] for k in shared]
+                    ),
                     "heads_compared": len(shared),
                     "top_k": min(top, len(top_a), len(top_b)),
                     "top_k_shared": overlap,
@@ -420,7 +424,9 @@ def estimate_cost(
     # a score: nothing computed here is reported as a head's importance.
     probe_donor = None
     if baseline == "resample":
-        probe_donor = capture_projection_inputs(model, blocks, ids, [layers[0]])[layers[0]]
+        probe_donor = capture_projection_inputs(model, blocks, ids, [layers[0]])[
+            layers[0]
+        ]
 
     def one_iteration() -> None:
         handle = proj.register_forward_pre_hook(
@@ -527,7 +533,11 @@ def rank_heads(
             # back to mean here is precisely the `.get(name, 0.0)` shape that
             # made 206 robot episodes show one video: a different measurement,
             # returned under the name of the one that was asked for.
-            layer_donors = _donors_for(donors, layer, size, corpus) if baseline == "resample" else []
+            layer_donors = (
+                _donors_for(donors, layer, size, corpus)
+                if baseline == "resample"
+                else []
+            )
 
             for head in range(n_heads):
                 if baseline == "resample":

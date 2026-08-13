@@ -64,7 +64,10 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/attention` | Attention |
 | `GET` | `/api/attention/ablate` | Ablate Heads |
+| `GET` | `/api/attention/ablate/estimate` | Estimate Ablation |
 | `GET` | `/api/attention/attribute` | Attribute Tokens |
+| `GET` | `/api/attention/baselines` | Compare Baselines |
+| `GET` | `/api/attention/control` | Control Ranking |
 | `GET` | `/api/attention/diff` | Attention Diff |
 | `GET` | `/api/attention/meta` | Attention Meta |
 | `GET` | `/api/vla/attention` | Vla Attention |
@@ -117,17 +120,21 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `DELETE` | `/api/traces` | Traces Clear |
 | `DELETE` | `/api/traces/{trace_id}` | Trace Delete |
 | `GET` | `/api/traces` | Traces List |
+| `GET` | `/api/traces/search` | Search Traces |
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
 | `POST` | `/api/traces/import` | Traces Import |
+| `POST` | `/api/traces/{trace_id}/steps/{step_id}/adopt` | Adopt Step |
 
 
 ## Other
 
 | method | path | notes |
 |---|---|---|
+| `GET` | `/api/gguf` | Read Gguf |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/paths` | Where |
 | `GET` | `/api/pull/progress` | Pull Progress |
+| `GET` | `/api/telemetry` | Read Telemetry |
 | `POST` | `/api/patch` | Patch Trace |
 
 ## Streaming

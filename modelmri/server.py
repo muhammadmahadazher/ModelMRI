@@ -1257,9 +1257,7 @@ def create_app(
             # root this server was already told about. `resolve_under_roots`
             # raises AdapterError with the sentence to show.
             target = await asyncio.to_thread(custom.resolve_under_roots, path)
-            return await asyncio.to_thread(
-                lambda: gguf_read.read(target).to_dict()
-            )
+            return await asyncio.to_thread(lambda: gguf_read.read(target).to_dict())
         except AdapterError as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except Refusal as err:

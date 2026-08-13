@@ -1,0 +1,38 @@
+# Gitleaks configuration.
+#
+# The default ruleset runs unchanged — this file only adds allowlist entries,
+# each for a specific string that is demonstrably not a credential. A scanner
+# that cries wolf gets muted, and a muted scanner is worse than none, so the
+# entries below are narrow on purpose: a path plus a regex, never a blanket
+# skip of a file or a rule.
+
+[extend]
+useDefault = true
+
+[[rules]]
+# Placeholder so `[extend]` has a sibling table; the default ruleset supplies
+# the real detectors. Gitleaks requires at least one rule stanza when a config
+# file is present.
+id = "modelmri-placeholder-never-matches"
+description = "Intentionally unmatchable; the default ruleset does the work."
+regex = '''\A(?!x)x'''
+
+[allowlist]
+description = "Strings that look like credentials and are not"
+
+regexes = [
+  # GGUF tensor names. `token_embd.weight` is the embedding matrix in every
+  # GGUF ever written — llama.cpp's own naming — and the generic-api-key rule
+  # matches it on the word "token". It appears in tests, in the reader's name
+  # mapping, and in the docs, and it will keep appearing.
+  '''token_embd\.weight''',
+  '''output_norm\.weight''',
+  # HuggingFace tensor names carrying "token" for the same reason.
+  '''model\.embed_tokens\.weight''',
+]
+
+paths = [
+  # Recorded audit output. It quotes the flagged lines verbatim, so scanning
+  # it re-reports every finding the code has already allowlisted above.
+  '''docs/audit-.*\.md''',
+]

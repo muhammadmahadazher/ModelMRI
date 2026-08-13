@@ -70,8 +70,7 @@ WEIGHTS = (".safetensors", ".bin", ".pth")
 LOOSE_WEIGHTS: dict[str, tuple[bool, str]] = {
     ".gguf": (
         False,
-        "GGUF - inspectable here, but transformers cannot run it; use Ollama "
-        "for that",
+        "GGUF - inspectable here, but transformers cannot run it; use Ollama for that",
     ),
     # `loadable` is False for both, and that is not pessimism. A `.pt`/`.pth`
     # is one of three unrelated things and none of them can be inspected as a

@@ -22,7 +22,6 @@ import pytest
 from modelmri.errors import Refusal
 from modelmri.traces import TraceStore
 
-
 # ------------------------------------------------------------- the migration
 
 
@@ -43,9 +42,7 @@ def test_a_store_written_before_meta_existed_still_opens(tmp_path):
           error INTEGER NOT NULL DEFAULT 0, seq INTEGER NOT NULL);
         """
     )
-    old.execute(
-        "INSERT INTO trace VALUES('t1','old run','2026-01-01T00:00:00Z','{}')"
-    )
+    old.execute("INSERT INTO trace VALUES('t1','old run','2026-01-01T00:00:00Z','{}')")
     old.execute(
         "INSERT INTO step VALUES('s1','t1',NULL,'llm_call','plan',0,5,'in','out',"
         "1,2,0,0)"

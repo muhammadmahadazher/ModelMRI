@@ -60,9 +60,7 @@ CREATE INDEX IF NOT EXISTS step_trace ON step(trace_id, seq);
 # nothing to a database that already has the table, so a store written by an
 # earlier version keeps its old shape and every INSERT naming the new column
 # fails — which would be an existing user's traces breaking on upgrade.
-_MIGRATIONS = (
-    ("step", "meta", "TEXT NOT NULL DEFAULT '{}'"),
-)
+_MIGRATIONS = (("step", "meta", "TEXT NOT NULL DEFAULT '{}'"),)
 
 
 def _loads(raw) -> dict:
@@ -143,9 +141,7 @@ class TraceStore:
                 if not existing:  # table absent; the schema above handles it
                     continue
                 if column not in existing:
-                    self._db.execute(
-                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}"
-                    )
+                    self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
                     log.info("added %s.%s to the trace store", table, column)
             self._relax_duration()
             self._db.commit()
@@ -235,9 +231,7 @@ class TraceStore:
                     # 'rebuild' rather than an INSERT..SELECT: it is FTS5's own
                     # idempotent resync from the content table, so running it
                     # against a partially-populated index cannot double-index.
-                    self._db.execute(
-                        "INSERT INTO step_fts(step_fts) VALUES('rebuild')"
-                    )
+                    self._db.execute("INSERT INTO step_fts(step_fts) VALUES('rebuild')")
                     log.info("backfilled the trace search index (%d steps)", stored)
                 self._db.commit()
                 self.fts = True

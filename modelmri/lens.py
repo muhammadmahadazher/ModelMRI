@@ -180,7 +180,10 @@ def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
             # are the same quantity.
             row["kl_to_final"] = round(
                 float(
-                    (truth * (truth.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())).sum()
+                    (
+                        truth
+                        * (truth.clamp_min(1e-12).log() - p.clamp_min(1e-12).log())
+                    ).sum()
                 ),
                 5,
             )

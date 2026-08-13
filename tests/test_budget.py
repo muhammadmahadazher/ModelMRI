@@ -39,7 +39,9 @@ def test_time_multiplies_across_passes():
 
 def test_peak_memory_does_not_multiply():
     """The whole point. 132 sequential passes hold one pass's peak."""
-    est = budget.project(_probe(peak_bytes=1_400_000_000, free_bytes=8_600_000_000), 132)
+    est = budget.project(
+        _probe(peak_bytes=1_400_000_000, free_bytes=8_600_000_000), 132
+    )
     assert est.peak_bytes == 1_400_000_000
 
 

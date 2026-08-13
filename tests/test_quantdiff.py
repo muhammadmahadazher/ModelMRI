@@ -21,7 +21,6 @@ np = pytest.importorskip("numpy")
 from modelmri import quantdiff  # noqa: E402
 from modelmri.errors import BadRequest  # noqa: E402
 
-
 # ------------------------------------------------------------ name mapping
 
 
@@ -90,7 +89,7 @@ def test_relative_rms_makes_tensors_of_different_scales_comparable():
     large = small * 1000
     err_s = quantdiff.compare_tensor(small * 1.1, small)
     err_l = quantdiff.compare_tensor(large * 1.1, large)
-    assert err_l["rms"] > err_s["rms"] * 100          # absolute error explodes
+    assert err_l["rms"] > err_s["rms"] * 100  # absolute error explodes
     assert err_l["relative_rms"] == pytest.approx(err_s["relative_rms"], rel=1e-5)
 
 
@@ -120,8 +119,15 @@ def test_max_abs_finds_the_single_worst_weight():
 
 def _damage(name, elements, rel, flips, cos=0.99):
     return quantdiff.TensorDamage(
-        name=name, hf_name="x", quant_type="Q4_K", elements=elements,
-        rms=0.1, max_abs=0.5, cosine=cos, sign_flips=flips, relative_rms=rel,
+        name=name,
+        hf_name="x",
+        quant_type="Q4_K",
+        elements=elements,
+        rms=0.1,
+        max_abs=0.5,
+        cosine=cos,
+        sign_flips=flips,
+        relative_rms=rel,
     )
 
 

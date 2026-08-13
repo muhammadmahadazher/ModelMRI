@@ -383,7 +383,7 @@ def test_the_result_is_json_safe(tmp_path):
 
 
 def test_the_scanner_lists_gguf_files(tmp_path, monkeypatch):
-    """"Click any .gguf the scanner already found" was not true: find_torchscript
+    """ "Click any .gguf the scanner already found" was not true: find_torchscript
     globbed only .pt/.pth/.torchscript, so the format most local users actually
     have was never listed."""
     from modelmri import custom

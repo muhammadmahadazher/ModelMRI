@@ -23,7 +23,6 @@ from modelmri import trace_query
 from modelmri.errors import BadRequest
 from modelmri.traces import TraceStore, _clip, _unclip
 
-
 # ------------------------------------------------------------- query parsing
 
 
@@ -54,7 +53,7 @@ def test_an_unknown_field_is_treated_as_prose_not_refused():
 
 
 def test_a_pasted_log_line_is_prose_even_when_it_names_a_real_field():
-    """"error: connection refused" is the single most likely thing anybody
+    """ "error: connection refused" is the single most likely thing anybody
     pastes into a search box. With loose binding it parsed as the filter
     `error:connection` and was refused."""
     q = trace_query.parse("error: connection refused")
@@ -112,7 +111,10 @@ def test_only_allow_listed_columns_can_appear():
     for token in clause.replace("(", " ").replace(")", " ").split():
         if token.startswith("s."):
             assert token.split(".")[1] in (
-                "kind", "name", "error", "duration_ms",
+                "kind",
+                "name",
+                "error",
+                "duration_ms",
             )
 
 
@@ -247,7 +249,8 @@ def test_an_old_store_with_not_null_duration_is_rebuilt(tmp_path):
     assert step["name"] == "pytest" and step["duration_ms"] == 7
 
     notnull = {
-        r[1]: r[3] for r in sqlite3.connect(str(path)).execute("PRAGMA table_info(step)")
+        r[1]: r[3]
+        for r in sqlite3.connect(str(path)).execute("PRAGMA table_info(step)")
     }
     assert notnull["duration_ms"] == 0, "duration_ms is still NOT NULL"
 
@@ -264,15 +267,34 @@ def store(tmp_path):
             "name": "nightly",
             "started_at": "2026-01-01T00:00:00Z",
             "steps": [
-                {"id": "a", "kind": "tool_call", "name": "pytest",
-                 "input": "run the suite", "output": "17 passed",
-                 "started_ms": 0, "duration_ms": 5000},
-                {"id": "b", "kind": "llm_call", "name": "plan",
-                 "input": "how do I fix the flaky test",
-                 "output": "retry it", "started_ms": 10, "duration_ms": 20},
-                {"id": "c", "kind": "tool_call", "name": "git",
-                 "input": "git push", "output": "permission denied",
-                 "started_ms": 20, "duration_ms": 30, "error": True},
+                {
+                    "id": "a",
+                    "kind": "tool_call",
+                    "name": "pytest",
+                    "input": "run the suite",
+                    "output": "17 passed",
+                    "started_ms": 0,
+                    "duration_ms": 5000,
+                },
+                {
+                    "id": "b",
+                    "kind": "llm_call",
+                    "name": "plan",
+                    "input": "how do I fix the flaky test",
+                    "output": "retry it",
+                    "started_ms": 10,
+                    "duration_ms": 20,
+                },
+                {
+                    "id": "c",
+                    "kind": "tool_call",
+                    "name": "git",
+                    "input": "git push",
+                    "output": "permission denied",
+                    "started_ms": 20,
+                    "duration_ms": 30,
+                    "error": True,
+                },
             ],
         }
     )
@@ -338,8 +360,15 @@ def test_reimporting_does_not_duplicate_index_entries(store):
             "id": "t1",
             "name": "nightly",
             "started_at": "2026-01-01T00:00:00Z",
-            "steps": [{"id": "a", "kind": "tool_call", "name": "pytest",
-                       "input": "run the suite", "output": "17 passed"}],
+            "steps": [
+                {
+                    "id": "a",
+                    "kind": "tool_call",
+                    "name": "pytest",
+                    "input": "run the suite",
+                    "output": "17 passed",
+                }
+            ],
         }
     )
     assert len(store.search("pytest")["results"]) == 1
@@ -389,8 +418,14 @@ def test_search_results_carry_the_truncation_marker(tmp_path):
             # 30,006-character word that the query "findme" does not match.
             # That is the documented behaviour the response note states, not a
             # defect — but it makes an unrealistic fixture fail confusingly.
-            "steps": [{"id": "s1", "kind": "tool_call", "name": "cat",
-                       "output": "findme " + "z " * 15_000}],
+            "steps": [
+                {
+                    "id": "s1",
+                    "kind": "tool_call",
+                    "name": "cat",
+                    "output": "findme " + "z " * 15_000,
+                }
+            ],
         }
     )
     hit = s.search("findme")["results"]
@@ -437,9 +472,18 @@ def test_reimporting_changed_text_does_not_leave_the_old_words_findable(tmp_path
     SQLite then reused."""
     store = TraceStore(tmp_path / "t.sqlite")
     doc = {
-        "id": "t1", "name": "run", "started_at": "2026-01-01T00:00:00Z",
-        "steps": [{"id": "s1", "kind": "tool_call", "name": "x",
-                   "input": "zebra", "output": ""}],
+        "id": "t1",
+        "name": "run",
+        "started_at": "2026-01-01T00:00:00Z",
+        "steps": [
+            {
+                "id": "s1",
+                "kind": "tool_call",
+                "name": "x",
+                "input": "zebra",
+                "output": "",
+            }
+        ],
     }
     store.import_trace(doc)
     assert store.search("zebra")["results"]
@@ -457,27 +501,54 @@ def test_results_are_ordered_by_the_real_clock_not_offset_within_a_run(tmp_path)
     the LIMIT then dropped today entirely — a full page of stale hits that
     looks complete."""
     store = TraceStore(tmp_path / "t.sqlite")
-    store.import_trace({
-        "id": "old", "name": "yesterday", "started_at": "2026-08-01T00:00:00Z",
-        "steps": [{"id": "o1", "kind": "tool_call", "name": "pytest",
-                   "input": "pytest", "started_ms": 540000}],
-    })
-    store.import_trace({
-        "id": "new", "name": "today", "started_at": "2026-08-13T00:00:00Z",
-        "steps": [{"id": "n1", "kind": "tool_call", "name": "pytest",
-                   "input": "pytest", "started_ms": 1000}],
-    })
+    store.import_trace(
+        {
+            "id": "old",
+            "name": "yesterday",
+            "started_at": "2026-08-01T00:00:00Z",
+            "steps": [
+                {
+                    "id": "o1",
+                    "kind": "tool_call",
+                    "name": "pytest",
+                    "input": "pytest",
+                    "started_ms": 540000,
+                }
+            ],
+        }
+    )
+    store.import_trace(
+        {
+            "id": "new",
+            "name": "today",
+            "started_at": "2026-08-13T00:00:00Z",
+            "steps": [
+                {
+                    "id": "n1",
+                    "kind": "tool_call",
+                    "name": "pytest",
+                    "input": "pytest",
+                    "started_ms": 1000,
+                }
+            ],
+        }
+    )
     got = [h["trace_name"] for h in store.search("pytest")["results"]]
     assert got == ["today", "yesterday"], got
 
 
 def test_every_hit_carries_the_time_it_happened(tmp_path):
     store = TraceStore(tmp_path / "t.sqlite")
-    store.import_trace({
-        "id": "t1", "name": "run", "started_at": "2026-08-13T09:00:00Z",
-        "steps": [{"id": "s1", "kind": "tool_call", "name": "x",
-                   "input": "needle"}],
-    })
+    store.import_trace(
+        {
+            "id": "t1",
+            "name": "run",
+            "started_at": "2026-08-13T09:00:00Z",
+            "steps": [
+                {"id": "s1", "kind": "tool_call", "name": "x", "input": "needle"}
+            ],
+        }
+    )
     assert store.search("needle")["results"][0]["trace_started_at"] == (
         "2026-08-13T09:00:00Z"
     )

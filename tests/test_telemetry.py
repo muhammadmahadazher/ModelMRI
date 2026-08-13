@@ -18,7 +18,6 @@ import pytest
 
 from modelmri import telemetry
 
-
 # ----------------------------------------------- what watching the model costs
 
 
@@ -110,7 +109,9 @@ def test_no_usable_limit_returns_none_with_the_reason():
 
 
 def test_a_zero_or_negative_limit_is_not_accepted():
-    assert telemetry.context_limit(Model(Cfg(max_position_embeddings=0)), Tok())[0] is None
+    assert (
+        telemetry.context_limit(Model(Cfg(max_position_embeddings=0)), Tok())[0] is None
+    )
 
 
 # ------------------------------------------------------------ the run report
@@ -128,13 +129,23 @@ def test_prompt_time_is_kept_apart_from_the_decode_rate():
             time.sleep(0.005)
             run.token()
 
-    t = run.finish(prompt_tokens=100, context=(2048, "config"))
+    t = run.finish(prompt_tokens=100, generated_tokens=5, context=(2048, "config"))
     assert t.prompt_ms is not None and t.prompt_ms >= 45
-    assert t.decode_ms is not None and t.decode_ms < t.prompt_ms
+    assert t.decode_ms is not None
     assert t.generated_tokens == 5
-    # The rate is over decode only, so it is much faster than 5 tokens over
-    # the whole wall clock would suggest.
-    assert t.tokens_per_s > 5 / ((t.prompt_ms + t.decode_ms) / 1000)
+
+    # The invariant is that the two spans are measured SEPARATELY and the rate
+    # uses only the decode one — not that decode is the faster of the two.
+    #
+    # The first version asserted `decode_ms < prompt_ms`, reasoning from the
+    # sleeps above (50 ms then 4x5 ms). That holds on an idle machine and not
+    # on a loaded CI runner: macOS py3.11 measured prompt 50.6 ms against
+    # decode 84.6 ms and failed every PR. A test whose truth depends on how
+    # busy the host is tests the host.
+    assert t.tokens_per_s == pytest.approx(4 / (t.decode_ms / 1000), rel=1e-6)
+    # And that is strictly faster than the same tokens over the whole wall
+    # clock, which is the thing separating the phases buys you.
+    assert t.tokens_per_s > 4 / ((t.prompt_ms + t.decode_ms) / 1000)
 
 
 def test_the_true_token_count_wins_over_the_stream_chunk_count():

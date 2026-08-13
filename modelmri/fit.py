@@ -76,10 +76,21 @@ from .errors import BadRequest, Refusal
 # than guessed: a dtype this table has not seen is one whose width we do not
 # know, and assuming 2 would silently halve or double the answer.
 DTYPE_BYTES = {
-    "F64": 8, "I64": 8, "U64": 8,
-    "F32": 4, "I32": 4, "U32": 4,
-    "F16": 2, "BF16": 2, "I16": 2, "U16": 2,
-    "F8_E4M3": 1, "F8_E5M2": 1, "I8": 1, "U8": 1, "BOOL": 1,
+    "F64": 8,
+    "I64": 8,
+    "U64": 8,
+    "F32": 4,
+    "I32": 4,
+    "U32": 4,
+    "F16": 2,
+    "BF16": 2,
+    "I16": 2,
+    "U16": 2,
+    "F8_E4M3": 1,
+    "F8_E5M2": 1,
+    "I8": 1,
+    "U8": 1,
+    "BOOL": 1,
 }
 
 # The header is a length prefix plus JSON. A malformed file could claim a
@@ -531,7 +542,9 @@ def grade(prediction: Fit, measured_bytes: int) -> dict:
     hidden inside a corrected total.
     """
     gap = measured_bytes - prediction.total_bytes
-    ratio = (measured_bytes / prediction.total_bytes) if prediction.total_bytes else None
+    ratio = (
+        (measured_bytes / prediction.total_bytes) if prediction.total_bytes else None
+    )
     return {
         "predicted_bytes": prediction.total_bytes,
         "measured_bytes": measured_bytes,

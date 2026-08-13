@@ -108,3 +108,10 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e  # v3.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Without this the action ignores .gitleaks.toml and runs the bare
+          # default ruleset, which flags `token_embd.weight` -- the embedding
+          # matrix in every GGUF ever written -- as a generic API key. The
+          # config extends the defaults rather than replacing them and
+          # allowlists that one string; a scanner that cries wolf gets muted,
+          # and a muted scanner is worse than no scanner.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml

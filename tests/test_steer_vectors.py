@@ -162,7 +162,9 @@ def test_a_saved_direction_round_trips(store):
 def test_saving_without_provenance_is_refused(store):
     _, vec = sv.fit_direction(separated(), 6)
     with pytest.raises(BadRequest, match="hidden_size"):
-        sv.save("x", vec, {"model": "gpt2", "layer": 1, "method": "caa", "dtype": "f32"})
+        sv.save(
+            "x", vec, {"model": "gpt2", "layer": 1, "method": "caa", "dtype": "f32"}
+        )
 
 
 def test_a_wrong_shaped_direction_is_refused_by_name(store):
@@ -260,7 +262,8 @@ def test_the_false_positive_rate_has_not_silently_got_worse():
     data. This pins the order of magnitude so a change to the null, the split
     or the draw count cannot quietly make the gate useless."""
     hits = sum(
-        1 for s in range(120)
+        1
+        for s in range(120)
         if sv.fit_direction(structureless(seed=s), 0, method="caa")[0].beats_null
     )
     rate = hits / 120
@@ -269,7 +272,8 @@ def test_the_false_positive_rate_has_not_silently_got_worse():
 
 def test_a_real_direction_is_still_found_after_the_p_value_change():
     found = sum(
-        1 for s in range(30)
+        1
+        for s in range(30)
         if sv.fit_direction(separated(gap=4.0, seed=s), 0)[0].beats_null
     )
     assert found >= 27, f"only {found}/30"

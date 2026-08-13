@@ -52,16 +52,32 @@ MAX_TENSORS = 500_000
 
 # GGUF metadata value types.
 (
-    _UINT8, _INT8, _UINT16, _INT16, _UINT32, _INT32, _FLOAT32, _BOOL,
-    _STRING, _ARRAY, _UINT64, _INT64, _FLOAT64,
+    _UINT8,
+    _INT8,
+    _UINT16,
+    _INT16,
+    _UINT32,
+    _INT32,
+    _FLOAT32,
+    _BOOL,
+    _STRING,
+    _ARRAY,
+    _UINT64,
+    _INT64,
+    _FLOAT64,
 ) = range(13)
 
 _SCALARS = {
-    _UINT8: ("<B", 1), _INT8: ("<b", 1),
-    _UINT16: ("<H", 2), _INT16: ("<h", 2),
-    _UINT32: ("<I", 4), _INT32: ("<i", 4),
-    _FLOAT32: ("<f", 4), _BOOL: ("<?", 1),
-    _UINT64: ("<Q", 8), _INT64: ("<q", 8),
+    _UINT8: ("<B", 1),
+    _INT8: ("<b", 1),
+    _UINT16: ("<H", 2),
+    _INT16: ("<h", 2),
+    _UINT32: ("<I", 4),
+    _INT32: ("<i", 4),
+    _FLOAT32: ("<f", 4),
+    _BOOL: ("<?", 1),
+    _UINT64: ("<Q", 8),
+    _INT64: ("<q", 8),
     _FLOAT64: ("<d", 8),
 }
 
@@ -172,7 +188,7 @@ class Gguf:
             row["tensors"] += 1
             row["elements"] += t.elements
             row["bytes"] += t.bytes or 0
-        for name, row in by_type.items():
+        for _name, row in by_type.items():
             row["bpw"] = (
                 round(row["bytes"] * 8 / row["elements"], 3)
                 if row["elements"]
@@ -245,8 +261,7 @@ class Gguf:
                 "which is a preset name — the tensors listed as higher "
                 "precision sit above the headline and are excluded from it."
                 if whole
-                else
-                "Parameter count is exact — element counts are read from the "
+                else "Parameter count is exact — element counts are read from the "
                 "tensor shapes and do not depend on the quantisation type. "
                 "Byte totals and bits-per-weight are withheld: see "
                 "why_unmeasured."
@@ -310,8 +325,10 @@ class _Cursor:
             if count > MAX_HEADER_BYTES:
                 raise BadRequest(f"{self.name} declares an implausible array length")
             return [self.value(inner, depth + 1) for _ in range(count)]
-        raise BadRequest(f"{self.name} uses metadata value type {kind}, which "
-                         "this reader does not know")
+        raise BadRequest(
+            f"{self.name} uses metadata value type {kind}, which "
+            "this reader does not know"
+        )
 
 
 def read(path: str | Path, *, max_array: int = 64) -> Gguf:

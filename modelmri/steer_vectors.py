@@ -180,9 +180,7 @@ def _fit(pos, neg, method: str):
         # worst shuffle reached 1.30 — a real direction that failed its own
         # control, because the estimator had thrown the direction away.
         diffs = pos - neg
-        _, _, v = torch.pca_lowrank(
-            diffs, q=min(4, *diffs.shape), center=False
-        )
+        _, _, v = torch.pca_lowrank(diffs, q=min(4, *diffs.shape), center=False)
         direction = v[:, 0]
         # PCA has no sign convention; align it with the mean difference so
         # "positive" means the same thing it means for CAA.
@@ -264,7 +262,7 @@ def fit_direction(
     # The null: same pairs, same split, same estimator — labels shuffled.
     # Anything the pipeline produces from structureless data shows up here.
     nulls = []
-    for k in range(refits):
+    for _ in range(refits):
         swap = torch.randint(0, 2, (n,), generator=gen).bool().to(device)
         shuffled_pos = torch.where(swap.unsqueeze(1), neg, pos)
         shuffled_neg = torch.where(swap.unsqueeze(1), pos, neg)
@@ -383,8 +381,7 @@ def _slug(name: str) -> str:
     cleaned = "".join(c if (c.isalnum() or c in "-_") else "-" for c in name).strip("-")
     if not cleaned:
         raise BadRequest(
-            "a vector name needs at least one letter or digit — it becomes a "
-            "filename."
+            "a vector name needs at least one letter or digit — it becomes a filename."
         )
     return cleaned[:80]
 
@@ -438,9 +435,7 @@ def load(name: str, *, hidden_size: int, model: str = ""):
         payload = json.loads(path.read_text(encoding="utf-8"))
         values = payload["values"]
     except (OSError, UnicodeDecodeError, ValueError, KeyError) as err:
-        raise Refusal(
-            f"{path.name} is not a direction this version can read."
-        ) from err
+        raise Refusal(f"{path.name} is not a direction this version can read.") from err
 
     if len(values) != hidden_size:
         raise Refusal(

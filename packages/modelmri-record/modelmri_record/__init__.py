@@ -372,7 +372,8 @@ def instrument_transformers() -> bool:
             ids = [int(i) for i in row.tolist()]
             config = getattr(self, "config", None)
             model_id = str(
-                getattr(config, "_name_or_path", "") or getattr(config, "name_or_path", "")
+                getattr(config, "_name_or_path", "")
+                or getattr(config, "name_or_path", "")
             )
             meta = {
                 "model": model_id,

@@ -9,6 +9,15 @@ on:
     # Weekly, so a newly-published advisory is caught without a push.
     - cron: "23 5 * * 1"
 
+# Cancel superseded runs. Without this every push to a branch started a full
+# matrix and the old one kept going -- on a branch with ten commits that is
+# nine complete duplicate runs, all of them emailing on failure. The `main`
+# group is keyed differently so a queued release build is never cancelled by
+# the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})

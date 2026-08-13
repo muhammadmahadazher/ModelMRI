@@ -97,7 +97,9 @@ def test_a_longer_donor_is_truncated_from_the_front_not_sampled():
 def test_capture_returns_the_tensor_cut_slices():
     model = ToyModel(layers=2)
     ids = torch.tensor([[1, 2, 3]])
-    captured = ablate.capture_projection_inputs(model, lambda i: model.blocks[i], ids, [0, 1])
+    captured = ablate.capture_projection_inputs(
+        model, lambda i: model.blocks[i], ids, [0, 1]
+    )
     assert set(captured) == {0, 1}
     for layer in (0, 1):
         assert captured[layer].shape == (3, WIDTH)
@@ -119,8 +121,13 @@ def test_resample_without_a_corpus_is_refused():
     model = ToyModel()
     with pytest.raises(BadRequest, match="needs a corpus"):
         ablate.rank_heads(
-            model, lambda i: model.blocks[i], torch.tensor([[1, 2]]),
-            position=0, layers=[0], n_heads=HEADS, baseline="resample",
+            model,
+            lambda i: model.blocks[i],
+            torch.tensor([[1, 2]]),
+            position=0,
+            layers=[0],
+            n_heads=HEADS,
+            baseline="resample",
         )
 
 
@@ -131,9 +138,15 @@ def test_a_donor_shorter_than_the_prompt_is_refused_with_both_lengths():
     donors = donors_from(model, [torch.tensor([[1, 2]])], [0])
     with pytest.raises(ablate.AblationError, match="2 tokens and this prompt is 4"):
         ablate.rank_heads(
-            model, lambda i: model.blocks[i], torch.tensor([[1, 2, 3, 4]]),
-            position=0, layers=[0], n_heads=HEADS, baseline="resample",
-            donors=donors, corpus="toy",
+            model,
+            lambda i: model.blocks[i],
+            torch.tensor([[1, 2, 3, 4]]),
+            position=0,
+            layers=[0],
+            n_heads=HEADS,
+            baseline="resample",
+            donors=donors,
+            corpus="toy",
         )
 
 
@@ -142,9 +155,15 @@ def test_a_donor_missing_the_layer_is_refused():
     donors = donors_from(model, [torch.tensor([[1, 2, 3]])], [0])  # layer 1 absent
     with pytest.raises(ablate.AblationError, match="no capture for layer 1"):
         ablate.rank_heads(
-            model, lambda i: model.blocks[i], torch.tensor([[1, 2]]),
-            position=0, layers=[1], n_heads=HEADS, baseline="resample",
-            donors=donors, corpus="toy",
+            model,
+            lambda i: model.blocks[i],
+            torch.tensor([[1, 2]]),
+            position=0,
+            layers=[1],
+            n_heads=HEADS,
+            baseline="resample",
+            donors=donors,
+            corpus="toy",
         )
 
 
@@ -153,9 +172,15 @@ def test_the_refusal_names_the_corpus():
     donors = donors_from(model, [torch.tensor([[1]])], [0])
     with pytest.raises(ablate.AblationError, match="wikitext-sample"):
         ablate.rank_heads(
-            model, lambda i: model.blocks[i], torch.tensor([[1, 2, 3]]),
-            position=0, layers=[0], n_heads=HEADS, baseline="resample",
-            donors=donors, corpus="wikitext-sample",
+            model,
+            lambda i: model.blocks[i],
+            torch.tensor([[1, 2, 3]]),
+            position=0,
+            layers=[0],
+            n_heads=HEADS,
+            baseline="resample",
+            donors=donors,
+            corpus="wikitext-sample",
         )
 
 
@@ -165,13 +190,21 @@ def test_the_refusal_names_the_corpus():
 def _run_resample(n_donors=4, layers=1):
     model = ToyModel(layers=layers)
     ids = torch.tensor([[1, 2, 3]])
-    seqs = [torch.tensor([[(i + 2) % VOCAB, (i + 3) % VOCAB, (i + 4) % VOCAB]])
-            for i in range(n_donors)]
+    seqs = [
+        torch.tensor([[(i + 2) % VOCAB, (i + 3) % VOCAB, (i + 4) % VOCAB]])
+        for i in range(n_donors)
+    ]
     donors = donors_from(model, seqs, list(range(layers)))
     return ablate.rank_heads(
-        model, lambda i: model.blocks[i], ids,
-        position=0, layers=list(range(layers)), n_heads=HEADS,
-        baseline="resample", donors=donors, corpus="toy-corpus",
+        model,
+        lambda i: model.blocks[i],
+        ids,
+        position=0,
+        layers=list(range(layers)),
+        n_heads=HEADS,
+        baseline="resample",
+        donors=donors,
+        corpus="toy-corpus",
         decode=lambda t: f"<{t}>",
     )
 
@@ -216,8 +249,13 @@ def test_estimating_a_resample_sweep_does_not_need_a_corpus():
     with the default baseline."""
     model = ToyModel()
     out = ablate.estimate_cost(
-        model, lambda i: model.blocks[i], torch.tensor([[1, 2, 3]]),
-        position=0, layers=[0], n_heads=HEADS, baseline="resample",
+        model,
+        lambda i: model.blocks[i],
+        torch.tensor([[1, 2, 3]]),
+        position=0,
+        layers=[0],
+        n_heads=HEADS,
+        baseline="resample",
     )
     assert out["estimate"]["passes"] == HEADS + 2
     assert out["baseline"] == "resample"
@@ -227,8 +265,13 @@ def test_estimating_works_for_every_baseline():
     model = ToyModel()
     for name in ablate.BASELINES:
         out = ablate.estimate_cost(
-            model, lambda i: model.blocks[i], torch.tensor([[1, 2]]),
-            position=0, layers=[0], n_heads=HEADS, baseline=name,
+            model,
+            lambda i: model.blocks[i],
+            torch.tensor([[1, 2]]),
+            position=0,
+            layers=[0],
+            n_heads=HEADS,
+            baseline=name,
         )
         assert out["estimate"]["passes"] > 0, name
 
@@ -256,8 +299,12 @@ def test_ties_get_average_ranks_so_they_do_not_manufacture_order():
 
 
 def test_compare_baselines_counts_the_top_k_disagreement():
-    zero = [{"layer": 0, "head": h, "kl": k} for h, k in enumerate([9.0, 8.0, 1.0, 0.5])]
-    resample = [{"layer": 0, "head": h, "kl": k} for h, k in enumerate([0.5, 1.0, 8.0, 9.0])]
+    zero = [
+        {"layer": 0, "head": h, "kl": k} for h, k in enumerate([9.0, 8.0, 1.0, 0.5])
+    ]
+    resample = [
+        {"layer": 0, "head": h, "kl": k} for h, k in enumerate([0.5, 1.0, 8.0, 9.0])
+    ]
     out = ablate.compare_baselines({"zero": zero, "resample": resample}, top=2)
 
     pair = out["pairs"][0]

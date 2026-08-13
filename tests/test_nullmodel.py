@@ -20,7 +20,6 @@ torch = pytest.importorskip("torch")
 from modelmri import nullmodel  # noqa: E402
 from modelmri.errors import Refusal  # noqa: E402
 
-
 # ------------------------------------------------------------ the verdict
 
 

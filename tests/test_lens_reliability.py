@@ -20,7 +20,6 @@ torch = pytest.importorskip("torch")
 
 from modelmri import lens  # noqa: E402
 
-
 # --------------------------------------------------------- the verdict
 
 

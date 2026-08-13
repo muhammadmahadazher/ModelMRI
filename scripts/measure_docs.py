@@ -48,7 +48,6 @@ def main() -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
 
-    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     from modelmri import ablate, budget, corpus, devices, lens, nullmodel, telemetry
@@ -108,17 +107,26 @@ def main() -> int:
     # ---------------------------------------------------------- pass counts
     out["passes_one_layer"] = n_heads + 2
     out["passes_whole_model"] = n_layers * n_heads + 2
-    say(f"\n## cost\none layer: {out['passes_one_layer']} passes · "
-        f"whole model: {out['passes_whole_model']} passes")
+    say(
+        f"\n## cost\none layer: {out['passes_one_layer']} passes · "
+        f"whole model: {out['passes_whole_model']} passes"
+    )
 
     # ------------------------------------------------------- the preflight
     est = ablate.estimate_cost(
-        model, blocks, ids, position=position, layers=list(range(n_layers)),
-        n_heads=n_heads, device_kind=accel.kind,
+        model,
+        blocks,
+        ids,
+        position=position,
+        layers=list(range(n_layers)),
+        n_heads=n_heads,
+        device_kind=accel.kind,
     )["estimate"]
     out["preflight"] = est
-    say(f"preflight: {est['passes']} passes, {est['seconds']}s projected, "
-        f"verdict {est['verdict']} ({est['basis']})")
+    say(
+        f"preflight: {est['passes']} passes, {est['seconds']}s projected, "
+        f"verdict {est['verdict']} ({est['basis']})"
+    )
 
     # ------------------------------------------------- the three baselines
     say("\n## head ranking, three baselines")
@@ -130,20 +138,30 @@ def main() -> int:
             donors = [
                 ablate.capture_projection_inputs(model, blocks, d, [args.layer])
                 for d in corpus.donor_ids(
-                    tok, sentences, at_least=size,
-                    want=ablate.RESAMPLE_DRAWS, device=accel.torch_device,
+                    tok,
+                    sentences,
+                    at_least=size,
+                    want=ablate.RESAMPLE_DRAWS,
+                    device=accel.torch_device,
                 )
             ]
             extra = {"donors": donors, "corpus": corpus_label}
         r = ablate.rank_heads(
-            model, blocks, ids, position=position, layers=[args.layer],
-            n_heads=n_heads, baseline=baseline,
-            decode=lambda t: tok.decode([t]), **extra,
+            model,
+            blocks,
+            ids,
+            position=position,
+            layers=[args.layer],
+            n_heads=n_heads,
+            baseline=baseline,
+            decode=lambda t: tok.decode([t]),
+            **extra,
         )
         rankings[baseline] = r["ranked"]
         top = ", ".join(f"H{x['head']}" for x in r["ranked"][:5])
         summaries[baseline] = {
-            "passes": r["passes"], "elapsed_s": r["elapsed_s"],
+            "passes": r["passes"],
+            "elapsed_s": r["elapsed_s"],
             "top5": [x["head"] for x in r["ranked"][:5]],
             "top_kl": r["ranked"][0]["kl"],
             "target_token": r["target_token"],
@@ -151,12 +169,22 @@ def main() -> int:
         }
         spread = ""
         if baseline == "resample":
-            w = max(r["ranked"], key=lambda x: (x.get("kl_max") or 0) - (x.get("kl_min") or 0))
+            w = max(
+                r["ranked"],
+                key=lambda x: (x.get("kl_max") or 0) - (x.get("kl_min") or 0),
+            )
             summaries[baseline]["widest"] = {
-                "head": w["head"], "min": w["kl_min"], "max": w["kl_max"], "median": w["kl"],
+                "head": w["head"],
+                "min": w["kl_min"],
+                "max": w["kl_max"],
+                "median": w["kl"],
             }
-            spread = f"   widest H{w['head']} {w['kl_min']}–{w['kl_max']} (median {w['kl']})"
-        say(f"  {baseline:<9} {r['passes']:>4} passes {r['elapsed_s']:>6.2f}s  top: {top}{spread}")
+            spread = (
+                f"   widest H{w['head']} {w['kl_min']}–{w['kl_max']} (median {w['kl']})"
+            )
+        say(
+            f"  {baseline:<9} {r['passes']:>4} passes {r['elapsed_s']:>6.2f}s  top: {top}{spread}"
+        )
     out["baselines"] = summaries
     out["corpus"] = corpus_label
 
@@ -164,34 +192,50 @@ def main() -> int:
     out["disagreement"] = agree["pairs"]
     say("\n  disagreement:")
     for p in agree["pairs"]:
-        say(f"    {p['baselines'][0]:<9} vs {p['baselines'][1]:<9} "
-            f"spearman {p['spearman']}   top-{p['top_k']} disagree on {p['top_k_disagree']}")
+        say(
+            f"    {p['baselines'][0]:<9} vs {p['baselines'][1]:<9} "
+            f"spearman {p['spearman']}   top-{p['top_k']} disagree on {p['top_k_disagree']}"
+        )
 
     # ------------------------------------------------ the untrained control
     try:
-        twin = nullmodel.build_twin(cfg, seed=0, dtype=model.dtype, device=accel.torch_device)
+        twin = nullmodel.build_twin(
+            cfg, seed=0, dtype=model.dtype, device=accel.torch_device
+        )
         try:
             ctrl = ablate.rank_heads(
-                twin, lambda i: _blocks_of(twin, i), ids, position=position,
-                layers=[args.layer], n_heads=n_heads, baseline="zero",
+                twin,
+                lambda i: _blocks_of(twin, i),
+                ids,
+                position=position,
+                layers=[args.layer],
+                n_heads=n_heads,
+                baseline="zero",
                 decode=lambda t: tok.decode([t]),
             )
             cmp = ablate.compare_baselines(
                 {"model": rankings["zero"], "untrained": ctrl["ranked"]}, top=5
             )["pairs"][0]
             out["control"] = {
-                "spearman": cmp["spearman"], "top_k": cmp["top_k"],
+                "spearman": cmp["spearman"],
+                "top_k": cmp["top_k"],
                 "top_k_shared": cmp["top_k_shared"],
                 "untrained_top5": [x["head"] for x in ctrl["ranked"][:5]],
                 "untrained_top_kl": ctrl["ranked"][0]["kl"],
                 "verdict": nullmodel.verdict(
-                    cmp["spearman"], top_k_shared=cmp["top_k_shared"], top_k=cmp["top_k"]
+                    cmp["spearman"],
+                    top_k_shared=cmp["top_k_shared"],
+                    top_k=cmp["top_k"],
                 ),
             }
-            say(f"\n## untrained control\n  spearman {cmp['spearman']}, "
-                f"sharing {cmp['top_k_shared']} of the top {cmp['top_k']}")
-            say(f"  untrained top: {[x['head'] for x in ctrl['ranked'][:5]]} "
-                f"(top KL {ctrl['ranked'][0]['kl']} vs {rankings['zero'][0]['kl']} trained)")
+            say(
+                f"\n## untrained control\n  spearman {cmp['spearman']}, "
+                f"sharing {cmp['top_k_shared']} of the top {cmp['top_k']}"
+            )
+            say(
+                f"  untrained top: {[x['head'] for x in ctrl['ranked'][:5]]} "
+                f"(top KL {ctrl['ranked'][0]['kl']} vs {rankings['zero'][0]['kl']} trained)"
+            )
         finally:
             nullmodel.teardown(twin)
     except Exception as err:  # a control that cannot be built is not a failure
@@ -202,25 +246,36 @@ def main() -> int:
     lr = lens.logit_lens(model, tok, ids, top_k=1)
     rel = lr["reliability"]
     out["lens"] = {
-        "final": lr["final"], "settled_at": lr["settled_at"],
-        "best_kl": rel.get("best_kl"), "median_kl": rel.get("median_kl"),
-        "floor_kl": rel.get("floor_kl"), "usable": rel.get("usable"),
+        "final": lr["final"],
+        "settled_at": lr["settled_at"],
+        "best_kl": rel.get("best_kl"),
+        "median_kl": rel.get("median_kl"),
+        "floor_kl": rel.get("floor_kl"),
+        "usable": rel.get("usable"),
         "trajectory": [
             {"layer": r["layer"], "token": r["tokens"][0], "kl": r["kl_to_final"]}
             for r in lr["layers"]
         ],
     }
-    say(f"\n## logit lens\n  answer {lr['final']!r}, settles at layer {lr['settled_at']}")
-    say(f"  best row {rel.get('best_kl')} nats, median {rel.get('median_kl')}, "
-        f"floor {rel.get('floor_kl')}, usable={rel.get('usable')}")
+    say(
+        f"\n## logit lens\n  answer {lr['final']!r}, settles at layer {lr['settled_at']}"
+    )
+    say(
+        f"  best row {rel.get('best_kl')} nats, median {rel.get('median_kl')}, "
+        f"floor {rel.get('floor_kl')}, usable={rel.get('usable')}"
+    )
 
     # --------------------------------------------------------- the patching
     try:
         from modelmri import patch as patch_mod
 
         pr = patch_mod.trace(
-            model, tok, [blocks(i) for i in range(n_layers)],
-            args.clean, args.corrupt, device=accel.torch_device,
+            model,
+            tok,
+            [blocks(i) for i in range(n_layers)],
+            args.clean,
+            args.corrupt,
+            device=accel.torch_device,
         )
         clean_tokens = (pr.get("clean") or {}).get("tokens") or []
         peaks = {}
@@ -237,14 +292,21 @@ def main() -> int:
                         continue
                     if best is None or v > best["score"]:
                         best = {
-                            "layer": li, "pos": pi, "score": round(v, 4),
-                            "token": clean_tokens[pi] if pi < len(clean_tokens) else "?",
+                            "layer": li,
+                            "pos": pi,
+                            "score": round(v, 4),
+                            "token": clean_tokens[pi]
+                            if pi < len(clean_tokens)
+                            else "?",
                         }
             if best:
                 peaks[comp] = best
         out["patching"] = {
-            "clean": args.clean, "corrupt": args.corrupt,
-            "passes": pr.get("passes"), "seconds": pr.get("seconds"), "peaks": peaks,
+            "clean": args.clean,
+            "corrupt": args.corrupt,
+            "passes": pr.get("passes"),
+            "seconds": pr.get("seconds"),
+            "peaks": peaks,
         }
         say(f"\n## patching\n  {pr.get('passes')} passes in {pr.get('seconds')}s")
         for comp, best in peaks.items():
@@ -265,10 +327,12 @@ def main() -> int:
     )
     mem = budget.free_memory(accel.kind)
     out["free_bytes"] = mem.free_bytes
-    say(f"\n## what introspection costs\n"
+    say(
+        f"\n## what introspection costs\n"
         f"  {n_layers}L × {n_heads}H × S² × {dtype_bytes}B — "
         f"{out['introspection_bytes_at_512'] / 1e6:.0f} MB at 512 tokens, "
-        f"{out['introspection_bytes_at_4096'] / 1e9:.2f} GB at 4096")
+        f"{out['introspection_bytes_at_4096'] / 1e9:.2f} GB at 4096"
+    )
 
     if args.json:
         print(json.dumps(out, indent=2))

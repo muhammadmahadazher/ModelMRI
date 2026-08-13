@@ -230,7 +230,9 @@ def _synchronize(device_kind: str) -> None:
         return
     try:
         fn()
-    except Exception:
+    except Exception:  # noqa: S110 - a sync that fails leaves the timing
+        # slightly optimistic, which the caller already treats as a floor. It
+        # is not a reason to refuse to estimate.
         pass
 
 
@@ -264,7 +266,7 @@ def free_memory(device_kind: str) -> Memory:
                 return Memory(
                     free_bytes=int(free), total_bytes=int(total), source="torch.xpu"
                 )
-            except Exception:
+            except Exception:  # noqa: S110 - the Memory below IS the handling
                 pass
         return Memory(
             source="torch.xpu",

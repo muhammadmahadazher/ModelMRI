@@ -213,9 +213,7 @@ class Run:
         introspection = None
         note = ""
         if n_layers and n_heads:
-            introspection = eager_attention_bytes(
-                n_layers, n_heads, total, dtype_bytes
-            )
+            introspection = eager_attention_bytes(n_layers, n_heads, total, dtype_bytes)
             note = (
                 f"{n_layers} layers x {n_heads} heads x {total}^2 x "
                 f"{dtype_bytes} bytes — the attention scores ModelMRI asks for "

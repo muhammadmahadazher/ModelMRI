@@ -103,7 +103,7 @@ def teardown(twin) -> None:
 
     try:
         twin.to("cpu")
-    except Exception:
+    except Exception:  # noqa: S110 - the collector below is the fallback
         # A model that will not move is one we cannot free this way; the
         # collector below is then the only lever, and saying nothing would be
         # worse than trying and moving on.
