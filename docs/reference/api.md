@@ -142,6 +142,44 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## The two lenses
+
+`GET /api/lens?top_k=5&kind=plain|tuned|both`
+
+`layers` is **always the plain reading**, on every `kind`. A tuned reading
+arrives beside it in `tuned`, never in its place — a translator fitted to
+minimise disagreement with the final distribution will reduce disagreement with
+the final distribution, so a caller handed translated rows where it expected
+plain ones would have no way to tell the model from the fit.
+
+**Align the two by `layer`, not by index.** The plain lens has one row more:
+the model's own final state, which has no translator because it is the answer
+rather than a guess at it.
+
+| route | does |
+|---|---|
+| `GET` `/api/lens/tuned` | whether a translator has been fitted for the loaded model, and what to |
+| `POST` `/api/lens/tune` | fit one. `{"texts": [...]}` or `{"file": "corpus.txt"}`, plus optional `steps` |
+
+**Nothing is downloaded.** Pretrained lenses exist on the Hub and fetching one
+would break the offline promise the rest of this package keeps, so the corpus
+comes from the caller and training happens on this machine.
+
+The response reports **held-out KL per layer** — measured on sequences the
+translator never saw — beside the plain KL for the same layer. Training loss is
+not reported anywhere, because a translator's training loss is a statement
+about the translator. A layer the translator made *worse* shows a negative
+gain rather than being clamped to zero.
+
+`caution` is non-empty when the corpus is small relative to the fit: a
+translator is `d_model² + d_model` parameters per layer, so a few thousand
+tokens leaves it orders of magnitude under-determined. The held-out numbers are
+still real; what they are about is text like the training text.
+
+A saved lens is refused if it was fitted to a different model or a different
+dtype. Loading one across either would produce a confident, plausible, entirely
+wrong reading.
+
 ## Receipts
 
 Every measurement route returns a `receipt` alongside its numbers: what

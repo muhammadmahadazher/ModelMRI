@@ -8,6 +8,57 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#5, completed: a tuned lens, trained on your own text, shown beside the
+  plain one — never instead.** `POST /api/lens/tune` fits a per-layer affine
+  translator on the Belrose objective (minimising KL(final ‖ head(norm(A·h+b))))
+  and `GET /api/lens?kind=both` returns both columns. On gpt2 over twelve
+  sentences, held-out KL at the embedding layer fell from 41.88 to 6.28 nats.
+
+  **Both columns always stay on screen.** A translator fitted to minimise
+  disagreement with the final distribution *will* reduce disagreement with the
+  final distribution — that is the method, not a flaw in it. If the tuned lens
+  silently replaced the plain one, every early layer would suddenly look like
+  it already knew the answer and nothing on screen would say whether that is
+  the model or the fit. `layers` is the plain reading on every `kind`.
+
+  **The only number reported is held-out KL**, measured on sequences the
+  translator never saw. Training loss appears nowhere. A layer the translator
+  made worse shows a negative gain rather than being clamped to zero, and a
+  corpus small relative to the fit raises a `caution` naming the ratio — twelve
+  sentences against 590,592 parameters per layer is 0.0003 tokens per
+  parameter, and the held-out numbers are real but they are about that text.
+
+  **Nothing is downloaded.** Pretrained lenses exist on the Hub; fetching one
+  would break the offline promise the rest of this package keeps, so training
+  is local and explicit. Lenses cache as safetensors keyed by model, dtype,
+  corpus hash and token count — all four, because all four change the lens —
+  and loading one fitted to a different model or dtype is refused.
+
+  The translator is initialised to the identity, so an untrained one *is* the
+  plain lens rather than making step 0 worse than doing nothing.
+
+- **The logit lens now travels in a `.mri`, and a recording serves it with no
+  model loaded.** The section existed in the format from the beginning and was
+  never written, because `export_session` did not pass it — so `lens` was
+  always `[]` and the hole was invisible. `verify` re-reads the trajectory and
+  `diff` compares it: the layer where two runs first disagree, and separately
+  the layer the answer settles at, which can move while every leading token
+  stays the same.
+
+### Fixed
+
+- **The logit lens's replay guard was duplicated in `server.py`**, because the
+  lens was the one measurement computed outside `ModelRuntime`. `server.py`
+  recorded how that failed: with a recording open *and* a model loaded, the
+  lens reported the live model's layers inside a session every other panel was
+  drawing from the file. It is a runtime method now, with one guard in the same
+  place as every other measurement's.
+
+- **The lens section of a `.mri` was never validated.** It reaches the viewer
+  as a table of tokens and a bar per probability, and nothing checked that a
+  row's tokens and probabilities were the same length — mismatched, the panel
+  renders a token with somebody else's probability beside it.
+
 - **#19, completed: `modelmri diff a.mri b.mri`, with a CI exit code.** Compares
   two saved analyses of the same prompt — which heads moved in the ablation
   ranking, which patching sites changed sign, whether the model still says the

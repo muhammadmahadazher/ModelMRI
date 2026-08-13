@@ -486,23 +486,51 @@ def _diff_lens(a, b) -> Delta:
             f"{which} file carries no logit-lens trajectory.",
         )
     rows = min(len(a.lens), len(b.lens))
+
+    def leader(row: dict) -> str | None:
+        tokens = row.get("tokens") or []
+        return tokens[0] if tokens else None
+
     for i in range(rows):
-        if a.lens[i].get("top") != b.lens[i].get("top"):
+        was, now = leader(a.lens[i]), leader(b.lens[i])
+        if was != now:
+            # The LAYER is the finding. "The answer used to be decided by
+            # layer 8 and now is not decided until 11" is what a reader acts
+            # on; which token it was at that layer is the supporting detail.
             return Delta(
                 "logit lens",
                 CHANGED,
-                f"the trajectory first diverges at layer {i}: "
-                f"{a.lens[i].get('top')!r} became {b.lens[i].get('top')!r}.",
+                f"the trajectory first diverges at layer {a.lens[i].get('layer', i)}: "
+                f"{was!r} led there and now {now!r} does.",
                 magnitude=None,
                 unit="token",
-                measured={"first_divergence_layer": i},
+                measured={
+                    "first_divergence_layer": a.lens[i].get("layer", i),
+                    "was": was,
+                    "now": now,
+                    "layers_compared": rows,
+                },
             )
+
+    settled_a = (a.lens_info or {}).get("settled_at")
+    settled_b = (b.lens_info or {}).get("settled_at")
+    if settled_a != settled_b:
+        return Delta(
+            "logit lens",
+            CHANGED,
+            f"the same token leads at every layer, but the answer settles at "
+            f"layer {settled_b} rather than {settled_a}.",
+            magnitude=None,
+            unit="layer",
+            measured={"settled_at_a": settled_a, "settled_at_b": settled_b},
+        )
     return Delta(
         "logit lens",
         SAME,
         f"the same token leads at all {rows} layers.",
         magnitude=0.0,
         unit="token",
+        measured={"layers_compared": rows},
     )
 
 

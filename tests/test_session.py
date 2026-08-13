@@ -416,3 +416,90 @@ def test_malformed_metadata_is_a_refusal_rather_than_a_500():
                     }
                 )
             )
+
+
+# ------------------------------------------------------- the lens section
+#
+# Carried in the format from the beginning and never validated, because
+# nothing wrote it: `export_session` did not pass it, so `lens` was always []
+# and the hole was invisible. It reaches the viewer as a table of tokens and a
+# bar per probability.
+
+
+def _lens_doc(rows, info=None):
+    import gzip
+    import json
+
+    from modelmri import session as s
+
+    raw = s.build(
+        model_id="gpt2",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a", "b"],
+        prompt="a",
+        generation="b",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=1,
+    )
+    doc = json.loads(gzip.decompress(raw))
+    doc["lens"] = rows
+    if info is not None:
+        doc["lens_info"] = info
+    return gzip.compress(json.dumps(doc).encode())
+
+
+def test_a_lens_row_with_mismatched_tokens_and_probs_is_refused():
+    """The panel zips them together; mismatched lengths render a token with
+    somebody else's probability beside it."""
+    import pytest
+
+    from modelmri import session as s
+
+    raw = _lens_doc([{"layer": 0, "tokens": ["a", "b"], "probs": [1.0]}])
+    with pytest.raises(s.SessionError, match="cannot be read together"):
+        s.parse(raw)
+
+
+def test_a_non_finite_lens_probability_is_refused():
+    import pytest
+
+    from modelmri import session as s
+
+    raw = _lens_doc([{"layer": 0, "tokens": ["a"], "probs": [float("nan")]}])
+    with pytest.raises(s.SessionError, match="non-finite"):
+        s.parse(raw)
+
+
+def test_a_lens_layer_with_no_index_is_refused():
+    import pytest
+
+    from modelmri import session as s
+
+    with pytest.raises(s.SessionError, match="no index"):
+        s.parse(_lens_doc([{"tokens": ["a"], "probs": [1.0]}]))
+
+
+def test_settled_at_none_survives_because_it_is_a_finding():
+    """ "The answer never settles before the last layer" is a result. Coercing
+    it to 0 would claim it settled immediately."""
+    from modelmri import session as s
+
+    parsed = s.parse(
+        _lens_doc(
+            [{"layer": 0, "tokens": ["a"], "probs": [1.0]}],
+            {"settled_at": None, "final": " a"},
+        )
+    )
+    assert parsed.lens_info["settled_at"] is None
+    assert parsed.lens_info["final"] == " a"
+
+
+def test_a_file_with_no_lens_reads_as_an_empty_one():
+    from modelmri import session as s
+
+    parsed = s.parse(_lens_doc([]))
+    assert parsed.lens == []
+    assert parsed.lens_info == {}

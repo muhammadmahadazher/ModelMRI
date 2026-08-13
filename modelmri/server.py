@@ -864,67 +864,89 @@ def create_app(
         }
 
     @app.get("/api/lens")
-    async def lens(top_k: int = 5):
+    async def lens(top_k: int = 5, kind: str = "plain"):
         """Logit lens — what the model would have said at each layer.
 
         The fallback for every model with no SAE, which is most of them.
+
+        `kind=plain|tuned|both`. `layers` is ALWAYS the plain reading, on
+        every kind; a tuned one arrives beside it in `tuned` rather than in
+        its place. A translator fitted to minimise disagreement with the final
+        distribution will reduce disagreement with the final distribution, so
+        a caller that got translated rows where it expected plain ones would
+        have no way to tell the model from the fit.
         """
-        # Replay first, and this is the only replay-sensitive route in the tree
-        # whose guard does not live in runtime.py. Every other one —
-        # attention_meta, attention_slice, compare, rank_heads,
-        # attribute_tokens, export_session — opens with `if self.replay is not
-        # None` because it is a ModelRuntime method. The lens is computed here
-        # instead, from `modelmri.lens`, so it never passed a runtime guard and
-        # nobody noticed: `runtime.model is None` catches the common case of
-        # opening a `.mri` with nothing loaded, which looks like it is working.
-        #
-        # It stops looking like it is working the moment someone opens a
-        # recording while their own model is still loaded. Then `model` is not
-        # None, `last_ids` is not None, and the lens happily reports the LIVE
-        # model's layers inside a session every other panel is drawing from the
-        # recording — with the replay pill on screen saying "recorded, not
-        # live".
-        if runtime.replay is not None:
-            return JSONResponse(
-                {
-                    "error": "This is a recording. The logit lens means running "
-                    "the model, and a `.mri` does not carry one."
-                },
-                status_code=409,
-            )
-        if runtime.backend == "ollama":
-            return JSONResponse(
-                {
-                    "error": "Ollama serves text only — the layers never leave its process"
-                },
-                status_code=409,
-            )
-        if runtime.model is None:
-            return JSONResponse({"error": "no model loaded"}, status_code=409)
-        if runtime.last_ids is None:
-            return JSONResponse(
-                {"error": "generate something first — the lens reads that run"},
-                status_code=409,
-            )
-
-        from .lens import logit_lens
-
-        def run() -> dict:
-            out = logit_lens(runtime.model, runtime.tokenizer, runtime.last_ids, top_k)
-            # Stamped here rather than inside `lens.py`, which takes a model
-            # and a tokenizer and has no idea which model id they came from.
-            # The receipt is about the setup, and the runtime is what holds it.
-            out["receipt"] = runtime.receipt("logit_lens", top_k=top_k)
-            return out
-
+        # The replay guard, the Ollama arm and the "generate something first"
+        # arm all live in `ModelRuntime.logit_lens` now, beside every other
+        # measurement's. They were duplicated here because the lens was
+        # computed outside the runtime, and the comment this replaces recorded
+        # how that failed: with a recording open AND a model loaded, the lens
+        # reported the LIVE model's layers inside a session every other panel
+        # was drawing from the file. One guard, one place.
         try:
-            return await asyncio.to_thread(run)
+            return await asyncio.to_thread(runtime.logit_lens, top_k, kind)
         except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/lens")
+
+    @app.get("/api/lens/tuned")
+    def tuned_lens_status() -> dict:
+        """Whether a translator has been fitted for the loaded model."""
+        return runtime.tuned_lens_status()
+
+    @app.post("/api/lens/tune")
+    async def train_tuned_lens(request: Request):
+        """Fit a per-layer translator on text you supply.
+
+        NOTHING IS FETCHED. Pretrained lenses exist on the Hub and pulling one
+        would break the offline promise the rest of this package keeps, so the
+        corpus comes from the caller: a list of strings, a local file, or the
+        prompts already in this machine's trace store.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        texts = body.get("texts")
+        source = body.get("file")
+        label = str(body.get("label") or "")
+        steps = int(body.get("steps") or 250)
+
+        try:
+            if source:
+                from . import sweep as sweep_mod
+
+                # The same reader `modelmri sweep` uses, so a corpus file that
+                # works for one works for the other rather than being two
+                # nearly-identical formats.
+                texts = sweep_mod.load_prompts(source)
+                label = label or Path(str(source)).name
+            if not isinstance(texts, list) or not texts:
+                return JSONResponse(
+                    {
+                        "error": "a tuned lens needs text to fit to. Pass "
+                        "`texts` (a list of strings) or `file` (a .txt or "
+                        ".jsonl). Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            out = await asyncio.to_thread(
+                runtime.train_tuned_lens,
+                [str(t) for t in texts],
+                corpus_label=label,
+                steps=steps,
+            )
+            return out
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/lens/tune")
 
     # ---------------------------------------------------------- custom models
     #

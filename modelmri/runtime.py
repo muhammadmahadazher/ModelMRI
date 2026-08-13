@@ -429,6 +429,12 @@ class ModelRuntime:
         self.epoch = 0
         self._last_patch: dict = {}
         self._last_ranking: dict = {}
+        self._last_lens: dict = {}
+        # A trained translator, when one has been fitted or loaded for THIS
+        # model. Cleared on every load: a lens fitted to one model reads
+        # another one's residual stream as confident nonsense.
+        self._tuned: dict = {}
+        self._tuned_info: dict = {}
         # One receipt per measurement that has run, keyed by the operation, so
         # `export_session` can put the setup of every number in the `.mri`
         # beside the number. Each carries the epoch it was taken under and is
@@ -672,6 +678,8 @@ class ModelRuntime:
                 self.sae = None
                 self._feats = None
                 self._steer = None
+                self._tuned = {}
+                self._tuned_info = {}
             return self.status()
 
         with self._load_slot(hf_id):
@@ -1139,6 +1147,7 @@ class ModelRuntime:
         # one rebase that did not.
         self._last_patch = {}
         self._last_ranking = {}
+        self._last_lens = {}
         # The generation itself gets a receipt, and it is the one every other
         # receipt depends on: each of them names a prompt, and this says how
         # that prompt was answered. `temperature` is the field `verify` cannot
@@ -1467,7 +1476,7 @@ class ModelRuntime:
             # carries the ranking, refusing a file that already holds the
             # answer is the format failing rather than the reader asking for
             # too much -- which is the lesson `patch_trace` records.
-            recorded = self.replay.ranking or {}
+            recorded = getattr(self.replay, "ranking", None) or {}
             if recorded.get("ranked"):
                 return {**recorded, "recorded": True}
             raise Refusal(
@@ -1762,6 +1771,7 @@ class ModelRuntime:
             self._attn_tokens = None
             self._last_patch = {}
             self._last_ranking = {}
+            self._last_lens = {}
             # `_feats` too. Every other rebase path clears it; this one did
             # not, and `_compute_features` guards its cache on
             # `last_ids_epoch == epoch` — which adopt satisfies — so the
@@ -1930,6 +1940,159 @@ class ModelRuntime:
             "compare_baselines", layer=layer, baselines=list(ablate.BASELINES)
         )
         return out
+
+    def train_tuned_lens(
+        self,
+        texts: list[str],
+        *,
+        corpus_label: str = "",
+        steps: int = 250,
+        on_progress=None,
+    ) -> dict:
+        """Fit a per-layer translator on text you provide, and keep it.
+
+        Cached on disk under (model, dtype, corpus hash, token count), because
+        every one of those four changes the lens. A second call with the same
+        corpus loads rather than retrains.
+        """
+        from . import tuned_lens as tl
+
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Training a lens means running the "
+                "model, and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no residual stream here "
+                "to fit a translator to."
+            )
+        if self.model is None:
+            raise Refusal("No model loaded — pick one first.")
+
+        # A padless tokenizer cannot batch, and gpt2's is the common case.
+        # Set on the tokenizer we already hold rather than reloading it.
+        if getattr(self.tokenizer, "pad_token", None) is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        dtype = str(next(self.model.parameters()).dtype).removeprefix("torch.")
+        sha = tl.corpus_hash(texts)
+        n_tokens = sum(len(self.tokenizer(t)["input_ids"]) for t in texts)
+        cached = tl.cache_path(self.hf_id or "", dtype, sha, n_tokens)
+
+        if cached.is_file():
+            info, state = tl.load(cached, model_id=self.hf_id or "", dtype=dtype)
+            self._tuned, self._tuned_info = state, info
+            return {**info, "cached": True, "path": cached.name}
+
+        info, state = tl.train(
+            self.model,
+            self.tokenizer,
+            texts,
+            corpus_label=corpus_label or f"{len(texts)} sequences",
+            steps=steps,
+            on_progress=on_progress,
+        )
+        info.model_id = self.hf_id or ""
+        tl.save(info, state, cached)
+        self._tuned, self._tuned_info = state, info.to_dict()
+        return {**info.to_dict(), "cached": False, "path": cached.name}
+
+    def tuned_lens_status(self) -> dict:
+        """Whether a translator is loaded, and what it was fitted to."""
+        return {
+            "trained": bool(self._tuned),
+            **({"info": self._tuned_info} if self._tuned else {}),
+        }
+
+    def logit_lens(self, top_k: int = 5, kind: str = "plain") -> dict:
+        """What the model was about to say at every layer, not just the last.
+
+        A ModelRuntime method rather than a call `server.py` makes into
+        `lens.py` directly, and that is the point of moving it. Every other
+        measurement here opens with `if self.replay is not None`; the lens did
+        not, because it was computed outside the runtime, so the replay guard
+        had to be duplicated at the route -- and a duplicated guard is one that
+        gets forgotten on the next route that needs it. `server.py` records
+        exactly how that failed: with a recording open AND a model loaded, the
+        lens happily reported the LIVE model's layers inside a session every
+        other panel was drawing from the file.
+
+        Now it is one guard, in the same place as the others, and a recording
+        that carries a lens can serve it.
+        """
+        with self._lock:
+            if self.replay is not None:
+                # getattr, not attribute access: `replay` is a Session in
+                # every real path, but a 500 is the wrong answer for "this is
+                # a recording" under ANY replay object. The refusal below is
+                # the correct response either way, and reaching it must not
+                # depend on the shape of what was opened.
+                recorded = getattr(self.replay, "lens", None) or []
+                if recorded:
+                    return {
+                        "layers": recorded,
+                        **(getattr(self.replay, "lens_info", None) or {}),
+                        "recorded": True,
+                    }
+                raise Refusal(
+                    "This is a recording, and it does not carry a logit lens. "
+                    "The lens means running the model, and a `.mri` holds "
+                    "activations rather than weights. Whoever exported it can "
+                    "read the lens and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — the layers never leave its "
+                    "process."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.last_ids is None:
+                raise Refusal(
+                    "Generate something first — the lens reads that run."
+                )
+
+            from .lens import logit_lens as _logit_lens
+
+            if kind not in ("plain", "tuned", "both"):
+                raise BadRequest(
+                    f"unknown lens kind {kind!r} — use plain, tuned or both"
+                )
+            if kind in ("tuned", "both") and not self._tuned:
+                raise Refusal(
+                    "No tuned lens has been trained for this model. Train one "
+                    "on your own text first — nothing is fetched, because a "
+                    "downloaded lens would break the offline promise the rest "
+                    "of this package keeps."
+                )
+
+            out = _logit_lens(
+                self.model, self.tokenizer, self.last_ids.unsqueeze(0), top_k
+            )
+            if kind in ("tuned", "both"):
+                from . import tuned_lens as tl
+
+                tuned = tl.read(
+                    self.model,
+                    self.tokenizer,
+                    self.last_ids.unsqueeze(0),
+                    self._tuned,
+                    top_k,
+                )
+                # BESIDE, never instead. `layers` stays the plain reading on
+                # every kind, so a caller that ignores `tuned` gets the
+                # untranslated rows rather than translated ones it did not ask
+                # for -- and the panel renders two columns from one payload.
+                out["tuned"] = tuned["layers"]
+                out["tuned_info"] = self._tuned_info
+            out["kind"] = kind
+            out["receipt"] = self.receipt("logit_lens", top_k=top_k, kind=kind)
+            # Kept for export on the same terms as the ranking and the patch
+            # trace: tagged with the epoch, dropped when the run it describes
+            # stops being the current one.
+            self._last_lens = {**out, "epoch": self.epoch}
+            return out
 
     def attribute_tokens(self, position: int | None = None) -> dict:
         """Rank the prompt's own tokens by how far masking one moves the answer.
@@ -2400,6 +2563,7 @@ class ModelRuntime:
             # metadata, and an unreadable one is better dropped than leaked.
             shared_id = Path(shared_id).name if shared_id else ""
 
+        lens_rows, lens_info = self._lens_for_export()
         return session.build(
             model_id=shared_id,
             device=self.device,
@@ -2420,6 +2584,8 @@ class ModelRuntime:
             # one you could not send anybody.
             patch=self._patch_for_export(),
             ranking=self._ranking_for_export(),
+            lens=lens_rows,
+            lens_info=lens_info,
             receipts=self._receipts_for_export(),
         )
 
@@ -2438,6 +2604,26 @@ class ModelRuntime:
             for receipt in self._receipts.values()
             if receipt.get("epoch") == self.epoch
         ]
+
+    def _lens_for_export(self) -> tuple[list, dict]:
+        """(rows, scalars) for the logit lens, if it belongs to this run.
+
+        Split in two because `lens` is an existing key with a declared list
+        type -- the rows the panel draws -- and the scalars that come with it
+        (`final`, `settled_at`, `reliability`) do not fit in a list. They ride
+        in an additive `lens_info` rather than changing the shape of a key
+        that already exists, so the format version does not move.
+        """
+        last = self._last_lens
+        if not last or last.get("epoch") != self.epoch:
+            return [], {}
+        rows = last.get("layers") or []
+        info = {
+            k: last[k]
+            for k in ("final", "settled_at", "n_layers", "reliability")
+            if k in last
+        }
+        return rows, info
 
     def _ranking_for_export(self) -> dict:
         """The last head ranking, if it belongs to the state being exported.

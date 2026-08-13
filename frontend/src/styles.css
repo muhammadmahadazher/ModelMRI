@@ -3647,3 +3647,61 @@ main > [id^="sec-"] {
 @media (prefers-reduced-motion: reduce) {
   .receipt-full { animation: none; }
 }
+
+/* ── tuned lens, beside the plain one ─────────────────────────────────
+   Two columns, never one. A translator fitted to minimise disagreement
+   with the final distribution will reduce disagreement with the final
+   distribution; a reader shown only the tuned rows cannot tell the model
+   from the fit, so the plain column never leaves. */
+
+.lens-row.twin {
+  /* One more track than the plain layout, for the tuned reading. */
+  grid-template-columns: 58px 92px 1fr 1fr;
+}
+.tuned-col {
+  border-left: 1px dashed var(--hair);
+  padding-left: var(--sp-3);
+}
+.lens-gain {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+/* Down is good here: the number is a KL, and less of it is closer to the
+   model. Coloured by direction rather than by sign so the eye does not
+   have to remember which way the metric runs. */
+.lens-gain.up { color: var(--sem-vla); }
+.lens-gain.down { color: var(--sem-error); }
+
+.tune {
+  margin: 0 0 var(--sp-3);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  padding: var(--sp-2) var(--sp-3);
+}
+.tune > summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-mute);
+}
+.tune[open] > summary { color: var(--color-ink); margin-bottom: var(--sp-2); }
+.tune-corpus {
+  width: 100%;
+  box-sizing: border-box;
+  margin: var(--sp-2) 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font: 12px/1.5 var(--font-mono);
+  resize: vertical;
+}
+.hint.warn {
+  border-left: 2px solid var(--sem-error);
+  padding-left: var(--sp-3);
+}

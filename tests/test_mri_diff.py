@@ -360,3 +360,67 @@ def test_the_rendered_report_names_the_units_of_the_threshold(pair):
     a, b = pair
     text = mri_diff.render(mri_diff.diff(a, b), fail_over=0.05)
     assert "own units" in text and "nats" in text
+
+
+# --------------------------------------------------------------- logit lens
+
+
+def _with_lens(doc: dict, leaders: list[str], settled: int | None = 2) -> dict:
+    doc["lens"] = [
+        {"layer": i, "tokens": [t, " other"], "probs": [0.7, 0.3], "entropy": 0.5}
+        for i, t in enumerate(leaders)
+    ]
+    doc["lens_info"] = {
+        "final": leaders[-1],
+        "settled_at": settled,
+        "n_layers": len(leaders),
+    }
+    return doc
+
+
+def test_two_identical_trajectories_are_the_same(pair):
+    a, b = pair
+    for path in (a, b):
+        path.write_bytes(
+            _pack(_with_lens(_doc(path.read_bytes()), [" a", " b", " Paris"]))
+        )
+    delta = _by_name(mri_diff.diff(a, b))["logit lens"]
+    assert delta.status == mri_diff.SAME
+    assert delta.measured["layers_compared"] == 3
+
+
+def test_the_layer_where_the_trajectory_diverges_is_the_finding(pair):
+    """ "The answer used to be decided by layer 8 and now is not" is what a
+    reader acts on; which token it was there is the supporting detail."""
+    a, b = pair
+    a.write_bytes(_pack(_with_lens(_doc(a.read_bytes()), [" a", " b", " Paris"])))
+    b.write_bytes(_pack(_with_lens(_doc(b.read_bytes()), [" a", " Berlin", " Paris"])))
+
+    delta = _by_name(mri_diff.diff(a, b))["logit lens"]
+    assert delta.status == mri_diff.CHANGED
+    assert delta.measured["first_divergence_layer"] == 1
+    assert delta.measured["now"] == " Berlin"
+
+
+def test_a_settling_layer_that_moved_is_caught_even_when_every_leader_matches(pair):
+    """The subtle one: the same token can lead at every layer while the layer
+    the model commits at moves, and that is a real change in the trajectory."""
+    a, b = pair
+    a.write_bytes(
+        _pack(_with_lens(_doc(a.read_bytes()), [" a", " b", " Paris"], settled=2))
+    )
+    b.write_bytes(
+        _pack(_with_lens(_doc(b.read_bytes()), [" a", " b", " Paris"], settled=1))
+    )
+
+    delta = _by_name(mri_diff.diff(a, b))["logit lens"]
+    assert delta.status == mri_diff.CHANGED
+    assert delta.measured == {"settled_at_a": 2, "settled_at_b": 1}
+
+
+def test_a_file_with_no_lens_is_not_comparable_rather_than_unchanged(pair):
+    a, b = pair
+    a.write_bytes(_pack(_with_lens(_doc(a.read_bytes()), [" a", " b"])))
+    assert _by_name(mri_diff.diff(a, b))["logit lens"].status == (
+        mri_diff.NOT_COMPARABLE
+    )

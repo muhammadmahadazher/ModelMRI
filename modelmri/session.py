@@ -252,6 +252,100 @@ def _graph(doc: dict) -> dict:
     return out
 
 
+def _lens(doc: dict) -> tuple[list, dict]:
+    """The logit-lens trajectory of an untrusted file, and its scalars.
+
+    This section was carried in the format from the beginning and never
+    validated, because nothing ever wrote it -- `export_session` did not pass
+    it, so `lens` was always `[]` and the hole was invisible. It reaches the
+    viewer as a table of tokens and a bar per probability, so it is held to the
+    same standard as everything else a stranger can send.
+
+    Absent is fine. Malformed is refused rather than dropped.
+    """
+    rows = doc.get("lens")
+    if rows is None:
+        return [], {}
+    if not isinstance(rows, list):
+        raise SessionError("this session's lens section is not a list of layers")
+    if len(rows) > MAX_DIM:
+        raise SessionError(
+            f"this session's lens claims {len(rows):,} layers, above the "
+            f"{MAX_DIM:,} this reads."
+        )
+
+    clean: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SessionError("this session's lens has a layer that is not fields")
+        layer = row.get("layer")
+        if not isinstance(layer, int) or isinstance(layer, bool) or layer < 0:
+            raise SessionError("this session's lens has a layer with no index")
+        tokens = row.get("tokens")
+        probs = row.get("probs")
+        if not isinstance(tokens, list) or not isinstance(probs, list):
+            raise SessionError(f"lens layer {layer} carries no predictions")
+        if len(tokens) != len(probs):
+            # A row the panel would zip together. Mismatched lengths render as
+            # a token with somebody else's probability beside it.
+            raise SessionError(
+                f"lens layer {layer} has {len(tokens)} tokens and "
+                f"{len(probs)} probabilities, which cannot be read together."
+            )
+        if len(tokens) > MAX_DIM:
+            raise SessionError(f"lens layer {layer} carries too many predictions")
+        keep: dict = {
+            "layer": layer,
+            "tokens": [str(t)[:MAX_RANKING_TEXT] for t in tokens],
+            "probs": [],
+        }
+        for value in probs:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise SessionError(
+                    f"lens layer {layer} has a probability that is not a number"
+                )
+            if not math.isfinite(value):
+                raise SessionError(f"lens layer {layer} has a non-finite probability")
+            keep["probs"].append(float(value))
+        for name in ("entropy", "kl_to_final"):
+            value = row.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if math.isfinite(value):
+                    keep[name] = float(value)
+        clean.append(keep)
+
+    raw_info = doc.get("lens_info")
+    info: dict = {}
+    if isinstance(raw_info, dict):
+        final = raw_info.get("final")
+        if isinstance(final, str):
+            info["final"] = final[:MAX_RANKING_TEXT]
+        settled = raw_info.get("settled_at")
+        # None is a real value here and NOT the same as absent: "the answer
+        # never settles before the last layer" is a finding, and coercing it to
+        # 0 would claim it settled immediately.
+        if settled is None or (
+            isinstance(settled, int) and not isinstance(settled, bool)
+        ):
+            info["settled_at"] = settled
+        n_layers = raw_info.get("n_layers")
+        if isinstance(n_layers, int) and not isinstance(n_layers, bool):
+            info["n_layers"] = n_layers
+        reliability = raw_info.get("reliability")
+        if isinstance(reliability, dict):
+            info["reliability"] = {
+                k: v
+                for k, v in reliability.items()
+                if isinstance(k, str)
+                and (
+                    isinstance(v, (bool, int, float))
+                    or (isinstance(v, str) and len(v) < MAX_GRAPH_TEXT)
+                    or v is None
+                )
+            }
+    return clean, info
+
+
 def _ranking(doc: dict) -> dict:
     """The head-ranking section of an untrusted file, or nothing.
 
@@ -544,6 +638,10 @@ class Session:
     # (layer, head) -> {"q": base64, "scale": float}
     attention: dict[str, dict] = field(default_factory=dict)
     lens: list[dict] = field(default_factory=list)
+    # `final`, `settled_at`, `n_layers` and the reliability block that come
+    # with the trajectory. Additive and separate because `lens` is an existing
+    # key with a declared list type, and scalars do not fit in a list.
+    lens_info: dict = field(default_factory=dict)
     n_layers: int = 0
     n_heads: int = 0
     # Where the prompt ends. Additive: a file written before this carries 0,
@@ -634,6 +732,7 @@ def build(
     n_heads: int,
     n_prompt: int = 0,
     lens: list[dict] | None = None,
+    lens_info: dict | None = None,
     note: str = "",
     scope: str = "",
     patch: dict | None = None,
@@ -710,6 +809,8 @@ def build(
     # Additive like `patch`, and written through the READER's validator for
     # the same reason `graph` is: a writer laxer than the reader is how you
     # build files nobody can open.
+    if lens_info and (lens or []):
+        doc["lens_info"] = lens_info
     if ranking and ranking.get("ranked"):
         doc["ranking"] = _ranking({"ranking": ranking})
     if receipts:
@@ -850,6 +951,10 @@ def parse(data: bytes) -> Session:
             "damaged or it is not a .mri"
         )
 
+    # Once, not once per field: `_lens` validates every layer and every
+    # probability, and calling it twice would do that work twice on a file a
+    # stranger sent.
+    lens_rows, lens_info = _lens(doc)
     return Session(
         meta={
             **(meta or {}),
@@ -860,7 +965,8 @@ def parse(data: bytes) -> Session:
         prompt=doc.get("prompt") or "",
         generation=doc.get("generation") or "",
         attention=attention,
-        lens=doc.get("lens") or [],
+        lens=lens_rows,
+        lens_info=lens_info,
         n_prompt=_boundary(doc, len(tokens)),
         n_layers=counts["n_layers"],
         n_heads=counts["n_heads"],

@@ -487,6 +487,80 @@ def _check_patch(parsed, runtime, blocked: str) -> Check:
     )
 
 
+def _check_lens(parsed, runtime, blocked: str) -> Check | None:
+    """Does the answer still arrive at the same layer?
+
+    Compared as a TRAJECTORY of leading tokens rather than cell by cell. The
+    per-layer probabilities move in the last digits for the same reasons every
+    other number does, but "which token leads at layer 8" is discrete: it
+    either reproduces or it does not, and there is no tolerance to invent for
+    it. `settled_at` is checked separately because the whole trajectory can
+    lead with the same token while the layer the model commits at moves.
+    """
+    stored = parsed.lens or []
+    if not stored:
+        if not _receipt_for(parsed, "logit_lens"):
+            return None
+        return Check(
+            "logit lens",
+            NOT_VERIFIABLE,
+            "this file records that a lens was read but does not carry it. "
+            "Files written before the lens travelled have nothing here.",
+        )
+    if blocked:
+        return Check("logit lens", NOT_VERIFIABLE, blocked)
+
+    try:
+        fresh = runtime.logit_lens(len(stored[0].get("tokens") or []) or 5)
+    except (BadRequest, Refusal) as err:
+        return Check(
+            "logit lens",
+            NOT_VERIFIABLE,
+            f"the lens could not be read here — {err}",  # leak-ok: authored
+        )
+
+    rows = fresh.get("layers") or []
+    if len(rows) != len(stored):
+        return Check(
+            "logit lens",
+            NOT_VERIFIABLE,
+            f"the file carries {len(stored)} layers and this model has "
+            f"{len(rows)} — a different depth is a different model.",
+        )
+
+    def leader(row: dict):
+        tokens = row.get("tokens") or []
+        return tokens[0] if tokens else None
+
+    for i, (here, there) in enumerate(zip(rows, stored, strict=True)):
+        if leader(here) != leader(there):
+            return Check(
+                "logit lens",
+                DIFFERS,
+                f"layer {there.get('layer', i)} led with {leader(there)!r} in "
+                f"the file and leads with {leader(here)!r} here.",
+                {"first_divergence_layer": there.get("layer", i)},
+            )
+
+    settled_there = (parsed.lens_info or {}).get("settled_at")
+    settled_here = fresh.get("settled_at")
+    if settled_there is not None and settled_there != settled_here:
+        return Check(
+            "logit lens",
+            DIFFERS,
+            f"every layer leads with the same token, but the answer settles at "
+            f"layer {settled_here} here against {settled_there} in the file.",
+            {"settled_at_file": settled_there, "settled_at_here": settled_here},
+        )
+    return Check(
+        "logit lens",
+        REPRODUCED,
+        f"the same token leads at all {len(rows)} layers"
+        + (f", settling at layer {settled_here}." if settled_here is not None else "."),
+        {"layers_compared": len(rows), "settled_at": settled_here},
+    )
+
+
 def _check_ranking(parsed, runtime, blocked: str) -> Check | None:
     """Does the same head still carry the answer, by the same margin?
 
@@ -736,6 +810,20 @@ def verify(path: str | Path, runtime) -> Report:
         )
 
     report.checks.append(_check_patch(parsed, runtime, blocked))
+
+    if generation.verdict == REPRODUCED:
+        lens = _check_lens(parsed, runtime, blocked)
+    elif parsed.lens or _receipt_for(parsed, "logit_lens"):
+        lens = Check(
+            "logit lens",
+            NOT_VERIFIABLE,
+            "the lens is read off a generation, and this file's could not be "
+            f"re-established here — {generation.detail}",
+        )
+    else:
+        lens = None
+    if lens is not None:
+        report.checks.append(lens)
 
     # Like attention, the ranking is measured at a position inside the run, so
     # it needs that run re-established. Unlike attention it is expensive --

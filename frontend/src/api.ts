@@ -1686,14 +1686,50 @@ export interface LensRow {
   entropy: number;
 }
 
-export const getLens = (topK = 5) =>
-  fetch(`/api/lens?top_k=${topK}`).then((r) =>
+/** What a translator was fitted to, and what it bought on held-out text. */
+export interface TunedLensInfo {
+  corpus_label?: string;
+  corpus_sha256?: string;
+  n_tokens?: number;
+  n_held_out?: number;
+  n_layers_improved?: number;
+  n_layers?: number;
+  /** Tokens of text per translator parameter. Under 1 means the fit is
+   *  under-determined, and `caution` then says so in a sentence. */
+  tokens_per_parameter?: number;
+  caution?: string;
+  means?: string;
+  seconds?: number;
+  cached?: boolean;
+  layers?: { layer: number; plain_kl: number; tuned_kl: number; gain: number }[];
+}
+
+export const trainTunedLens = (body: { texts?: string[]; file?: string; steps?: number }) =>
+  fetch("/api/lens/tune", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<TunedLensInfo>(r));
+
+export const tunedLensStatus = () =>
+  fetch("/api/lens/tuned").then((r) =>
+    json<{ trained: boolean; info?: TunedLensInfo }>(r),
+  );
+
+export const getLens = (topK = 5, kind: "plain" | "tuned" | "both" = "plain") =>
+  fetch(`/api/lens?top_k=${topK}&kind=${kind}`).then((r) =>
     json<{
       layers: LensRow[];
       n_layers: number;
       final: string;
       settled_at: number | null;
       receipt?: Receipt | null;
+      /** BESIDE the plain rows, never instead of them: `layers` is the plain
+       *  reading on every kind. Align by `layer`, not by index — the plain
+       *  lens has one more row (the model's own final state), which has no
+       *  translator because it is the answer rather than a guess at it. */
+      tuned?: LensRow[] | null;
+      tuned_info?: TunedLensInfo | null;
     }>(r),
   );
 

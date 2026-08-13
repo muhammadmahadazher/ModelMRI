@@ -71,6 +71,7 @@ def recording(gpt2, tmp_path_factory):
         )
     )
     gpt2.ablate_heads(layer=0)
+    gpt2.logit_lens(4)
     gpt2.patch_trace("The capital of France is", "The capital of Italy is")
     path = tmp_path_factory.mktemp("mri") / "run.mri"
     path.write_bytes(gpt2.export_session(layer=0, head=0, note="test"))
@@ -448,3 +449,74 @@ def test_a_recording_without_a_ranking_still_refuses_with_a_reason(recording, tm
     reader.open_session(path.read_bytes())
     with pytest.raises(Refusal, match="does not carry a head ranking"):
         reader.ablate_heads()
+
+
+# --------------------------------------------------------------- logit lens
+
+
+def test_the_lens_is_re_read_not_merely_named(clean_report):
+    """It reported "not comparable" for every file, because `export_session`
+    never wrote the lens — the section existed in the format and nothing ever
+    filled it."""
+    check = next(c for c in clean_report.checks if c.name == "logit lens")
+    assert check.verdict == verify_mod.REPRODUCED
+    assert check.measured["layers_compared"] > 1
+
+
+def test_a_moved_trajectory_is_caught_at_its_layer(recording, fresh, tmp_path):
+    doc = _doc(recording.read_bytes())
+    doc["lens"][3]["tokens"][0] = " Berlin"
+    bad = tmp_path / "bad.mri"
+    bad.write_bytes(_pack(doc))
+
+    report = verify_mod.verify(bad, fresh)
+    check = next(c for c in report.checks if c.name == "logit lens")
+    assert check.verdict == verify_mod.DIFFERS
+    assert check.measured["first_divergence_layer"] == doc["lens"][3]["layer"]
+    assert report.exit_code() == 1
+
+
+def test_a_moved_settling_layer_is_caught_even_when_the_leaders_match(
+    recording, fresh, tmp_path
+):
+    """The same token can lead at every layer while the layer the model
+    commits at moves."""
+    doc = _doc(recording.read_bytes())
+    doc["lens_info"]["settled_at"] = 1
+    bad = tmp_path / "settled.mri"
+    bad.write_bytes(_pack(doc))
+
+    report = verify_mod.verify(bad, fresh)
+    check = next(c for c in report.checks if c.name == "logit lens")
+    assert check.verdict == verify_mod.DIFFERS
+    assert "settles at" in check.detail
+
+
+def test_a_recording_serves_its_lens_with_no_model_loaded(recording):
+    from modelmri.runtime import ModelRuntime
+
+    reader = ModelRuntime()
+    reader.open_session(recording.read_bytes())
+    out = reader.logit_lens()
+    assert out["recorded"] is True
+    assert out["layers"]
+    assert reader.model is None
+
+
+def test_the_lens_replay_guard_lives_with_the_others(recording):
+    """It was duplicated in `server.py` because the lens was computed outside
+    the runtime, and `server.py` recorded how that failed: with a recording
+    open AND a model loaded, the lens reported the LIVE model's layers inside
+    a session every other panel drew from the file."""
+    import inspect as _inspect
+
+    from modelmri import server
+
+    source = _inspect.getsource(server.create_app)
+    # From this route's decorator to the next one, rather than a fixed
+    # character window — a docstring growing must not silently stop this from
+    # checking anything.
+    start = source.index('@app.get("/api/lens")')
+    lens_route = source[start : source.index("@app.", start + 10)]
+    assert "runtime.logit_lens" in lens_route, lens_route[-400:]
+    assert "from .lens import logit_lens" not in lens_route
