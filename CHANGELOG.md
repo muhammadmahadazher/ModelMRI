@@ -8,6 +8,45 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#7, partially: head type labels, gated on measured nulls.**
+  `GET /api/attention/types` labels heads as induction, previous-token,
+  duplicate-token or sink — or, for most of them, "no type detected", which is
+  a result rather than a gap. On gpt2 it finds the canonical induction heads
+  the literature names: L5H5 (0.930 of its attention on the induction offset),
+  L7H10 (0.902), L5H1 (0.893), L6H9 (0.884), and L4H11 as a textbook
+  previous-token head at 0.993.
+
+  **Three gates, and each exists because the previous ones were measured and
+  found insufficient.** The σ gate alone labelled 138 of gpt2's 144 heads: the
+  null for a repetition-dependent pattern is ~0.0008 with almost no spread, so
+  any score clears three of them, and a head putting **0.15× chance** on the
+  induction offset was labelled an induction head at 201σ. That is significance
+  without effect size — the same failure as having no null at all, arrived at
+  from the other side. So a label now needs σ above its own null, **and** more
+  attention than chance under the causal mask, **and** that offset being the
+  single target the head attends to most.
+
+  **Two nulls, because the patterns fail differently.** Induction and
+  duplicate-token are gated on matched non-repeating sequences, which is the
+  right null for offsets that are only special because the sequence repeats.
+  A previous-token head attends to i−1 whether or not anything repeats and a
+  sink attends to position 0 always, so their non-repeating "null" is the same
+  number again and they would never clear it. Those are gated on chance under
+  the causal mask instead. Which null a label cleared travels with the label.
+
+  A byte-level tokenizer is refused rather than measured badly, and the report
+  states that these are **behaviour on repeated random tokens, not claims about
+  real text** — and that a label must never be read as explaining the ablation
+  ranking, since a head can be labelled and irrelevant or unlabelled and
+  load-bearing.
+
+  When one label lands on most of a model's heads the report says so: gpt2
+  attends to the first token throughout, so 90 of 144 heads have position 0 as
+  their peak. True, and useless read as "these 90 are special".
+
+  Still to come for this item: rendering the labels in the attention panel and
+  carrying them in the `.mri`.
+
 - **#6, completed: direct logit attribution, sited inside the ablation panel.**
   `GET /api/attention/direct` decomposes the predicted token's logit across
   every head and MLP, as signed bars from a centre line. On gpt2 predicting

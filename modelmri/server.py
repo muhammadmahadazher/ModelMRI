@@ -903,9 +903,7 @@ def create_app(
         carry the answer through a later head.
         """
         try:
-            return await asyncio.to_thread(
-                runtime.direct_attribution, position, top_k
-            )
+            return await asyncio.to_thread(runtime.direct_attribution, position, top_k)
         except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:

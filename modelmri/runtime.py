@@ -2029,9 +2029,7 @@ class ModelRuntime:
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
             if self.last_ids is None:
-                raise Refusal(
-                    "Generate something first — attribution reads that run."
-                )
+                raise Refusal("Generate something first — attribution reads that run.")
 
             # The last PROMPT token by default, for the same reason
             # `ablate_heads` uses it: that is where the model answers the
@@ -2088,15 +2086,12 @@ class ModelRuntime:
                 )
             if self.backend == "ollama":
                 raise Refusal(
-                    "Ollama serves text only — the layers never leave its "
-                    "process."
+                    "Ollama serves text only — the layers never leave its process."
                 )
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
             if self.last_ids is None:
-                raise Refusal(
-                    "Generate something first — the lens reads that run."
-                )
+                raise Refusal("Generate something first — the lens reads that run.")
 
             from .lens import logit_lens as _logit_lens
 
