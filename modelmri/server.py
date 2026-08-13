@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, custom, gguf_read, paths
+from . import __version__, behavdiff, custom, gguf_read, paths
 from .custom import AdapterError, CustomHandle
 
 # Every browser-facing handler below answers `str(err)` for these types, and
@@ -1381,11 +1381,21 @@ def create_app(
         """
         try:
             q = await asyncio.to_thread(custom.resolve_under_roots, body.quantised)
-            # The original may be a directory (a checkpoint) or a hub id, so it
-            # is resolved only when it looks like a local path. A hub id is not
-            # a filesystem read and does not belong to the roots gate.
+            # The original may be a local checkpoint directory or a hub id, and
+            # which one is decided by SHAPE -- never by asking the filesystem.
+            #
+            # This used to be `if Path(original).exists()`, which cannot be
+            # asked about caller-supplied text without answering it: an
+            # existing path took the roots gate and got "outside the
+            # directories", a missing one fell through to the hub and got
+            # something else, so anyone able to call this route could test for
+            # the existence of any file on the machine. CodeQL called it
+            # uncontrolled data in a path expression and was right.
+            #
+            # Everything that is not hub-id-shaped now goes through the gate
+            # unconditionally, so both answers are the same sentence.
             original = body.original
-            if Path(original).exists():
+            if not behavdiff.is_hub_id(original):
                 original = str(
                     await asyncio.to_thread(custom.resolve_dir_under_roots, original)
                 )

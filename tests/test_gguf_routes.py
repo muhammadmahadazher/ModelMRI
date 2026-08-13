@@ -240,3 +240,80 @@ def test_all_three_gguf_routes_are_registered():
 def test_the_load_route_requires_a_path():
     """A 422 from the model, not a 500 from a None reaching Path()."""
     assert _client().post("/api/gguf/load", json={}).status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# The quantisation-comparison route must not answer "does this path exist?"
+# ---------------------------------------------------------------------------
+
+
+def _behaviour(client, original, quantised):
+    return client.post(
+        "/api/quantdiff/behaviour",
+        json={"quantised": quantised, "original": original, "prompt": "x"},
+    )
+
+
+def test_an_existing_and_a_missing_path_are_indistinguishable(tmp_path):
+    """The route used to branch on `Path(original).exists()`, so an existing
+    path outside the roots got "outside the directories" and a missing one
+    fell through to the hub and got something else. That difference is an
+    existence oracle for any file on the machine — small, but a primitive the
+    server has no reason to hand out. CodeQL called it uncontrolled data in a
+    path expression and was right.
+
+    Both must now produce the same refusal.
+    """
+    p = _gguf(tmp_path)
+    custom.add_root(str(tmp_path))
+    c = _client()
+
+    # OUTSIDE the roots, which is where the oracle would matter. A path under
+    # a root is one the caller was already allowed to read, so telling them it
+    # is missing discloses nothing.
+    outside = tmp_path.parent / "outside-the-roots"
+    outside.mkdir(exist_ok=True)
+    real = _behaviour(c, str(outside.resolve()), str(p))
+    missing = _behaviour(c, str(tmp_path.parent / "definitely-not-here"), str(p))
+
+    assert real.status_code == missing.status_code == 409
+    # Byte-identical but for the path echoed back: an existing directory and a
+    # missing one are refused the same way, so neither answer says which.
+    assert "outside the directories" in real.json()["error"]
+    assert "outside the directories" in missing.json()["error"]
+    assert (
+        real.json()["error"].split("is outside")[1]
+        == (missing.json()["error"].split("is outside")[1])
+    )
+
+
+@pytest.mark.parametrize(
+    "original",
+    ["/etc/passwd", "C:/Windows/System32/config/SAM", "../../secret", "~/.ssh/id_rsa"],
+)
+def test_a_path_shaped_original_never_skips_the_roots_gate(tmp_path, original):
+    """Anything not hub-id-shaped goes through the gate unconditionally."""
+    p = _gguf(tmp_path)
+    custom.add_root(str(tmp_path))
+    r = _behaviour(_client(), original, str(p))
+    assert r.status_code == 409
+    assert (
+        "outside the directories" in r.json()["error"]
+        or "does not exist" in (r.json()["error"])
+    )
+
+
+def test_a_hub_id_is_not_sent_through_the_filesystem_gate(tmp_path, monkeypatch):
+    """A hub id is not a path and must not be refused for failing to be one —
+    otherwise the feature only works against local checkpoints."""
+    from modelmri import behavdiff
+
+    called = {}
+
+    def spy(*a, **kw):
+        called["gate"] = True
+        raise AssertionError("a hub id reached the filesystem gate")
+
+    monkeypatch.setattr(custom, "resolve_dir_under_roots", spy)
+    assert behavdiff.is_hub_id("Qwen/Qwen3-0.6B")
+    assert not called

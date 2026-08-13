@@ -35,6 +35,7 @@ the one position where the answer changed.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -402,6 +403,31 @@ class Side:
         from pathlib import Path
 
         return Path(self.spec).name if self.kind == "gguf" else self.spec
+
+
+# A HuggingFace repo id: `name` or `namespace/name`, from a small alphabet
+# and at most one slash. Anchored, so anything carrying a drive letter, a
+# backslash, a leading slash or a `..` fails it and is treated as a path.
+HUB_ID = re.compile(r"^[A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*)?$")
+
+
+def is_hub_id(spec: str) -> bool:
+    """Whether this names a hub repo, decided by SHAPE and nothing else.
+
+    Deliberately not `Path(spec).exists()`. That question cannot be asked
+    about caller-supplied text without answering it: a path that exists takes
+    one branch and a path that does not takes another, and the two produce
+    different errors, so anyone who can call the route can test for the
+    existence of any file on the machine. Small, but it is a primitive, and
+    the server has no reason to hand one out.
+
+    Shape also fails in the safe direction. A local directory that happens to
+    match this pattern goes down the hub branch and is refused by the hub for
+    not existing; a hub id can never be mistaken for a path and skip the roots
+    gate, which is the failure that would matter.
+    """
+    spec = (spec or "").strip()
+    return bool(spec) and ".." not in spec and bool(HUB_ID.match(spec))
 
 
 def side(spec: str) -> Side:
