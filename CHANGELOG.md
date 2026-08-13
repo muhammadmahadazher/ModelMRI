@@ -8,7 +8,7 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
-- **#7, partially: head type labels, gated on measured nulls.**
+- **#7, completed: head type labels, gated on measured nulls.**
   `GET /api/attention/types` labels heads as induction, previous-token,
   duplicate-token or sink — or, for most of them, "no type detected", which is
   a result rather than a gap. On gpt2 it finds the canonical induction heads
@@ -44,8 +44,22 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   attends to the first token throughout, so 90 of 144 heads have position 0 as
   their peak. True, and useless read as "these 90 are special".
 
-  Still to come for this item: rendering the labels in the attention panel and
-  carrying them in the `.mri`.
+  Labels render as a chip beside each head in the ablation ranking — a
+  separate chip on purpose, never folded into the KL line, because the two are
+  different measurements that disagree. The chip's tooltip carries the
+  evidence: "9.85x chance, 9.69σ above its chance null — a behavioural label
+  from random repeated tokens, which does NOT explain the KL beside it".
+
+  They travel in the `.mri` and a recording serves them with no model loaded.
+  **A label without its evidence is refused** rather than carried: the whole
+  value of the section is that a name was earned against a measured null, and
+  a row with the name and not the margin is exactly the bare assertion the
+  feature exists to replace.
+
+  Unlike every other measurement in the runtime, the labels **survive a new
+  generation**. They are measured on the detector's own random sequences and
+  say nothing about the current prompt; a model swap invalidates them and the
+  epoch already means precisely that.
 
 - **#6, completed: direct logit attribution, sited inside the ablation panel.**
   `GET /api/attention/direct` decomposes the predicted token's logit across
@@ -78,6 +92,20 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   ignores a constant added to every logit.
 
 ### Fixed
+
+- **Labelling every head took 68 seconds through the route**, and the browser
+  gave up at 30. Two causes, both mine: the standard deviation of the null was
+  computed by re-measuring every null sequence individually, on top of the pass
+  that had already measured them together, and the inner loop did a GPU→CPU
+  transfer per (position, layer) — 288 per sequence on gpt2. The profiles are
+  now gathered in one operation per layer and the mean and spread come out of
+  the same pass. **1.1s**, and the induction scores are unchanged to the last
+  digit.
+
+  The rewrite also corrected a real bias: attention at a far offset was divided
+  by every scored position rather than by the positions that could actually
+  reach it, understating it. Fixing that tightened the label set — 78 heads now
+  read "no type detected" where 19 did before.
 
 - **The frozen-norm reconstruction is verified before any number is reported**,
   and the check caught two real bugs in this feature while it was being built.

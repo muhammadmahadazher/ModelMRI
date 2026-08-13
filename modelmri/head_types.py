@@ -282,21 +282,47 @@ def _offsets(index: int, seq_len: int) -> dict:
 
 
 def _measure(model, ids, seq_len: int, n_layers: int, n_heads: int):
-    """Mean attention mass at each pattern's offset, per head.
+    """Per-sequence attention profiles, gathered rather than looped.
+
+    Returns `[n_sequences, n_layers, n_heads, S]` of mean attention at each
+    RELATIVE offset, plus the same shape minus the offset axis for the sink,
+    which is an absolute position and has no fixed offset.
+
+    PER SEQUENCE, not averaged here, because the caller needs both the mean
+    AND the spread across sequences and computing them from one pass is the
+    difference between two forward passes and eight. The first version
+    re-measured every null sequence individually to get its standard
+    deviation, on top of the pass that had already measured them together:
+    68 seconds for a button, and the browser gave up at 30.
 
     Scored over the SECOND half only. In the first half there is no earlier
-    copy to attend to, so an induction score there would be measuring nothing
-    and averaging it in would halve every real signal.
+    copy to attend to, so an induction score there measures nothing and
+    averaging it in would halve every real signal.
     """
     import torch
 
     device = next(model.parameters()).device
-    totals = {p: torch.zeros(n_layers, n_heads, dtype=torch.float64) for p in PATTERNS}
-    # Mean attention at every RELATIVE offset, so "is this the single thing
-    # this head looks at most" can be asked without inventing a threshold for
-    # what counts as a lot.
-    by_offset = torch.zeros(n_layers, n_heads, ids.shape[1], dtype=torch.float64)
-    counted = 0
+    width = ids.shape[1]
+    if width <= seq_len:
+        raise Refusal(
+            "there were no positions to score — the sequence length asked for "
+            "leaves no second half to measure."
+        )
+
+    index = torch.arange(seq_len, width)
+    # target[k, o] is "o positions back from position index[k]". Negative
+    # where that runs off the front of the sequence.
+    target = index.unsqueeze(1) - torch.arange(width).unsqueeze(0)
+    valid = target >= 0
+    safe = target.clamp(min=0)
+    # How many of the scored positions can see each offset at all. Dividing by
+    # the total would report a smaller mean for far offsets simply because
+    # fewer positions could reach them.
+    reach = valid.sum(dim=0).clamp(min=1)
+
+    profiles = torch.zeros(ids.shape[0], n_layers, n_heads, width, dtype=torch.float64)
+    sinks = torch.zeros(ids.shape[0], n_layers, n_heads, dtype=torch.float64)
+
     with torch.no_grad():
         # One sequence at a time. The attention cube is layers x heads x S x S
         # and holding a batch of them is the largest allocation this module
@@ -304,31 +330,36 @@ def _measure(model, ids, seq_len: int, n_layers: int, n_heads: int):
         # eight sequences, for numbers that are summed and thrown away.
         for row in range(ids.shape[0]):
             out = model(ids[row : row + 1].to(device), output_attentions=True)
-            attentions = out.attentions
-            for index in range(seq_len, ids.shape[1]):
-                targets = _offsets(index, seq_len)
-                for pattern, target in targets.items():
-                    if target < 0 or target > index:
-                        continue
-                    for layer in range(n_layers):
-                        block = attentions[layer][0, :, index, target]
-                        totals[pattern][layer] += block.detach().float().cpu().double()
-                for layer in range(n_layers):
-                    row = attentions[layer][0, :, index, : index + 1]
-                    row = row.detach().float().cpu().double()
-                    # Reversed, so column o is "o positions back from here" and
-                    # the same column means the same thing at every position.
-                    by_offset[layer, :, : index + 1] += row.flip(-1)
-                counted += 1
-            del out, attentions
-    if not counted:
-        raise Refusal(
-            "there were no positions to score — the sequence length asked for "
-            "leaves no second half to measure."
-        )
-    out = {p: (t / counted) for p, t in totals.items()}
-    out["_by_offset"] = by_offset / counted
-    return out
+            for layer in range(n_layers):
+                # [H, P, S] -- every scored position's whole attention row.
+                rows = out.attentions[layer][0, :, index, :].detach().float().cpu()
+                sinks[row, layer] = rows[:, :, 0].mean(dim=1).double()
+                # One gather instead of a Python loop over positions and
+                # heads. The old inner loop did a GPU->CPU transfer per
+                # (position, layer) -- 288 of them per sequence on gpt2.
+                picked = torch.gather(
+                    rows, 2, safe.unsqueeze(0).expand(n_heads, -1, -1)
+                )
+                picked = picked * valid.unsqueeze(0)
+                profiles[row, layer] = (picked.sum(dim=1) / reach).double()
+            del out
+    return profiles, sinks
+
+
+def _patterns_from(profiles, sinks, seq_len: int) -> dict:
+    """Pattern scores read straight off the offset profile.
+
+    Three of the four patterns ARE fixed offsets, so they need no separate
+    measurement: induction is the token after the earlier copy, which is
+    `seq_len - 1` back; previous-token is 1 back; duplicate-token is `seq_len`
+    back. Only the sink is an absolute position and it arrives separately.
+    """
+    return {
+        "induction": profiles[..., seq_len - 1],
+        "previous-token": profiles[..., 1],
+        "duplicate-token": profiles[..., seq_len],
+        "sink": sinks,
+    }
 
 
 def label_heads(
@@ -363,8 +394,22 @@ def label_heads(
         usable, seq_len=seq_len, count=n_sequences, repeat=False, seed=seed + 1
     )
 
-    scores = _measure(model, repeated, seq_len, n_layers, n_heads)
-    repeat_null = _measure(model, fresh, seq_len, n_layers, n_heads)
+    # TWO forward-pass sweeps, not two plus one per null sequence. The mean
+    # and the spread both come out of the same per-sequence profiles.
+    repeat_profiles, repeat_sinks = _measure(
+        model, repeated, seq_len, n_layers, n_heads
+    )
+    null_profiles, null_sinks = _measure(model, fresh, seq_len, n_layers, n_heads)
+
+    per_sequence = _patterns_from(repeat_profiles, repeat_sinks, seq_len)
+    null_per_sequence = _patterns_from(null_profiles, null_sinks, seq_len)
+
+    scores = {p: per_sequence[p].mean(dim=0) for p in PATTERNS}
+    repeat_null = {p: null_per_sequence[p].mean(dim=0) for p in PATTERNS}
+    spreads = {
+        p: null_per_sequence[p].std(dim=0, unbiased=fresh.shape[0] > 1)
+        for p in PATTERNS
+    }
 
     # Chance under the causal mask, for the patterns that non-repeating text
     # does not make go away. At position i there are i+1 positions available,
@@ -372,20 +417,6 @@ def label_heads(
     # exactly the positions that were scored.
     positions = range(seq_len, 2 * seq_len)
     chance = sum(1.0 / (i + 1) for i in positions) / len(list(positions))
-
-    # The null's own spread, measured across sequences rather than assumed.
-    # Without it there is no σ to state a margin in.
-    spreads = {}
-    for pattern in PATTERNS:
-        per_sequence = []
-        for row in range(fresh.shape[0]):
-            per_sequence.append(
-                _measure(model, fresh[row : row + 1], seq_len, n_layers, n_heads)[
-                    pattern
-                ]
-            )
-        stacked = torch.stack(per_sequence)
-        spreads[pattern] = stacked.std(dim=0, unbiased=len(per_sequence) > 1)
 
     # THE HEAD'S FAVOURITE TARGET, which is what a type label claims.
     #
@@ -397,18 +428,11 @@ def label_heads(
     # excludes one pattern it hands the label to a weaker one: L5H8 read
     # "induction" at 0.089 while 70% of its attention sat on position 0.
     #
-    # A type label says "this is what this head looks at". So the test is
-    # whether the pattern's offset is the single target the head attends to
-    # most on average — parameter-free, and exclusive by construction, since
-    # only one target can be the peak.
-    # The sink is an ABSOLUTE position, not a relative offset, so it does not
-    # appear in the relative profile — position 0 is a different offset at
-    # every index and its mass is smeared across all of them. Taking the peak
-    # over relative offsets alone therefore never tested the sink pattern
-    # against anything: a head with 0.95 on position 0 was compared against a
-    # relative peak of 0.04 and passed trivially. Both axes, so every pattern
-    # faces the same question.
-    peak = torch.maximum(scores["_by_offset"].max(dim=-1).values, scores["sink"])
+    # The sink is an ABSOLUTE position and so does not appear in the relative
+    # profile -- position 0 is a different offset at every index. Both axes,
+    # or the sink pattern never faces the test at all.
+    peak = torch.maximum(repeat_profiles.mean(dim=0).max(dim=-1).values, scores["sink"])
+
     labels: list[HeadLabel] = []
     for layer in range(n_layers):
         for head in range(n_heads):

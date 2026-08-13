@@ -142,6 +142,38 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Head type labels
+
+`GET /api/attention/types?seq_len=24&n_sequences=6&seed=0`
+
+Labels each head induction / previous-token / duplicate-token / sink, or — for
+most of them — `label: null`, which is "no type detected" and a result rather
+than a gap.
+
+**A label needs all three gates**, and each exists because the previous ones
+were measured and found insufficient:
+
+| gate | what it rules out |
+|---|---|
+| `margin` ≥ 3σ above the head's own null | the score being the null |
+| `times_chance` ≥ 1 | significance without effect size — a null with no spread makes any score clear 3σ |
+| the offset is the head's `peak` | a habit the head merely has, rather than what it does |
+
+**Two nulls**, and `null_kind` says which was used. Induction and
+duplicate-token are gated on matched non-repeating sequences, which is right
+for offsets that are only special because the sequence repeats. A
+previous-token head attends to i−1 whether or not anything repeats and a sink
+attends to position 0 always, so those are gated on chance under the causal
+mask instead — their non-repeating null is the same number again.
+
+These are **behaviour on repeated random tokens, not claims about real text**,
+and a label must never be read as explaining the ablation ranking: a head can
+be labelled and irrelevant, or unlabelled and load-bearing. A byte-level
+tokenizer is refused rather than measured badly.
+
+When one label lands on most of a model's heads the response says so — that is
+a fact about the model rather than a distinction between its heads.
+
 ## Direct logit attribution
 
 `GET /api/attention/direct?position=&top_k=40`

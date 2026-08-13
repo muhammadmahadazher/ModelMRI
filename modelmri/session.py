@@ -346,6 +346,104 @@ def _lens(doc: dict) -> tuple[list, dict]:
     return clean, info
 
 
+def _head_types(doc: dict) -> dict:
+    """The head-label section of an untrusted file, or nothing.
+
+    Same standard as `_ranking`. These render as a chip beside a head in the
+    list, so a label is bounded text and a score is a finite number before it
+    reaches anybody's browser.
+
+    A label without its gates is refused. The whole value of this section is
+    that a name was earned against a measured null, and a row carrying the
+    name and not the evidence would be exactly the bare assertion the feature
+    exists to replace.
+    """
+    raw = doc.get("head_types")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's head-type section is not a set of fields")
+
+    rows = raw.get("labels")
+    if not isinstance(rows, list):
+        raise SessionError("this session's head types carry no labels")
+    if len(rows) > MAX_RANKING_ROWS:
+        raise SessionError(
+            f"this session claims {len(rows):,} labelled heads, above the "
+            f"{MAX_RANKING_ROWS:,} this reads."
+        )
+
+    clean: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SessionError("this session has a head-type row that is not fields")
+        layer, head = row.get("layer"), row.get("head")
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) and 0 <= v < MAX_DIM
+            for v in (layer, head)
+        ):
+            raise SessionError("a head-type row does not name a head")
+
+        label = row.get("label")
+        if label is not None and not isinstance(label, str):
+            raise SessionError(f"the head-type label for L{layer}H{head} is not text")
+        keep: dict = {
+            "layer": layer,
+            "head": head,
+            # None survives as None. "No type detected" is the finding for most
+            # heads, and coercing it to "" would make an unlabelled head look
+            # like one whose label went missing.
+            "label": label[:MAX_RANKING_TEXT] if isinstance(label, str) else None,
+        }
+        if keep["label"]:
+            for name in ("margin", "times_chance", "peak"):
+                value = row.get(name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    if math.isfinite(value):
+                        keep[name] = float(value)
+            kind = row.get("null_kind")
+            keep["null_kind"] = kind if isinstance(kind, str) else ""
+            if "margin" not in keep or not keep["null_kind"]:
+                raise SessionError(
+                    f"L{layer}H{head} is labelled {keep['label']!r} with no "
+                    f"margin or no null named. A label that does not say what "
+                    f"it cleared is the bare assertion this section exists to "
+                    f"replace."
+                )
+        scores = row.get("scores")
+        if isinstance(scores, dict):
+            keep["scores"] = {
+                str(k)[:MAX_RANKING_TEXT]: float(v)
+                for k, v in scores.items()
+                if isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+            }
+        clean.append(keep)
+
+    out: dict = {"labels": clean}
+    for name in ("means",):
+        value = raw.get(name)
+        if isinstance(value, str):
+            out[name] = value[:MAX_GRAPH_TEXT]
+    for name in ("n_layers", "n_heads", "seq_len", "n_sequences", "seed"):
+        value = raw.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[name] = value
+    counts = raw.get("counts")
+    if isinstance(counts, dict):
+        out["counts"] = {
+            str(k)[:MAX_RANKING_TEXT]: v
+            for k, v in counts.items()
+            if isinstance(v, int) and not isinstance(v, bool)
+        }
+    margin = raw.get("margin_sigma")
+    if isinstance(margin, (int, float)) and not isinstance(margin, bool):
+        if math.isfinite(margin):
+            out["margin_sigma"] = float(margin)
+    return out
+
+
 def _ranking(doc: dict) -> dict:
     """The head-ranking section of an untrusted file, or nothing.
 
@@ -676,6 +774,10 @@ class Session:
     # `patch`. It carries `noise_floor_kl` with it, because a score without
     # the floor it was measured against cannot be told from arithmetic.
     ranking: dict = field(default_factory=dict)
+    # Behavioural labels for each head, each with the margin and null it
+    # cleared. Optional and additive. A label without its evidence is refused
+    # rather than carried, because the evidence is the whole point.
+    head_types: dict = field(default_factory=dict)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -690,6 +792,9 @@ class Session:
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))
+
+    def has_head_types(self) -> bool:
+        return bool(self.head_types.get("labels"))
 
     def has_ranking(self) -> bool:
         return bool(self.ranking.get("ranked"))
@@ -738,6 +843,7 @@ def build(
     patch: dict | None = None,
     graph: dict | None = None,
     ranking: dict | None = None,
+    head_types: dict | None = None,
     receipts: list | None = None,
 ) -> bytes:
     """Serialise one analysis into a gzipped `.mri`."""
@@ -809,6 +915,8 @@ def build(
     # Additive like `patch`, and written through the READER's validator for
     # the same reason `graph` is: a writer laxer than the reader is how you
     # build files nobody can open.
+    if head_types and head_types.get("labels"):
+        doc["head_types"] = _head_types({"head_types": head_types})
     if lens_info and (lens or []):
         doc["lens_info"] = lens_info
     if ranking and ranking.get("ranked"):
@@ -973,6 +1081,7 @@ def parse(data: bytes) -> Session:
         patch=_patch(doc),
         graph=_graph(doc),
         ranking=_ranking(doc),
+        head_types=_head_types(doc),
         # Validated in `receipts.parse` rather than here: the rules belong
         # beside the writer that produces them, and this module already has
         # more section validators than is comfortable.

@@ -892,6 +892,26 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.get("/api/attention/types")
+    async def head_types(seq_len: int = 24, n_sequences: int = 6, seed: int = 0):
+        """Behavioural labels for every head, each gated on a measured null.
+
+        A label here must NEVER be read as explaining the ablation ranking:
+        the ranking measures what breaks when a head is removed, this measures
+        a positional habit on random repeated tokens, and a head can be
+        labelled and irrelevant or unlabelled and load-bearing.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.head_types, seq_len, n_sequences, seed
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/types")
+
     @app.get("/api/attention/direct")
     async def direct_attribution(position: int | None = None, top_k: int = 40):
         """Direct logit attribution, beside the ablation ranking.

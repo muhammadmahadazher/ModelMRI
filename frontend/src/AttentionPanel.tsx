@@ -15,6 +15,8 @@ import {
   getAttention,
   getAttentionDiff,
   getAttentionMeta,
+  getHeadTypes,
+  HeadTypes,
   rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
@@ -68,6 +70,32 @@ export default function AttentionPanel({
   const [attributing, setAttributing] = useState(false);
   const [attrErr, setAttrErr] = useState("");
   const [pinned, setPinned] = useState(-1);
+  // Behavioural labels for every head. NOT cleared on a new generation: they
+  // are measured on random sequences of the detector's own making and say
+  // nothing about the current prompt. The server drops them on a model swap,
+  // which is the change that does invalidate them.
+  const [types, setTypes] = useState<HeadTypes | null>(null);
+  const [typing, setTyping] = useState(false);
+
+  async function labelHeads() {
+    setTyping(true);
+    setErr("");
+    try {
+      setTypes(await getHeadTypes());
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setTyping(false);
+    }
+  }
+
+  // Keyed by layer.head so a row can find its own label without scanning 144
+  // of them on every render.
+  const typeAt = new Map(
+    (types?.labels ?? [])
+      .filter((t) => t.label)
+      .map((t) => [`${t.layer}.${t.head}`, t]),
+  );
 
   /** Rank the tokens at the pinned position, or at the server's own default.
    *
@@ -525,6 +553,27 @@ export default function AttentionPanel({
                     >
                       {wholeModel ? `L${r.layer} H${r.head}` : `H${r.head}`}
                     </button>
+                    {/* The label, when this head earned one. Deliberately
+                        rendered as a separate chip rather than folded into
+                        the KL line: the ranking and the label are different
+                        measurements that disagree, and a head can be labelled
+                        and irrelevant or unlabelled and load-bearing. */}
+                    {typeAt.has(`${r.layer}.${r.head}`) && (
+                      <span
+                        className={`headtype t-${typeAt
+                          .get(`${r.layer}.${r.head}`)!
+                          .label!.replace(/[^a-z]/g, "")}`}
+                        title={
+                          `${typeAt.get(`${r.layer}.${r.head}`)!.times_chance}x ` +
+                          `chance, ${typeAt.get(`${r.layer}.${r.head}`)!.margin}σ ` +
+                          `above its ${typeAt.get(`${r.layer}.${r.head}`)!.null_kind} ` +
+                          `null — a behavioural label from random repeated ` +
+                          `tokens, which does NOT explain the KL beside it`
+                        }
+                      >
+                        {typeAt.get(`${r.layer}.${r.head}`)!.label}
+                      </span>
+                    )}
                     <span className="mid">
                       {noise
                         ? "below the noise floor"
@@ -620,6 +669,35 @@ export default function AttentionPanel({
           {/* The setup that produced this ranking. It sits at the bottom of
               the block rather than the top because it answers a question you
               ask AFTER reading a number, not before. */}
+          <div className="row" style={{ marginTop: 10 }}>
+            <button
+              className="ghost sm"
+              onClick={() => void labelHeads()}
+              disabled={typing}
+            >
+              {typing
+                ? "Labelling every head…"
+                : types
+                  ? "Re-label the heads"
+                  : "What kind of head is each of these?"}
+            </button>
+            {types && (
+              <span className="meta">
+                {Object.entries(types.counts)
+                  .filter(([, n]) => n > 0)
+                  .map(([k, n]) => `${n} ${k}`)
+                  .join(" · ")}
+              </span>
+            )}
+          </div>
+          {types && (
+            /* The caveat is not optional and not a tooltip. These labels are
+               behaviour on random repeated tokens, and the number beside them
+               in this very list is a causal measurement on a real prompt.
+               Reading one as explaining the other is the mistake the whole
+               feature is built to avoid. */
+            <div className="hint warn">{types.means}</div>
+          )}
           <ReceiptLine receipt={ranked?.receipt} />
           {/* Inside this block on purpose. Direct attribution answers a
               related question and disagrees with the ranking above — a head

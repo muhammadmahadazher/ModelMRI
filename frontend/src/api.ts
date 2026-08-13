@@ -1686,6 +1686,44 @@ export interface LensRow {
   entropy: number;
 }
 
+/** A behavioural label for one head, with the evidence it cleared. */
+export interface HeadTypeLabel {
+  layer: number;
+  head: number;
+  /** null is "no type detected", which is the finding for most heads — not a
+   *  label that went missing. */
+  label: string | null;
+  /** Standard deviations above this head's own null. Null when unlabelled;
+   *  0 would read as "exactly at the null", which is a measurement. */
+  margin?: number | null;
+  /** The winning pattern's score as a multiple of chance under the causal
+   *  mask. Significance and effect size are both required, and both shown. */
+  times_chance?: number | null;
+  /** The most attention this head puts on any single target. A label is only
+   *  attached when the pattern's offset IS this peak. */
+  peak?: number;
+  /** "repeat" (gated on non-repeating sequences) or "chance" (gated on chance
+   *  under the causal mask). Not interchangeable. */
+  null_kind?: string;
+  scores?: Record<string, number>;
+}
+
+export interface HeadTypes {
+  labels: HeadTypeLabel[];
+  counts: Record<string, number>;
+  n_layers: number;
+  n_heads: number;
+  seq_len: number;
+  n_sequences: number;
+  margin_sigma: number;
+  means: string;
+  recorded?: boolean;
+  receipt?: Receipt | null;
+}
+
+export const getHeadTypes = () =>
+  fetch("/api/attention/types").then((r) => json<HeadTypes>(r));
+
 /** One component's direct push on the predicted token, in logits. */
 export interface DirectContribution {
   name: string;

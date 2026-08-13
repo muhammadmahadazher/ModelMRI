@@ -197,3 +197,197 @@ def test_the_report_survives_json(report):
     out = json.loads(json.dumps(report.to_dict(), allow_nan=False))
     assert out["counts"]["no type detected"] >= 0
     assert len(out["labels"]) == out["n_layers"] * out["n_heads"]
+
+
+# ------------------------------------------------- carried in a .mri file
+
+
+def _mri(**over) -> bytes:
+    from modelmri import session
+
+    kw = dict(
+        model_id="gpt2",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a", "b"],
+        prompt="a",
+        generation="b",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=1,
+    )
+    kw.update(over)
+    return session.build(**kw)
+
+
+def _types(**over) -> dict:
+    base = {
+        "labels": [
+            {
+                "layer": 0,
+                "head": 0,
+                "label": "induction",
+                "margin": 31.4,
+                "times_chance": 12.0,
+                "peak": 0.89,
+                "null_kind": "repeat",
+                "scores": {"induction": 0.89, "sink": 0.01},
+            },
+            {"layer": 0, "head": 1, "label": None},
+        ],
+        "counts": {"induction": 1, "no type detected": 1},
+        "n_layers": 1,
+        "n_heads": 2,
+        "margin_sigma": 3.0,
+        "means": "measured on repeated random tokens",
+    }
+    base.update(over)
+    return base
+
+
+def test_head_types_survive_the_round_trip():
+    from modelmri import session
+
+    parsed = session.parse(_mri(head_types=_types()))
+    assert parsed.has_head_types()
+    rows = parsed.head_types["labels"]
+    assert len(rows) == 2
+    assert rows[0]["label"] == "induction"
+    assert rows[0]["margin"] == 31.4
+    assert rows[0]["null_kind"] == "repeat"
+
+
+def test_an_unlabelled_head_stays_null_rather_than_empty_text():
+    """No type detected is the finding for most heads. An empty string would
+    make it look like a label that went missing."""
+    from modelmri import session
+
+    parsed = session.parse(_mri(head_types=_types()))
+    assert parsed.head_types["labels"][1]["label"] is None
+
+
+def test_a_label_without_its_evidence_is_refused():
+    """The whole value of this section is that a name was earned against a
+    measured null. A row with the name and not the evidence is exactly the
+    bare assertion the feature exists to replace."""
+    from modelmri import session
+
+    naked = _types(labels=[{"layer": 0, "head": 0, "label": "induction"}])
+    with pytest.raises(session.SessionError, match="bare assertion"):
+        session.parse(_mri(head_types=naked))
+
+
+def test_a_label_with_no_null_named_is_refused():
+    from modelmri import session
+
+    half = _types(labels=[{"layer": 0, "head": 0, "label": "induction", "margin": 5.0}])
+    with pytest.raises(session.SessionError, match="bare assertion"):
+        session.parse(_mri(head_types=half))
+
+
+def test_a_file_without_head_types_carries_no_empty_section():
+    import gzip
+
+    doc = json.loads(gzip.decompress(_mri()))
+    assert "head_types" not in doc
+
+
+def test_the_writer_is_not_laxer_than_the_reader():
+    from modelmri import session
+
+    with pytest.raises(session.SessionError):
+        _mri(head_types=_types(labels=[{"layer": 0, "head": 0, "label": "x"}]))
+
+
+def test_a_row_that_does_not_name_a_head_is_refused():
+    from modelmri import session
+
+    with pytest.raises(session.SessionError, match="does not name a head"):
+        session.parse(_mri(head_types=_types(labels=[{"label": "sink"}])))
+
+
+# ------------------------------------------- against a real model, end to end
+
+
+@pytest.fixture(scope="module")
+def runtime_with_types():
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    from modelmri import receipts as _receipts
+
+    if _receipts.revision_of("gpt2")[0] is None and not os.environ.get(
+        "MODELMRI_TEST_DOWNLOAD"
+    ):
+        pytest.skip("gpt2 is not in the local model cache")
+
+    from modelmri.runtime import ModelRuntime
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load("gpt2")
+    except Exception as err:
+        pytest.skip(f"gpt2 is not available here: {err}")
+    runtime.head_types(seq_len=16, n_sequences=4)
+    try:
+        yield runtime
+    finally:
+        runtime.unload()
+
+
+def test_labels_survive_a_new_generation(runtime_with_types):
+    """They are measured on the detector's own random sequences and say
+    nothing about the current prompt, so a new prompt does not invalidate
+    them -- unlike every other measurement in the runtime."""
+    assert runtime_with_types._types_for_export()
+    list(
+        runtime_with_types.generate_stream(
+            "Something entirely different", max_new_tokens=2, temperature=0.0
+        )
+    )
+    assert runtime_with_types._types_for_export(), (
+        "a head's positional habit is not a fact about the prompt"
+    )
+
+
+def test_a_recording_serves_its_labels_with_no_model_loaded(runtime_with_types):
+    from modelmri import session
+    from modelmri.runtime import ModelRuntime
+
+    list(
+        runtime_with_types.generate_stream(
+            "The capital of France is", max_new_tokens=2, temperature=0.0
+        )
+    )
+    blob = runtime_with_types.export_session(layer=0, head=0)
+    assert session.parse(blob).has_head_types()
+
+    reader = ModelRuntime()
+    reader.open_session(blob)
+    served = reader.head_types()
+    assert served["recorded"] is True
+    assert served["labels"]
+    assert reader.model is None
+
+
+def test_a_recording_without_labels_refuses_with_a_reason(runtime_with_types):
+    import gzip
+
+    from modelmri.errors import Refusal
+    from modelmri.runtime import ModelRuntime
+
+    list(
+        runtime_with_types.generate_stream(
+            "The capital of France is", max_new_tokens=2, temperature=0.0
+        )
+    )
+    doc = json.loads(
+        gzip.decompress(runtime_with_types.export_session(layer=0, head=0))
+    )
+    doc.pop("head_types", None)
+
+    reader = ModelRuntime()
+    reader.open_session(gzip.compress(json.dumps(doc).encode()))
+    with pytest.raises(Refusal, match="does not carry head type labels"):
+        reader.head_types()

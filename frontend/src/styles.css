@@ -3757,3 +3757,27 @@ main > [id^="sec-"] {
   cursor: pointer;
 }
 .linkish:hover { color: var(--color-ink); }
+
+/* ── head type labels ─────────────────────────────────────────────────
+   A chip beside the head, deliberately NOT merged into the KL line: the
+   ranking and the label are different measurements that disagree, and a
+   head can be labelled and irrelevant or unlabelled and load-bearing. */
+
+.headtype {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  flex: none;
+  /* Dimmer than the KL beside it. The causal number is the finding; this is
+     context for it, and equal weight would invite reading them as one claim. */
+  opacity: 0.8;
+}
+.headtype.tinduction { color: var(--sem-feat); }
+.headtype.tprevioustoken { color: var(--sem-base); }
+.headtype.tduplicatetoken { color: var(--sem-vla); }
+.headtype.tsink { color: var(--color-mute); }

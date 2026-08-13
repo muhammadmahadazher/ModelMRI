@@ -430,6 +430,13 @@ class ModelRuntime:
         self._last_patch: dict = {}
         self._last_ranking: dict = {}
         self._last_lens: dict = {}
+        # Head type labels. Tagged with the epoch and NOT cleared on
+        # generation, unlike everything else here -- deliberately. These are
+        # measured on random sequences of the module's own making and say
+        # nothing about the current prompt, so a new generation does not
+        # invalidate them. A model change does, and the epoch moves on load
+        # and unload and not on generation, which is exactly that rule.
+        self._last_types: dict = {}
         # A trained translator, when one has been fitted or loaded for THIS
         # model. Cleared on every load: a lens fitted to one model reads
         # another one's residual stream as confident nonsense.
@@ -680,6 +687,7 @@ class ModelRuntime:
                 self._steer = None
                 self._tuned = {}
                 self._tuned_info = {}
+                self._last_types = {}
             return self.status()
 
         with self._load_slot(hf_id):
@@ -2005,6 +2013,50 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def head_types(
+        self, seq_len: int = 24, n_sequences: int = 6, seed: int = 0
+    ) -> dict:
+        """Label heads by behaviour, each gated on a null measured here.
+
+        Independent of any generation: it runs its own random sequences, so it
+        needs a model and nothing else. That is also why the result survives a
+        new prompt while every other measurement here does not.
+        """
+        from . import head_types as ht
+
+        with self._lock:
+            if self.replay is not None:
+                recorded = getattr(self.replay, "head_types", None) or {}
+                if recorded.get("labels"):
+                    return {**recorded, "recorded": True}
+                raise Refusal(
+                    "This is a recording, and it does not carry head type "
+                    "labels. Labelling heads means running the model on new "
+                    "random sequences, and a `.mri` holds activations rather "
+                    "than weights. Whoever exported it can label the heads "
+                    "and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — the attention these labels are "
+                    "read from never leaves its process."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            out = ht.label_heads(
+                self.model,
+                self.tokenizer,
+                seq_len=seq_len,
+                n_sequences=n_sequences,
+                seed=seed,
+            ).to_dict()
+            out["receipt"] = self.receipt(
+                "head_types", seq_len=seq_len, n_sequences=n_sequences, seed=seed
+            )
+            self._last_types = {**out, "epoch": self.epoch}
+            return out
+
     def direct_attribution(self, position: int | None = None, top_k: int = 40) -> dict:
         """How many logits each head and MLP put behind the predicted token.
 
@@ -2624,6 +2676,7 @@ class ModelRuntime:
             # one you could not send anybody.
             patch=self._patch_for_export(),
             ranking=self._ranking_for_export(),
+            head_types=self._types_for_export(),
             lens=lens_rows,
             lens_info=lens_info,
             receipts=self._receipts_for_export(),
@@ -2664,6 +2717,19 @@ class ModelRuntime:
             if k in last
         }
         return rows, info
+
+    def _types_for_export(self) -> dict:
+        """Head labels, if they describe the model being exported.
+
+        Epoch-filtered like the ranking, but for a different reason: these
+        survive a new generation on purpose and die on a model swap. Labels
+        measured on one model written beside another model's attention would
+        name heads that do not exist.
+        """
+        last = self._last_types
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
 
     def _ranking_for_export(self) -> dict:
         """The last head ranking, if it belongs to the state being exported.
