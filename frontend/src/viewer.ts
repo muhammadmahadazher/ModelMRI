@@ -79,6 +79,18 @@ interface Doc {
   n_heads?: number;
   attention?: Record<string, { q: string; scale: number }>;
   lens?: unknown[];
+  /** An attribution graph THIS TOOL DID NOT COMPUTE, read from a
+   *  circuit-tracer file. Optional and additive, like `patch`: a file written
+   *  before it simply has no key, which is why the format version does not
+   *  move. `provenance` is not optional -- see the shim below. */
+  graph?: {
+    n_nodes?: number;
+    edges?: { source: number; target: number; weight: number }[];
+    provenance?: Record<string, unknown>;
+    prompt?: string;
+    summary?: Record<string, unknown>;
+    notes?: string[];
+  };
 }
 
 let open: Doc | null = null;
@@ -240,6 +252,38 @@ export async function viewerFetch(
       app: "modelmri",
       version: `${open?.modelmri ?? ""} viewer`.trim(),
       model: { loaded: false, hf_id: null, device: null, dtype: null, n_params: null },
+    });
+  }
+
+  if (p === "/api/graph") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const g = open.graph;
+    if (!g || !g.n_nodes) return ok({ available: false });
+    // Refused here as well as in session.py, because this copy runs in the
+    // RECIPIENT'S browser on a file a stranger forwarded — and the claim it
+    // guards is the one the whole feature rests on. A graph rendered under
+    // ModelMRI's chrome without saying who computed it is the confusion the
+    // section exists to prevent, so an absent provenance is an error rather
+    // than a missing caption.
+    if (!g.provenance || !g.provenance.measured_by) {
+      return {
+        status: 422,
+        payload: {
+          error:
+            "this session carries an attribution graph with no provenance. A " +
+            "graph ModelMRI did not compute must say who did, so it is not " +
+            "rendered rather than shown as if it were ours.",
+        },
+      };
+    }
+    return ok({
+      available: true,
+      n_nodes: g.n_nodes,
+      edges: g.edges ?? [],
+      provenance: g.provenance,
+      prompt: g.prompt ?? "",
+      summary: g.summary ?? {},
+      notes: g.notes ?? [],
     });
   }
 

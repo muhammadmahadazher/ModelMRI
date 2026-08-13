@@ -286,6 +286,41 @@ class Graph:
         }
 
 
+def to_session(graph: Graph, *, edge_limit: int = DEFAULT_EDGE_LIMIT) -> bytes:
+    """A `.mri` carrying this graph, so it travels like every other finding.
+
+    The session's own fields are deliberately empty: there is no attention, no
+    lens and no generation here, because ModelMRI ran nothing. `model_id` is
+    left None rather than filled from the graph -- a `.mri` whose header names
+    a model reads as one this tool loaded, and the model is already in the
+    graph's provenance where it is labelled as the FILE's claim.
+    """
+    from . import session
+
+    return session.build(
+        model_id=None,
+        device=None,
+        dtype=None,
+        n_params=None,
+        tokens=list(graph.tokens),
+        generation="",
+        prompt=graph.prompt,
+        attention={},
+        lens=[],
+        n_layers=0,
+        n_heads=0,
+        note=f"attribution graph read from {Path(graph.path).name}",
+        graph={
+            "n_nodes": graph.n_nodes,
+            "edges": graph.edges(limit=edge_limit),
+            "provenance": graph.provenance,
+            "prompt": graph.prompt,
+            "summary": graph.summary(edge_limit=edge_limit),
+            "notes": graph.notes,
+        },
+    )
+
+
 def read(path: str | Path, *, max_nodes: int = MAX_NODES) -> Graph:
     """Read an attribution graph, refusing anything that is not one.
 

@@ -132,6 +132,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/gguf` | Read Gguf |
 | `GET` | `/api/gguf/plan` | Plan Gguf |
+| `GET` | `/api/graph` | Graph |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/paths` | Where |
 | `GET` | `/api/pull/progress` | Pull Progress |

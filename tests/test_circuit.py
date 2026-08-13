@@ -444,3 +444,144 @@ def test_the_control_shows_that_payload_really_is_dangerous(tmp_path):
     assert marker.exists(), (
         "the control payload did not fire; the test above proves nothing"
     )
+
+
+# ---------------------------------------------------------------------------
+# The .mri section: a graph travels like every other finding
+# ---------------------------------------------------------------------------
+
+
+def _session_bytes(tmp_path, producer, **over):
+    from modelmri import session
+
+    g = circuit.read(_graph_file(tmp_path, producer))
+    doc = {
+        "n_nodes": g.n_nodes,
+        "edges": g.edges(limit=100),
+        "provenance": g.provenance,
+        "prompt": g.prompt,
+        "summary": g.summary(),
+        "notes": g.notes,
+    }
+    doc.update(over)
+    return session.build(
+        model_id=None,
+        device=None,
+        dtype=None,
+        n_params=None,
+        tokens=[],
+        generation="",
+        prompt=g.prompt,
+        attention={},
+        lens=[],
+        n_layers=0,
+        n_heads=0,
+        graph=doc,
+    )
+
+
+def test_a_graph_survives_a_round_trip_through_a_mri(tmp_path, producer):
+    from modelmri import session
+
+    s = session.parse(circuit.to_session(circuit.read(_graph_file(tmp_path, producer))))
+    assert s.has_graph()
+    assert s.graph["n_nodes"] == 32
+    assert s.graph["edges"][0]["weight"] == pytest.approx(0.9)
+
+
+def test_the_provenance_survives_the_round_trip(tmp_path, producer):
+    """The one field that must never be lost in transit."""
+    from modelmri import session
+
+    s = session.parse(circuit.to_session(circuit.read(_graph_file(tmp_path, producer))))
+    assert "ModelMRI did not run the model" in s.graph["provenance"]["measured_by"]
+    assert s.graph["provenance"]["producer"] == "circuit-tracer"
+    assert s.graph["provenance"]["model"] == "google/gemma-2-2b"
+
+
+def test_the_mri_header_does_not_claim_the_graphs_model_as_its_own(tmp_path, producer):
+    """A `.mri` whose header names a model reads as one this tool loaded. The
+    model belongs in the graph's provenance, labelled as the FILE's claim."""
+    from modelmri import session
+
+    s = session.parse(circuit.to_session(circuit.read(_graph_file(tmp_path, producer))))
+    assert not s.meta.get("model")
+    assert s.graph["provenance"]["model"] == "google/gemma-2-2b"
+
+
+def test_a_session_without_a_graph_carries_no_empty_section(tmp_path):
+    from modelmri import session
+
+    blob = session.build(
+        model_id=None,
+        device=None,
+        dtype=None,
+        n_params=None,
+        tokens=["a"],
+        generation="",
+        prompt="",
+        attention={},
+        lens=[],
+        n_layers=1,
+        n_heads=1,
+    )
+    assert session.parse(blob).has_graph() is False
+
+
+def test_building_a_graph_without_provenance_is_refused(tmp_path, producer):
+    """The WRITER is as strict as the reader. Dropping the section instead
+    would hand back a file the caller believes carries a graph and which does
+    not, silently — and the reason it was dropped is the one thing the section
+    exists to guarantee."""
+    from modelmri.errors import BadRequest as _BadRequest
+
+    with pytest.raises(_BadRequest, match="provenance"):
+        _session_bytes(tmp_path, producer, provenance={})
+
+
+@pytest.mark.parametrize(
+    "broken,match",
+    [
+        ({"edges": [{"source": 999, "target": 0, "weight": 1.0}]}, "outside the"),
+        ({"edges": [{"source": 0, "target": 1, "weight": "big"}]}, "not a number"),
+        ({"edges": [{"source": 0, "target": 1, "weight": float("inf")}]}, "non-finite"),
+        ({"edges": "not a list"}, "missing or malformed"),
+        ({"n_nodes": "many"}, "how many nodes"),
+    ],
+)
+def test_a_malformed_graph_stops_at_the_reader(tmp_path, producer, broken, match):
+    """Same posture as the rest of `session.parse`: this runs on bytes a
+    stranger forwarded, and the indices reach a browser as array subscripts."""
+    from modelmri import session
+    from modelmri.errors import BadRequest as _BadRequest
+
+    blob = _session_bytes(tmp_path, producer, **broken)
+    with pytest.raises(_BadRequest, match=match):
+        session.parse(blob)
+
+
+def test_an_absurd_edge_count_is_refused(tmp_path, producer):
+    from modelmri import session
+    from modelmri.errors import BadRequest as _BadRequest
+
+    many = [{"source": 0, "target": 1, "weight": 0.1}] * (session.MAX_GRAPH_EDGES + 1)
+    with pytest.raises(_BadRequest, match="above the"):
+        session.parse(_session_bytes(tmp_path, producer, n_nodes=4, edges=many))
+
+
+def test_the_two_implementations_agree_on_the_graph_key(tmp_path, producer):
+    """`session.py` and `frontend/src/viewer.ts` both read this section, and
+    two implementations of one format drift. The names are pinned from the
+    Python side here; `tests/viewer_check.py` compares the parsed result."""
+    import re
+
+    ts = (ROOT_TS := __import__("pathlib").Path("frontend/src/viewer.ts")).read_text(
+        encoding="utf-8"
+    )
+    assert ROOT_TS.is_file()
+    block = re.search(r"graph\?:\s*\{(.+?)\n  \};", ts, re.S)
+    assert block, "the viewer's Doc has no graph section"
+    for key in ("n_nodes", "edges", "provenance", "summary", "notes"):
+        assert key in block.group(1), f"the viewer does not read {key}"
+    # And the guard that matters must exist on the viewer side too.
+    assert "measured_by" in ts

@@ -15,6 +15,7 @@ import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
+import GraphPanel from "./GraphPanel";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
@@ -254,6 +255,11 @@ export default function App() {
       </div>
 
       <SessionBar session={session} onChange={setSession} />
+
+      {/* Renders only when the open session carries one, which is why it sits
+          unconditionally here: the panel decides, and it returns null when
+          there is no graph or no provenance to show it under. */}
+      <GraphPanel key={`graph-${session.open}-${resetKey}`} />
       <Playground
         key={resetKey}
         model={model}

@@ -8,6 +8,39 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#53, completed: a graph travels in a `.mri` and renders in the viewer.**
+  `modelmri open graph.pt` now writes a forwardable `.mri` and serves it in
+  the same viewer as every other finding, and `modelmri inspect` reports a
+  graph rather than printing an apparently-empty session.
+
+  The section is additive like `patch`, so the format version does not move
+  and an older reader ignores the key. One rule is new and specific to it:
+  **`provenance.measured_by` is required.** A `.mri` that renders somebody
+  else's attributions under ModelMRI's chrome without saying so is exactly
+  the confusion the feature exists to prevent, so a graph without it is
+  refused — by `session.build` when writing, by `session.parse` when reading,
+  by the server route, and by the viewer's own shim. Four copies, because the
+  last one runs in the recipient's browser on a file a stranger forwarded.
+
+  The writer is as strict as the reader on purpose. Dropping the section
+  instead would hand back a file the caller believes carries a graph and which
+  does not, silently — and the reason it was dropped is the one guarantee the
+  section makes.
+
+  Bounds like the rest of `parse`: an edge pointing outside the declared node
+  count, a non-numeric or non-finite weight, an edge list that is not a list,
+  a node count that is not an integer, and more than 50,000 edges are each
+  refused with the reason. Indices reach the viewer as array subscripts.
+
+  The panel draws the provenance first and above every number, in the file's
+  own words — the disclaimer is rendered from the payload, never composed in
+  the UI, because one assembled in a component is one a refactor can drop.
+  Edge bars are signed: an edge that suppresses is not a weak edge that
+  promotes, and a bar drawn from the absolute value loses that.
+
+  Also: the viewer's served filename now derives from the file instead of
+  being fixed at `session.mri`, so the URL says what is open.
+
 - **#53 Open somebody else's circuit-tracer attribution graph.**
   `modelmri open graph.pt` reads one and prints it behind a banner naming the
   file, the tool that produced it and the model it was computed on. Nothing

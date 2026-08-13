@@ -1690,6 +1690,42 @@ def create_app(
     def session_state() -> dict:
         return runtime.session_info()
 
+    @app.get("/api/graph")
+    def graph() -> dict:
+        """An attribution graph carried by the open `.mri`, if it has one.
+
+        The same shape the viewer's own shim answers, so a graph looks
+        identical whether it is opened in the app or in the zero-install
+        viewer. `available: False` is a state, not an error: most sessions
+        have no graph.
+
+        Provenance is checked here too, not only at parse. A graph rendered
+        under ModelMRI's chrome without saying who computed it is the
+        confusion this whole feature exists to prevent, and the guard belongs
+        on every path that can reach a screen.
+        """
+        replay = runtime.replay
+        g = getattr(replay, "graph", None) if replay is not None else None
+        if not g or not g.get("n_nodes"):
+            return {"available": False}
+        if not (g.get("provenance") or {}).get("measured_by"):
+            return {
+                "available": False,
+                "error": (
+                    "this session carries an attribution graph with no "
+                    "provenance, so it is not rendered."
+                ),
+            }
+        return {
+            "available": True,
+            "n_nodes": g["n_nodes"],
+            "edges": g.get("edges") or [],
+            "provenance": g["provenance"],
+            "prompt": g.get("prompt") or "",
+            "summary": g.get("summary") or {},
+            "notes": g.get("notes") or [],
+        }
+
     @app.get("/api/session/export")
     async def session_export(layer: int = 0, head: int = 0, note: str = ""):
         try:

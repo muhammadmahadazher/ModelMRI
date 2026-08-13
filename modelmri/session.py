@@ -96,6 +96,101 @@ class SessionError(BadRequest):
 
 MAX_PATCH_CELLS = 2_000_000
 
+# An attribution graph section carries a PRUNED edge list, never a dense
+# matrix -- `circuit.py` reduces before anything reaches here. The bound is on
+# what a browser will lay out: 50,000 edges is already far past what anyone
+# reads, and a file claiming millions is not a graph anyone measured.
+MAX_GRAPH_EDGES = 50_000
+MAX_GRAPH_NODES = 200_000
+
+
+def _graph(doc: dict) -> dict:
+    """The attribution-graph section of an untrusted file, or nothing.
+
+    Same standard as `_patch`, and one extra rule that is the whole reason
+    #53 exists: a graph section MUST carry its provenance. This tool did not
+    compute these attributions, and a `.mri` that renders them without saying
+    so is precisely the confusion the feature was built to prevent -- so a
+    graph without `provenance.measured_by` is refused rather than rendered
+    under ModelMRI's own chrome.
+
+    Absent is fine. Malformed is refused, not dropped: a damaged file shown as
+    an intact one minus a section is the failure this module exists to avoid.
+    """
+    raw = doc.get("graph")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's graph section is not a set of fields")
+
+    provenance = raw.get("provenance")
+    if not isinstance(provenance, dict) or not provenance.get("measured_by"):
+        raise SessionError(
+            "this session carries an attribution graph with no provenance. A "
+            "graph ModelMRI did not compute must say who did, so a section "
+            "without it is refused rather than rendered as if it were ours."
+        )
+
+    nodes = raw.get("n_nodes")
+    if not isinstance(nodes, int) or isinstance(nodes, bool) or nodes < 0:
+        raise SessionError("this session's graph does not say how many nodes it has")
+    if nodes > MAX_GRAPH_NODES:
+        raise SessionError(
+            f"this session's graph claims {nodes:,} nodes, above the "
+            f"{MAX_GRAPH_NODES:,} this reads."
+        )
+
+    edges = raw.get("edges")
+    if not isinstance(edges, list):
+        raise SessionError("this session's graph edge list is missing or malformed")
+    if len(edges) > MAX_GRAPH_EDGES:
+        raise SessionError(
+            f"this session's graph carries {len(edges):,} edges, above the "
+            f"{MAX_GRAPH_EDGES:,} this reads. An attribution graph is pruned "
+            "to its strongest edges before it travels."
+        )
+
+    clean: list[dict] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise SessionError("this session's graph has a malformed edge")
+        source, target, weight = (
+            edge.get("source"),
+            edge.get("target"),
+            edge.get("weight"),
+        )
+        for value in (source, target):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise SessionError("a graph edge names a node that is not an index")
+            # Indices reach the viewer as array subscripts and as node ids.
+            if not 0 <= value < nodes:
+                raise SessionError(
+                    f"a graph edge points at node {value}, outside the "
+                    f"{nodes} this graph declares."
+                )
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool):
+            raise SessionError("a graph edge has a weight that is not a number")
+        if weight != weight or weight in (float("inf"), float("-inf")):
+            raise SessionError("a graph edge has a non-finite weight")
+        clean.append(
+            {"source": int(source), "target": int(target), "weight": float(weight)}
+        )
+
+    out = {
+        "n_nodes": nodes,
+        "edges": clean,
+        "provenance": {
+            str(k): v
+            for k, v in provenance.items()
+            if isinstance(v, (str, int, float, bool)) or v is None
+        },
+    }
+    for key in ("prompt", "summary", "notes"):
+        value = raw.get(key)
+        if value is not None:
+            out[key] = value
+    return out
+
 
 def _patch(doc: dict) -> dict:
     """The patching section of an untrusted file, or nothing.
@@ -295,6 +390,13 @@ class Session:
     # `patch` key, and an older reader ignores the key rather than failing on
     # it, which is why the format version does not move.
     patch: dict = field(default_factory=dict)
+    # An attribution graph THIS TOOL DID NOT COMPUTE, read from a
+    # circuit-tracer file. Optional and additive like `patch`, so a file
+    # written before it has no `graph` key and an older reader ignores it
+    # rather than failing -- which is why the format version does not move.
+    #
+    # Its `provenance` is not optional: see `_graph`.
+    graph: dict = field(default_factory=dict)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -309,6 +411,9 @@ class Session:
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))
+
+    def has_graph(self) -> bool:
+        return bool(self.graph.get("edges") or self.graph.get("n_nodes"))
 
     def attention_slice(self, layer: int, head: int) -> dict:
         key = f"{layer}:{head}"
@@ -348,6 +453,7 @@ def build(
     note: str = "",
     scope: str = "",
     patch: dict | None = None,
+    graph: dict | None = None,
 ) -> bytes:
     """Serialise one analysis into a gzipped `.mri`."""
     from . import __version__
@@ -391,6 +497,23 @@ def build(
     # patching section and every reader render an empty one.
     if patch and patch.get("grids"):
         doc["patch"] = patch
+    # Same additive rule: written only when there is one, so a session without
+    # a graph carries no empty section for a reader to render as one.
+    #
+    # But a graph WITHOUT provenance is refused rather than quietly dropped.
+    # Dropping it would hand back a file the caller believes carries a graph
+    # and which does not, silently -- and the reason it would be dropped is
+    # the one thing this section exists to guarantee. `parse` refuses the
+    # same shape; a writer that is laxer than the reader is a way to build
+    # files nobody can open.
+    if graph:
+        if not (graph.get("provenance") or {}).get("measured_by"):
+            raise SessionError(
+                "an attribution graph needs provenance saying who computed "
+                "it. ModelMRI did not, and a session that renders one without "
+                "saying so is the confusion this section exists to prevent."
+            )
+        doc["graph"] = graph
     return gzip.compress(json.dumps(doc, separators=(",", ":")).encode("utf-8"), 6)
 
 
@@ -528,4 +651,5 @@ def parse(data: bytes) -> Session:
         n_layers=counts["n_layers"],
         n_heads=counts["n_heads"],
         patch=_patch(doc),
+        graph=_graph(doc),
     )

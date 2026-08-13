@@ -67,6 +67,20 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         },
         "prompt": parsed.prompt,
         "generation": parsed.generation,
+        # A graph is somebody else's measurement, so `inspect` -- which is
+        # triage, run before opening anything -- has to say so. A file whose
+        # only content is a graph would otherwise print as an empty session.
+        "graph": (
+            {
+                "present": True,
+                "n_nodes": parsed.graph.get("n_nodes"),
+                "edges": len(parsed.graph.get("edges") or []),
+                "producer": (parsed.graph.get("provenance") or {}).get("producer"),
+                "model": (parsed.graph.get("provenance") or {}).get("model"),
+            }
+            if parsed.has_graph()
+            else {"present": False}
+        ),
     }
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -96,6 +110,11 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         line("patching", ", ".join(summary["patch"]["components"]))
         line("  clean", summary["patch"]["clean"])
         line("  corrupt", summary["patch"]["corrupt"])
+    if summary["graph"]["present"]:
+        g = summary["graph"]
+        line("graph", f"{g['n_nodes']:,} nodes, {g['edges']:,} edges carried")
+        line("  computed by", f"{g['producer']} on {g['model'] or 'an unnamed model'}")
+        line("", "NOT measured by ModelMRI")
     print()
     # Truncated on purpose: `inspect` is triage, and a 4,000-token prompt
     # scrolling past is the opposite of it. `--json` gives the whole thing.
@@ -151,7 +170,7 @@ def list_models() -> int:
     return 0
 
 
-def open_graph(target) -> int:
+def open_graph(target, *, host="127.0.0.1", port=5900, browser=True) -> int:
     """Print what somebody else's attribution graph contains.
 
     The banner is the feature. A graph ModelMRI did not compute must never be
@@ -162,6 +181,8 @@ def open_graph(target) -> int:
     Nothing is loaded and no model is touched: this reads a tensor archive
     with a restricted unpickler and reduces on the tensor.
     """
+    from pathlib import Path
+
     from . import circuit
     from .errors import BadRequest, Refusal
 
@@ -210,6 +231,23 @@ def open_graph(target) -> int:
             "  classes named by the file and NOT imported: "
             f"{', '.join(graph.foreign_classes)}"
         )
+
+    # Then render it, in the same viewer as everything else. Written to a
+    # temporary `.mri` rather than served from memory because that is how
+    # every other finding travels -- and because it means the graph a person
+    # is looking at is a file they can forward, with the provenance welded on.
+    import tempfile
+
+    from . import circuit as _circuit
+
+    blob = _circuit.to_session(graph)
+    tmp = Path(tempfile.gettempdir()) / f"{Path(graph.path).stem}.mri"
+    tmp.write_bytes(blob)
+    print()
+    print(f"  written as {tmp}  ({len(blob) / 1024:.1f} KB) — forwardable")
+    print("  no model will be loaded — this is somebody else's measurement")
+    print()
+    serve_viewer(tmp, host=host, port=port, browser=browser)
     return 0
 
 
@@ -384,7 +422,17 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
         raise SystemExit(1)
 
     payload = Path(target).read_bytes()
-    name = "session.mri"
+    # Derived from the file, not fixed. `session.mri` for everything meant the
+    # URL said nothing about what was open, and a graph served as "session"
+    # is the one thing this release is trying not to do.
+    #
+    # Sanitised hard, because `name` becomes both a served path and a `?f=`
+    # value: anything outside this alphabet could walk the path or smuggle a
+    # query, so it is rebuilt character by character rather than escaped.
+    stem = "".join(c if c.isalnum() or c in "-_" else "-" for c in Path(target).stem)[
+        :60
+    ]
+    name = f"{stem or 'session'}.mri"
 
     # Said once, plainly, rather than assumed. The docstring above promises
     # loopback; --host takes anything, and a recording is somebody's prompts.
@@ -833,7 +881,14 @@ def main() -> None:
         # refused by `circuit.read` with a sentence about what it actually
         # holds, which is more useful than a gzip error from `session.parse`.
         if target.suffix.lower() in (".pt", ".pth"):
-            raise SystemExit(open_graph(target))
+            raise SystemExit(
+                open_graph(
+                    target,
+                    host=args.host,
+                    port=args.port,
+                    browser=not args.no_browser,
+                )
+            )
 
         # Parse before starting anything. Someone who was sent the wrong file
         # should get one sentence, not a server they then have to shut down.

@@ -1645,6 +1645,10 @@ footer .spacer { flex: 1; }
    A panel about the model you wrote yourself is worth a colour of its own. */
 .h-custom { color: var(--color-custom); }
 .d-custom { background: var(--color-custom); }
+/* The graph panel borrows the feature hue rather than claiming one of its own:
+   it is not a ModelMRI measurement and should not read as a peer of the panels
+   that are. */
+.d-graph { background: var(--color-feat); }
 
 .pill.tiny { font-size: 10px; padding: 3px 8px; letter-spacing: 0.03em; }
 .pill.bad {
@@ -2835,6 +2839,7 @@ footer {
 .panel:has(.d-agent)  { --panel-accent: var(--color-agent); }
 .panel:has(.d-vla)    { --panel-accent: var(--color-vla); }
 .panel:has(.d-custom) { --panel-accent: var(--color-custom); }
+.panel:has(.d-graph)  { --panel-accent: var(--color-feat); }
 .panel:has(.d-replay) { --panel-accent: var(--sem-agent); }
 .panel:has(.d-run)    { --panel-accent: var(--color-mute); }
 
@@ -3133,6 +3138,58 @@ button.model-btn:hover:not(:disabled) {
 }
 .gguf-stat .meta { font-size: 10.5px; }
 .gguf-bpw { border-left: 3px solid var(--color-custom); padding-left: 12px; }
+
+/* Somebody else's attribution graph. The provenance block is deliberately the
+   loudest thing in the panel and sits above every number: this is the one
+   panel on the page showing something ModelMRI did not measure, and a reader
+   who cannot tell has been misled by the page rather than informed by it. */
+.graph-provenance {
+  margin: 10px 0 14px;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 34%, transparent);
+  border-left: 3px solid var(--color-agent);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--sem-agent) 8%, var(--color-card));
+}
+.graph-provenance .row { gap: 10px; flex-wrap: wrap; align-items: baseline; }
+.graph-provenance .hint { margin-top: 6px; }
+
+.graph-edges {
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 6px;
+  padding-right: 4px;
+}
+.graph-edge {
+  display: grid;
+  grid-template-columns: 4.5rem 1rem 4.5rem 1fr 5rem;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.graph-node { color: var(--color-mute); text-align: right; }
+.graph-arrow { color: var(--color-mute); text-align: center; }
+.graph-w { text-align: right; color: var(--color-ink); }
+.graph-bar {
+  display: block;
+  height: 7px;
+  border-radius: 2px;
+  background: color-mix(in oklab, var(--color-ink) 7%, transparent);
+  overflow: hidden;
+}
+/* Signed. An edge that suppresses is not a weak edge that promotes, and a bar
+   drawn from the absolute value alone loses exactly that distinction. */
+.graph-bar .pos,
+.graph-bar .neg {
+  display: block;
+  height: 100%;
+  width: var(--w, 0%);
+  border-radius: 2px;
+}
+.graph-bar .pos { background: var(--color-cobalt); }
+.graph-bar .neg { background: var(--color-agent); }
 
 /* The behaviour half of the quantisation damage report. */
 .gguf-diff {

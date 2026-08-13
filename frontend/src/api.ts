@@ -1524,6 +1524,41 @@ export const compareQuantisation = (
     body: JSON.stringify({ quantised, original, prompt, attention }),
   }).then((r) => json<QuantBehaviour>(r));
 
+/** An attribution graph read from another tool's file.
+ *
+ *  `available: false` is a state, not an error — most sessions have no graph.
+ *  `provenance.measured_by` is guaranteed present when `available` is true:
+ *  both the server and the viewer refuse to report a graph without it. */
+export interface GraphView {
+  available: boolean;
+  error?: string;
+  n_nodes?: number;
+  edges?: { source: number; target: number; weight: number }[];
+  provenance?: {
+    file?: string;
+    producer?: string;
+    model?: string | null;
+    scan?: string | null;
+    measured_by?: string;
+  };
+  prompt?: string;
+  summary?: {
+    nodes?: number;
+    possible_edges?: number;
+    nonzero_edges?: number;
+    density?: number | null;
+    max_abs_weight?: number | null;
+    returned_edges?: number;
+    truncated?: boolean;
+    means?: string;
+  };
+  notes?: string[];
+}
+
+/** The attribution graph carried by the open session, if any. */
+export const getGraph = () =>
+  fetch("/api/graph").then((r) => json<GraphView>(r));
+
 export interface CustomCandidate {
   path: string;
   name: string;
