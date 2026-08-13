@@ -121,6 +121,17 @@ class LoadRequest(BaseModel):
     confirm: bool = False
 
 
+class GgufLoad(BaseModel):
+    path: str
+    # None means "whatever this accelerator prefers". Named explicitly rather
+    # than defaulted to float32 here, because the dtype is half of the memory
+    # figure and a silent default would make the preflight describe a load
+    # nobody asked for.
+    dtype: str | None = None
+    # Overrides a tight fit, and nothing else.
+    confirm: bool = False
+
+
 class SAELoadRequest(BaseModel):
     repo: str = DEFAULT_SAE_REPO
     hook: str = DEFAULT_SAE_HOOK
@@ -1266,6 +1277,58 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf")
+
+    @app.get("/api/gguf/plan")
+    async def plan_gguf(path: str, dtype: str | None = None):
+        """What loading this GGUF would cost, before loading it.
+
+        The header only — a few hundred kilobytes of a multi-gigabyte file.
+        Two figures, because they fail at different moments: the resident size
+        (parameters x dtype bytes, which has to sit on the device) and the
+        float32 transit (parameters x 4, which has to fit in host RAM while
+        the dequantiser runs). Neither is the file size, and the file size is
+        what people budget against.
+        """
+        try:
+            target = await asyncio.to_thread(custom.resolve_under_roots, path)
+            return await asyncio.to_thread(
+                lambda: runtime.plan_gguf(str(target), dtype=dtype)
+            )
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf/plan")
+
+    @app.post("/api/gguf/load")
+    async def load_gguf(body: GgufLoad):
+        """Load a GGUF as a full torch module, so every panel works on it.
+
+        Expensive and refusable. The Ollama backend runs the same file faster
+        and at its real bit width but can show you nothing; this dequantises
+        it into an ordinary module the lens and the ablation sweep can reach.
+        `confirm` overrides a tight fit and only a tight fit — "will not fit"
+        is that the RAM needed exceeds the RAM that exists.
+        """
+        try:
+            target = await asyncio.to_thread(custom.resolve_under_roots, body.path)
+            st = await asyncio.to_thread(
+                lambda: runtime.load_gguf(
+                    str(target), dtype=body.dtype, confirm=body.confirm
+                )
+            )
+            return st.to_dict()
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf/load")
 
     @app.get("/api/traces/search")
     async def search_traces(q: str = "", limit: int = 100):

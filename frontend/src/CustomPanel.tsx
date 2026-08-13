@@ -42,7 +42,13 @@ function shapeText(s: number[]): string {
   return s.length ? s.join("×") : "—";
 }
 
-export default function CustomPanel() {
+export default function CustomPanel({
+  onModelChange,
+}: {
+  /** Called when this panel has changed which model the server holds — today
+   *  only the GGUF loader does. Optional so the panel stays usable standalone. */
+  onModelChange?: () => void;
+} = {}) {
   const [status, setStatus] = useState<CustomStatus | null>(null);
   const [cands, setCands] = useState<{
     adapters: CustomCandidate[];
@@ -241,7 +247,13 @@ export default function CustomPanel() {
           <div className="cand-wrap">
             {/* The reader sits above the list rather than replacing the panel,
                 so "back to the list" costs one click and the scan survives. */}
-            {gguf && <GgufReader report={gguf} onClose={() => setGguf(null)} />}
+            {gguf && (
+              <GgufReader
+                report={gguf}
+                onClose={() => setGguf(null)}
+                onLoaded={onModelChange}
+              />
+            )}
             {cands.adapters.length === 0 && cands.torchscript.length === 0 && (
               <p className="resting-empty">
                 Nothing found under {cands.roots.join(", ")}. An adapter is a

@@ -390,6 +390,11 @@ class ModelStatus:
     # question, and a UI that does not say so invites the reader to conclude
     # the tool is broken when the tool is working exactly as intended.
     instruct: bool | None = None
+    # The load plan, when this model was built from a GGUF: file size against
+    # resident size, the expansion between them, and the standing caveat that
+    # every measurement below describes the quantised weights. None otherwise,
+    # never {} -- an empty dict reads as "from a GGUF, nothing to say".
+    gguf: dict | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -404,6 +409,14 @@ class ModelRuntime:
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
         self.backend: str = "hf"  # "hf" (full introspection) | "ollama" (text only)
+        # Set when the loaded model came from a GGUF. NOT a third backend: a
+        # dequantised GGUF is an ordinary torch module and every panel works on
+        # it unchanged, so gating fifteen call sites on a new backend value
+        # would be inventing a difference that does not exist. What IS
+        # different is what the numbers describe -- the quantised weights, not
+        # the original -- and that is provenance, so it rides here and appears
+        # in status(). None on every other load.
+        self.gguf: dict | None = None
         # GPU when one is usable (NVIDIA / AMD ROCm / Intel / Apple), else CPU
         self.accel = devices.detect()
         self.device = self.accel.torch_device
@@ -482,6 +495,7 @@ class ModelRuntime:
             dtype=str(next(self.model.parameters()).dtype).removeprefix("torch."),
             n_params=sum(p.numel() for p in self.model.parameters()),
             instruct=bool(getattr(self.tokenizer, "chat_template", None)),
+            gguf=self.gguf,
         )
 
     def unload(self) -> dict:
@@ -506,6 +520,7 @@ class ModelRuntime:
             self.tokenizer = None
             self.hf_id = None
             self.backend = None
+            self.gguf = None
             self.replay = None
             self.last_ids = None
             self.last_user_span = None
@@ -634,6 +649,7 @@ class ModelRuntime:
                 self.model = None
                 self.tokenizer = None
                 self.backend = "ollama"
+                self.gguf = None
                 self.hf_id = hf_id
                 # Asked once per load, from Ollama's own metadata. None when
                 # it cannot be determined — never assumed.
@@ -769,6 +785,10 @@ class ModelRuntime:
             progress.TRACKER.finish()
             self.epoch += 1
             self.backend = "hf"
+            # Cleared, not left: loading an HF model after a GGUF one would
+            # otherwise leave the previous file's provenance attached to it,
+            # and the UI would caption a full-precision model as quantised.
+            self.gguf = None
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.replay = None
             self.last_ids = None
@@ -2294,6 +2314,97 @@ class ModelRuntime:
         if self.sae is None:
             return SAEStatus(loaded=False)
         return self.sae.status()
+
+    # ------------------------------------------------------------------ GGUF
+
+    def plan_gguf(self, path: str, *, dtype: str | None = None) -> dict:
+        """What loading this GGUF would cost, without loading it.
+
+        Cheap on purpose: it reads the header, which is a few hundred
+        kilobytes of a multi-gigabyte file, and returns both memory figures.
+        The point is that "this will not fit" is answerable before the
+        download rather than twenty minutes into it.
+        """
+        from . import gguf_load
+
+        report = gguf_load.plan(
+            path,
+            dtype=dtype or self.accel.dtype,
+            device_kind=self.accel.kind,
+        ).to_dict()
+        # Whether this file IS the model currently held. Added here rather than
+        # in gguf_load, which knows nothing about sessions.
+        #
+        # Without it the panel tells you a model you are already running will
+        # not fit — and it is not wrong: its own weights are in the free-memory
+        # figure it just read, so loading a second copy really would fail. It
+        # is still the wrong sentence to show, because the question the reader
+        # is asking has already been answered by the thing in front of them.
+        current = (self.gguf or {}).get("plan", {}).get("path")
+        report["already_loaded"] = bool(
+            current and Path(current) == Path(report["path"])
+        )
+        return report
+
+    def load_gguf(
+        self, path: str, *, dtype: str | None = None, confirm: bool = False
+    ) -> ModelStatus:
+        """Load a GGUF as a full torch module — every panel, not just chat.
+
+        The Ollama backend already runs GGUF files, at their real bit width and
+        fast, and cannot show you a single attention head. This is the other
+        trade: transformers dequantises the weights, which costs about three
+        times the file on disk, and in exchange the model is an ordinary module
+        that the lens, the ablation sweep and the patching grid all work on.
+
+        Which of those you want is a real choice, so the cost is named before
+        the load rather than discovered during it.
+
+        Blocking — call from a worker thread.
+        """
+        from . import gguf_load
+
+        want = dtype or self.accel.dtype
+        with self._load_slot(f"gguf {Path(path).name}"):
+            progress.TRACKER.start(f"loading {Path(path).name}")
+            try:
+                loaded = gguf_load.load(
+                    path,
+                    dtype=want,
+                    device=self.device,
+                    device_kind=self.accel.kind,
+                    confirm=confirm,
+                    on_stage=progress.TRACKER.stage,
+                )
+            except BaseException as err:
+                # finish() before re-raising, or the progress meter stays
+                # "active" for the rest of the session and its watcher thread
+                # polls forever. Same bug the HF path already fixed.
+                progress.TRACKER.finish(error=_load_failed(err))
+                raise
+            progress.TRACKER.finish()
+
+            report = loaded.to_dict()
+            self.epoch += 1
+            self.backend = "hf"
+            self.gguf = report
+            self.model = loaded.model
+            self.tokenizer = loaded.tokenizer
+            # The file name, not a hub id. Naming it after the repo would let
+            # a .mri recorded from a Q4_K_M file claim to come from the
+            # full-precision model of the same name -- which is exactly the
+            # substitution this module exists to prevent.
+            self.hf_id = Path(loaded.plan.path).name
+            self.replay = None
+            self.last_ids = None
+            self.last_user_span = None
+            self._attn_variants.clear()
+            self._attn_tokens = None
+            self.sae = None
+            self._feats = None
+            self._steer = None
+            self._ollama_instruct = None
+            return self.status()
 
     def load_sae(self, repo: str, hook: str) -> SAEStatus:
         """Load an SAE and validate it against the current model. Blocking."""

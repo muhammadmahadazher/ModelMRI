@@ -11,6 +11,11 @@ export interface ModelStatus {
    *  continues text rather than answering — the usual reason an answer
    *  looks wrong when nothing is broken. */
   instruct?: boolean;
+  /** Present only when this model was built from a GGUF. Every number
+   *  measured on it then describes the QUANTISED weights, not the original —
+   *  which is a caveat about the numbers, not about the model, so it rides
+   *  with the status rather than being recomputed per panel. */
+  gguf?: GgufLoaded | null;
 }
 
 export interface SessionInfo {
@@ -1399,6 +1404,65 @@ export const readGguf = (path: string) =>
   fetch(`/api/gguf?path=${encodeURIComponent(path)}`).then((r) =>
     json<GgufReport>(r),
   );
+
+/** What loading a GGUF would cost, computed from its header alone.
+ *
+ *  Two figures because they fail at different moments. `resident_bytes` is
+ *  parameters x dtype bytes and has to sit on the device afterwards;
+ *  `peak_host_bytes` is parameters x 4 and has to fit in host RAM while the
+ *  dequantiser runs. Neither is the file size, and the file size is what
+ *  people budget against — measured, a 0.397 GB Q4_K_M file becomes 1.192 GB
+ *  of bfloat16 tensors. */
+export interface GgufPlan {
+  path: string;
+  architecture: string | null;
+  parameters: number;
+  file_bytes: number;
+  dtype: string;
+  resident_bytes: number;
+  peak_host_bytes: number;
+  expansion: number | null;
+  device: string;
+  /** null, never 0 — "we could not ask" and "there is none left" are
+   *  different answers and only one is a reason to refuse. */
+  device_free_bytes: number | null;
+  host_free_bytes: number | null;
+  host_total_bytes: number | null;
+  verdict: "fits" | "tight" | "will not fit" | "unknown";
+  why: string;
+  notes: string[];
+  means: string;
+  /** This file is already the loaded model. The verdict is then about loading
+   *  a SECOND copy beside the first, which is not the question being asked. */
+  already_loaded?: boolean;
+}
+
+/** The plan again, plus what the module actually weighed. The prediction is
+ *  arithmetic on a header; this is the check against reality. */
+export interface GgufLoaded {
+  plan: GgufPlan;
+  measured_resident_bytes: number;
+  prediction_error: number | null;
+  load_seconds: number;
+}
+
+/** Ask what a GGUF would cost. Reads the header only — no GPU is touched. */
+export const planGguf = (path: string, dtype?: string) =>
+  fetch(
+    `/api/gguf/plan?path=${encodeURIComponent(path)}` +
+      (dtype ? `&dtype=${encodeURIComponent(dtype)}` : ""),
+  ).then((r) => json<GgufPlan>(r));
+
+/** Load a GGUF as a full torch module, so every panel works on it.
+ *
+ *  `confirm` overrides a tight fit and only a tight fit — "will not fit" is
+ *  that the RAM needed exceeds the RAM that exists. */
+export const loadGguf = (path: string, dtype?: string, confirm = false) =>
+  fetch("/api/gguf/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, dtype, confirm }),
+  }).then((r) => json<ModelStatus>(r));
 
 export interface CustomCandidate {
   path: string;

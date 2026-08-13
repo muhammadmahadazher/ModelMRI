@@ -244,7 +244,16 @@ export default function App() {
           does, it should do without three dead ends around it. */}
       {!VIEWER && (
         <>
-          <CustomPanel />
+          {/* Loading a GGUF makes it the live model, so the header and
+              every panel have to re-ask. `refresh` updates the status;
+              bumping resetKey remounts the playground, which is the same
+              path the adopt button takes. */}
+          <CustomPanel
+            onModelChange={() => {
+              void refresh();
+              setResetKey((k) => k + 1);
+            }}
+          />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to

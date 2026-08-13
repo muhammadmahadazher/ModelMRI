@@ -46,6 +46,12 @@ def main() -> int:
     ap.add_argument("--corrupt", default="The Colosseum is located in the city of")
     ap.add_argument("--layer", type=int, default=0, help="layer for the head sweep")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument(
+        "--gguf",
+        help="a .gguf to measure instead of --model. Every figure below is then "
+        "about the QUANTISED weights, dequantised -- which is the point, but it "
+        "is a different model from the safetensors of the same name.",
+    )
     args = ap.parse_args()
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -63,17 +69,52 @@ def main() -> int:
     }
 
     say = (lambda *a: None) if args.json else print
-    say(f"# measured on {accel.name} · {accel.dtype} · {args.model}\n")
+    say(f"# measured on {accel.name} · {accel.dtype} · {args.gguf or args.model}\n")
+    if args.gguf:
+        say("# these are the QUANTISED weights, dequantised. Not the original.\n")
+        # The preflight prints BEFORE the load, because the load is the
+        # expensive part and the preflight is what says whether it is worth
+        # starting. A GGUF header is a few hundred kilobytes of a multi-gigabyte
+        # file, so this costs nothing and can save half an hour.
+        from modelmri import gguf_load
 
-    t0 = time.perf_counter()
-    tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        dtype=devices.torch_dtype(accel),
-        attn_implementation="eager",
-    ).to(accel.torch_device)
-    model.eval()
-    out["load_seconds"] = round(time.perf_counter() - t0, 2)
+        plan = gguf_load.plan(args.gguf, dtype=accel.dtype, device_kind=accel.kind)
+        say(
+            f"## gguf preflight\n  {plan.file_bytes / 1e9:.3f} GB on disk -> "
+            f"{plan.resident_bytes / 1e9:.3f} GB resident at {plan.dtype} "
+            f"({plan.expansion:.2f}x), {plan.peak_host_bytes / 1e9:.3f} GB peak"
+        )
+        say(f"  verdict {plan.verdict}: {plan.why}")
+        loaded = gguf_load.load(
+            args.gguf,
+            dtype=accel.dtype,
+            device=accel.torch_device,
+            device_kind=accel.kind,
+            # Run deliberately, by someone reading the preflight it just
+            # printed. A tight fit is theirs to accept; "will not fit" is
+            # arithmetic and refuses regardless of this flag.
+            confirm=True,
+        )
+        model, tok = loaded.model, loaded.tokenizer
+        args.model = Path(plan.path).name
+        out["model"] = args.model
+        out["gguf"] = loaded.to_dict()
+        out["load_seconds"] = round(loaded.load_seconds, 2)
+        say(
+            f"  prediction error {loaded.prediction_error:+.6f} "
+            f"({loaded.measured_resident_bytes:,} weighed against "
+            f"{plan.resident_bytes:,} predicted)"
+        )
+    else:
+        t0 = time.perf_counter()
+        tok = AutoTokenizer.from_pretrained(args.model)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            dtype=devices.torch_dtype(accel),
+            attn_implementation="eager",
+        ).to(accel.torch_device)
+        model.eval()
+        out["load_seconds"] = round(time.perf_counter() - t0, 2)
 
     cfg = model.config
     n_layers = int(cfg.num_hidden_layers)

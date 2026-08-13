@@ -1,5 +1,11 @@
-import { useMemo, useState } from "react";
-import { GgufReport, GgufTensor } from "./api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  GgufPlan,
+  GgufReport,
+  GgufTensor,
+  loadGguf,
+  planGguf,
+} from "./api";
 
 const bytes = (n: number) => {
   if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
@@ -25,14 +31,39 @@ type SortKey = "name" | "type_name" | "elements" | "bytes" | "offset";
 export default function GgufReader({
   report,
   onClose,
+  onLoaded,
 }: {
   report: GgufReport;
   onClose: () => void;
+  /** Called after the file has become the live model, so the rest of the app
+   *  can refresh its status. Optional — the panel is useful read-only. */
+  onLoaded?: () => void;
 }) {
   const [sort, setSort] = useState<SortKey>("bytes");
   const [desc, setDesc] = useState(true);
   const [filter, setFilter] = useState("");
+  // Every hook above every early return. React error #310 has shipped twice
+  // in this codebase from a `return` sneaking above a useState.
+  const [plan, setPlan] = useState<GgufPlan | null>(null);
+  const [planErr, setPlanErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [loadErr, setLoadErr] = useState("");
   const s = report.summary;
+
+  // Asked as soon as the file is open, because the answer is the reason to
+  // open it: the header is a few hundred kilobytes and the verdict decides
+  // whether the next click is worth thirty seconds or is doomed.
+  useEffect(() => {
+    let live = true;
+    setPlan(null);
+    setPlanErr("");
+    planGguf(report.path)
+      .then((p) => live && setPlan(p))
+      .catch((e) => live && setPlanErr(String(e?.message || e)));
+    return () => {
+      live = false;
+    };
+  }, [report.path]);
 
   const tensors = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -125,6 +156,92 @@ export default function GgufReader({
 
       {s.why_unmeasured && (
         <div className="hint err refusal">{s.why_unmeasured}</div>
+      )}
+
+      {/* What loading it would cost. The one number nobody expects: a 4-bit
+          GGUF does not load as a 4-bit model. Transformers has no kernels for
+          these types, so it dequantises everything on the way in and the file
+          size stops predicting anything. Measured on this repo's machine, a
+          0.397 GB Q4_K_M file became 1.192 GB of bfloat16 tensors after a
+          2.30 GB peak. Saying that before the click is the whole feature. */}
+      {planErr && <div className="hint err refusal">{planErr}</div>}
+      {plan && (
+        <div className={`gguf-plan v-${plan.verdict.replace(/ /g, "-")}`}>
+          <div className="gguf-plan-bars">
+            <span className="gguf-stat">
+              <b>{bytes(plan.file_bytes)}</b>
+              <span className="meta">on disk</span>
+            </span>
+            <span className="gguf-arrow" aria-hidden="true">
+              →
+            </span>
+            <span className="gguf-stat">
+              <b>{bytes(plan.resident_bytes)}</b>
+              <span className="meta">loaded at {plan.dtype}</span>
+            </span>
+            <span className="gguf-stat">
+              <b>{bytes(plan.peak_host_bytes)}</b>
+              <span className="meta">peak host RAM</span>
+            </span>
+            {plan.expansion != null && (
+              <span className="gguf-stat gguf-bpw">
+                <b>{plan.expansion.toFixed(2)}×</b>
+                <span className="meta">bigger than the file</span>
+              </span>
+            )}
+          </div>
+          <div className="row">
+            {/* The verdict is about loading this file. When it is already the
+                live model that question is about a SECOND copy beside the
+                first — true, doomed, and not what anyone is asking. */}
+            <span
+              className={`pill ${
+                plan.already_loaded || plan.verdict === "fits" ? "ok" : "warn"
+              }`}
+            >
+              {plan.already_loaded ? "loaded" : plan.verdict}
+            </span>
+            <span className="meta">
+              {plan.already_loaded
+                ? "this file is the model currently loaded — every panel below is reading it"
+                : plan.why}
+            </span>
+            <span className="spacer" />
+            <button
+              className="primary sm"
+              hidden={plan.already_loaded}
+              disabled={busy || plan.verdict === "will not fit"}
+              title={
+                plan.verdict === "will not fit"
+                  ? plan.why
+                  : "Dequantise this file into a full torch module — every panel, not just chat"
+              }
+              onClick={() => {
+                setBusy(true);
+                setLoadErr("");
+                // confirm is passed only for a tight fit. "will not fit" is
+                // arithmetic, and the button is disabled for it rather than
+                // offering an override that cannot work.
+                loadGguf(report.path, undefined, plan.verdict === "tight")
+                  .then(() => onLoaded?.())
+                  .catch((e) => setLoadErr(String(e?.message || e)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {busy
+                ? "dequantising…"
+                : plan.verdict === "tight"
+                  ? "load anyway"
+                  : "load for introspection"}
+            </button>
+          </div>
+          {loadErr && <div className="hint err refusal">{loadErr}</div>}
+          {plan.notes.map((n) => (
+            <div className="hint" key={n}>
+              {n}
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Where the bits went. This is the part the quantisation label hides. */}

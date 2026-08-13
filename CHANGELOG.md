@@ -8,6 +8,41 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **Run a GGUF through the whole stack, and see what it costs first.** The
+  reader could tell you what was inside a GGUF and then nothing could open it.
+  `gguf_load.py` dequantises one into an ordinary torch module, so the logit
+  lens, the head sweep, the patching grid and attention all work on it.
+
+  The number nobody expects comes with it. A 4-bit GGUF does not load as a
+  4-bit model — transformers has no kernels for these types, so it dequantises
+  every tensor on the way in. Measured on `Qwen3-0.6B-Q4_K_M.gguf`: **0.397 GB
+  on disk becomes 1.192 GB of bfloat16 tensors, after a 2.30 GB peak.** Three
+  times the file resident, and nearly six times transiently, because the whole
+  checkpoint is materialised as float32 before anything is cast — so asking
+  for bfloat16 does not avoid the float32 transit.
+
+  Both figures are arithmetic on the header, which is a few hundred kilobytes
+  of a multi-gigabyte file, so the answer arrives before the download rather
+  than twenty minutes into it. The resident prediction was exact: 1,192,099,840
+  bytes predicted, 1,192,099,840 weighed, error 0.0 — and the load report
+  carries that comparison rather than assuming it.
+
+  Worked example of the refusal, on the machine this was written on: Gemma 4
+  E2B is 4.63 **billion** raw parameters behind an "E2B" name, so its 2.83 GB
+  Q4_0 file wants 9.26 GB resident and an 18.51 GB float32 transit. Against
+  16.94 GB of total RAM the answer is "will not fit", and it says *total*
+  rather than *free*, because closing other programs cannot change it.
+
+  Refusals by name rather than by stack trace for the things a GGUF repo ships
+  beside the model — `mmproj-*` projectors, `mtp-*` speculative heads, split
+  `-00001-of-*` shards, architectures transformers has no config for (asked at
+  runtime, not hardcoded), and a directory holding several quantisations, which
+  is refused rather than guessed at because which file you load is which file
+  your measurements describe.
+
+  Every result says so, too: a loaded GGUF is the quantised weights
+  dequantised, not the original model, and `quantdiff` measures the gap.
+
 - **A third ablation baseline, and the number that says the baseline is
   deciding.** `ablate.py` has documented since it was written that zero- and
   mean-ablation disagree, and done nothing about it — so every ranking this

@@ -131,10 +131,12 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/gguf` | Read Gguf |
+| `GET` | `/api/gguf/plan` | Plan Gguf |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/paths` | Where |
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/telemetry` | Read Telemetry |
+| `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/patch` | Patch Trace |
 
 ## Streaming

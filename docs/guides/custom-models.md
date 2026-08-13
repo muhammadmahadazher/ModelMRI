@@ -31,6 +31,7 @@ Open **CUSTOM MODEL**, click **Find models here**, pick your adapter, click
 | a HuggingFace-format folder (`config.json` + weights) | ✅ | use the normal model picker — it's already found |
 | a Python file that builds your `nn.Module` | ✅ | that's an adapter; see below |
 | TorchScript (`torch.jit.save`) | ✅ | pick the `.pt` directly |
+| a GGUF (`.gguf`) | ✅ | pick it — the header reads instantly, and the **load for introspection** button turns it into a full model; see [below](#gguf-and-what-loading-one-costs) |
 | a `state_dict` (`torch.save(model.state_dict(), ...)`) | ❌ | write an adapter — see [why](#why-a-state_dict-alone-is-refused) |
 | an ONNX file, a scikit-learn pickle, a Keras model | ❌ | not yet |
 
@@ -118,6 +119,56 @@ ModelMRI says that, tells you how many tensors it found and names a few, and
 points you at the template. The alternative — guessing an architecture that
 fits the tensor shapes — would produce a layer map that looks authoritative
 and describes a network you never trained.
+
+## GGUF, and what loading one costs
+
+Every other local runner shows a GGUF as a quantisation label and a file size.
+Open one here and you get where the bits actually went, computed per tensor
+from the file's own table — measured on `Qwen3-0.6B-Q4_K_M.gguf`, a file
+labelled Q4_K reads **5.245 bits per weight effective**, because 29 of its
+tensors are Q6_K and 113 are F32.
+
+Then there is a button that loads it. Pressing it gives you the lens, the head
+sweep, the patching grid and attention on a file that used to be readable and
+not runnable. What it does **not** give you is a 4-bit model in memory:
+
+| | Qwen3-0.6B-Q4_K_M | Gemma 4 E2B Q4_0 |
+|---|---|---|
+| file on disk | 0.397 GB | 2.83 GB |
+| parameters | 596,049,920 | 4,628,569,635 |
+| resident at bfloat16 | **1.192 GB** (3.00×) | **9.26 GB** (3.27×) |
+| peak host RAM while loading | **2.30 GB** | **18.51 GB** |
+
+Transformers has no kernels for these quantised types, so it dequantises every
+tensor on the way in — and it materialises the whole checkpoint as float32
+before casting, which is why asking for bfloat16 still transits through
+`parameters × 4`. The resident figure is `parameters × dtype bytes` and it is
+exact: 1,192,099,840 bytes predicted from the header, 1,192,099,840 weighed
+from the built module.
+
+Both numbers come from the header, which is a few hundred kilobytes of a
+multi-gigabyte file, so the panel shows them **before** you press anything.
+That is the point of the feature. Gemma 4 E2B is 4.63 *billion* raw parameters
+behind an "E2B" name; on a 16.94 GB machine the answer is "will not fit", and
+it says *total* RAM rather than free, because closing other programs cannot
+change it.
+
+If what you want is to *run* a large GGUF rather than look inside it, use the
+Ollama backend — same file, real bit width, much faster, and no introspection.
+That trade is the whole reason both exist.
+
+Two things the panel will refuse rather than guess:
+
+- **A directory holding several quantisations.** Repos ship Q4_K_M beside Q8_0
+  beside BF16. Which one loads is which one your measurements describe, so you
+  name it.
+- **The companions.** `mmproj-*` is a vision projector, `mtp-*` is a
+  speculative-decoding head, and `*-00001-of-*` is one shard of a split file.
+  None is a language model.
+
+And a standing caveat on everything measured afterwards: a loaded GGUF is the
+*quantised* weights, dequantised. It is not the original model. To see how far
+apart they are, point [`quantdiff`](../reference/api.md) at both.
 
 ## What this is not
 

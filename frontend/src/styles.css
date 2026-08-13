@@ -3134,6 +3134,43 @@ button.model-btn:hover:not(:disabled) {
 .gguf-stat .meta { font-size: 10.5px; }
 .gguf-bpw { border-left: 3px solid var(--color-custom); padding-left: 12px; }
 
+/* The load preflight. Deliberately the loudest thing in the panel: the
+   number people arrive with is the file size, and the number that decides
+   whether the load survives is three to six times larger. The arrow between
+   "on disk" and "loaded" is the whole argument, so it gets to be seen. */
+.gguf-plan {
+  margin: 12px 0;
+  padding: 13px 15px 10px;
+  border: 1px solid color-mix(in oklab, var(--color-ink) 14%, transparent);
+  border-left: 3px solid var(--color-mute);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--color-card) 96%, white);
+}
+.gguf-plan.v-fits { border-left-color: var(--color-cobalt); }
+.gguf-plan.v-tight { border-left-color: var(--color-agent); }
+.gguf-plan.v-will-not-fit { border-left-color: var(--color-warn, var(--color-agent)); }
+.gguf-plan-bars {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 10px;
+}
+.gguf-plan-bars .gguf-stat b { font-size: 17px; }
+.gguf-arrow {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  color: var(--color-mute);
+  /* Nudged up so it sits on the numbers' baseline rather than the labels'. */
+  margin-top: -14px;
+}
+.gguf-plan .hint { margin-top: 7px; }
+.pill.ok {
+  color: var(--color-cobalt);
+  border-color: color-mix(in oklab, var(--acc) 45%, transparent);
+  background: color-mix(in oklab, var(--acc) 8%, var(--color-card));
+}
+
 .gguf-scroll { max-height: 420px; overflow: auto; margin-top: 6px; }
 .gguf-table {
   width: 100%;
