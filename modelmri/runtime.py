@@ -428,6 +428,7 @@ class ModelRuntime:
         # just quietly reports numbers about nothing.
         self.epoch = 0
         self._last_patch: dict = {}
+        self._last_ranking: dict = {}
         # One receipt per measurement that has run, keyed by the operation, so
         # `export_session` can put the setup of every number in the `.mri`
         # beside the number. Each carries the epoch it was taken under and is
@@ -1137,6 +1138,7 @@ class ModelRuntime:
         # on the same rebase for the same reason; the generate path was the
         # one rebase that did not.
         self._last_patch = {}
+        self._last_ranking = {}
         # The generation itself gets a receipt, and it is the one every other
         # receipt depends on: each of them names a prompt, and this says how
         # that prompt was answered. `temperature` is the field `verify` cannot
@@ -1153,8 +1155,7 @@ class ModelRuntime:
             # changes without the reader of a two-year-old file being told.
             greedy=temperature <= 0,
             n_prompt_tokens=self.last_n_prompt_tokens,
-            n_generated_tokens=int(self.last_ids.shape[0])
-            - self.last_n_prompt_tokens,
+            n_generated_tokens=int(self.last_ids.shape[0]) - self.last_n_prompt_tokens,
         )
 
     # ---------------- attention ----------------
@@ -1460,9 +1461,21 @@ class ModelRuntime:
         that make the number honest.
         """
         if self.replay is not None:
+            # A recording that CARRIES a ranking can serve it, the same way a
+            # recorded patch trace is served. The blanket refusal below was
+            # right when the format held nothing here; now that a `.mri`
+            # carries the ranking, refusing a file that already holds the
+            # answer is the format failing rather than the reader asking for
+            # too much -- which is the lesson `patch_trace` records.
+            recorded = self.replay.ranking or {}
+            if recorded.get("ranked"):
+                return {**recorded, "recorded": True}
             raise Refusal(
-                "This is a recording. Ranking heads means running the model, "
-                "and a `.mri` does not carry one."
+                "This is a recording, and it does not carry a head ranking. "
+                "Ranking heads means running the model once per head, and a "
+                "`.mri` holds activations rather than weights — there is "
+                "nothing here to re-run. Whoever exported it can rank the "
+                "heads and share it again."
             )
         if self.backend == "ollama":
             raise Refusal(
@@ -1512,6 +1525,13 @@ class ModelRuntime:
                     position=position,
                     corpus=extra.get("corpus"),
                 )
+                # Kept so a `.mri` can carry it, on the same terms as
+                # `_last_patch`: tagged with the epoch and dropped when the run
+                # it describes stops being the current one. Until this, a file
+                # recorded THAT a ranking had run and carried none of it, so
+                # `verify` could only report it as the one measurement in the
+                # file it was unable to check.
+                self._last_ranking = {**ranked, "layer": layer, "epoch": self.epoch}
                 return ranked
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
@@ -1741,6 +1761,7 @@ class ModelRuntime:
             self._attn_variants = {}
             self._attn_tokens = None
             self._last_patch = {}
+            self._last_ranking = {}
             # `_feats` too. Every other rebase path clears it; this one did
             # not, and `_compute_features` guards its cache on
             # `last_ids_epoch == epoch` — which adopt satisfies — so the
@@ -2398,6 +2419,7 @@ class ModelRuntime:
             # in this tool that is causal rather than correlational was the
             # one you could not send anybody.
             patch=self._patch_for_export(),
+            ranking=self._ranking_for_export(),
             receipts=self._receipts_for_export(),
         )
 
@@ -2416,6 +2438,20 @@ class ModelRuntime:
             for receipt in self._receipts.values()
             if receipt.get("epoch") == self.epoch
         ]
+
+    def _ranking_for_export(self) -> dict:
+        """The last head ranking, if it belongs to the state being exported.
+
+        Same epoch rule as `_patch_for_export`, and the same reason: a ranking
+        measured against an earlier prompt written beside these tokens would
+        be a claim about which heads carry an answer the file does not show.
+        """
+        last = self._last_ranking
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        # `receipt` is dropped: the receipts list carries it once already, and
+        # a second copy inside the section is a second thing to keep in step.
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
 
     def _patch_for_export(self) -> dict:
         """The last patch trace, if it belongs to the state being exported.

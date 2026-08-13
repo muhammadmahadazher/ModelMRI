@@ -290,13 +290,62 @@ def test_a_different_revision_blocks_the_comparison(light, fresh, tmp_path):
     assert report.exit_code() == 0
 
 
-def test_the_head_ranking_is_reported_absent_rather_than_skipped(clean_report):
-    """The `.mri` records that a ranking ran and does not carry it. Silence
-    would read as "it reproduced"."""
+def test_the_head_ranking_is_re_run_not_merely_named(clean_report):
+    """It used to be the one measurement in the file that could not be
+    checked: the `.mri` recorded that a ranking had run and carried none of
+    it, so `verify` could only name it."""
     report = clean_report
     check = next(c for c in report.checks if c.name == "head ranking")
+    assert check.verdict == verify_mod.REPRODUCED
+    assert check.measured["heads_compared"] > 1
+    assert check.measured["tolerance_from"].startswith("this run's own noise floor")
+
+
+def test_a_file_written_before_the_ranking_section_says_so(light, fresh, tmp_path):
+    """Named rather than skipped — silence would read as "it reproduced"."""
+    doc = _doc(light.read_bytes())
+    doc.pop("ranking", None)
+    path = tmp_path / "old.mri"
+    path.write_bytes(_pack(doc))
+
+    report = verify_mod.verify(path, fresh)
+    check = next(c for c in report.checks if c.name == "head ranking")
     assert check.verdict == verify_mod.NOT_VERIFIABLE
-    assert "not the ranking itself" in check.detail
+    assert "does not carry it" in check.detail
+
+
+def test_a_tampered_ranking_score_is_caught(light, fresh, tmp_path):
+    """One head's KL moved, the order left alone. The scores broke and the
+    order held, and the sentence has to say which."""
+    doc = _doc(light.read_bytes())
+    doc["ranking"]["ranked"][-1]["kl"] += 0.02
+    path = tmp_path / "badscore.mri"
+    path.write_bytes(_pack(doc))
+
+    report = verify_mod.verify(path, fresh)
+    check = next(c for c in report.checks if c.name == "head ranking")
+    assert check.verdict == verify_mod.DIFFERS
+    assert "top" in check.detail and "unchanged" in check.detail
+    assert check.measured["max_abs_kl_diff"] > check.measured["tolerance"]
+
+
+def test_a_reordered_ranking_is_caught_as_a_different_claim(light, fresh, tmp_path):
+    """Scores can drift while the order holds, and the order can move while
+    the scores barely do. They fail differently and are reported differently:
+    a reader acts on "which head carries this", not on the last digits."""
+    doc = _doc(light.read_bytes())
+    rows = doc["ranking"]["ranked"]
+    for row, kl in zip(rows, sorted(r["kl"] for r in rows), strict=True):
+        row["kl"] = kl  # was descending, now ascending
+    path = tmp_path / "badorder.mri"
+    path.write_bytes(_pack(doc))
+
+    report = verify_mod.verify(path, fresh)
+    check = next(c for c in report.checks if c.name == "head ranking")
+    assert check.verdict == verify_mod.DIFFERS
+    assert "different claim about which head" in check.detail
+    assert check.measured["spearman"] is not None
+    assert check.measured["top_k_shared"] < check.measured["top_k"]
 
 
 def test_a_model_this_machine_cannot_load_is_not_a_failure(light, fresh, tmp_path):
@@ -362,3 +411,40 @@ def test_the_report_survives_json(clean_report):
     round_tripped = json.loads(json.dumps(report.to_dict(), allow_nan=False))
     assert round_tripped["totals"]["reproduced"] >= 1
     assert {c["name"] for c in round_tripped["checks"]} >= {"generation", "attention"}
+
+
+def test_a_recording_serves_its_ranking_with_no_model_loaded(recording):
+    """The point of the format: a colleague sees the head you found without
+    downloading 8 GB.
+
+    The replay arm used to refuse this flatly — "ranking heads means running
+    the model" — which was right when the file held nothing here. Once it
+    carries the ranking, refusing a file that already holds the answer is the
+    format failing rather than the reader asking too much. `patch_trace`
+    records the same lesson.
+    """
+    from modelmri.runtime import ModelRuntime
+
+    reader = ModelRuntime()  # nothing loaded, as on a stranger's machine
+    reader.open_session(recording.read_bytes())
+
+    out = reader.ablate_heads()
+    assert out["recorded"] is True
+    assert out["ranked"], "the recording carries rows"
+    assert out["baseline"], "and says which baseline produced them"
+    assert reader.model is None, "serving a recording must not load anything"
+
+
+def test_a_recording_without_a_ranking_still_refuses_with_a_reason(recording, tmp_path):
+    from modelmri.errors import Refusal
+    from modelmri.runtime import ModelRuntime
+
+    doc = _doc(recording.read_bytes())
+    doc.pop("ranking", None)
+    path = tmp_path / "noranking.mri"
+    path.write_bytes(_pack(doc))
+
+    reader = ModelRuntime()
+    reader.open_session(path.read_bytes())
+    with pytest.raises(Refusal, match="does not carry a head ranking"):
+        reader.ablate_heads()

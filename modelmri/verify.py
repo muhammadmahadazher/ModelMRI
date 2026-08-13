@@ -487,20 +487,130 @@ def _check_patch(parsed, runtime, blocked: str) -> Check:
     )
 
 
-def _check_ranking(parsed) -> Check | None:
-    """The head ranking, which a `.mri` records having run and does not carry.
+def _check_ranking(parsed, runtime, blocked: str) -> Check | None:
+    """Does the same head still carry the answer, by the same margin?
 
-    Reported rather than omitted. A reader who exported a file after ranking
-    heads will look for it here, and silence would read as "it reproduced".
+    TWO questions, because they fail differently. The scores can drift while
+    the order holds, which is float noise; the order can change while the
+    scores barely move, which is a different claim about the model. A reader
+    who is told only "reproduced" cannot tell those apart, so both are
+    measured and the sentence names whichever broke.
+
+    The tolerance is `rank_heads`'s own noise floor, taken from THIS run: the
+    same forward pass twice with nothing ablated. It was built for exactly
+    this purpose -- "anything at or below this is arithmetic, not the model" --
+    and using the freshly measured one rather than the file's is what makes it
+    a measurement of this machine.
     """
-    if not _receipt_for(parsed, "ablate_heads"):
-        return None
+    stored = parsed.ranking or {}
+    rows = stored.get("ranked") or []
+    if not rows:
+        if not _receipt_for(parsed, "ablate_heads"):
+            return None
+        # Written before the ranking section existed. Named rather than
+        # skipped: silence would read as "it reproduced".
+        return Check(
+            "head ranking",
+            NOT_VERIFIABLE,
+            "this file records that a head ranking ran but does not carry it. "
+            "Files written before the ranking section existed have nothing "
+            "here to compare against.",
+        )
+    if blocked:
+        return Check("head ranking", NOT_VERIFIABLE, blocked)
+
+    from . import ablate
+
+    baseline = stored.get("baseline")
+    layer = stored.get("layer")
+    try:
+        fresh = runtime.ablate_heads(layer=layer, baseline=baseline)
+    except (BadRequest, Refusal) as err:
+        return Check(
+            "head ranking",
+            NOT_VERIFIABLE,
+            f"the ranking could not be re-taken here — {err}",  # leak-ok: authored
+        )
+
+    here = {(r["layer"], r["head"]): r["kl"] for r in fresh.get("ranked") or []}
+    there = {(r["layer"], r["head"]): r["kl"] for r in rows}
+    shared = sorted(here.keys() & there.keys())
+    if not shared:
+        return Check(
+            "head ranking",
+            NOT_VERIFIABLE,
+            "the re-run ranked a different set of heads entirely, so there is "
+            "no head the two rankings have in common to compare.",
+        )
+
+    floor = float(fresh.get("noise_floor_kl") or 0.0)
+    worst_head, worst_gap = shared[0], 0.0
+    for head in shared:
+        gap = abs(here[head] - there[head])
+        if gap > worst_gap:
+            worst_head, worst_gap = head, gap
+
+    # Order, separately. The top-k set is what a reader acts on -- "layer 6
+    # head 9 carries this" -- and it can change while every score stays inside
+    # the floor.
+    top = min(5, len(shared))
+    top_here = [h for h in sorted(here, key=lambda h: -here[h])][:top]
+    top_there = [h for h in sorted(there, key=lambda h: -there[h])][:top]
+    shared_top = len(set(top_here) & set(top_there))
+    rank_correlation = ablate.spearman(
+        [here[h] for h in shared], [there[h] for h in shared]
+    )
+
+    measured = {
+        "heads_compared": len(shared),
+        "heads_in_file": len(there),
+        "max_abs_kl_diff": worst_gap,
+        "worst_head": f"L{worst_head[0]}H{worst_head[1]}",
+        "tolerance": floor,
+        "tolerance_from": (
+            "this run's own noise floor — the same forward pass twice with "
+            "nothing ablated"
+        ),
+        "top_k": top,
+        "top_k_shared": shared_top,
+        "spearman": rank_correlation,
+        "baseline": baseline,
+    }
+
+    scores_hold = worst_gap <= floor
+    order_holds = shared_top == top
+    if scores_hold and order_holds:
+        return Check(
+            "head ranking",
+            REPRODUCED,
+            f"all {len(shared)} heads score within {worst_gap:.2e} of the "
+            f"file against a {floor:.2e} noise floor, and the top {top} are "
+            f"the same heads.",
+            measured,
+        )
+    if order_holds:
+        return Check(
+            "head ranking",
+            DIFFERS,
+            f"the top {top} heads are unchanged, but L{worst_head[0]}"
+            f"H{worst_head[1]} scores {here[worst_head]:.5f} here against "
+            f"{there[worst_head]:.5f} in the file — a gap of {worst_gap:.2e} "
+            f"outside the {floor:.2e} noise floor.",
+            measured,
+        )
     return Check(
         "head ranking",
-        NOT_VERIFIABLE,
-        "this file records that a head ranking ran, but the `.mri` format "
-        "carries attention, patching and the generation — not the ranking "
-        "itself. There is no stored number here to compare against.",
+        DIFFERS,
+        f"the ranking moved: {top - shared_top} of the top {top} heads are "
+        f"different"
+        + (
+            f" (Spearman {rank_correlation:.2f} across all {len(shared)} heads)"
+            if rank_correlation is not None
+            else ""
+        )
+        + ". This is a different claim about which head carries the answer, "
+        "not a difference in the last digits.",
+        measured,
     )
 
 
@@ -626,7 +736,23 @@ def verify(path: str | Path, runtime) -> Report:
         )
 
     report.checks.append(_check_patch(parsed, runtime, blocked))
-    ranking = _check_ranking(parsed)
+
+    # Like attention, the ranking is measured at a position inside the run, so
+    # it needs that run re-established. Unlike attention it is expensive --
+    # n_layers x n_heads forward passes -- which is why it goes last: a reader
+    # watching the output has already seen everything cheap by the time this
+    # starts.
+    if generation.verdict == REPRODUCED:
+        ranking = _check_ranking(parsed, runtime, blocked)
+    elif parsed.ranking.get("ranked") or _receipt_for(parsed, "ablate_heads"):
+        ranking = Check(
+            "head ranking",
+            NOT_VERIFIABLE,
+            "a ranking is measured at a position inside a generation, and "
+            f"this file's could not be re-established here — {generation.detail}",
+        )
+    else:
+        ranking = None
     if ranking is not None:
         report.checks.append(ranking)
     return report

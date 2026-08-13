@@ -8,6 +8,49 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#16, completed: `modelmri sweep`.** Runs one measurement over a set of
+  prompts and reports each head as **median, IQR, n and how often it reached
+  the top five** instead of as a number. Headless — a `ModelRuntime` directly,
+  no FastAPI and no browser — so it works over SSH. `--jsonl` writes one row
+  per prompt, `--out-dir` writes one `.mri` per prompt so any single row can be
+  opened, forwarded or verified like any other finding, and every row carries
+  the receipt that produced it.
+
+  "A number measured once is a sample, not a property" was a line in the
+  README. This is it as behaviour. On five prompts through gpt2 layer 0, L0H0
+  came back with a median of 0.054 and a maximum of 1.716 — a head that carried
+  one prompt almost entirely and did nothing on the other four. A mean would
+  have buried it.
+
+  Three rules it enforces rather than documents. **Never a mean without a
+  spread**: every aggregate is an order statistic. **A refusal is a row, not a
+  gap**: a prompt the measurement cannot be taken on is written out with the
+  sentence saying why in `could_not_measure`, because skipping them leaves a
+  file that quietly describes only the prompts that happened to work.
+  **Position metrics are not aggregated across prompts**: layer 6 head 9 is the
+  same head everywhere and feature 4021 is the same feature, but token position
+  3 is a different word in every prompt, so a `tokens` sweep is refused at the
+  aggregate rather than computed and captioned with a warning.
+
+  The projected pass count prints before anything runs, and a sweep past 20,000
+  forward passes is refused unless `--yes` — the resample baseline multiplies
+  its draws through every prompt, and a sweep that cannot finish inside
+  anybody's patience is worse than one that never began.
+
+- **A `.mri` now carries the head ranking it measured.** The file recorded that
+  a ranking had run and carried none of it, so `modelmri verify` could name the
+  headline measurement and not re-run it — the one number in the file nobody
+  could audit was the one people quote. `verify` now re-takes it and checks two
+  things separately, because they fail differently: the per-head scores against
+  the noise floor measured on this run, and the ORDER, since the top-k set can
+  change while every score stays inside the floor. A reordering is reported as
+  "a different claim about which head carries the answer", with the Spearman
+  correlation, rather than as a difference in the last digits.
+
+  A recording also serves its ranking with no model loaded, the way a recorded
+  patch trace already does. Refusing a file that holds the answer was the
+  format failing, not the reader asking for too much.
+
 - **#18, completed: `modelmri verify FILE.mri`.** Re-runs the measurements in a
   recording on the machine you run it on and reports, per number, whether it
   came back the same. The other half of #17: a receipt says what produced a

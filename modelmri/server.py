@@ -910,9 +910,7 @@ def create_app(
         from .lens import logit_lens
 
         def run() -> dict:
-            out = logit_lens(
-                runtime.model, runtime.tokenizer, runtime.last_ids, top_k
-            )
+            out = logit_lens(runtime.model, runtime.tokenizer, runtime.last_ids, top_k)
             # Stamped here rather than inside `lens.py`, which takes a model
             # and a tokenizer and has no idea which model id they came from.
             # The receipt is about the setup, and the runtime is what holds it.

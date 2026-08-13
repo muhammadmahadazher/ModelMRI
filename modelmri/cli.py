@@ -5,8 +5,132 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from . import __version__
+
+
+def run_sweep(
+    prompts_path,
+    *,
+    model: str,
+    metric: str = "heads",
+    baseline: str = "zero",
+    layer: int | None = None,
+    max_new_tokens: int = 8,
+    out_dir=None,
+    jsonl=None,
+    yes: bool = False,
+    as_json: bool = False,
+) -> int:
+    """Run one measurement over many prompts and report the distribution.
+
+    Prints the projected pass count BEFORE anything runs. Cost is N prompts x
+    per-prompt cost and the resample baseline multiplies through every row, so
+    a sweep that is about to take an hour should say so while there is still
+    time to press ctrl-c -- not after.
+    """
+    import datetime
+    import json
+    import uuid
+
+    from . import sweep as sweep_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    try:
+        prompts = sweep_mod.load_prompts(prompts_path)
+        job = sweep_mod.Job(
+            model=model,
+            prompts=prompts,
+            metric=metric,
+            baseline=baseline,
+            layer=layer,
+            max_new_tokens=max_new_tokens,
+            out_dir=Path(out_dir) if out_dir else None,
+        ).validated()
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load(model, confirm=True)
+        projection = sweep_mod.plan(job, runtime)
+        print(
+            f"{projection['prompts']} prompts x "
+            f"{projection['passes_per_prompt']:,} passes = "
+            f"{projection['passes_total']:,} forward passes",
+            file=sys.stderr,
+        )
+        if not projection["aggregatable"]:
+            print(
+                f"  a {metric} sweep is per-prompt only: position 3 is a "
+                f"different token in every prompt, so it is not aggregated",
+                file=sys.stderr,
+            )
+        if projection["passes_total"] > 20_000 and not yes:
+            # Refused rather than started. A sweep that cannot finish inside
+            # anybody's patience is worse than one that never began, because
+            # the half-finished one has already cost the time.
+            print(
+                "  that is a lot of passes. Re-run with --yes if you meant "
+                "it, or narrow it with --layer.",
+                file=sys.stderr,
+            )
+            return 2
+
+        rows = sweep_mod.run(
+            job,
+            runtime,
+            on_row=lambda row, total: print(
+                f"  [{row.index + 1}/{total}] "
+                + ("ok" if row.measured else f"refused: {row.could_not_measure}"),
+                file=sys.stderr,
+            ),
+        )
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+    finally:
+        try:
+            runtime.unload()
+        except Exception:  # noqa: S110 - the rows are already collected
+            pass
+
+    stats = (
+        sweep_mod.aggregate(rows, metric=job.metric, top_k=job.top_k)
+        if job.metric in sweep_mod.AGGREGATABLE
+        else []
+    )
+    sweep_id = uuid.uuid4().hex[:12]
+    sweep_mod.save(
+        job,
+        rows,
+        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        sweep_id=sweep_id,
+    )
+    if jsonl:
+        written = sweep_mod.write_jsonl(rows, jsonl)
+        print(f"  rows written to {written}", file=sys.stderr)
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "id": sweep_id,
+                    "projection": projection,
+                    "rows": [r.to_dict() for r in rows],
+                    "stats": [s.to_dict() for s in stats],
+                },
+                indent=2,
+                allow_nan=False,
+            )
+        )
+    else:
+        print(sweep_mod.render(job, rows, stats))
+    # Every prompt refused is a failure of the run, not a finding.
+    return 0 if any(r.measured for r in rows) else 1
 
 
 def verify_session(path, *, as_json: bool = False) -> int:
@@ -863,6 +987,34 @@ def main() -> None:
         help="emit the summary as JSON instead of text",
     )
 
+    sweeper = sub.add_parser(
+        "sweep",
+        help="Run one measurement over many prompts and report the "
+        "distribution, not one number",
+    )
+    sweeper.add_argument("prompts", help="a .jsonl (objects with `prompt`) or .txt")
+    sweeper.add_argument("--model", required=True, help="which model to load")
+    sweeper.add_argument(
+        "--metric",
+        default="heads",
+        choices=("heads", "tokens", "features"),
+        help="heads: the ablation ranking (default). features: SAE features. "
+        "tokens: per-prompt only, never aggregated",
+    )
+    sweeper.add_argument(
+        "--baseline", default="zero", help="heads only: zero, mean or resample"
+    )
+    sweeper.add_argument(
+        "--layer", type=int, default=None, help="one layer; omit to sweep all"
+    )
+    sweeper.add_argument("--max-new-tokens", type=int, default=8)
+    sweeper.add_argument("--out-dir", default=None, help="write one .mri per prompt")
+    sweeper.add_argument("--jsonl", default=None, help="write one row per prompt")
+    sweeper.add_argument(
+        "--yes", action="store_true", help="run even when the projection is large"
+    )
+    sweeper.add_argument("--json", action="store_true", help="emit JSON")
+
     checker = sub.add_parser(
         "verify",
         help="Re-run the measurements in a .mri on this machine and report "
@@ -1022,6 +1174,21 @@ def main() -> None:
         return
     elif args.command == "inspect":
         raise SystemExit(inspect_session(args.file, as_json=args.json))
+    elif args.command == "sweep":
+        raise SystemExit(
+            run_sweep(
+                args.prompts,
+                model=args.model,
+                metric=args.metric,
+                baseline=args.baseline,
+                layer=args.layer,
+                max_new_tokens=args.max_new_tokens,
+                out_dir=args.out_dir,
+                jsonl=args.jsonl,
+                yes=args.yes,
+                as_json=args.json,
+            )
+        )
     elif args.command == "verify":
         raise SystemExit(verify_session(args.file, as_json=args.json))
     elif args.command == "models":

@@ -97,6 +97,15 @@ class SessionError(BadRequest):
 
 MAX_PATCH_CELLS = 2_000_000
 
+# One row per head. A whole-model sweep is n_layers x n_heads: 144 on gpt2,
+# 448 on Qwen3-1.7B, ~1,800 on a 70B. The bound is far above any real model
+# and far below what would make a browser lay out a table for a minute.
+MAX_RANKING_ROWS = 20_000
+
+# The ranking's own strings -- baseline name, target token, corpus label. A
+# label is a few words; anything longer is a payload heading for a browser.
+MAX_RANKING_TEXT = 1_000
+
 # An attribution graph section carries a PRUNED edge list, never a dense
 # matrix -- `circuit.py` reduces before anything reaches here. The bound is on
 # what a browser will lay out: 50,000 edges is already far past what anyone
@@ -240,6 +249,113 @@ def _graph(doc: dict) -> dict:
                     if isinstance(v, (str, int, float, bool))
                 }
         out["summary"] = clean_summary
+    return out
+
+
+def _ranking(doc: dict) -> dict:
+    """The head-ranking section of an untrusted file, or nothing.
+
+    Same standard as `_patch`: absent is fine, malformed is refused rather
+    than dropped. The rows reach a table and a bar width in somebody else's
+    browser, so a string where a KL belongs, or a claim of two million heads,
+    stops here.
+
+    This section exists so a finding can be CHECKED. Until it, a `.mri`
+    recorded that a ranking had run and carried none of it, which meant
+    `modelmri verify` could name the measurement and not re-run it -- the one
+    number in the file that could not be audited was the headline one.
+    """
+    raw = doc.get("ranking")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's ranking section is not a set of fields")
+
+    rows = raw.get("ranked")
+    if not isinstance(rows, list):
+        raise SessionError("this session's ranking carries no rows")
+    if len(rows) > MAX_RANKING_ROWS:
+        raise SessionError(
+            f"this session's ranking claims {len(rows):,} heads, above the "
+            f"{MAX_RANKING_ROWS:,} this reads."
+        )
+
+    clean_rows: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SessionError("this session's ranking has a row that is not fields")
+        layer, head = row.get("layer"), row.get("head")
+        if not all(
+            isinstance(v, int) and not isinstance(v, bool) and 0 <= v < MAX_DIM
+            for v in (layer, head)
+        ):
+            raise SessionError(
+                "this session's ranking has a row that does not name a head"
+            )
+        kl = row.get("kl")
+        if not isinstance(kl, (int, float)) or isinstance(kl, bool):
+            raise SessionError(
+                f"the ranking row for layer {layer} head {head} has no score"
+            )
+        if not math.isfinite(kl):
+            # Same rule the attention path keeps: a non-finite number renders
+            # as a blank cell or an infinite bar and explains neither.
+            raise SessionError(
+                f"the ranking row for layer {layer} head {head} is not finite"
+            )
+        keep: dict = {"layer": layer, "head": head, "kl": float(kl)}
+        # Optional, and copied only when they are the right shape. A resample
+        # ranking carries min/max/draws; a zero-baseline one does not, and an
+        # absent field must not become 0 -- that would state a measured spread
+        # of nothing where none was taken.
+        for name in ("kl_min", "kl_max", "p_top_before", "p_top_after"):
+            value = row.get(name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if math.isfinite(value):
+                    keep[name] = float(value)
+        draws = row.get("draws")
+        if isinstance(draws, int) and not isinstance(draws, bool) and draws >= 0:
+            keep["draws"] = draws
+        if isinstance(row.get("flips_top"), bool):
+            keep["flips_top"] = row["flips_top"]
+        clean_rows.append(keep)
+
+    out: dict = {"ranked": clean_rows}
+
+    baseline = raw.get("baseline")
+    # A non-empty string, and deliberately NOT checked against a list of known
+    # baselines. `ablate.BASELINES` lives beside torch, and this module is the
+    # one that must stay importable without it -- `modelmri inspect` and
+    # `modelmri open` are fast precisely because they never touch torch, and
+    # duplicating the tuple here would make a file written by a newer version
+    # with a fourth baseline unreadable by this one. Requiring that the
+    # ranking SAYS which baseline it used is the part that matters: `ablate.py`
+    # measures the three agreeing only weakly (Spearman 0.34-0.47 on gpt2
+    # layer 0), so a ranking that does not name its baseline cannot be
+    # compared against one that does.
+    if not (isinstance(baseline, str) and baseline.strip()):
+        raise SessionError(
+            "this session's ranking does not say which baseline produced it, "
+            "and the baselines disagree — so the rows cannot be read."
+        )
+    out["baseline"] = baseline[:MAX_RANKING_TEXT]
+
+    # The measured floor travels with the scores. Anything at or below it is
+    # arithmetic rather than the model, and a reader without it cannot tell
+    # the difference.
+    floor = raw.get("noise_floor_kl")
+    if isinstance(floor, (int, float)) and not isinstance(floor, bool):
+        if math.isfinite(floor):
+            out["noise_floor_kl"] = float(floor)
+
+    for name in ("target_token", "corpus", "means"):
+        value = raw.get(name)
+        if isinstance(value, str):
+            out[name] = value[:MAX_RANKING_TEXT]
+    for name in ("position", "layer", "passes", "draws"):
+        value = raw.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[name] = value
     return out
 
 
@@ -457,6 +573,11 @@ class Session:
     # that took it. Every panel already printed its setup in prose for whoever
     # was looking at the screen at the time; none of that survived an export.
     receipts: list = field(default_factory=list)
+    # The head ranking, when one was measured against this run: which head
+    # moves the answer most, and by how many nats. Optional and additive like
+    # `patch`. It carries `noise_floor_kl` with it, because a score without
+    # the floor it was measured against cannot be told from arithmetic.
+    ranking: dict = field(default_factory=dict)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -471,6 +592,9 @@ class Session:
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))
+
+    def has_ranking(self) -> bool:
+        return bool(self.ranking.get("ranked"))
 
     def has_graph(self) -> bool:
         return bool(self.graph.get("edges") or self.graph.get("n_nodes"))
@@ -514,6 +638,7 @@ def build(
     scope: str = "",
     patch: dict | None = None,
     graph: dict | None = None,
+    ranking: dict | None = None,
     receipts: list | None = None,
 ) -> bytes:
     """Serialise one analysis into a gzipped `.mri`."""
@@ -582,6 +707,11 @@ def build(
     # sections above. This also means a receipt is bounded on the way out, so
     # a hostile `request` block cannot be smuggled into a file this tool signs
     # its own name to.
+    # Additive like `patch`, and written through the READER's validator for
+    # the same reason `graph` is: a writer laxer than the reader is how you
+    # build files nobody can open.
+    if ranking and ranking.get("ranked"):
+        doc["ranking"] = _ranking({"ranking": ranking})
     if receipts:
         doc["receipts"] = _receipts_mod.parse(receipts)
     # allow_nan=False. The default emits a bare `NaN`/`Infinity` token, which
@@ -736,6 +866,7 @@ def parse(data: bytes) -> Session:
         n_heads=counts["n_heads"],
         patch=_patch(doc),
         graph=_graph(doc),
+        ranking=_ranking(doc),
         # Validated in `receipts.parse` rather than here: the rules belong
         # beside the writer that produces them, and this module already has
         # more section validators than is comfortable.

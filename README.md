@@ -302,6 +302,7 @@ command says so.
 | `modelmri traces` | List agent runs recorded here, newest first. Instant. | — |
 | `modelmri open FILE.mri` | Open an analysis somebody sent you, in a browser. No model, no GPU, ~0.3s. | — |
 | `modelmri inspect FILE.mri` | Print what a `.mri` holds and exit — model, shape, what was captured, the prompt. `--json` for the lot. ~0.2s. | — |
+| `modelmri sweep PROMPTS` | **Run one measurement over many prompts** and report each head as median, IQR, n and top-k rate instead of one number. `--metric`, `--layer`, `--jsonl`, `--out-dir`. | a model |
 | `modelmri verify FILE.mri` | **Re-run the measurements in a `.mri` on this machine** and report, per number, whether it came back the same. `--json` for CI. Loads the model. | the file's model |
 | `modelmri doctor` | What this machine can and cannot run, and why. Run it before you file a bug. | — |
 | `modelmri where` | Every directory ModelMRI reads or writes, and the variables that move them. | — |
@@ -359,6 +360,35 @@ cannot check is not a broken file.
 
 No hosted platform can offer this. It can hand you its own assertion; it can
 never hand you the re-run.
+
+**One prompt is an anecdote**
+
+```bash
+modelmri sweep prompts.txt --model gpt2 --layer 0
+```
+
+```
+heads over 5 prompts on gpt2 · baseline zero
+  5 measured · 0 could not be measured
+
+  head          median       IQR               range    n  top5
+  L0H7         1.06260   0.20091  0.38243–2.03443      5  5/5 (100%)
+  L0H10        0.55359   0.15838  0.53501–0.76216      5  5/5 (100%)
+  L0H9         0.30114   0.07043  0.17363–0.41155      5  5/5 (100%)
+  L0H2         0.17921   0.09322  0.03475–0.37399      5  3/5 (60%)
+  L0H0         0.05418   0.04382  0.03673–1.71640      5  3/5 (60%)
+```
+
+Read the fifth row. **L0H0 has a median of 0.054 and a maximum of 1.716** — it
+carried one prompt almost entirely and did nothing on the rest. That is the
+head worth looking at, and it is the head a mean would have buried. This is
+what "a number measured once is a sample, not a property" looks like as
+behaviour rather than as a line in a readme.
+
+Three rules it enforces rather than documents: never a mean without a spread;
+a prompt that could not be measured is a **row** carrying the reason, never a
+gap; and a token-position sweep is never aggregated across prompts, because
+position 3 is a different word in every one of them.
 
 A `.mri` is one analysis without the model — attention, the logit lens, the
 generation, and the activation-patching trace if you ran one. It is how you
