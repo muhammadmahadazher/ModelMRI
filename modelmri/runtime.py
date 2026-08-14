@@ -2013,6 +2013,115 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def probe_layers(
+        self,
+        examples: list[dict],
+        *,
+        n_permutations: int = 0,
+        save_as: str = "",
+    ) -> dict:
+        """Fit a linear probe at every layer, with its null and majority line.
+
+        `examples` is `[{"text": ..., "label": 0|1}, ...]`. Captured at the
+        same pre-hook point `steer_vectors` and `patch` use, so a direction
+        fitted here lives in the space those already measure and can be pushed
+        straight back through the steering harness.
+        """
+        from . import probe as probe_mod
+        from . import steer_vectors
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Fitting a probe means running the "
+                    "model on your examples, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to fit a probe to."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            texts, labels = [], []
+            for row in examples or []:
+                if not isinstance(row, dict):
+                    raise BadRequest("each example is {text, label}")
+                text = row.get("text")
+                label = row.get("label")
+                if not isinstance(text, str) or not text.strip():
+                    raise BadRequest("an example has no text")
+                if not isinstance(label, int) or isinstance(label, bool):
+                    raise BadRequest(
+                        f"the label for {text[:40]!r} is not an integer. "
+                        "A probe separates two classes; label them 0 and 1."
+                    )
+                texts.append(text)
+                labels.append(label)
+
+            n_layers = int(self.model.config.num_hidden_layers)
+            layers = list(range(n_layers))
+            ids_list = [
+                self.tokenizer(t, return_tensors="pt")["input_ids"].to(self.device)
+                for t in texts
+            ]
+            states = steer_vectors._last_token_states(
+                self.model, self._block, ids_list, layers
+            )
+
+            report = probe_mod.sweep(
+                states,
+                labels,
+                n_permutations=n_permutations or probe_mod.N_PERMUTATIONS,
+            )
+            out = report.to_dict()
+            out["receipt"] = self.receipt(
+                "probe_layers",
+                n_examples=len(texts),
+                n_permutations=out["n_permutations"],
+            )
+
+            if save_as:
+                best = report.best_layer
+                if best is None:
+                    # Refused, not saved with a caveat attached. A direction
+                    # fitted at a layer whose probe never beat noise is a
+                    # direction fitted to noise, and the steering store is
+                    # where it would be picked up later with none of this
+                    # context attached to it.
+                    raise Refusal(
+                        "no layer read this concept above its own permutation "
+                        "null, so there is no direction here worth saving. A "
+                        "vector fitted where the probe did not beat shuffled "
+                        "labels is fitted to noise, and the store is the one "
+                        "place it would later be used without any of this "
+                        "beside it."
+                    )
+                direction = probe_mod.direction_at(states, labels, best)
+                out["saved"] = steer_vectors.save(
+                    save_as,
+                    direction,
+                    {
+                        "model": self.hf_id or "",
+                        "layer": best,
+                        "hidden_size": int(direction.shape[0]),
+                        "method": "probe",
+                        "dtype": str(next(self.model.parameters()).dtype).removeprefix(
+                            "torch."
+                        ),
+                        "accuracy": out["layers"][best]["accuracy"],
+                        "null_high": out["layers"][best]["null_high"],
+                        "majority": out["majority"],
+                        "note": (
+                            "fitted by a layer-sweep probe. READABLE IS NOT "
+                            "USED: this direction was linearly decodable, "
+                            "which is not evidence the model reads it."
+                        ),
+                    },
+                )
+            return out
+
     def head_types(
         self, seq_len: int = 24, n_sequences: int = 6, seed: int = 0
     ) -> dict:

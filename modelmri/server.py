@@ -892,6 +892,33 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.post("/api/probe")
+    async def probe_layers(request: Request):
+        """Fit a linear probe at every layer, with its null and majority line.
+
+        A layer inside the permutation null is reported as inside it. That is
+        the feature: "we have probes" is not worth shipping, "we show you when
+        your curve is inside the null" is.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.probe_layers,
+                body.get("examples") or [],
+                n_permutations=int(body.get("n_permutations") or 0),
+                save_as=str(body.get("save_as") or ""),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/probe")
+
     @app.get("/api/attention/types")
     async def head_types(seq_len: int = 24, n_sequences: int = 6, seed: int = 0):
         """Behavioural labels for every head, each gated on a measured null.

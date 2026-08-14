@@ -8,6 +8,38 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#10, completed: layer-sweep linear probes with a permutation null and a
+  majority-class line.** `POST /api/probe` fits a probe at every layer and
+  draws the usual "where does this information appear" curve — with two
+  references behind it that decide whether the curve means anything.
+
+  The point is not having probes. It is **reporting when your curve is inside
+  the null**: K refits on shuffled labels, same fit, same examples, at the same
+  layer. A layer that does not clear its own band comes back `inside_null` and
+  is not counted, and `best_layer` is `null` when nothing cleared anywhere —
+  which is a result, not a gap.
+
+  **Three refusals to overclaim, and two of them came from running it.**
+  `null_saturated` marks a layer where the shuffled fit reached the top of the
+  scale, so no accuracy could have cleared it: at six held-out examples the
+  null hit 1.00 at five of gpt2's twelve layers, making READABLE a coin flip.
+  `expected_false_positives` reports `n_layers × 5%`, because sweeping every
+  layer against a 95th-percentile band is a multiple comparison — 0.6 on a
+  12-layer model, so one readable layer is roughly what noise produces and the
+  response says so. `MIN_PER_CLASS` and `MIN_TEST` are enforced in code.
+
+  **Readable is not used.** A direction can be linearly present and play no
+  part in the answer; the ablation follow-up is the only thing that upgrades
+  the claim. `save_as` exports the fitted direction into the same store the
+  steering harness reads — and is **refused** when no layer beat its null,
+  because a vector fitted there is fitted to noise and the store is exactly
+  where it would later be used with none of this context beside it.
+
+  The fit is pure torch, so the runtime dependencies stay torch, transformers
+  and fastapi, and it runs on the CPU: the sweep does `n_layers × (1 + K)`
+  fits and every one of them would otherwise be competing with the model for
+  VRAM.
+
 - **#7, completed: head type labels, gated on measured nulls.**
   `GET /api/attention/types` labels heads as induction, previous-token,
   duplicate-token or sink — or, for most of them, "no type detected", which is

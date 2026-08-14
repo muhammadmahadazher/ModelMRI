@@ -142,6 +142,46 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Layer-sweep probes
+
+`POST /api/probe` with `{"examples": [{"text": ..., "label": 0|1}, ...]}`,
+optional `n_permutations` and `save_as`.
+
+Fits a linear probe at every layer and returns the curve — plus the two things
+that decide whether the curve means anything:
+
+| reference | what it rules out |
+|---|---|
+| `majority` | a probe that beats nothing by always guessing the commoner label |
+| `null_low` / `null_high` | K refits on **shuffled labels**, same fit, same examples. Whatever that reaches is what this setup produces from information that is not there |
+
+A layer whose accuracy lands inside the band comes back `inside_null: true` and
+is not counted as readable. `best_layer` is **null** when nothing cleared, which
+is a result: on these examples, at this position, the concept is not linearly
+readable anywhere.
+
+**Three ways this refuses to overclaim.**
+
+`null_saturated` marks a layer where the shuffled fit reached the top of the
+scale — no accuracy could have cleared it, so the layer is untestable with this
+many examples rather than uninformative. Measured: at six held-out examples the
+null hit 1.00 at five of gpt2's twelve layers.
+
+`expected_false_positives` is `n_layers × 5%`, because the sweep asks every
+layer against a 95th-percentile band and that is a multiple comparison. On a
+12-layer model it is 0.6 — so **one** readable layer is roughly what noise
+produces, and the response says so when the count is that low.
+
+`MIN_PER_CLASS` and `MIN_TEST` are enforced in code, not documented: a fit on
+four examples of a 768-dimensional stream separates them perfectly and means
+nothing.
+
+**Readable is not used.** A direction can be linearly present and play no part
+in the answer. `save_as` exports the fitted direction into the same store the
+steering harness reads so it can be ablated — and it is **refused** when no
+layer beat its null, because a vector fitted there is fitted to noise and the
+store is where it would later be picked up with none of this context attached.
+
 ## Head type labels
 
 `GET /api/attention/types?seq_len=24&n_sequences=6&seed=0`
