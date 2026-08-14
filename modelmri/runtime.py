@@ -2013,6 +2013,88 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def feature_evidence(
+        self,
+        texts: list[str],
+        *,
+        feature_id: int | None = None,
+        corpus_label: str = "",
+        top_k: int = 10,
+    ) -> dict:
+        """What a feature fires on in YOUR corpus, and what it promotes.
+
+        Two readouts plus a pointer to the third: `feature_ablate` already
+        measures what removing it does, and a claim that survives all three is
+        worth something a claim resting on one is not.
+        """
+        from . import feature_corpus as fc
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Sweeping a corpus means running the "
+                    "model, and a `.mri` does not carry one."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.sae is None:
+                raise Refusal(
+                    "No SAE loaded, so there are no features to show evidence "
+                    "for. Load one against this model first."
+                )
+
+            layer = int(getattr(self.sae, "layer", 0) or 0)
+            block = self._block(layer)
+            stats, per_feature = fc.sweep(
+                self.model,
+                block,
+                self.tokenizer,
+                self.sae,
+                texts,
+                device=self.device,
+                layer=layer,
+                corpus_label=corpus_label,
+            )
+            saved = fc.save(
+                stats,
+                per_feature,
+                model=self.hf_id or "",
+                sae=getattr(self.sae, "repo", ""),
+            )
+            out = {
+                "corpus": stats.to_dict(),
+                "saved_rows": saved,
+                "top_by_firing_rate": [
+                    {"feature": f, "n_fired": n, "max_activation": round(a, 5)}
+                    for f, (n, a) in sorted(
+                        per_feature.items(), key=lambda kv: -kv[1][0]
+                    )[:20]
+                ],
+                "receipt": self.receipt(
+                    "feature_evidence",
+                    n_sequences=stats.n_sequences,
+                    n_tokens=stats.n_tokens,
+                    corpus_sha256=stats.corpus_sha256,
+                    sae_repo=getattr(self.sae, "repo", None),
+                    layer=layer,
+                ),
+            }
+            if feature_id is not None:
+                out["evidence"] = fc.evidence(
+                    self.model,
+                    block,
+                    self.tokenizer,
+                    self.sae,
+                    texts,
+                    feature_id,
+                    device=self.device,
+                    top_k=top_k,
+                )
+                out["logit_weights"] = fc.logit_weights(
+                    self.model, self.tokenizer, self.sae, feature_id
+                )
+            return out
+
     def patchscope(
         self,
         source_prompt: str,

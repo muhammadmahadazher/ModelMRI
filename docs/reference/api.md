@@ -142,6 +142,44 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Feature evidence from your own corpus
+
+`POST /api/features/evidence` with `{"texts": [...]}` or `{"file": "corpus.txt"}`,
+optional `feature` and `top_k`.
+
+"Feature 14203 fired" is not a finding. This gives one feature three
+independent readouts:
+
+| readout | needs a corpus? | exact? |
+|---|---|---|
+| top-activating spans, firing rate, histogram | yes — **yours** | no, these are top activations *in that text* |
+| tokens it promotes and suppresses | no | **yes** — pure weight math |
+| what removing it does | — | already measured by the feature ablation ranking |
+
+**Nothing is downloaded.** The corpus is a local `.txt`/`.jsonl` you point at,
+read through the same loader `modelmri sweep` and the tuned lens use.
+
+**The corpus is part of the result.** Its name, token count and the fraction of
+features that never fired travel with every number, because *"feature 14203
+fires on legal citations"* and *"feature 14203's highest activation in the
+40,000 tokens you gave it was on a legal citation"* are different claims and
+only the second was measured.
+
+**A feature with zero activations is `not seen in this corpus`, never `dead`.**
+Dead means the feature does nothing; not seen means this text never showed it
+anything it responds to, and only one of those is about the model.
+
+`selective` is false when a feature fires on more than a fifth of tokens — that
+is not a concept, and its top spans will look like whatever the corpus is
+mostly made of. Measured on gpt2 at layer 8: the most frequently firing feature
+fired on **68% of tokens** and promoted an unrelated scatter of vocabulary, all
+three readouts agreeing it is not a clean concept.
+
+**No natural-language labels.** Naming the concept is the reader's job; a
+generated label would be the one thing on the page nothing measured. It also
+inherits `saes.py`'s calibration refusal, so unlike the dashboards it competes
+with it cannot show features from an SAE fed the wrong convention.
+
 ## Patchscopes — ask the model what it is holding
 
 `POST /api/patchscope` with `{"prompt": ..., "layer": N}`, optional `position`,

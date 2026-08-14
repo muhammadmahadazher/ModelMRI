@@ -8,6 +8,34 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#13, completed: feature evidence from your own corpus.**
+  `POST /api/features/evidence` sweeps a local `.txt`/`.jsonl` through the
+  already-calibrated SAE and gives one feature three independent readouts: the
+  spans it fires on in *your* text with a firing rate and histogram, the tokens
+  it promotes and suppresses in vocabulary space, and a pointer to the causal
+  ranking `feature_ablate` already produces. A claim surviving all three is
+  worth something a claim resting on one is not.
+
+  The vocabulary half is **exact** — `W_dec[f]` through the final norm and the
+  unembedding is pure weight math, no corpus and nothing to be a sample of.
+
+  **Nothing is downloaded**, and the corpus is part of the result: its name,
+  token count and the fraction of features that never fired travel with every
+  number. On gpt2 at layer 8 over an 8-sequence corpus, **21,801 of 24,576
+  features never fired** — reported as *not seen in this corpus*, never *dead*,
+  because dead means the feature does nothing and not seen means the text never
+  showed it anything.
+
+  `selective` is false above a fifth of tokens. Measured: the most frequently
+  firing feature fired on **68% of tokens** and promoted an unrelated scatter of
+  vocabulary — not a concept, and its top spans would read as one without the
+  flag. All three readouts agreed, which is the argument for having three.
+
+  **No natural-language labels.** The sweep holds no activation history —
+  `[n_tokens, d_sae]` for a 24,576-feature SAE over 200K tokens is 52 GB — so
+  it accumulates per-feature statistics as it streams and a second pass
+  collects one feature's spans on request.
+
 - **#12, completed: Patchscopes, as its own labelled experiment.**
   `POST /api/patchscope` splices a hidden state into a prompt built to make the
   model describe what it is holding — the identity target from Ghandeharioun et

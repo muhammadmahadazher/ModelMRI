@@ -892,6 +892,51 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.post("/api/features/evidence")
+    async def feature_evidence(request: Request):
+        """What a feature fires on in YOUR corpus, and what it promotes.
+
+        NOTHING IS DOWNLOADED — the corpus is a local file or a list of
+        strings you supply. The corpus name, its token count and the fraction
+        of features that never fired travel with every number, because a top
+        activation is a top activation IN THIS TEXT.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        from . import feature_corpus as fc
+
+        texts = body.get("texts")
+        label = str(body.get("label") or "")
+        try:
+            if body.get("file"):
+                texts, label = fc.load_corpus(str(body["file"]))
+            if not isinstance(texts, list) or not texts:
+                return JSONResponse(
+                    {
+                        "error": "a feature sweep needs text. Pass `texts` (a "
+                        "list of strings) or `file` (a .txt or .jsonl). "
+                        "Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            feature = body.get("feature")
+            return await asyncio.to_thread(
+                runtime.feature_evidence,
+                [str(t) for t in texts],
+                feature_id=int(feature) if feature is not None else None,
+                corpus_label=label,
+                top_k=int(body.get("top_k") or 10),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/features/evidence")
+
     @app.post("/api/patchscope")
     async def patchscope(request: Request):
         """Ask the model to describe a hidden state, with two controls.
