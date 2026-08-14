@@ -8,6 +8,38 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#11, completed: edge-level path patching.** `POST /api/patch/path` takes a
+  bright cell from the node grid as a receiver and asks what put it there:
+  for each earlier attention head and MLP, it adds just that component's clean
+  contribution into the receiver's residual input with everything else still
+  corrupt. *"Position 7 layer 12 matters"* becomes *"head 9.6 wrote it."*
+
+  Scored with the same recovery fraction the node grid uses, with the same
+  eight same-norm control draws and the same shifted-position control, so edge
+  and node numbers are on one scale and can be read together. On gpt2 with the
+  reference pair: 130 senders in 240 forward passes, 10.4s, L9 MLP strongest at
+  +0.250 and clearing both controls.
+
+  **`seeding` and `scope` are in the response, not the docs.** Edge count is
+  quadratic in general and this is linear only because the receiver is fixed —
+  saying which edges were considered is the difference between "the strongest
+  sender" and "the strongest sender we looked at". And v1 does not split q/k/v:
+  a sender is patched in as a whole, so this says which component *wrote* what
+  the receiver reads, not which path carried it. Freezing q/k/v across GQA,
+  fused QKV and rotary embeddings would produce confident and subtly wrong
+  numbers, so it is refused rather than approximated.
+
+### Fixed
+
+- **A recovery fraction is quantised by the dtype, and nothing said so.**
+  Measured while building the edge trace: on gpt2 in bfloat16 the logits reach
+  128, where one representable step is 1.0 — so with a gap of 4.0 every score
+  lands on a grid of 0.25, and **23 senders sat within one step of the top**.
+  Ranking those against each other is reading noise. Both traces now report
+  `recovery_resolution` and say that differences below it are ties rather than
+  an ordering. The node grid had the identical blind spot in the identical
+  formula and gets the same field.
+
 - **#10, completed: layer-sweep linear probes with a permutation null and a
   majority-class line.** `POST /api/probe` fits a probe at every layer and
   draws the usual "where does this information appear" curve — with two

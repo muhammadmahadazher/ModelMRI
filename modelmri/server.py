@@ -892,6 +892,34 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.post("/api/patch/path")
+    async def path_trace(request: Request):
+        """Which component wrote what makes a patching site matter.
+
+        The node grid says WHERE; this says WHAT PUT IT THERE. Same recovery
+        fraction, same eight same-norm control draws, same shifted-position
+        control — so an edge number and a node number can be read together.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.path_trace,
+                str(body.get("clean") or ""),
+                str(body.get("corrupt") or ""),
+                layer=int(body.get("layer", -1)),
+                position=int(body.get("position", -1)),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch/path")
+
     @app.post("/api/probe")
     async def probe_layers(request: Request):
         """Fit a linear probe at every layer, with its null and majority line.

@@ -142,6 +142,43 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Path patching — what put it there
+
+`POST /api/patch/path` with `{"clean": ..., "corrupt": ..., "layer": N,
+"position": P}`.
+
+The node grid answers **where**: "position 7, layer 12 carries the answer". It
+cannot answer what put it there, because patching a residual stream restores
+everything that ever wrote into it at once.
+
+This takes one bright cell as the **receiver** and, for each earlier component
+— one attention head, or one MLP — adds just that component's clean
+contribution into the receiver's residual input with everything else still
+corrupt. A sender that recovers the answer on its own is the thing that wrote
+it. *"Position 7 layer 12 matters"* becomes *"head 9.6 wrote it."*
+
+Scored with the **same fraction** the node grid uses, so edge and node numbers
+are on one scale. Both of its controls run here too: eight same-norm random
+draws, and the same edit taken from a neighbouring position.
+
+**`recovery_resolution` is the number to read first.** A recovery is a
+difference of logits divided by the gap, and on gpt2 in bfloat16 the logits
+reach 128 where one representable step is 1.0 — so scores land on a grid.
+Measured on the reference pair: resolution 0.25, with 23 senders inside one
+step of the top. Two senders closer than that are **tied, not ranked**. The
+node grid reports it too; it has the same formula and had the same blind spot.
+
+**`seeding` states which edges were considered at all.** Edge count is
+quadratic in general; this is linear only because the receiver is fixed to the
+site you named. Controls run on the top senders by recovery, and the rest carry
+a score and no verdict — absence of a verdict is not a verdict.
+
+**`scope` names what v1 does not split.** A sender is patched into the
+receiver's residual input as a whole, so this says which component *wrote* what
+the receiver reads — not which of its query, key or value paths carried it.
+Splitting those across GQA, fused QKV and rotary embeddings would produce
+confident and subtly wrong numbers.
+
 ## Layer-sweep probes
 
 `POST /api/probe` with `{"examples": [{"text": ..., "label": 0|1}, ...]}`,

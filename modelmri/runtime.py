@@ -2013,6 +2013,60 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def path_trace(
+        self, clean: str, corrupt: str, *, layer: int, position: int
+    ) -> dict:
+        """Which earlier component wrote what makes this receiver matter.
+
+        The follow-up to a bright cell in the patching grid: that grid says
+        WHERE the answer is carried, and patching a residual stream restores
+        everything that ever wrote into it at once. This splits that apart.
+        """
+        from . import patch
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Path patching means running the "
+                    "model with one component's contribution swapped, and a "
+                    "`.mri` holds activations rather than weights."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to patch into."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            n_layers = int(self.model.config.num_hidden_layers)
+            blocks = [self._block(i) for i in range(n_layers)]
+            try:
+                out = patch.path_trace(
+                    self.model,
+                    self.tokenizer,
+                    blocks,
+                    clean,
+                    corrupt,
+                    device=self.device,
+                    receiver_layer=layer,
+                    receiver_position=position,
+                )
+            except patch.PatchError as err:
+                # A pair or a receiver this measurement cannot be taken on,
+                # not a failure of the code. Every one names what to change.
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+            out["receipt"] = self.receipt(
+                "path_trace",
+                clean_sha256=receipts.digest(clean),
+                corrupt_sha256=receipts.digest(corrupt),
+                receiver_layer=layer,
+                receiver_position=position,
+            )
+            return out
+
     def probe_layers(
         self,
         examples: list[dict],
