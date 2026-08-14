@@ -778,3 +778,281 @@ def path_trace(
             f"cannot express a finer step at this logit magnitude."
         ),
     }
+
+
+# ----------------------------------------------------------- patchscopes
+#
+# Every other reading in this file asks the model a question in numbers. This
+# one asks it in words: take a hidden state from somewhere in one run, splice
+# it into a second prompt built to make the model describe whatever it is
+# holding, and read what comes out.
+#
+# The method's known failure is that a good target prompt describes ANYTHING
+# fluently. Hand it a random vector and it will still produce a confident
+# sentence. So a decode on its own is not evidence, and this never returns one
+# alone.
+
+
+# The identity target from Ghandeharioun et al. -- a few-shot pattern with
+# nothing but "x -> x", so the model's only job at the final position is to
+# say what is in front of it. VISIBLE AND EDITABLE, never a hidden constant:
+# the target prompt is part of the result, and two decodes taken under
+# different targets are not comparable. It is returned with every response for
+# that reason.
+DEFAULT_TARGET = "cat -> cat\n1135 -> 1135\nhello -> hello\n?"
+
+
+def _overlap(a: str, b: str) -> float:
+    """How much two decodes share, as a fraction of the smaller vocabulary.
+
+        An EXACT-MATCH check is not enough on its own and measuring it showed why.
+        Splicing a layer-8 state into the identity target gave ", hello, hello,
+        hello" while the UNTOUCHED target gave " -> hello
+    ? -> hello": different
+        strings, so an equality test called the decode informative -- and both are
+        plainly the few-shot pattern talking rather than anything about the state.
+        A reader looking at the two would see it instantly; a boolean would not.
+
+        Reported rather than thresholded. There is no principled cut-off for "the
+        same", so the number goes on screen beside both decodes and the reader
+        judges. Word-level and case-folded, because the failure being caught is
+        the target prompt's vocabulary reappearing, not its punctuation.
+    """
+
+    # STRIPPED, not merely filtered. The first version used `.strip()` as the
+    # test and kept the original word, so "hello," never matched "hello" --
+    # which defeats the whole check, since the failure it exists to catch is
+    # the target prompt's own words coming back in slightly different
+    # punctuation. Caught by a test, not by reading it.
+    def words(text: str) -> set[str]:
+        stripped = (w.strip(".,:;!?\"'()->") for w in text.lower().split())
+        return {w for w in stripped if w}
+
+    left, right = words(a), words(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def _splice_prefill(block: torch.nn.Module, pos: int, vec: torch.Tensor):
+    """Replace one position of a block's residual input, ON THE PREFILL ONLY.
+
+    A separate helper from `_splice`, and the difference is generation.
+    `trace` runs one forward pass per patch, so the sequence dimension is
+    always the whole prompt and a plain splice is right. A patchscope
+    GENERATES: after the prefill the model runs with a KV cache and each step
+    passes a single new token, so the stream arrives with sequence length 1
+    and writing at position 14 raises IndexError -- inside a generation
+    worker thread, where it surfaces as a streamer timeout rather than as the
+    bug it is. Measured exactly that way.
+
+    Skipping the decode steps is also the correct semantics: the patch goes
+    into the PROMPT's residual stream, and the continuation should flow from
+    that rather than have the same vector stamped over every new token.
+
+    `_splice` is left alone rather than given this guard, because a silent
+    no-op on an out-of-range position would hide a real mistake for its
+    single-pass callers.
+    """
+
+    def pre(module, args):
+        x = args[0]
+        if pos >= x.shape[1]:
+            return None
+        edited = x.clone()
+        edited[:, pos, :] = vec.to(edited.dtype).to(edited.device)
+        return (edited,) + args[1:]
+
+    return block.register_forward_pre_hook(pre)
+
+
+def patchscope(
+    model: Any,
+    tokenizer: Any,
+    blocks: list,
+    decode: Any,
+    source_prompt: str,
+    *,
+    device: Any,
+    source_layer: int,
+    source_position: int,
+    target_prompt: str = DEFAULT_TARGET,
+    target_layer: int | None = None,
+    target_position: int = -1,
+    draws: int = 1,
+) -> dict:
+    """Ask the model to describe a hidden state, with two controls beside it.
+
+    `decode` is a callable taking a prompt and returning generated text --
+    supplied by the caller so this module keeps no generation logic of its own.
+    It must be GREEDY: three decodes are being compared, and sampling would put
+    a second source of difference between them.
+
+    Returns the patched decode and both controls:
+
+      identity   the target prompt with its OWN activation, untouched
+      random     the target prompt with a same-norm random vector
+
+    A decode that reads the same across all three is the TARGET PROMPT TALKING,
+    and the response says so rather than leaving the reader to notice.
+    """
+    t0 = time.perf_counter()
+    n_layers = len(blocks)
+    if not 0 <= source_layer < n_layers:
+        raise PatchError(
+            f"source layer {source_layer} is outside this model's {n_layers}."
+        )
+    if target_layer is None:
+        target_layer = source_layer
+    if not 0 <= target_layer < n_layers:
+        raise PatchError(
+            f"target layer {target_layer} is outside this model's {n_layers}."
+        )
+
+    source_ids = tokenizer(source_prompt, return_tensors="pt")["input_ids"].to(device)
+    n_source = int(source_ids.shape[-1])
+    if not -n_source <= source_position < n_source:
+        raise PatchError(
+            f"source position {source_position} is outside the "
+            f"{n_source} tokens of that prompt."
+        )
+    at = source_position if source_position >= 0 else n_source + source_position
+
+    target_ids = tokenizer(target_prompt, return_tensors="pt")["input_ids"].to(device)
+    n_target = int(target_ids.shape[-1])
+    if not -n_target <= target_position < n_target:
+        raise PatchError(
+            f"target position {target_position} is outside the "
+            f"{n_target} tokens of the target prompt."
+        )
+    into = target_position if target_position >= 0 else n_target + target_position
+
+    # The source state, read at the pre-hook point every other measurement in
+    # this file uses, so a patchscope reads the same stream the grid patches.
+    sink: dict = {}
+    handle = _capture(blocks[source_layer], source_layer, sink)
+    try:
+        with torch.no_grad():
+            model(source_ids)
+    finally:
+        handle.remove()
+    if source_layer not in sink:
+        raise PatchError(
+            f"layer {source_layer} produced no residual stream on this model."
+        )
+    state = sink[source_layer][0, at, :].clone()
+    norm = float(state.norm())
+
+    def decode_with(vec: torch.Tensor | None) -> str:
+        if vec is None:
+            return decode(target_prompt)
+        handle = _splice_prefill(blocks[target_layer], into, vec)
+        try:
+            return decode(target_prompt)
+        finally:
+            handle.remove()
+
+    patched = decode_with(state)
+    identity = decode_with(None)
+
+    gen = torch.Generator().manual_seed(CONTROL_SEED)
+    randoms = []
+    for _ in range(max(1, draws)):
+        r = torch.randn(state.shape, generator=gen).to(state.device, state.dtype)
+        randoms.append(decode_with(r / r.norm() * norm))
+
+    # The verdict the reader would otherwise have to reach by eye, and often
+    # would not: a decode identical to the untouched target prompt means the
+    # patch changed nothing, and one identical to the random control means the
+    # target prompt says this whatever it is handed.
+    same_as_identity = patched.strip() == identity.strip()
+    same_as_random = any(patched.strip() == r.strip() for r in randoms)
+    overlap_identity = _overlap(patched, identity)
+    overlap_random = max(_overlap(patched, r) for r in randoms)
+
+    return {
+        "source": {
+            "prompt": source_prompt,
+            "layer": source_layer,
+            "position": at,
+            "tokens": _tokens(tokenizer, source_ids),
+            "norm": round(norm, 4),
+        },
+        "target": {
+            # RETURNED, ALWAYS. The target prompt is part of the result: two
+            # decodes taken under different targets are not comparable, and a
+            # hidden default would make that invisible.
+            "prompt": target_prompt,
+            "layer": target_layer,
+            "position": into,
+            "tokens": _tokens(tokenizer, target_ids),
+        },
+        "decode": patched,
+        "controls": {
+            "identity": identity,
+            "random": randoms,
+            "draws": len(randoms),
+        },
+        "same_as_identity": same_as_identity,
+        "same_as_random": same_as_random,
+        # How much of the decode's vocabulary the controls already had. The
+        # exact-match booleans above catch only the clearest case; these are
+        # what a reader actually needs when the decode merely ECHOES the
+        # target prompt in different words.
+        "overlap_identity": round(overlap_identity, 3),
+        "overlap_random": round(overlap_random, 3),
+        # Differs from both controls as a string AND says at least one word
+        # neither of them already said.
+        #
+        # The string test alone was not enough, measured on gpt2: a layer-8
+        # state decoded as ", hello, hello, hello" against an untouched target
+        # that was also nothing but "hello" repeated. Different strings, so it
+        # was flagged informative -- with 100% of its vocabulary already in
+        # the control.
+        # Complete containment is a test, not a tuned threshold: the decode
+        # used no word the target prompt was not already using.
+        "informative": bool(
+            not same_as_identity
+            and not same_as_random
+            and overlap_identity < 1.0
+            and overlap_random < 1.0
+        ),
+        "cross_layer": source_layer != target_layer,
+        "seconds": round(time.perf_counter() - t0, 2),
+        "means": (
+            f"The model was shown a prompt built to make it describe whatever "
+            f"is in front of it, with the layer-{source_layer} state from "
+            f"position {at} of your prompt spliced in at layer {target_layer}. "
+            + (
+                f"SOURCE LAYER {source_layer} INTO TARGET LAYER {target_layer}: "
+                f"the two streams are only comparable where the model treats "
+                f"them alike, and nothing here checks that they do. "
+                if source_layer != target_layer
+                else ""
+            )
+            + (
+                "THE DECODE MATCHES A CONTROL, so it is not about the state: "
+                + (
+                    "it is identical to the untouched target prompt, meaning "
+                    "the patch changed nothing. "
+                    if same_as_identity
+                    else "it is identical to what a same-norm RANDOM vector "
+                    "produced, meaning the target prompt says this whatever it "
+                    "is handed. "
+                )
+                if (same_as_identity or same_as_random)
+                else "It differs from both controls — the untouched target "
+                "prompt and a same-norm random vector — so it is at least "
+                "responding to what was patched. "
+            )
+            + (
+                f"It shares {overlap_identity:.0%} of its words with the "
+                f"untouched target and {overlap_random:.0%} with the random "
+                f"control — read those beside the decodes themselves, which "
+                f"are all three on screen for exactly this reason. "
+            )
+            + "A DECODE IS A GENERATION AND THEREFORE A SAMPLE. It is what the "
+            "model said when handed this state through this target prompt, not "
+            "what the state means."
+        ),
+    }

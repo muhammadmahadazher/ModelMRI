@@ -2013,6 +2013,87 @@ class ModelRuntime:
             **({"info": self._tuned_info} if self._tuned else {}),
         }
 
+    def patchscope(
+        self,
+        source_prompt: str,
+        *,
+        source_layer: int,
+        source_position: int = -1,
+        target_prompt: str = "",
+        target_layer: int | None = None,
+        target_position: int = -1,
+        max_new_tokens: int = 12,
+        draws: int = 1,
+    ) -> dict:
+        """Ask the model to describe a hidden state, with two controls.
+
+        Its own surface, not a column beside the logit lens. The lens reads a
+        state through the unembedding and reports tokens; this hands the state
+        to the model inside a different prompt and reports a SENTENCE. Rendered
+        side by side they would read as two measurements of one thing, and
+        they are not.
+        """
+        from . import patch
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. A patchscope means running the model "
+                    "on a second prompt, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to splice."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            def decode(prompt: str) -> str:
+                # GREEDY, and commit=False. Three decodes are being compared,
+                # so sampling would put a second source of difference between
+                # them -- and committing would rebase `last_ids` onto the
+                # target prompt, leaving every other panel describing a run
+                # the user never asked for.
+                # `generate_stream` takes no lock of its own, so calling it
+                # while holding this one serialises rather than deadlocking.
+                return "".join(
+                    self.generate_stream(
+                        prompt, max_new_tokens, temperature=0.0, commit=False
+                    )
+                )
+
+            try:
+                out = patch.patchscope(
+                    self.model,
+                    self.tokenizer,
+                    [
+                        self._block(i)
+                        for i in range(self.model.config.num_hidden_layers)
+                    ],
+                    decode,
+                    source_prompt,
+                    device=self.device,
+                    source_layer=source_layer,
+                    source_position=source_position,
+                    target_prompt=target_prompt or patch.DEFAULT_TARGET,
+                    target_layer=target_layer,
+                    target_position=target_position,
+                    draws=draws,
+                )
+            except patch.PatchError as err:
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+            out["receipt"] = self.receipt(
+                "patchscope",
+                prompt=source_prompt,
+                source_layer=source_layer,
+                target_layer=out["target"]["layer"],
+                target_sha256=receipts.digest(out["target"]["prompt"]),
+            )
+            return out
+
     def path_trace(
         self, clean: str, corrupt: str, *, layer: int, position: int
     ) -> dict:

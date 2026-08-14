@@ -8,6 +8,45 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#12, completed: Patchscopes, as its own labelled experiment.**
+  `POST /api/patchscope` splices a hidden state into a prompt built to make the
+  model describe what it is holding — the identity target from Ghandeharioun et
+  al. — and reads the decode.
+
+  **Never a decode alone.** The method's known failure is a target prompt that
+  describes anything fluently, so every response carries the target prompt with
+  its *own* activation and the target prompt with a *same-norm random vector*.
+  Both were necessary, measured on gpt2: a layer-2 state decoded **byte-
+  identically to the random control**, and a layer-8 decode differed from the
+  untouched target as a string while using **100% of its vocabulary**. Neither
+  says anything about the state, and the tool reports that rather than
+  interpreting them.
+
+  `overlap_identity` and `overlap_random` are reported, not thresholded — there
+  is no principled cut-off for "the same". `informative` requires differing
+  from both controls *and* saying at least one word neither already said;
+  complete containment is a test, not a tuned number.
+
+  The target prompt is returned with every response because it is part of the
+  result, a cross-layer splice is flagged since the two streams are only
+  comparable where the model treats them alike, and the response states that a
+  decode is a **generation and therefore a sample** — what the model said when
+  handed this state through this target, never what the state means. Sited as
+  its own surface rather than a lens column, which would read as a second
+  measurement of the same thing.
+
+### Fixed
+
+- **A splice held across an autoregressive generation raised inside the worker
+  thread.** After the prefill the model runs with a KV cache and each step
+  passes a single token, so a hook writing at position 14 hit `IndexError` on a
+  sequence of length 1 — surfacing as a streamer timeout rather than as the bug
+  it was. Patchscopes is the first caller to generate *through* a splice; it
+  now uses a prefill-only variant, which is also the correct semantics (the
+  patch goes into the prompt's stream, and the continuation should flow from
+  that rather than have the vector stamped over every new token). `_splice` is
+  left strict for its single-pass callers.
+
 - **#11, completed: edge-level path patching.** `POST /api/patch/path` takes a
   bright cell from the node grid as a receiver and asks what put it there:
   for each earlier attention head and MLP, it adds just that component's clean

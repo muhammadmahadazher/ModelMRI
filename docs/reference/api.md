@@ -142,6 +142,48 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 
+## Patchscopes — ask the model what it is holding
+
+`POST /api/patchscope` with `{"prompt": ..., "layer": N}`, optional `position`,
+`target`, `target_layer`, `max_new_tokens`.
+
+Takes a hidden state from your prompt and splices it into a second prompt built
+to make the model describe whatever is in front of it — the identity target
+from Ghandeharioun et al. by default — then reads what comes out.
+
+**The decode never comes back alone.** The method's known failure is that a
+good target prompt describes *anything* fluently, so every response carries two
+controls:
+
+| control | catches |
+|---|---|
+| `identity` | the target prompt with its **own** activation — a decode matching this means the patch changed nothing |
+| `random` | a **same-norm** random vector — a decode matching this means the target prompt says it whatever it is handed |
+
+`overlap_identity` and `overlap_random` report how much of the decode's
+vocabulary each control already used. They are reported, not thresholded —
+there is no principled cut-off for "the same", so the numbers sit beside all
+three decodes and the reader judges. `informative` is only true when the decode
+differs from both as a string **and** says at least one word neither already
+said; complete containment is a test, not a tuned threshold.
+
+Measured on gpt2: a layer-2 state decoded **byte-identically to the random
+control**, and a layer-8 decode differed from the untouched target as a string
+while using **100% of its vocabulary**. Neither is informative, and the tool
+says so rather than interpreting them.
+
+**The target prompt is part of the result** and is returned with every
+response — two decodes under different targets are not comparable, and a hidden
+default would make that invisible. A source layer spliced into a different
+target layer sets `cross_layer`, because the two streams are only comparable
+where the model treats them alike and nothing here checks that it does.
+
+**A decode is a generation and therefore a sample.** It is what the model said
+when handed this state through this target prompt, never what the state means.
+It is its own surface, not a column beside the logit lens — that reports tokens
+read through the unembedding, this reports a sentence, and side by side they
+would read as two measurements of one thing.
+
 ## Path patching — what put it there
 
 `POST /api/patch/path` with `{"clean": ..., "corrupt": ..., "layer": N,

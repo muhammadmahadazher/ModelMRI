@@ -892,6 +892,46 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/lens")
 
+    @app.post("/api/patchscope")
+    async def patchscope(request: Request):
+        """Ask the model to describe a hidden state, with two controls.
+
+        Its own surface, not a column beside the logit lens — the lens reports
+        tokens read through the unembedding, this reports a SENTENCE the model
+        produced, and side by side they would read as two measurements of one
+        thing.
+
+        The target prompt is returned with every response because it is part
+        of the result: two decodes taken under different targets are not
+        comparable, and the method's known failure is a target that describes
+        anything fluently.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.patchscope,
+                str(body.get("prompt") or ""),
+                source_layer=int(body.get("layer", 0)),
+                source_position=int(body.get("position", -1)),
+                target_prompt=str(body.get("target") or ""),
+                target_layer=(
+                    int(body["target_layer"])
+                    if body.get("target_layer") is not None
+                    else None
+                ),
+                max_new_tokens=int(body.get("max_new_tokens") or 12),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patchscope")
+
     @app.post("/api/patch/path")
     async def path_trace(request: Request):
         """Which component wrote what makes a patching site matter.
