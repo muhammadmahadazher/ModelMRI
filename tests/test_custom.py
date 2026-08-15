@@ -542,3 +542,58 @@ def test_softmax_gets_no_saturation_figure_at_all():
     """
     uniform = torch.full((1000,), 1 / 1000)
     assert custom.tensor_stats(uniform, "Softmax").get("pct_saturated") is None
+
+
+# ------------------ a top prediction that is actually a number
+
+
+def test_a_partly_nonfinite_output_does_not_name_the_nan_as_the_answer():
+    """The guard only fired when EVERY value was unusable, so a partly-NaN
+    output fell through — and torch ranks NaN as the largest thing there is.
+
+    MEASURED on [0.1, nan, 0.9, 0.3, inf]: `argmax` returns 1 and `topk`
+    returns [nan, inf, 0.9]. So "your model's top prediction is class 1" named
+    the slot with no number in it, on the panel whose entire job is telling a
+    small-model author what their network answered — at 2am, when the loss is
+    nan and they are trying to find out which layer did it.
+    """
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, float("nan"), 0.9, 0.3, float("inf")]]))
+
+    assert out["argmax"] == 2, "the NaN slot was named as the prediction"
+    assert out["top_index"] == [2, 3, 0]
+    assert out["top_value"] == [0.9, 0.3, 0.1]
+    assert all(v == v and abs(v) != float("inf") for v in out["top_value"])
+
+
+def test_the_count_of_unusable_outputs_travels_with_the_answer():
+    """A network that is half NaN is a finding, not a reason to say nothing.
+    The count rides beside the prediction rather than replacing it."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, float("nan"), 0.9, float("nan")]]))
+    assert out["n_nonfinite"] == 2
+    assert out["n_out"] == 4
+    assert out["argmax"] == 2
+
+
+def test_a_healthy_output_reports_no_unusable_slots():
+    """0 rather than absent, so the panel can state it instead of inferring
+    it from a short list."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, 0.5, 0.9]]))
+    assert out["n_nonfinite"] == 0
+    assert out["argmax"] == 2
+    assert out["top_index"] == [2, 1, 0]
+
+
+def test_an_entirely_nonfinite_output_still_says_so():
+    """The existing behaviour, which was right and must stay."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[float("nan"), float("-inf")]]))
+    assert out["nonfinite"] is True
+    assert out["n_nonfinite"] == 2
+    assert "argmax" not in out

@@ -798,14 +798,41 @@ def _summarise_output(t) -> dict:
         else t.detach().float().reshape(1, -1)
     )
     row = flat[0]
-    if row.numel() == 0 or not torch.isfinite(row).any():
-        return {"nonfinite": True}
-    top = torch.topk(row, k=min(5, row.numel()))
+    finite = torch.isfinite(row)
+    n_nonfinite = int((~finite).sum())
+    if row.numel() == 0 or not finite.any():
+        return {
+            "nonfinite": True,
+            "n_nonfinite": n_nonfinite,
+            "n_out": int(row.numel()),
+        }
+
+    # RANKED OVER THE FINITE VALUES. The guard above only fires when EVERY
+    # value is unusable, so a partly-NaN output fell straight through -- and
+    # torch ranks NaN as the largest thing there is. MEASURED on
+    # [0.1, nan, 0.9, 0.3, inf]: argmax returns 1, and topk returns
+    # [nan, inf, 0.9]. So "your model's top prediction is class 1" named the
+    # slot that had no number in it, on the panel whose whole job is telling a
+    # small-model author what their network answered.
+    #
+    # Masking to -inf keeps the indices honest: a finite value wins, and the
+    # count of unusable slots travels beside the answer instead of replacing
+    # it. A network that is half NaN is a finding, not a reason to say nothing.
+    ranked = row.masked_fill(~finite, float("-inf"))
+    top = torch.topk(ranked, k=min(5, row.numel()))
+    keep = [
+        (int(i), float(v))
+        for i, v in zip(top.indices.tolist(), top.values.tolist(), strict=True)
+        if v != float("-inf")
+    ]
     return {
-        "top_index": [int(i) for i in top.indices],
-        "top_value": [round(float(v), 6) for v in top.values],
-        "argmax": int(torch.argmax(row)),
+        "top_index": [i for i, _ in keep],
+        "top_value": [round(v, 6) for _, v in keep],
+        "argmax": int(torch.argmax(ranked)),
         "n_out": int(row.numel()),
+        # 0 on a healthy model, so the panel can say "3 of 10 outputs are not
+        # numbers" rather than leaving it to be inferred from a short list.
+        "n_nonfinite": n_nonfinite,
     }
 
 

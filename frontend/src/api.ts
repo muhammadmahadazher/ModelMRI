@@ -1832,6 +1832,13 @@ export interface CustomRun {
     argmax?: number;
     n_out?: number;
     nonfinite?: boolean;
+    /**
+     * How many of the outputs are nan or inf. 0 on a healthy model, and set
+     * even when SOME are usable — `nonfinite` is only true when none are.
+     * The argmax is ranked over the finite values, so it names a real
+     * prediction; this is how many slots it had to step over to do it.
+     */
+    n_nonfinite?: number;
   };
 }
 

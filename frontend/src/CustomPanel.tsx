@@ -506,6 +506,17 @@ export default function CustomPanel({
               </span>
             )}
             {run.output.nonfinite && <span className="pill bad">output is nan/inf</span>}
+            {/* SOME of the outputs, which is the case that used to be
+                invisible: `nonfinite` is only true when every slot is
+                unusable, so a half-nan output showed a confident argmax and
+                nothing else. The argmax beside this is ranked over the finite
+                values, and this says how many it stepped over. */}
+            {!run.output.nonfinite && (run.output.n_nonfinite ?? 0) > 0 && (
+              <span className="pill warn">
+                {run.output.n_nonfinite} of {run.output.n_out} outputs are
+                nan/inf
+              </span>
+            )}
             {run.truncated && (
               <span className="pill warn">only the first 512 layers are shown</span>
             )}
