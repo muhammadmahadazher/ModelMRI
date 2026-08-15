@@ -118,17 +118,36 @@ class Tokens:
 
 
 def _single_token_forms(tokenizer, forms) -> tuple:
-    """The forms this tokenizer encodes to exactly one id, and those ids."""
-    kept, ids = [], []
+    """The forms this tokenizer encodes to exactly one id, and those DISTINCT ids.
+
+    DEDUPLICATED, and that is the whole point of this function's shape. Several
+    casings can share one id — an uncased vocabulary, or a sentencepiece
+    tokenizer with `remove_extra_whitespaces=True`, maps ' yes', ' Yes', 'yes'
+    and 'Yes' to the same token. `score` reads the mass with
+    `probs[list(ids)].sum()`, so a repeated id is ADDED ONCE PER CASING.
+
+    Measured on `openai-community/openai-gpt`, which lowercases and strips
+    whitespace: without this, yes_ids came back as
+    (685, 685, 685, 685, 685, 1849, 1849, 1849) and the reported verdict mass
+    was 4.136 where the true mass was 0.827. A probability above 1 is not a
+    thing, the `mass <= 1` invariant this module's own tests assert was
+    violated, and the MIN_VERDICT_MASS floor stopped firing on paraphrases the
+    model genuinely had not answered.
+
+    The FORMS list keeps one entry per id rather than being deduplicated
+    independently, so what is reported still describes what was found.
+    """
+    by_id: dict = {}
     for form in forms:
         try:
             encoded = tokenizer.encode(form, add_special_tokens=False)
         except Exception:  # noqa: BLE001 - a failure means "not this form"
             continue
         if len(encoded) == 1:
-            kept.append(form)
-            ids.append(int(encoded[0]))
-    return tuple(kept), tuple(ids)
+            # First form wins, so the reported surface form is the one this
+            # module prefers rather than whichever casing happened to be last.
+            by_id.setdefault(int(encoded[0]), form)
+    return tuple(by_id.values()), tuple(by_id)
 
 
 def verdict_tokens(tokenizer) -> Tokens:
@@ -164,6 +183,18 @@ def verdict_tokens(tokenizer) -> Tokens:
         no_ids = tuple(i for _, i in keep_no)
 
     if not yes_ids or not no_ids:
+        # TWO DIFFERENT FAULTS, two different sentences. They used to share
+        # one, which sent a reader whose tokenizer encodes every form as a
+        # single token off to check tokenisation granularity — a true
+        # refusal carrying a false diagnosis.
+        if overlap:
+            raise Refusal(
+                "This tokenizer cannot tell yes from no: every form of both "
+                "encodes to the same token id, so there is nothing to compare. "
+                "That usually means the tokenizer does not match the model, or "
+                "is a domain vocabulary that maps unknown words to one id. "
+                "Refusing rather than reading one id as both answers."
+            )
         raise Refusal(
             "This tokenizer has no single-token yes/no form, so there is no id "
             f"to read a verdict off. Tried {', '.join(repr(f) for f in YES_FORMS)} "

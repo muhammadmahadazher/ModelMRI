@@ -91,14 +91,71 @@ def test_a_tokenizer_with_no_single_token_verdict_is_refused():
 
 
 def test_a_tokenizer_that_maps_yes_and_no_to_one_id_is_refused():
-    """Same id for both means there is nothing to compare."""
+    """Same id for both means there is nothing to compare — and the refusal
+    must say THAT, not that the forms are multi-token. They are single tokens;
+    the tokenizer just cannot tell them apart. An earlier version shared one
+    message for both faults and sent this reader to check tokenisation
+    granularity."""
 
     class Collapsing:
         def encode(self, text, add_special_tokens=False):
             return [7]
 
-    with pytest.raises(Refusal, match="no single-token yes/no form"):
+    with pytest.raises(Refusal) as caught:
         judge.verdict_tokens(Collapsing())
+    message = str(caught.value)
+    assert "cannot tell yes from no" in message
+    assert "does not match the model" in message
+    assert "multi-token" not in message, "that is the other fault's diagnosis"
+
+
+def test_casings_that_share_an_id_are_counted_once():
+    """Found by an adversarial review and MEASURED on
+    openai-community/openai-gpt, which lowercases and strips whitespace: every
+    yes casing collapsed to id 685 and every 'true' casing to 1849, so
+    `probs[list(yes_ids)].sum()` added the same probability five and three
+    times. Reported verdict mass was 4.136 against a true 0.827 — above 1,
+    breaking this module's own invariant, and the floor stopped firing on
+    paraphrases the model had not answered."""
+
+    class Uncased:
+        """Every casing of a word maps to one id."""
+
+        def encode(self, text, add_special_tokens=False):
+            word = text.strip().lower()
+            return [{"yes": 685, "true": 1849, "no": 664, "false": 6843}[word]]
+
+    found = judge.verdict_tokens(Uncased())
+    assert found.yes_ids == (685, 1849), found.yes_ids
+    assert found.no_ids == (664, 6843), found.no_ids
+    assert len(set(found.yes_ids)) == len(found.yes_ids)
+    assert len(set(found.no_ids)) == len(found.no_ids)
+    # One form reported per id, so what is shown still describes what was found.
+    assert len(found.yes_forms) == len(found.yes_ids)
+
+
+def test_a_collapsing_tokenizer_cannot_push_mass_above_one(gpt2):
+    """The invariant the duplication broke: a probability above 1 is not a
+    thing, and `mass` is what the floor is compared against."""
+    model, tok = gpt2
+
+    class Uncased:
+        eos_token_id = tok.eos_token_id
+
+        def encode(self, text, add_special_tokens=False):
+            word = text.strip().lower()
+            table = {"yes": 3763, "true": 3763, "no": 645, "false": 645}
+            return [table[word]]
+
+        def __call__(self, *a, **k):
+            return tok(*a, **k)
+
+        def decode(self, ids):
+            return tok.decode(ids)
+
+    out = judge.score(model, Uncased(), "The cat sat.", "Is there an animal?", min_mass=0.0)
+    for p in out.passes:
+        assert 0.0 <= p.mass <= 1.0, f"mass {p.mass} is not a probability"
 
 
 def test_a_tokenizer_that_raises_is_not_fatal():
