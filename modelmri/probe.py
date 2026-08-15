@@ -288,6 +288,38 @@ def _accuracy(weights, bias, mean, std, x, y) -> float:
         return float(((logits > 0).long() == y).float().mean())
 
 
+def _binary(labels):
+    """Labels as 0 and 1, whichever two values the caller actually used.
+
+    `sweep` did this and `direction_at` did not, so one label vector got two
+    answers. `runtime.probe_layers` only checks that a label is an int, so
+    examples labelled 1 and 2 are legal: `sweep` remapped them and scored the
+    layer correctly, while `direction_at` handed the raw 1s and 2s to `_fit`,
+    which floats them into `binary_cross_entropy_with_logits`. That does not
+    validate its target, so a target of 2.0 gives a finite loss whose gradient
+    `sigmoid(z) - t` never changes sign -- the fit runs to completion and
+    returns the class centroid direction rather than the separating one. It
+    was then written into the steering store carrying the accuracy `sweep`
+    measured, with no exception and nothing on screen.
+
+    Shared rather than copied, and that matters beyond the remap itself: both
+    sides must send the SAME class to 1, or the exported direction points
+    opposite to the accuracy reported beside it.
+    """
+    import torch
+
+    labels = torch.as_tensor(labels).long().cpu()
+    values = sorted(set(labels.tolist()))
+    if len(values) != 2:
+        raise BadRequest(
+            f"a probe separates two classes and these examples carry "
+            f"{len(values)}. Label them 0 and 1."
+        )
+    if labels.min() != 0 or labels.max() != 1:
+        labels = (labels == values[1]).long()
+    return labels
+
+
 def sweep(
     states: dict,
     labels,
@@ -309,15 +341,7 @@ def sweep(
     # allocations would be competing with the model for VRAM on a machine
     # chosen for having 8 GB of it. Moving them here also frees the capture.
     states = {layer: x.detach().float().cpu() for layer, x in states.items()}
-    labels = torch.as_tensor(labels).long().cpu()
-    values = sorted(set(labels.tolist()))
-    if len(values) != 2:
-        raise BadRequest(
-            f"a probe separates two classes and these examples carry "
-            f"{len(values)}. Label them 0 and 1."
-        )
-    if labels.min() != 0 or labels.max() != 1:
-        labels = (labels == values[1]).long()
+    labels = _binary(labels)
 
     for value in (0, 1):
         count = int((labels == value).sum())
@@ -396,12 +420,12 @@ def direction_at(states: dict, labels, layer: int, *, seed: int = CONTROL_SEED):
     space the fit works in, so it can be added to a stream directly — which is
     what the steering harness does with it.
     """
-    import torch
-
-    labels = torch.as_tensor(labels).long()
     if layer not in states:
         raise Refusal(f"no residual stream was captured at layer {layer}.")
-    labels = torch.as_tensor(labels).long().cpu()
+    # The SAME remap `sweep` applies. Without it a 1/2 labelling fitted
+    # against targets of 1.0 and 2.0 and exported a direction that separates
+    # nothing, under the accuracy sweep had measured on the 0/1 version.
+    labels = _binary(labels)
     train_idx, _ = _split(next(iter(states.values())), labels, seed=seed)
     weights, _, _, std = _fit(
         states[layer].detach().float().cpu()[train_idx], labels[train_idx]

@@ -406,3 +406,65 @@ def test_a_single_permutation_still_answers():
 def test_a_percentile_of_nothing_is_refused_rather_than_invented():
     with pytest.raises(ValueError):
         probe._percentile([], probe.NULL_HIGH)
+
+
+# ------------------ one label vector, one answer, whichever two values
+
+
+def _separable(seed: int = 0, d: int = 32, n: int = 16):
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(seed)
+    low = torch.randn(n, d)
+    low[:, 0] -= 3.0
+    high = torch.randn(n, d)
+    high[:, 0] += 3.0
+    return {7: torch.cat([low, high])}, n
+
+
+def test_the_exported_direction_does_not_depend_on_which_two_labels_were_used():
+    """`sweep` remapped any two distinct integers to 0/1 and `direction_at`
+    did not, so one label vector got two answers.
+
+    `runtime.probe_layers` only checks that a label is an int, so 1 and 2 are
+    legal. `sweep` remapped them and scored the layer correctly; `direction_at`
+    handed the raw 1s and 2s to `_fit`, whose
+    `binary_cross_entropy_with_logits` does not validate its target — a target
+    of 2.0 gives a finite loss whose gradient never changes sign. The fit ran
+    to completion and the vector went into the steering store carrying the
+    accuracy sweep had measured.
+
+    MEASURED before the fix: cosine 0.883 between the two directions, with the
+    largest-weight dimension moving from 20 to 3. Close enough to look right.
+    """
+    torch = pytest.importorskip("torch")
+    states, n = _separable()
+
+    zero_one = torch.tensor([0] * n + [1] * n)
+    one_two = torch.tensor([1] * n + [2] * n)
+
+    a = probe.direction_at(states, zero_one, 7)
+    b = probe.direction_at(states, one_two, 7)
+    assert float(a @ b) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_the_remap_sends_the_same_class_to_one_on_both_paths():
+    """Beyond the remap itself: if the two paths disagreed about WHICH class
+    becomes 1, the exported direction would point opposite to the accuracy
+    reported next to it. One helper, so they cannot."""
+    torch = pytest.importorskip("torch")
+
+    for pair in ((0, 1), (1, 2), (3, 9), (-1, 1)):
+        labels = torch.tensor([pair[0]] * 4 + [pair[1]] * 4)
+        mapped = probe._binary(labels)
+        assert mapped.tolist() == [0, 0, 0, 0, 1, 1, 1, 1], (
+            f"{pair} did not map the larger value to 1"
+        )
+
+
+def test_a_direction_for_three_classes_is_refused():
+    """A separating direction between three classes is not a thing."""
+    torch = pytest.importorskip("torch")
+    states, n = _separable()
+    labels = torch.tensor([0] * n + [1] * (n - 4) + [2] * 4)
+    with pytest.raises(BadRequest, match="two classes"):
+        probe.direction_at(states, labels, 7)
