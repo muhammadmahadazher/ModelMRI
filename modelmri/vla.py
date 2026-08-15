@@ -66,6 +66,27 @@ VISION_HINTS = (
 )
 
 
+def prepare_frame(rgb, size: int, device):
+    """One camera frame as a vision tower's normalised [1,3,S,S] input.
+
+    THE ONLY normalisation in this package, and it is shared rather than
+    copied for the reason `VLA.occlude` already depends on: two of them would
+    mean the causal map and the attention map beside it describe different
+    images, with nothing on screen saying so. `checkpoints.compare` needs the
+    identical transform to put two policies' embeddings on one scale, so it
+    calls this rather than growing a second one.
+    """
+    import numpy as np
+    import torch
+
+    arr = np.asarray(rgb, dtype=np.float32) / 255.0
+    img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+    img = torch.nn.functional.interpolate(
+        img, size=(int(size), int(size)), mode="bilinear", align_corners=False
+    )
+    return (img * 2.0 - 1.0).to(device)
+
+
 def discover_vision_prefix(keys) -> tuple[str, int]:
     """The state-dict prefix of this checkpoint's vision tower.
 
@@ -365,23 +386,8 @@ class VLAHandle:
         }
 
     def _prepare(self, rgb):
-        """One camera frame as the tower's normalised [1,3,S,S] input.
-
-        Lifted out of `analyse` so the occlusion sweep feeds the tower exactly
-        what the attention path feeds it. Two normalisations would mean the
-        causal map and the attention map beside it describe different images,
-        and nothing on screen would say so.
-        """
-        import numpy as np
-        import torch
-
-        size = self.status_.image_size
-        arr = np.asarray(rgb, dtype=np.float32) / 255.0
-        img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        img = torch.nn.functional.interpolate(
-            img, size=(size, size), mode="bilinear", align_corners=False
-        )
-        return (img * 2.0 - 1.0).to(self.status_.device)
+        """One camera frame as the tower's normalised [1,3,S,S] input."""
+        return prepare_frame(rgb, self.status_.image_size, self.status_.device)
 
     def occlude(
         self,
