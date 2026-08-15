@@ -116,7 +116,12 @@ class Step:
     # What was actually emitted.
     chosen: str = ""
     chosen_id: int = -1
-    chosen_p: float = 0.0
+    # The emitted token's pre-mask probability, or None when it was not among
+    # the `top` rows recorded here. It defaulted to 0.0, which reads as "the
+    # model gave this token no probability" -- the opposite of the truth for a
+    # token the grammar forced through from outside the top few. `top` holds
+    # the strongest handful; anything past that is unrecorded, not zero.
+    chosen_p: float | None = None
     allowed_count: int = 0
     vocab_size: int = 0
     # Probability the mask removed, from the PRE-MASK distribution at this
@@ -289,6 +294,12 @@ class MaskRecorder:
             else len(tokenizer.get_vocab()),
         )
         self._n_prompt = None
+        # Steps SEEN, which keeps counting after `steps` stops growing at
+        # MAX_STEPS. `record_choice` needs to know the difference: past the
+        # cap there is no row for the token being reported, and writing it to
+        # the last one there is corrupts a row that already described a
+        # different step.
+        self._steps_seen = 0
 
     def __call__(self, input_ids, scores):
         import torch
@@ -324,6 +335,7 @@ class MaskRecorder:
         deleted = float(probs.double()[~keep].sum())
         deleted = min(1.0, max(0.0, deleted))
 
+        self._steps_seen += 1
         if len(self.trace.steps) < MAX_STEPS:
             self.trace.steps.append(
                 Step(
@@ -363,7 +375,13 @@ class MaskRecorder:
         is never set keeps `chosen_id = -1`, which reads as "not recorded"
         rather than as token 0.
         """
-        if not self.trace.steps:
+        # Only while steps are still being RECORDED. `__call__` stops
+        # appending at MAX_STEPS and this went on writing to `steps[-1]`, so
+        # every token past the cap overwrote the last recorded step's choice
+        # -- step 1,999 ended up showing the token emitted at step 5,000,
+        # beside its own `wanted` and its own `top`. A row describing two
+        # different moments is worse than a missing row.
+        if not self.trace.steps or self._steps_seen > len(self.trace.steps):
             return
         step = self.trace.steps[-1]
         step.chosen_id = int(token_id)

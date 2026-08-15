@@ -926,6 +926,7 @@ vla-lite = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "lm-format-enforcer" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pytest" },
@@ -960,6 +961,7 @@ provides-extras = ["gguf", "grammar", "vla-lite"]
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
+    { name = "lm-format-enforcer", specifier = ">=0.10" },
     { name = "pillow", specifier = ">=10" },
     { name = "playwright", specifier = ">=1.48" },
     { name = "pytest", specifier = ">=8" },
