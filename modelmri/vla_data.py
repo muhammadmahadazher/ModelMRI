@@ -402,6 +402,17 @@ class LeRobotV3Reader:
         match = next((e for e in eps if e.index == episode), None)
         if match is None:
             raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
+        # The same bound `frame()` above enforces, and `HDF5Reader.raw_frame`
+        # enforces, and this one did not. LeRobot v3.0 concatenates many
+        # episodes into ONE mp4, so an episode is a span inside a file: a `t`
+        # past the end resolves to `from_ts + t/fps`, which lands inside the
+        # NEXT episode and decodes a real frame from it. No error, a picture
+        # on screen, and it is the method the analysis and occlusion paths
+        # call -- so the causal map, the attention comparison and the shared
+        # .mri would all be of a frame belonging to another episode, labelled
+        # with this one.
+        if not 0 <= t < match.length:
+            raise BadRequest(f"t must be in [0,{match.length}) for episode {episode}")
         with self._lock:
             return self._decode(match.from_ts + t / self.fps, match)
 

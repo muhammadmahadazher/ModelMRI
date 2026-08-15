@@ -68,7 +68,20 @@ class FakeHandle:
         flat = [1.0, 1.0, 1.0, 1.0]
         if peak:
             flat = [1.0, 0.0, 0.0, 0.0]
-        return {"heat": [flat[:2], flat[2:]]}
+        grid = [flat[:2], flat[2:]]
+        # BOTH, like the real method: `heat` stretched to [0,1] for drawing
+        # and `values` raw. This double used to return the raw grid under the
+        # name `heat`, which is why nothing here noticed that the real
+        # `attention()` normalises it -- the flat case above min-max
+        # normalises to all zeros, and the entropy metric read it as an empty
+        # map rather than as the most spread-out frame possible.
+        lo = min(v for row in grid for v in row)
+        hi = max(v for row in grid for v in row)
+        span = hi - lo
+        heat = [
+            [((v - lo) / span if span > 1e-12 else 0.0) for v in row] for row in grid
+        ]
+        return {"heat": heat, "values": grid, "min": lo, "max": hi}
 
 
 # ------------------------------------------------------------- the planning
@@ -308,3 +321,49 @@ def test_the_report_survives_json():
     assert doc["metric"] == "attention_entropy"
     assert "means" in doc
     assert len(doc["rows"]) == doc["n_frames"]
+
+
+# ------------------- entropy of the attention, not of the picture of it
+
+
+class UniformHandle(FakeHandle):
+    """Every patch attended equally — the most spread-out frame there is."""
+
+    def attention(self, layer, head):
+        grid = [[0.25, 0.25], [0.25, 0.25]]
+        # min == max, so the display heatmap is all zeros. That is correct for
+        # drawing and catastrophic for a statistic.
+        return {
+            "heat": [[0.0, 0.0], [0.0, 0.0]],
+            "values": grid,
+            "min": 0.25,
+            "max": 0.25,
+        }
+
+
+def test_a_uniform_attention_map_is_the_maximum_entropy_not_an_empty_one():
+    """`heat` is min-max normalised, so a uniform map normalises to all zeros
+    and the sweep raised "this frame produced an empty attention map" for the
+    single most spread-out frame it could ever see."""
+    out = sw.run(
+        UniformHandle(), FakeReader(episodes=1), "attention_entropy", frame_stride=50
+    )
+    assert out.n_frames == 2
+    assert out.failed == []
+    assert out.rows[0].value == pytest.approx(math.log(4))
+
+
+def test_the_entropy_reads_the_raw_grid_rather_than_the_display_heatmap():
+    """Subtracting the frame's own minimum drives the least-attended patch to
+    exactly zero probability, making every frame look more concentrated than
+    it was — by an amount that varies per frame. This metric exists to RANK
+    frames against each other, so a per-frame distortion is the one error it
+    cannot absorb."""
+    import inspect
+
+    source = inspect.getsource(sw.attention_entropy)
+    code = "\n".join(
+        line.split("#", 1)[0] for line in source.splitlines() if line.strip()
+    )
+    assert '["values"]' in code
+    assert '["heat"]' not in code

@@ -158,8 +158,24 @@ def attention_entropy(handle, rgb, **_) -> float:
     layers = len(handle._attn)
     if not layers:
         raise SweepError("this frame produced no attention maps")
-    heat = handle.attention(layers - 1, -1)["heat"]
-    flat = [max(0.0, float(v)) for row in heat for v in row]
+    # THE RAW ATTENTION, not `attention()["heat"]`. That heatmap is min-max
+    # normalised to [0,1] for display, which subtracts the frame's own
+    # minimum -- and an entropy computed after subtracting a constant is not
+    # the entropy of the distribution. It drives the least-attended patch to
+    # exactly zero probability and makes every frame look more concentrated
+    # than it was, by an amount that depends on that frame's minimum. Since
+    # this metric exists to RANK frames against each other, a per-frame
+    # distortion is the one error it cannot absorb.
+    #
+    # Worse than a distortion at the top end: a perfectly UNIFORM map is the
+    # most spread-out frame there is, and min-max normalising it gives all
+    # zeros -- so the sweep raised "this frame produced an empty attention
+    # map" for the maximum-entropy case.
+    flat = [
+        max(0.0, float(v))
+        for row in handle.attention(layers - 1, -1)["values"]
+        for v in row
+    ]
     total = sum(flat)
     if total <= 0:
         raise SweepError("this frame produced an empty attention map")

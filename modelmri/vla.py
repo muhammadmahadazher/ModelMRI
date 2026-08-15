@@ -511,6 +511,13 @@ class VLAHandle:
             "head": head,
             "grid": self.status_.grid,
             "heat": [[round(float(v), 4) for v in row] for row in norm.tolist()],
+            # The SAME grid before normalisation. `heat` is stretched to [0,1]
+            # so it can be drawn, and that subtracts this frame's own minimum
+            # -- fine for a picture, wrong for any statistic. Anything that
+            # computes over the distribution reads this instead; `vla_sweep`'s
+            # entropy read `heat` and reported a frame's spread as a function
+            # of its own darkest patch.
+            "values": [[float(v) for v in row] for row in m.tolist()],
             "min": lo,
             "max": hi,
         }

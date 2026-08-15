@@ -128,3 +128,38 @@ def test_a_base_install_is_told_which_extra_encodes_a_frame(monkeypatch):
     with pytest.raises(Refusal) as caught:
         encode_png(np.zeros((4, 4, 3), dtype="uint8"))
     assert "modelmri[vla-lite]" in str(caught.value)
+
+
+def test_raw_frame_bounds_the_timestep_like_every_other_accessor():
+    """LeRobot v3.0 concatenates many episodes into ONE mp4, so an episode is
+    a span inside a file. A `t` past the end resolves to `from_ts + t/fps`,
+    lands inside the NEXT episode and decodes a real frame from it — no
+    error, a picture on screen.
+
+    `frame()` checks this and `Hdf5Reader.raw_frame` checks this; the one
+    method that did not is the one the analysis and occlusion paths call, so
+    the causal map, the attention comparison and the shared .mri would all be
+    of another episode's frame labelled with this one.
+    """
+    import inspect
+
+    from modelmri import vla_data
+
+    source = inspect.getsource(vla_data.LeRobotV3Reader.raw_frame)
+    assert "match.length" in source
+    assert "t must be in" in source
+
+
+def test_every_frame_accessor_bounds_its_timestep():
+    """Structural, because three of the four had this and one did not."""
+    import inspect
+
+    from modelmri import hdf5_data, vla_data
+
+    for owner, name in (
+        (vla_data.LeRobotV3Reader, "frame"),
+        (vla_data.LeRobotV3Reader, "raw_frame"),
+        (hdf5_data.Hdf5Reader, "raw_frame"),
+    ):
+        source = inspect.getsource(getattr(owner, name))
+        assert "t must be in" in source, f"{owner.__name__}.{name} bounds nothing"
