@@ -595,3 +595,63 @@ def test_an_explicit_zero_start_is_still_zero(tmp_path):
         {"name": "t", "steps": [{"id": "s1", "kind": "tool_call", "started_ms": 0}]}
     )
     assert store.get_trace(trace_id)["steps"][0]["started_ms"] == 0
+
+
+def _many(store, n: int, word: str = "needle"):
+    store.import_trace(
+        {
+            "name": "run",
+            "steps": [
+                {
+                    "id": f"s{i}",
+                    "started_ms": i,
+                    "kind": "tool_call",
+                    "name": "fetch",
+                    "input": f"{word} here",
+                }
+                for i in range(n)
+            ],
+        }
+    )
+
+
+def test_a_truncated_search_says_so(tmp_path):
+    """The LIMIT was applied and never mentioned. A search over a large store
+    returned exactly `limit` rows with a note about matching semantics and
+    nothing about being cut — so somebody hunting the tool call that failed
+    could read a full page of hits and conclude it was not there.
+
+    This module already reports the truncation of a step's TEXT via `_unclip`.
+    The result set was the one cut it stayed quiet about.
+    """
+    store = TraceStore(tmp_path / "t.db")
+    _many(store, 25)
+
+    out = store.search("needle", limit=10)
+    assert len(out["results"]) == 10
+    assert out["truncated"] is True
+    assert out["limit"] == 10
+    assert "MORE MATCHES THAN SHOWN" in out["note"]
+
+
+def test_an_untruncated_search_claims_no_cut(tmp_path):
+    """`truncated` has to be false when everything fits, or the warning means
+    nothing."""
+    store = TraceStore(tmp_path / "t.db")
+    _many(store, 25)
+
+    out = store.search("needle", limit=100)
+    assert len(out["results"]) == 25
+    assert out["truncated"] is False
+    assert "MORE MATCHES" not in out["note"]
+
+
+def test_exactly_limit_matches_is_not_reported_as_truncated(tmp_path):
+    """The off-by-one that a naive `len(rows) == limit` check would get wrong:
+    25 matches at limit 25 is a complete answer, not a cut one."""
+    store = TraceStore(tmp_path / "t.db")
+    _many(store, 25)
+
+    out = store.search("needle", limit=25)
+    assert len(out["results"]) == 25
+    assert out["truncated"] is False

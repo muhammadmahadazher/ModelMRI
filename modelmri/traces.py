@@ -399,8 +399,16 @@ class TraceStore:
         #
         # `trace.started_at` is the real clock, and was already joined here and
         # unused. `list_traces` has always ordered by it.
+        # One MORE than asked for, so the extra row is the answer to "was
+        # there more?". The cap was applied and never mentioned: a search over
+        # a large store returned exactly `limit` rows carrying a note about
+        # matching semantics and nothing at all about being cut, so a reader
+        # looking for the failing tool call could scroll a full page of hits
+        # and conclude it was not there. This module already reports the
+        # truncation of a step's TEXT, via `_unclip`; the result set was the
+        # one cut it stayed quiet about.
         sql += " ORDER BY t.started_at DESC, s.started_ms ASC LIMIT ?"
-        args.append(int(limit))
+        args.append(int(limit) + 1)
 
         # UNDER THE LOCK, like every other reader in this class. The two that
         # were not are what produced short rows and intermittent 500s from
@@ -416,6 +424,9 @@ class TraceStore:
                     "that search could not be run as a full-text query. Try "
                     "plain words, or quote a phrase."
                 ) from err
+
+        truncated = len(rows) > int(limit)
+        rows = rows[: int(limit)]
 
         results = []
         for r in rows:
@@ -441,17 +452,25 @@ class TraceStore:
                 }
             )
 
+        note = (
+            "Full-text matching is by whole word, so a multi-word query is "
+            "a contiguous phrase."
+            if engine == "fts5"
+            else "Scanning for substrings — matches inside words, and gets "
+            "slower as the store grows."
+        )
+        if truncated:
+            note = (
+                f"MORE MATCHES THAN SHOWN: this is the first {int(limit)}, "
+                f"newest run first, and the rest were not returned. " + note
+            )
         return {
             "engine": engine,
             "query": query.to_dict(),
             "results": results,
-            "note": (
-                "Full-text matching is by whole word, so a multi-word query is "
-                "a contiguous phrase."
-                if engine == "fts5"
-                else "Scanning for substrings — matches inside words, and gets "
-                "slower as the store grows."
-            ),
+            "limit": int(limit),
+            "truncated": truncated,
+            "note": note,
         }
 
     def import_trace(self, doc: dict) -> str:
