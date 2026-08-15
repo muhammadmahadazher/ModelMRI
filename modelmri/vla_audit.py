@@ -82,8 +82,11 @@ class Check:
 @dataclass
 class Report:
     repo_id: str
-    n_episodes: int
-    n_frames: int
+    # None when the dataset would not tell us. NOT 0: "this dataset has no
+    # frames" and "the frame table could not be read" are different answers,
+    # and the second one is the whole reason somebody opened an audit.
+    n_episodes: int | None
+    n_frames: int | None
     checks: list[Check] = field(default_factory=list)
     seconds: float = 0.0
 
@@ -829,13 +832,46 @@ def audit(reader) -> Report:
     exception, which is a fact about this machine rather than about the data.
     """
     started = time.perf_counter()
-    episodes = reader.episodes()
-    table = reader._frame_table()
+
+    # INSIDE the guard, like every check below. These two sat outside it, so
+    # a dataset whose parquet will not open took the whole audit down with an
+    # unhandled exception -- from the one tool whose stated purpose is telling
+    # you "whether to train on this data at all". The case where the data is
+    # broken is exactly the case it must survive.
+    preamble: list[Check] = []
+    try:
+        episodes = reader.episodes()
+        n_episodes = len(episodes)
+    except Exception as err:
+        n_episodes = None
+        preamble.append(
+            Check(
+                "episode index",
+                UNCHECKED,
+                f"the episode index raised {type(err).__name__} on this "
+                f"machine, so nothing below could count episodes.",
+            )
+        )
+    try:
+        table = reader._frame_table()
+        n_frames = len(table.get("episode_index") or [])
+    except Exception as err:
+        n_frames = None
+        preamble.append(
+            Check(
+                "frame table",
+                UNCHECKED,
+                f"the frame table raised {type(err).__name__} on this "
+                f"machine, so the per-frame checks below have nothing to read.",
+            )
+        )
+
     report = Report(
         repo_id=getattr(reader, "repo_id", "?"),
-        n_episodes=len(episodes),
-        n_frames=len(table.get("episode_index") or []),
+        n_episodes=n_episodes,
+        n_frames=n_frames,
     )
+    report.checks.extend(preamble)
     for check in CHECKS:
         name = check.__name__.replace("check_", "").replace("_", " ")
         try:

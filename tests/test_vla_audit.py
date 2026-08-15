@@ -425,3 +425,62 @@ def test_the_report_survives_json():
     assert doc["repo_id"] == "fake/dataset"
     assert "means" in doc
     assert len(doc["checks"]) == len(vla_audit.CHECKS)
+
+
+# ---------------- the audit has to survive the data it is auditing
+
+
+class _TableWontOpen:
+    repo_id = "lerobot/pusht"
+
+    def episodes(self):
+        return [type("E", (), {"index": 0, "length": 10})()]
+
+    def _frame_table(self):
+        raise RuntimeError("parquet shard is truncated")
+
+
+class _NothingOpens:
+    repo_id = "lerobot/pusht"
+
+    def episodes(self):
+        raise OSError("the snapshot directory disappeared")
+
+    def _frame_table(self):
+        raise OSError("the snapshot directory disappeared")
+
+
+def test_an_unreadable_frame_table_does_not_take_the_whole_audit_down():
+    """The docstring promises "One failing check never stops the others", and
+    the per-check guard honours it — but `episodes()` and `_frame_table()`
+    ran OUTSIDE that guard.
+
+    So a dataset whose parquet will not open crashed the one tool whose
+    stated purpose is telling you "whether to train on this data at all".
+    The case where the data is broken is exactly the case it has to survive.
+    """
+    report = vla_audit.audit(_TableWontOpen())
+
+    assert report.n_episodes == 1
+    assert report.n_frames is None, "unreadable is not zero frames"
+    assert report.checks, "a report with no checks is not a report"
+    assert any("frame table" in c.name for c in report.unchecked)
+    assert any("RuntimeError" in (c.detail or "") for c in report.checks)
+
+
+def test_a_reader_that_opens_nothing_still_answers():
+    report = vla_audit.audit(_NothingOpens())
+
+    assert report.n_episodes is None
+    assert report.n_frames is None
+    assert len(report.unchecked) == len(report.checks)
+    assert "OSError" in " ".join(c.detail or "" for c in report.checks)
+
+
+def test_a_healthy_dataset_reports_real_counts():
+    """The counts must stay numbers when the data is fine — None means
+    "could not read", and it has to mean only that."""
+    report = vla_audit.audit(_healthy())
+
+    assert isinstance(report.n_episodes, int)
+    assert isinstance(report.n_frames, int)
