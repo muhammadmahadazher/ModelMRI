@@ -23,7 +23,7 @@ jobs:
       # fails in three seconds with "unable to find version `v9`". Every other
       # action here does publish them, which is why this one line looks
       # inconsistent and is not.
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.0
       - name: Lint, format, test
         run: |
           uv sync --dev
@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.0
       # bash on all three runners, so this is one script rather than three.
       # GitHub ships Git Bash on the Windows images; without this the block
       # would run under pwsh there and the syntax would differ.
@@ -110,7 +110,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.0
       - name: Build the UI and the viewer
         run: |
           cd frontend
