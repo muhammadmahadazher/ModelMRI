@@ -80,8 +80,17 @@ def test_both_controls_run_on_the_top_senders(traced):
     for row in controlled:
         assert row["control_draws"] == 8
         assert "shifted_position" in row
-        assert row["clears_control"] == (row["recovery"] > row["control_max"])
-        assert row["clears_position"] == (row["recovery"] > row["shifted_position"])
+        # The flags are computed on FULL precision and reported rounded to 6
+        # decimals, so they cannot be re-derived from the reported numbers: on
+        # macOS `recovery` and `control_max` both rounded to 0.014085 while
+        # the underlying comparison was a genuine win. Assert consistency only
+        # where the rounded values actually separate.
+        for flag, against in (
+            ("clears_control", "control_max"),
+            ("clears_position", "shifted_position"),
+        ):
+            if abs(row["recovery"] - row[against]) > 1e-6:
+                assert row[flag] == (row["recovery"] > row[against])
 
 
 def test_uncontrolled_senders_carry_a_score_and_no_verdict(traced):

@@ -50,9 +50,7 @@ def _judge_model_is_cached() -> bool:
     roots = [Path(home)] if home else []
     roots.append(Path.home() / ".cache" / "huggingface" / "hub")
     name = "models--" + JUDGE_MODEL.replace("/", "--")
-    return any(
-        p.exists() for root in roots for p in (root / name, root / "hub" / name)
-    )
+    return any(p.exists() for root in roots for p in (root / name, root / "hub" / name))
 
 
 needs_judge_model = pytest.mark.skipif(

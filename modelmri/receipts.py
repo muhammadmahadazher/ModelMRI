@@ -281,6 +281,15 @@ class Receipt:
 # test agree by construction instead of by two people remembering the same rule.
 _ABSOLUTE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\|/)")
 
+# An absolute path appearing ANYWHERE in a string, for the repr arm below.
+#
+# The lookbehind keeps a URL intact. `https://example.com/Qwen/x` has four
+# slashes and every one must be rejected: the first follows `:`, the second
+# follows `/`, and the rest follow word characters. Excluding only `:` reduced
+# that URL to `https:/x` — measured, not guessed. A drive letter is matched
+# explicitly because `C:\Users` has no leading separator to anchor on.
+_EMBEDDED = re.compile(r"(?<![A-Za-z0-9:~/\\])(?:[A-Za-z]:[\\/]|\\\\|/)[^\s'\"<>|,;]*")
+
 
 def _no_path(text: str) -> str:
     """A request value with any absolute path in it reduced to a bare name.
@@ -296,11 +305,26 @@ def _no_path(text: str) -> str:
     `sae_repo` in its receipt, an SAE can be loaded from a local directory, and
     that path travelled inside every `.mri` exported after one.
     """
-    if not _ABSOLUTE.match(text):
-        return text
-    # rsplit on both separators: a Windows path read on Linux, or the reverse,
-    # still reduces. PurePath would pick one convention and miss the other.
-    return re.split(r"[\\/]", text.rstrip("\\/"))[-1] or text
+    if _ABSOLUTE.match(text):
+        # rsplit on both separators: a Windows path read on Linux, or the
+        # reverse, still reduces. PurePath would pick one convention and miss
+        # the other.
+        return re.split(r"[\\/]", text.rstrip("\\/"))[-1] or text
+
+    # EMBEDDED paths, not only ones at position 0. The `else` arm of `_request`
+    # reduces `repr(value)`, and `repr(Path("/home/me/corpus.jsonl"))` is
+    # `PosixPath('/home/me/corpus.jsonl')` — which does not START with a
+    # separator, so the anchored match above let the whole path through.
+    #
+    # `test_an_object_argument_does_not_smuggle_a_path_through_its_repr` is
+    # named for exactly this and passed anyway on Windows, where
+    # `str(tmp_path)` uses backslashes while the repr renders forward slashes,
+    # so the substring it looked for was never there. It failed the moment CI
+    # ran it on macOS. The leak was real on every POSIX machine.
+    return _EMBEDDED.sub(
+        lambda m: re.split(r"[\\/]", m.group(0).rstrip("\\/"))[-1] or m.group(0),
+        text,
+    )
 
 
 def _request(raw: dict | None) -> dict:
