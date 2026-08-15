@@ -36,7 +36,15 @@ class Tower(nn.Module):
         self.drift_from = drift_from
 
     def forward(self, pixel_values, output_hidden_states=False):
-        x = pixel_values.reshape(1, 4, 16)
+        # `pixel_values` is a real [1, 3, S, S] image now, because the reader
+        # hands back RGB and `vla.prepare_frame` normalises it — the same
+        # transform the attention and occlusion paths use. This used to
+        # reshape a flat [1, 64] vector, which only worked because the fake
+        # reader implemented `frame_tensor`, a method no real reader has.
+        n, c, h, w = pixel_values.shape
+        flat = pixel_values.reshape(n, -1)
+        # 4 patches x hidden 16, from whatever the image size is.
+        x = flat[:, : 4 * 16].reshape(n, 4, 16)
         hidden = [x]
         for i, block in enumerate(self.blocks):
             x = x + torch.tanh(block(x))
@@ -61,11 +69,19 @@ class FakeReader:
     def episodes(self):
         return self._eps
 
-    def frame_tensor(self, episode, t):
-        # Deterministic per frame, so BOTH sides see identical input — which
-        # is the entire premise of the comparison.
-        gen = torch.Generator().manual_seed(episode * 1000 + t)
-        return torch.randn(1, 64, generator=gen)
+    def raw_frame(self, episode, t):
+        # `raw_frame`, because that is what the real readers offer. This
+        # double used to implement `frame_tensor` -- a method that exists on
+        # neither `LeRobotV3Reader` nor `Hdf5Reader` -- so the tests exercised
+        # an API nobody had written and the feature was dead in every real
+        # run while passing here.
+        #
+        # Deterministic per frame, so BOTH sides see identical input, which is
+        # the entire premise of the comparison.
+        import numpy as np
+
+        gen = np.random.default_rng(episode * 1000 + t)
+        return (gen.random((32, 32, 3)) * 255).astype("uint8")
 
 
 def _loader(models, configs=None, cameras=None):
@@ -148,8 +164,8 @@ def test_both_sides_see_identical_frames(pair):
     reader = FakeReader()
     seen: list = []
 
-    original = reader.frame_tensor
-    reader.frame_tensor = lambda e, t: seen.append((e, t)) or original(e, t)
+    original = reader.raw_frame
+    reader.raw_frame = lambda e, t: seen.append((e, t)) or original(e, t)
     ck.compare(
         _loader({"base": a, "tuned": b}), "base", "tuned", reader, frame_stride=25
     )
@@ -206,13 +222,13 @@ def test_the_gate_fires_before_the_second_side_runs_its_frames(pair):
     a, b, _ = pair
     frames_run = {"n": 0}
     reader = FakeReader()
-    original = reader.frame_tensor
+    original = reader.raw_frame
 
     def counting(e, t):
         frames_run["n"] += 1
         return original(e, t)
 
-    reader.frame_tensor = counting
+    reader.raw_frame = counting
     with pytest.raises(BadRequest, match="`hidden_size`"):
         ck.compare(
             _loader(
@@ -402,3 +418,98 @@ def test_the_report_survives_json(pair):
     assert doc["checkpoint_a"] == "base"
     assert "means" in doc
     assert len(doc["layers"]) == 7
+
+
+# ------------------ a comparison that actually reaches a frame
+
+
+class _Tower(torch.nn.Module):
+    def __init__(self, drift: float = 0.0):
+        super().__init__()
+        self.drift = drift
+
+    def forward(self, pixel_values, output_hidden_states=False):
+        n = pixel_values.shape[0]
+        base = pixel_values.mean(dim=(1, 2, 3)).reshape(n, 1, 1)
+        return type(
+            "O",
+            (),
+            {
+                "hidden_states": [
+                    (base + i * 0.1 + (self.drift if i >= 3 else 0.0)).expand(n, 4, 8)
+                    for i in range(6)
+                ]
+            },
+        )()
+
+
+class _Reader:
+    repo_id = "ds"
+    camera = "cam"
+
+    def episodes(self):
+        return [type("E", (), {"index": i, "length": 50})() for i in range(2)]
+
+    def raw_frame(self, episode, t):
+        import numpy as np
+
+        return (np.ones((32, 32, 3)) * ((episode * 50 + t) % 255)).astype("uint8")
+
+
+_CFG = {"image_size": 16, "patch_size": 8, "num_hidden_layers": 6, "hidden_size": 8}
+
+
+def _load_side(spec):
+    return _Tower(0.0 if spec == "a" else 0.4), "cpu", _CFG, ["cam"], (lambda: None)
+
+
+def test_a_comparison_reaches_the_frames_at_all():
+    """`reader.frame_tensor(...)` does not exist — not on `LeRobotV3Reader`,
+    not on `Hdf5Reader`, not anywhere in this package.
+
+    It raised AttributeError on the FIRST frame, so the whole feature was
+    dead: two checkpoints loaded, both released, nothing measured. A method
+    name nobody implements is the same defect class as the SDK-shape drift
+    `modelmri-record` exists to catch, sitting in this repo.
+    """
+    out = ck.compare(_load_side, "a", "b", _Reader(), frame_stride=25)
+
+    assert out.n_frames > 0, "no frame was ever read"
+    assert len(out.layers) == 6
+    assert out.ran_perception is True
+
+
+def test_the_frames_go_through_the_one_shared_normalisation():
+    """Two normalisations would put the two towers' embeddings on different
+    scales while the report claims they saw identical frames. `vla.prepare_frame`
+    is the transform the attention and occlusion paths already use."""
+    import inspect
+
+    from modelmri import vla
+
+    source = inspect.getsource(ck.compare)
+    code = "\n".join(
+        line.split("#", 1)[0] for line in source.splitlines() if line.strip()
+    )
+    assert "vla.prepare_frame" in code
+    assert "frame_tensor" not in code
+    assert callable(vla.prepare_frame)
+
+
+def test_every_reader_method_the_comparison_calls_exists_on_both_readers():
+    """The structural version. `frame_tensor` was called for as long as it took
+    somebody to run the feature, because nothing checked the readers offer what
+    this asks them for."""
+    import inspect
+    import re
+
+    from modelmri import hdf5_data, vla_data
+
+    called = set(re.findall(r"\breader\.([a-z_]+)\s*\(", inspect.getsource(ck)))
+    assert called, "the pattern found no reader calls and would pass vacuously"
+
+    for reader in (vla_data.LeRobotV3Reader, hdf5_data.Hdf5Reader):
+        for name in sorted(called):
+            assert hasattr(reader, name), (
+                f"{reader.__name__} has no {name}(), which checkpoints.py calls"
+            )

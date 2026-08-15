@@ -474,3 +474,58 @@ def test_no_sae_capture_site_ignores_the_hook_point():
     assert "_register_capture" in code
     assert "sae.point" in code
     assert "patch import _capture" not in code
+
+
+def test_the_evidence_pass_stops_where_the_sweep_stops(sae_runtime, monkeypatch):
+    """`sweep` cut at MAX_TOKENS and `evidence` walked the whole corpus, so
+    one response reported two different sizes for "this corpus" — and the
+    firing rate shown for a feature was over a different denominator from the
+    rates it sits beside in the sweep's table. Two numbers that look
+    comparable and are not.
+    """
+    monkeypatch.setattr(fc, "MAX_TOKENS", 4)
+    block = sae_runtime._block(8)
+
+    stats, _ = fc.sweep(
+        sae_runtime.model,
+        block,
+        sae_runtime.tokenizer,
+        sae_runtime.sae,
+        CORPUS,
+        device=sae_runtime.device,
+        layer=8,
+    )
+    shown = fc.evidence(
+        sae_runtime.model,
+        block,
+        sae_runtime.tokenizer,
+        sae_runtime.sae,
+        CORPUS,
+        0,
+        device=sae_runtime.device,
+    )
+
+    assert stats.n_tokens == shown["n_tokens"], "the two passes disagree on size"
+    assert shown["truncated"] is True
+    # Either branch of `means` must disclose the cut. The never-fired one
+    # matters most: "this text never showed it anything" is a claim about the
+    # WHOLE corpus, and an unread tail is exactly where the missing
+    # activation would be.
+    said = shown["means"]
+    assert ("cut at" in said) or ("READ ONLY TO" in said), said
+
+
+def test_an_uncapped_corpus_claims_no_cut(sae_runtime, monkeypatch):
+    monkeypatch.setattr(fc, "MAX_TOKENS", 1_000_000)
+    block = sae_runtime._block(8)
+    shown = fc.evidence(
+        sae_runtime.model,
+        block,
+        sae_runtime.tokenizer,
+        sae_runtime.sae,
+        CORPUS,
+        0,
+        device=sae_runtime.device,
+    )
+    assert shown["truncated"] is False
+    assert "cut at" not in shown["means"]

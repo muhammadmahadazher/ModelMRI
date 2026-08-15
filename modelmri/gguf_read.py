@@ -152,6 +152,16 @@ class Gguf:
     metadata: dict
     tensors: list[Tensor]
     unknown_types: list[int] = field(default_factory=list)
+    # Where the tensor BLOB begins: the end of the header, rounded up to
+    # `general.alignment`. Every `Tensor.offset` is relative to this.
+    #
+    # Recorded because the parser is the only thing that knows it, and
+    # discarding it forced `quantdiff` to reverse-engineer the base from the
+    # file size -- `file_size - (last offset + size)`, which is only right if
+    # the file ends exactly at the last tensor. GGUF writers pad to alignment
+    # after it, so that inference ran long by the padding and then rounded UP
+    # again, putting every read past the true start. 0 when unknown.
+    data_offset: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -424,6 +434,11 @@ def read(path: str | Path, *, max_array: int = 64) -> Gguf:
             )
         )
 
+    # The cursor stops at the end of the tensor-info table, and the blob
+    # starts at the next `alignment` boundary.
+    alignment = int(metadata.get("general.alignment", 32) or 32) or 32
+    blob_start = cur.at + ((-cur.at) % alignment)
+
     return Gguf(
         path=str(p),
         version=int(version),
@@ -431,4 +446,5 @@ def read(path: str | Path, *, max_array: int = 64) -> Gguf:
         metadata=metadata,
         tensors=tensors,
         unknown_types=sorted(unknown),
+        data_offset=int(blob_start),
     )

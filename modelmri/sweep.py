@@ -172,6 +172,23 @@ def plan(job: Job, runtime) -> dict:
     n_heads = int(getattr(model.config, "num_attention_heads", 0) or 0)
 
     if job.metric == "heads":
+        # REFUSED, not defaulted. `getattr(config, ..., 0) or 0` turns an
+        # architecture that names these fields differently into a model with
+        # no layers and no heads, and the arithmetic below then quotes a
+        # whole-model head sweep at 2 passes per prompt instead of
+        # n_layers x n_heads + 2 -- 2 against 450 on Qwen3-0.6B.
+        #
+        # `model_diff.head_pass_estimate` already refuses exactly this and
+        # says why: "A preflight that under-quotes is worse than no
+        # preflight, because it is the number somebody plans around." Same
+        # defect, same answer.
+        if n_layers <= 0 or n_heads <= 0:
+            raise Refusal(
+                f"this model's config does not state how many layers and "
+                f"attention heads it has (read {n_layers} and {n_heads}), so "
+                f"the cost of a head sweep cannot be projected. Running it "
+                f"blind is the thing this preflight exists to prevent."
+            )
         per_prompt = (n_layers * n_heads if job.layer is None else n_heads) + 2
         # The resample baseline draws several times per head, and the draws
         # multiply through every prompt. This is the number the caveat in the
@@ -253,6 +270,26 @@ def run(job: Job, runtime, *, on_row=None, cancel: threading.Event | None = None
 
     for index, prompt in enumerate(job.prompts):
         if cancel is not None and cancel.is_set():
+            # A ROW, NOT A GAP -- the same rule the `except` arm below states
+            # and this did not follow. Breaking out left the unrun prompts
+            # with no row and no note, so a sweep cancelled after 3 of 20
+            # prompts was saved and rendered as a complete 3-prompt sweep. The
+            # aggregate, the top-k and the "measured on N prompts" line were
+            # all true of a run nobody meant to take as final, and nothing on
+            # screen or in the JSONL said it had been stopped.
+            #
+            # `measured` is False for these, so `aggregate` skips them exactly
+            # as it skips a refusal.
+            for later, unrun in enumerate(job.prompts[index:], start=index):
+                rows.append(
+                    Row(
+                        index=later,
+                        prompt_sha256=receipts.digest(unrun),
+                        could_not_measure=(
+                            "the sweep was cancelled before this prompt ran"
+                        ),
+                    )
+                )
             break
         row = Row(index=index, prompt_sha256=receipts.digest(prompt))
         try:

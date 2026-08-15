@@ -32,11 +32,21 @@ class Device:
         return asdict(self)
 
 
-def _cuda_like() -> Device | None:
+def _cuda_like(index: int | None = None) -> Device | None:
+    """The CUDA/ROCm device, optionally a NAMED one.
+
+    `index` exists because asking for `cuda:1` used to probe whichever card
+    was current and then overwrite only the device STRING -- so the panel
+    showed card 0's name and VRAM while the model loaded onto card 1. That is
+    the same failure the comment below describes for the default path, and
+    the fix landed there and not here.
+    """
     import torch
 
     try:
         if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+            return None
+        if index is not None and not 0 <= index < torch.cuda.device_count():
             return None
         # torch's own current device, not device 0. On a multi-GPU box the two
         # differ the moment anything sets CUDA_VISIBLE_DEVICES or calls
@@ -44,7 +54,7 @@ def _cuda_like() -> Device | None:
         # while loading onto a different card. Every number on screen would
         # describe hardware the model was not running on, which is worse than
         # no number at all.
-        index = torch.cuda.current_device()
+        index = torch.cuda.current_device() if index is None else index
         props = torch.cuda.get_device_properties(index)
         vram = round(props.total_memory / 1e9, 1)
         is_rocm = bool(getattr(torch.version, "hip", None))
@@ -195,12 +205,29 @@ def detect(prefer: str = "auto") -> Device:
         )
 
     if prefer not in ("auto", "", None):
+        # An explicit index is READ, not pasted on. `cuda:1` used to probe
+        # whichever card was current, keep that card's name and VRAM, and
+        # overwrite the device string alone -- so every number on screen, and
+        # every capacity check that reads `vram_gb`, described a different
+        # card from the one about to be loaded. `_cuda_like` records the same
+        # failure for the default path: "worse than no number at all".
+        head, _, tail = prefer.partition(":")
+        wanted = int(tail) if tail.isdigit() else None
         for probe in (_cuda_like, _xpu, _mps):
-            found = probe()
-            if found and found.torch_device.split(":")[0] == prefer.split(":")[0]:
-                found.torch_device = prefer
-                found.reason = f"requested explicitly ({prefer})"
+            found = _cuda_like(wanted) if probe is _cuda_like else probe()
+            if found and found.torch_device.split(":")[0] == head:
+                # Only when the probe could not honour the index itself.
+                # `_cuda_like` returns the card it actually read, so trust it.
+                if found.torch_device.split(":")[0] != prefer.split(":")[0]:
+                    continue
+                if probe is not _cuda_like:
+                    found.torch_device = prefer
+                found.reason = f"requested explicitly ({found.torch_device})"
                 return found
+        if head in ("cuda", "rocm") and wanted is not None:
+            return _cpu(
+                f"{prefer} was requested and there is no CUDA device at index {wanted}"
+            )
         return _cpu(f"{prefer} was requested but is not available")
 
     for probe in (_cuda_like, _xpu, _mps):

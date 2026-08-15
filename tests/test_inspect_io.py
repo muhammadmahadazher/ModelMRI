@@ -380,3 +380,93 @@ def test_reading_leaves_no_open_handle(tmp_path):
     # If any handle were still open this raises PermissionError on Windows.
     path.unlink()
     assert not path.exists()
+
+
+def test_a_capped_listing_does_not_report_its_cap_as_the_logs_size(
+    tmp_path, monkeypatch
+):
+    """`samples()` stops at MAX_SAMPLES_LISTED and this sentence quoted
+    `len(refs)` as the log's size.
+
+    So a log larger than the cap told the reader it "carries 5000 sample(s)"
+    — a false statement about their file, delivered as the authoritative
+    answer to "is my sample in here?". The header's own `total_samples` is
+    the real count, and when the two differ the cap is stated rather than
+    quietly substituted.
+    """
+    monkeypatch.setattr(inspect_io, "MAX_SAMPLES_LISTED", 3)
+    made = [_sample(sid=f"s{i}") for i in range(6)]
+    path = _log(tmp_path, samples=made)
+
+    assert len(inspect_io.samples(path)) == 3, "the cap still applies"
+
+    with pytest.raises(inspect_io.InspectError) as caught:
+        inspect_io.read_sample(path, sample_id="nope")
+    said = str(caught.value)
+    assert "carries 6 sample(s)" in said, "quoted the cap as the size"
+    assert "Only the first 3 are listed" in said
+
+
+def test_an_uncapped_listing_says_nothing_about_a_cap(tmp_path):
+    """The clause is for a log that was actually cut."""
+    made = [_sample(sid=f"s{i}") for i in range(3)]
+    path = _log(tmp_path, samples=made)
+    with pytest.raises(inspect_io.InspectError) as caught:
+        inspect_io.read_sample(path, sample_id="nope")
+    said = str(caught.value)
+    assert "carries 3 sample(s)" in said
+    assert "Only the first" not in said
+
+
+def test_a_mixed_timeline_stays_in_order():
+    """`base = started` anchored the first timestamped event to ITSELF, so it
+    got offset 0 — the same x as the first synthetic block.
+
+    MEASURED on three untimestamped events followed by two timestamped and
+    one more untimestamped: [0, 10, 20, 0, 2000, 50]. The fourth step renders
+    on top of the first and BEFORE the two between them, and the last lands
+    back at 50 after a block at 2000. The comment above that line promises
+    exactly what this did not do — "rather than all-zero, which would stack
+    every block on top of each other at x=0".
+    """
+    events = [
+        {"event": "model"},
+        {"event": "tool"},
+        {"event": "tool"},
+        {"event": "model", "timestamp": "2024-01-01T00:00:10Z"},
+        {"event": "tool", "timestamp": "2024-01-01T00:00:12Z"},
+        {"event": "tool"},
+    ]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+
+    assert offsets == sorted(offsets), f"the timeline runs backwards: {offsets}"
+    assert len(set(offsets)) == len(offsets), f"two blocks share an x: {offsets}"
+    # The real 2s gap between the two timestamped events survives.
+    assert offsets[4] - offsets[3] == 2000
+
+
+def test_an_all_timestamped_sample_is_measured_from_its_first_event():
+    """The ordinary case must be unchanged: offsets are real milliseconds
+    from the start of the sample."""
+    events = [
+        {"event": "model", "timestamp": "2024-01-01T00:00:00Z"},
+        {"event": "tool", "timestamp": "2024-01-01T00:00:03Z"},
+    ]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+    assert offsets == [0, 3000]
+
+
+def test_an_all_untimestamped_sample_still_ladders():
+    """The other end, which the comment already described and which worked."""
+    events = [{"event": "model"}, {"event": "tool"}, {"event": "tool"}]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+    assert offsets == [0, 10, 20]

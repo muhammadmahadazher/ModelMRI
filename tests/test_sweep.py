@@ -327,3 +327,105 @@ def test_one_mri_per_prompt_when_asked(gpt2, tmp_path):
 
     parsed = session.parse(written[0].read_bytes())
     assert parsed.has_ranking(), "and it carries the ranking that row measured"
+
+
+# ------------------------- a stopped run is not a short run
+
+
+class _Counting:
+    """A runtime that trips a cancel event partway through."""
+
+    last_n_prompt_tokens = 3
+
+    def __init__(self, cancel, after: int):
+        self.cancel, self.after, self.seen = cancel, after, 0
+
+    def generate_stream(self, *a, **k):
+        self.seen += 1
+        if self.seen >= self.after:
+            self.cancel.set()
+        return iter(["x"])
+
+    def ablate_heads(self, **k):
+        return {"ranked": [{"layer": 0, "head": 0, "kl": 1.0}], "receipt": {}}
+
+
+def test_a_cancelled_sweep_still_accounts_for_every_prompt():
+    """`break` left the unrun prompts with no row and no note, so a sweep
+    stopped after 3 of 20 was saved and rendered as a complete 3-prompt sweep.
+    The aggregate, the top-k and the "measured on N prompts" line were all
+    true of a run nobody meant to take as final.
+
+    The `except` arm a few lines below already states the rule this broke:
+    "A ROW, NOT A GAP".
+    """
+    import threading
+
+    cancel = threading.Event()
+    job = sweep.Job(model="m", prompts=[f"p{i}" for i in range(20)], metric="heads")
+    rows = sweep.run(job, _Counting(cancel, after=3), cancel=cancel)
+
+    assert len(rows) == 20, "the unrun prompts vanished"
+    assert sum(1 for r in rows if r.measured) == 3
+    assert [r.index for r in rows] == list(range(20))
+    for row in rows[3:]:
+        assert "cancelled" in row.could_not_measure
+
+
+def test_the_cancelled_rows_are_skipped_by_the_aggregate():
+    """They must not dilute the statistics they are absent from — `measured`
+    is what `aggregate` filters on, and a cancelled row is not measured."""
+    import threading
+
+    cancel = threading.Event()
+    job = sweep.Job(model="m", prompts=[f"p{i}" for i in range(10)], metric="heads")
+    rows = sweep.run(job, _Counting(cancel, after=2), cancel=cancel)
+
+    stats = sweep.aggregate(rows, metric="heads")
+    assert stats, "the measured rows still aggregate"
+    assert all(s.n <= 2 for s in stats), "a cancelled row was counted as measured"
+
+
+def test_an_uncancelled_sweep_is_unchanged():
+    """The rows must not grow a phantom cancellation when nothing stopped."""
+    import threading
+
+    cancel = threading.Event()
+    job = sweep.Job(model="m", prompts=["a", "b", "c"], metric="heads")
+    rows = sweep.run(job, _Counting(cancel, after=99), cancel=cancel)
+
+    assert len(rows) == 3
+    assert all(r.measured for r in rows)
+
+
+def test_a_head_sweep_on_an_unreadable_config_is_refused_not_under_quoted():
+    """`getattr(config, ..., 0) or 0` turns an architecture that names these
+    fields differently into a model with no layers and no heads, and the
+    projection then quotes a whole-model head sweep at 2 passes per prompt
+    instead of n_layers x n_heads + 2 — 2 against 450 on Qwen3-0.6B.
+
+    `model_diff.head_pass_estimate` already refuses exactly this, and says
+    why: "A preflight that under-quotes is worse than no preflight, because
+    it is the number somebody plans around."
+    """
+
+    class Runtime:
+        model = type("M", (), {"config": type("C", (), {})()})()
+
+    job = sweep.Job(model="m", prompts=["a", "b"], metric="heads")
+    with pytest.raises(Refusal) as caught:
+        sweep.plan(job, Runtime())
+    said = str(caught.value)
+    assert "does not state how many layers" in said
+    assert "cannot be projected" in said
+
+
+def test_a_token_sweep_needs_no_head_counts():
+    """The refusal is scoped to the metric that depends on them."""
+
+    class Runtime:
+        model = type("M", (), {"config": type("C", (), {})()})()
+
+    job = sweep.Job(model="m", prompts=["a", "b"], metric="tokens")
+    out = sweep.plan(job, Runtime())
+    assert out["passes_total"] > 0

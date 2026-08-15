@@ -925,9 +925,12 @@ vla-lite = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "h5py" },
     { name = "httpx" },
+    { name = "lm-format-enforcer" },
     { name = "pillow" },
     { name = "playwright" },
+    { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-xdist" },
     { name = "ruff" },
@@ -959,9 +962,12 @@ provides-extras = ["gguf", "grammar", "vla-lite"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "h5py", specifier = ">=3.8" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "lm-format-enforcer", specifier = ">=0.10" },
     { name = "pillow", specifier = ">=10" },
     { name = "playwright", specifier = ">=1.48" },
+    { name = "pyarrow", specifier = ">=15" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-xdist", specifier = ">=3.6" },
     { name = "ruff", specifier = ">=0.15.20" },

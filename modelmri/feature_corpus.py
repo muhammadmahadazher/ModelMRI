@@ -352,9 +352,19 @@ def evidence(
     spans: list[Span] = []
     values: list[float] = []
     n_tokens = 0
+    truncated = False
     for index, tokens, acts in _activations(
         model, block, tokenizer, sae, texts, device
     ):
+        # THE SAME CAP `sweep` APPLIES. It stopped at MAX_TOKENS and this
+        # walked the whole corpus, so one response reported two different
+        # sizes for "this corpus" -- the sweep's 200,000 beside this one's
+        # full count -- and the firing rate shown for a feature was computed
+        # over a different denominator from the rates it sits next to in the
+        # table. Two numbers that look comparable and are not.
+        if n_tokens >= MAX_TOKENS:
+            truncated = True
+            break
         column = acts[:, feature_id]
         n_tokens += len(tokens)
         for position in (column > 0).nonzero(as_tuple=True)[0].tolist():
@@ -390,6 +400,7 @@ def evidence(
         "spans": [s.to_dict() for s in spans[:top_k]],
         "n_fired": len(values),
         "n_tokens": n_tokens,
+        "truncated": truncated,
         "firing_rate": round(len(values) / n_tokens, 6) if n_tokens else 0.0,
         "max_activation": round(max(values), 5) if values else 0.0,
         "histogram": histogram,
@@ -401,6 +412,13 @@ def evidence(
             f"corpus. These are its highest activations HERE — a different "
             f"claim from what it fires on generally, and the corpus is named "
             f"beside them for that reason."
+            + (
+                f" The corpus was cut at {MAX_TOKENS:,} tokens, the same cut "
+                f"the feature sweep makes, so this rate and the sweep's are "
+                f"over the same denominator."
+                if truncated
+                else ""
+            )
             + (
                 f" A FIRING RATE THIS HIGH IS NOT A CONCEPT: a feature active "
                 f"on {(len(values) / max(1, n_tokens)):.0%} of tokens is not "
@@ -419,6 +437,18 @@ def evidence(
                 f"is NOT SEEN IN THIS CORPUS, not dead — this text never "
                 f"showed it anything it responds to, which is a fact about "
                 f"the text as much as about the feature."
+                # The cut belongs HERE most of all. "this text never showed
+                # it anything" is a claim about the whole corpus, and a
+                # truncated pass only read the front of it -- so an unread
+                # tail is exactly where the missing activation would be.
+                + (
+                    f" READ ONLY TO {MAX_TOKENS:,} TOKENS, though: the rest of "
+                    f"this corpus was not looked at, so "
+                    f'"not in this corpus" means "not in the part that was '
+                    f'read".'
+                    if truncated
+                    else ""
+                )
             )
         ),
         # NO LABEL. Naming the concept is the reader's job; a generated label

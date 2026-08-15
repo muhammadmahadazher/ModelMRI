@@ -87,7 +87,15 @@ class Preview:
     """Exactly what is about to leave the machine."""
 
     n_steps: int = 0
+    # Steps left out because the run was longer than MAX_TRACE_STEPS.
     n_steps_dropped: int = 0
+    # Steps left out because they were not objects at all. A DIFFERENT fact
+    # about the file, and it used to be folded into the count above and
+    # explained with that count's sentence -- so a five-step trace carrying
+    # two malformed entries reported "2 step(s) are NOT in this file: the
+    # trace section holds 500 and the run was longer", which is false twice
+    # over about a file whose whole purpose is saying exactly what is in it.
+    n_steps_malformed: int = 0
     n_payloads_clipped: int = 0
     chars_clipped: int = 0
     redactions: list = field(default_factory=list)
@@ -101,6 +109,7 @@ class Preview:
         return {
             "n_steps": self.n_steps,
             "n_steps_dropped": self.n_steps_dropped,
+            "n_steps_malformed": self.n_steps_malformed,
             "n_payloads_clipped": self.n_payloads_clipped,
             "chars_clipped": self.chars_clipped,
             "redactions": [r.to_dict() for r in self.redactions],
@@ -127,6 +136,12 @@ class Preview:
             parts.append(
                 f"{self.n_steps_dropped} step(s) are NOT in this file: the "
                 f"trace section holds {MAX_TRACE_STEPS} and the run was longer."
+            )
+        if self.n_steps_malformed:
+            parts.append(
+                f"{self.n_steps_malformed} entr(y/ies) in the trace were not "
+                f"objects and could not be exported as steps. That is a fact "
+                f"about the source document, not about this file's size."
             )
         if self.n_payloads_clipped:
             parts.append(
@@ -202,8 +217,10 @@ def prepare(
             )
 
         kept = []
+        malformed = 0
         for step in steps[:MAX_TRACE_STEPS]:
             if not isinstance(step, dict):
+                malformed += 1
                 continue
             copy = dict(step)
             for name in ("input", "output"):
@@ -226,7 +243,11 @@ def prepare(
             kept.append(copy)
 
         preview.n_steps = len(kept)
-        preview.n_steps_dropped = max(0, len(steps) - len(kept))
+        # The two causes counted apart, because they are answered differently:
+        # one means "export a smaller subtree", the other means "your source
+        # document has junk in it".
+        preview.n_steps_dropped = max(0, len(steps) - MAX_TRACE_STEPS)
+        preview.n_steps_malformed = malformed
         clean_trace = {
             "id": str(trace.get("id") or ""),
             "name": _scan_and_redact(str(trace.get("name") or ""), tally),

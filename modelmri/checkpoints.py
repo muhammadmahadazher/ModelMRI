@@ -34,6 +34,7 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass, field
 
+from . import vla
 from .errors import BadRequest
 
 # Frames per comparison. Each costs one tower pass per side, and the loads
@@ -386,9 +387,25 @@ def compare(
             for index, (episode, timestep) in enumerate(frames):
                 if on_stage:
                     on_stage("frame", f"{spec} · {index + 1}/{len(frames)}")
-                rows.append(
-                    pooled_layers(model, reader.frame_tensor(episode, timestep), device)
+                # `reader.frame_tensor` does not exist -- not on
+                # `LeRobotV3Reader`, not on `Hdf5Reader`, not anywhere in this
+                # package. This raised AttributeError on the FIRST frame, so
+                # the whole comparison was dead: two checkpoints loaded, both
+                # released, nothing measured. A method name nobody implements
+                # is the same defect class as the SDK-shape drift `record`
+                # exists to catch, and it was in this repo.
+                #
+                # `raw_frame` is what the readers offer, and `vla.prepare_frame`
+                # is the normalisation the attention and occlusion paths use --
+                # shared, not copied, so two policies' embeddings land on one
+                # scale. `check_compatible` above already refuses a pair whose
+                # `image_size` differs, so one size is correct for both sides.
+                frame = vla.prepare_frame(
+                    reader.raw_frame(episode, timestep),
+                    int(config.get("image_size") or 0),
+                    device,
                 )
+                rows.append(pooled_layers(model, frame, device))
             captured[spec] = rows
         finally:
             # In a `finally`: a capture that raises must still give the memory

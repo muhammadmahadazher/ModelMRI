@@ -216,24 +216,23 @@ class Ablation:
                     f"in {(self.sites[0].control_draws or 1) + 1} having done "
                     f"nothing. THIS SWEEP FOUND NOTHING ABOVE THAT."
                 )
+            else:
                 parts.append(
-                    "MEAN ABLATION IS OFF-DISTRIBUTION. The mean of your "
-                    "samples is not a value this layer ever produces, so a "
-                    "large effect can mean the layer matters or that the "
-                    "model has never seen an input like the one you just "
-                    "built. That is why the control is here."
+                    f"{len(cleared)} of the {len(tested)} sites tested against "
+                    f"chance beat every one of their control draws — {null} "
+                    f"({names}). The other {self.n_sites - len(tested)} sites "
+                    f"carry a score and NO verdict — they were not tested. "
+                    f"About {self.expected_false_positives:.1f} of the "
+                    f"{len(tested)} would clear by chance, so read the margin "
+                    f"rather than the flag: a site clearing by a hair is what "
+                    f"that number looks like."
                 )
-                return " ".join(parts)
-            parts.append(
-                f"{len(cleared)} of the {len(tested)} sites tested against "
-                f"chance beat every one of their control draws — {null} "
-                f"({names}). The other {self.n_sites - len(tested)} sites "
-                f"carry a score and NO verdict — they were not tested. "
-                f"About {self.expected_false_positives:.1f} of the "
-                f"{len(tested)} would clear by chance, so read the margin "
-                f"rather than the flag: a site clearing by a hair is what "
-                f"that number looks like."
-            )
+        # NO EARLY RETURN above. The "found nothing above chance" arm used to
+        # return here, skipping the truncation clause -- and that is the arm
+        # where it matters most: "this sweep found nothing" is a far weaker
+        # statement when a cap meant part of the model was never swept at all.
+        # The reader was told there is nothing to see while some of it had not
+        # been looked at.
         if self.truncated:
             parts.append(
                 f"{self.truncated} further sites were not swept: this runs one "
@@ -623,8 +622,20 @@ def sweep_layers(
         seconds=round(time.perf_counter() - started, 2),
         truncated=truncated,
         control_ceiling=None if ceiling is None else round(ceiling, 6),
+        # SUMMED PER SITE, over the draws each one actually got. This divided
+        # the controlled count by the REQUESTED `draws`, and a site can end up
+        # with fewer: the control loop draws from the OTHER sites, so a model
+        # with fewer of them than `draws` gives every site a shorter null --
+        # and a shorter null is easier to beat. Under the null a real edit
+        # wins with probability 1/(k+1) for that site's own k, so quoting the
+        # requested k under-states how many sites clear by chance, on the one
+        # number whose job is to stop a reader over-reading the table.
         expected_false_positives=round(
-            sum(1 for s in rows if s.beats_control is not None) / (max(1, draws) + 1),
+            sum(
+                1.0 / (max(1, s.control_draws) + 1)
+                for s in rows
+                if s.beats_control is not None
+            ),
             3,
         ),
     )
@@ -803,8 +814,20 @@ def sweep_inputs(
         seconds=round(time.perf_counter() - started, 2),
         truncated=truncated,
         control_ceiling=None if ceiling is None else round(ceiling, 6),
+        # SUMMED PER SITE, over the draws each one actually got. This divided
+        # the controlled count by the REQUESTED `draws`, and a site can end up
+        # with fewer: the control loop draws from the OTHER sites, so a model
+        # with fewer of them than `draws` gives every site a shorter null --
+        # and a shorter null is easier to beat. Under the null a real edit
+        # wins with probability 1/(k+1) for that site's own k, so quoting the
+        # requested k under-states how many sites clear by chance, on the one
+        # number whose job is to stop a reader over-reading the table.
         expected_false_positives=round(
-            sum(1 for s in rows if s.beats_control is not None) / (max(1, draws) + 1),
+            sum(
+                1.0 / (max(1, s.control_draws) + 1)
+                for s in rows
+                if s.beats_control is not None
+            ),
             3,
         ),
     )

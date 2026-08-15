@@ -66,6 +66,27 @@ VISION_HINTS = (
 )
 
 
+def prepare_frame(rgb, size: int, device):
+    """One camera frame as a vision tower's normalised [1,3,S,S] input.
+
+    THE ONLY normalisation in this package, and it is shared rather than
+    copied for the reason `VLA.occlude` already depends on: two of them would
+    mean the causal map and the attention map beside it describe different
+    images, with nothing on screen saying so. `checkpoints.compare` needs the
+    identical transform to put two policies' embeddings on one scale, so it
+    calls this rather than growing a second one.
+    """
+    import numpy as np
+    import torch
+
+    arr = np.asarray(rgb, dtype=np.float32) / 255.0
+    img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+    img = torch.nn.functional.interpolate(
+        img, size=(int(size), int(size)), mode="bilinear", align_corners=False
+    )
+    return (img * 2.0 - 1.0).to(device)
+
+
 def discover_vision_prefix(keys) -> tuple[str, int]:
     """The state-dict prefix of this checkpoint's vision tower.
 
@@ -177,6 +198,12 @@ class VLAStatus:
     image_size: int = 0
     patch_size: int = 0
     warmup_ms: int | None = None
+    # Tokens this tower prepends before the patches -- a class token, and
+    # registers on top of that in DINOv2-style towers. 0 for SigLIP, which is
+    # what SmolVLA uses and why `reshape(n_heads, grid, grid)` worked here for
+    # as long as it did. Reported so a reader knows the map covers the patches
+    # and not the whole sequence.
+    n_prefix_tokens: int = 0
     dataset: dict | None = None
 
     def to_dict(self) -> dict:
@@ -346,9 +373,33 @@ class VLAHandle:
         t0 = time.time()
         with self._lock, torch.no_grad():
             out = self.model(pixel_values=img, output_attentions=True)
-            # attention RECEIVED per patch: mean over queries -> [heads, G, G]
+
+            # NOT EVERY TOWER IS ALL PATCHES. `reshape(n_heads, grid, grid)`
+            # assumes the token axis is exactly grid x grid, which is true of
+            # SigLIP (attention pooling, no class token) and false of ViT,
+            # CLIP and DINOv2 -- a class token, and registers on top of that.
+            # Those prepend to the sequence, so the row is grid*grid + k long
+            # and reshape raised a bare RuntimeError: a 500 out of a module
+            # that otherwise goes to real lengths to load an architecture
+            # nobody here has downloaded.
+            #
+            # The prefix is dropped from BOTH axes, so the map stays
+            # patch-attends-to-patch rather than mixing in a token that is not
+            # anywhere on the image. Identical to the old behaviour when there
+            # is no prefix.
+            patches = grid * grid
+            n_tokens = int(out.attentions[0].shape[-1])
+            prefix = n_tokens - patches
+            if prefix < 0:
+                raise Refusal(
+                    f"this tower produced {n_tokens} attention tokens for a "
+                    f"{grid}x{grid} patch grid ({patches} patches). ModelMRI "
+                    f"cannot say which of them are patches, and drawing the "
+                    f"wrong ones on the frame would be worse than not drawing."
+                )
+            self.status_.n_prefix_tokens = prefix
             maps = [
-                a[0]
+                a[0][:, prefix:, prefix:]
                 .mean(dim=-2)
                 .reshape(self.status_.n_heads, grid, grid)
                 .float()
@@ -361,27 +412,13 @@ class VLAHandle:
             "layers": len(maps),
             "heads": self.status_.n_heads,
             "grid": [grid, grid],
+            "n_prefix_tokens": self.status_.n_prefix_tokens,
             "latency_ms": int((time.time() - t0) * 1000),
         }
 
     def _prepare(self, rgb):
-        """One camera frame as the tower's normalised [1,3,S,S] input.
-
-        Lifted out of `analyse` so the occlusion sweep feeds the tower exactly
-        what the attention path feeds it. Two normalisations would mean the
-        causal map and the attention map beside it describe different images,
-        and nothing on screen would say so.
-        """
-        import numpy as np
-        import torch
-
-        size = self.status_.image_size
-        arr = np.asarray(rgb, dtype=np.float32) / 255.0
-        img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        img = torch.nn.functional.interpolate(
-            img, size=(size, size), mode="bilinear", align_corners=False
-        )
-        return (img * 2.0 - 1.0).to(self.status_.device)
+        """One camera frame as the tower's normalised [1,3,S,S] input."""
+        return prepare_frame(rgb, self.status_.image_size, self.status_.device)
 
     def occlude(
         self,

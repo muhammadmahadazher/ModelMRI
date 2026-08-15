@@ -65,6 +65,134 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+**A twenty-defect sweep over what already shipped.** An adversarial review of
+every module, with each finding reproduced against the real code before it was
+touched. Grouped by what went wrong rather than by file, because the same
+mistake kept turning up in different places.
+
+*Features that had never run.*
+
+- **`checkpoints.compare` called `reader.frame_tensor(...)`, a method no reader
+  in this package implements.** It raised `AttributeError` on the first frame,
+  so the whole checkpoint comparison was dead: two policies loaded, both
+  released, nothing measured, after paying for both multi-gigabyte loads. The
+  tests could not see it because the fake reader implemented `frame_tensor`
+  too — a double describing an API nobody had written. It reads `raw_frame`
+  through `vla.prepare_frame` now, the same normalisation the attention and
+  occlusion paths use, so the two towers' embeddings land on one scale.
+
+- **Three test files were skipping whole and reporting as passes.**
+  `test_grammar.py` (`lmformatenforcer`, 17 tests), `test_hdf5_data.py`
+  (`h5py`) and `test_vla_routing.py` (`pyarrow`) each opened with an
+  `importorskip` for a package in no dependency group. **54 tests passed by not
+  existing**, and constrained decoding shipped with its entire suite switched
+  off. Those packages are in the `dev` group now — optional to *install* is a
+  real decision and the right one; optional to *test* is not — and
+  `tests/test_suite_actually_runs.py` fails on any guarded module the dev
+  environment lacks, naming the file that would otherwise go dark.
+
+- **`vla.analyse` crashed on any vision tower with a class token.** Reshaping
+  attention straight to `(n_heads, grid, grid)` assumes the token axis is
+  exactly the patch grid: true of SigLIP, false of ViT, CLIP and DINOv2, which
+  prepend a class token and sometimes registers. The prefix is measured and
+  dropped from both axes now, so the map stays patch-attends-to-patch, and
+  `n_prefix_tokens` is reported beside it.
+
+*Numbers describing something other than what was measured.*
+
+- **`custom` named a NaN as the model's top prediction.** The guard fired only
+  when *every* output was unusable, and torch ranks NaN as the largest thing
+  there is. Measured on `[0.1, nan, 0.9, 0.3, inf]`: `argmax` returned 1 and
+  `topk` returned `[nan, inf, 0.9]`. Ranking happens over the finite values
+  now, and `n_nonfinite` rides beside the answer — a network that is half NaN
+  is a finding, not a reason to say nothing. The panel reads "3 of 5 outputs
+  are nan/inf" where it used to show a confident argmax and nothing else.
+
+- **`devices.detect("cuda:1")` reported a different card from the one it
+  chose.** It probed whichever device was current, kept that card's name and
+  VRAM, and overwrote only the device string. Measured on a simulated pair:
+  `cuda:1` reported "RTX 4060, 8.6 GB" for an 80 GB A100. `vram_gb` is what
+  `capacity.guard` refuses against and the fit calculator plans with, so this
+  was not cosmetic. An index that does not exist no longer answers with card 0.
+
+- **`quantdiff` located the GGUF tensor blob by subtracting from the file
+  size**, which holds only when the file ends exactly at the last tensor — and
+  GGUF writers pad to alignment after it. On a header-only fixture the
+  inference came out **negative**: a base pointing before the start of the
+  file. `Gguf.data_offset` records the real answer now, and a declared blob
+  that does not fit inside the file is refused rather than read.
+
+- **`dla` counted unreadable components over the survivors of its own top-k.**
+  On gpt2 at the default `top_k=40`, 157 components are decomposed and 117 fall
+  below the reconstruction floor. The sentence said **0**, because it counted
+  the 40 strongest, which are the least likely to be unreadable.
+
+- **`custom_ablate` under-stated its own false-positive rate**, dividing by the
+  draws requested rather than the draws each site actually got. Measured on
+  eight cleared sites, four with 8 draws and four with 2: 0.889 quoted against
+  a true 1.778.
+
+- **The tuned lens reported a held-out KL measured on 8 sequences as though it
+  covered all 50**, and counted `n_tokens` over the whole corpus untruncated —
+  a 4.2x over-count that suppressed the `caution` the ratio exists to trigger.
+
+- **`probe` took its null ceiling at the best of the shuffles rather than the
+  95th percentile**, which is what the comment beside `NULL_HIGH` explicitly
+  forbids.
+
+*Truncations nobody was told about.*
+
+- `traces.search` applied its `LIMIT` silently, so a full page of hits looked
+  complete; `inspect_io` quoted its own 5,000-sample listing cap as the log's
+  size, telling a reader with a 6,000-sample log that it "carries 5000";
+  `patterns` never said it looks only for cycles 2–12 steps long, so a
+  repeating 20-step sequence read as "no repeating sequences"; `feature_corpus`
+  capped the sweep and not the evidence pass, so one response carried two
+  corpus sizes and two incompatible firing-rate denominators; and
+  `custom_ablate` dropped its "N further sites were not swept" notice in
+  exactly the arm where it matters most — the one concluding the sweep found
+  nothing.
+
+*Unknown collapsing into zero.*
+
+- `mri_diff` published a `(0.0, 0.0)` seed as the measured gap and floor
+  whenever two files agreed — a quantisation step of exactly zero, which cannot
+  exist; `traces` filed a step with no `started_ms` at the very start of the
+  run; `grammar` reported a chosen token outside the recorded top-k as having
+  zero probability; `vla_occlude` defaulted every occlusion to episode 0,
+  timestep 0; and `vla_audit` reported an unreadable frame table as zero
+  frames.
+
+*One question, two answers.*
+
+- The MCP server returned a different `status` document over `--attach` than
+  in-process, and swept 450 head-ablation passes in-process where `--attach`
+  swept 14. `probe.direction_at` fitted on raw labels that `sweep` remaps, so a
+  1/2 labelling exported a steering vector at cosine 0.883 from the right one,
+  carrying the accuracy `sweep` had measured. `ledger` billed token counts its
+  own rollup refuses to count, and answered a 500 for a string one. `otel`
+  dropped three of five token counts on export. `feature_corpus` read the
+  block's input regardless of the SAE's declared hook point — the third
+  appearance of a bug `saes.py` documents having fixed.
+
+*Crashes that should have been refusals.*
+
+- `lens` answered a 500 for `top_k=0` where its sibling returns 422;
+  `session.parse` accepted an attention block with no stored matrix and crashed
+  on read; `patch` raised `KeyError` after spending every forward pass when a
+  sublayer was missing, making its own skip-and-continue path unreachable;
+  `vla_data.raw_frame` had no timestep bound, so an out-of-range `t` silently
+  decoded a frame belonging to the *next* episode; `sweep.plan` projected a
+  whole-model head sweep at 2 passes per prompt instead of 450 when a config
+  named its fields differently; a cancelled `sweep` was saved and rendered as a
+  complete one; and `vla_audit` crashed outright on exactly the datasets it
+  exists to diagnose.
+
+- **Test isolation.** `custom._SESSION_ROOTS` is module-level and nothing
+  cleared it between tests, so one test's sandbox stayed in the adapter
+  allow-list for every test after it. It surfaced only once the three dark
+  suites were switched on.
+
 - **A splice held across an autoregressive generation raised inside the worker
   thread.** After the prefill the model runs with a KV cache and each step
   passes a single token, so a hook writing at position 14 hit `IndexError` on a

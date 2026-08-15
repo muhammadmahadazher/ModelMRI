@@ -7,6 +7,7 @@ dead-unit count is real.
 
 from __future__ import annotations
 
+import math
 import textwrap
 
 import pytest
@@ -542,3 +543,119 @@ def test_softmax_gets_no_saturation_figure_at_all():
     """
     uniform = torch.full((1000,), 1 / 1000)
     assert custom.tensor_stats(uniform, "Softmax").get("pct_saturated") is None
+
+
+# ------------------ a top prediction that is actually a number
+
+
+def test_a_partly_nonfinite_output_does_not_name_the_nan_as_the_answer():
+    """The guard only fired when EVERY value was unusable, so a partly-NaN
+    output fell through — and torch ranks NaN as the largest thing there is.
+
+    MEASURED on [0.1, nan, 0.9, 0.3, inf]: `argmax` returns 1 and `topk`
+    returns [nan, inf, 0.9]. So "your model's top prediction is class 1" named
+    the slot with no number in it, on the panel whose entire job is telling a
+    small-model author what their network answered — at 2am, when the loss is
+    nan and they are trying to find out which layer did it.
+    """
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, float("nan"), 0.9, 0.3, float("inf")]]))
+
+    assert out["argmax"] == 2, "the NaN slot was named as the prediction"
+    assert out["top_index"] == [2, 3, 0]
+    assert out["top_value"] == [0.9, 0.3, 0.1]
+    # `math.isfinite`, not `v == v`: the NaN idiom reads as a tautology,
+    # which is what CodeQL flags, and this covers inf in the same call.
+    assert all(math.isfinite(v) for v in out["top_value"])
+
+
+def test_the_count_of_unusable_outputs_travels_with_the_answer():
+    """A network that is half NaN is a finding, not a reason to say nothing.
+    The count rides beside the prediction rather than replacing it."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, float("nan"), 0.9, float("nan")]]))
+    assert out["n_nonfinite"] == 2
+    assert out["n_out"] == 4
+    assert out["argmax"] == 2
+
+
+def test_a_healthy_output_reports_no_unusable_slots():
+    """0 rather than absent, so the panel can state it instead of inferring
+    it from a short list."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[0.1, 0.5, 0.9]]))
+    assert out["n_nonfinite"] == 0
+    assert out["argmax"] == 2
+    assert out["top_index"] == [2, 1, 0]
+
+
+def test_an_entirely_nonfinite_output_still_says_so():
+    """The existing behaviour, which was right and must stay."""
+    from modelmri.custom import _summarise_output
+
+    out = _summarise_output(torch.tensor([[float("nan"), float("-inf")]]))
+    assert out["nonfinite"] is True
+    assert out["n_nonfinite"] == 2
+    assert "argmax" not in out
+
+
+# ------------- a scan that answers about your files, not about their address
+
+
+def _under(tmp_path, *parts):
+    root = tmp_path.joinpath(*parts)
+    root.mkdir(parents=True)
+    return root
+
+
+@pytest.mark.parametrize("ancestor", ["venv", "site-packages", "node_modules", ".git"])
+def test_a_checkpoint_under_a_skipped_ancestor_is_still_found(tmp_path, ancestor):
+    """`find_adapters` documents this fix in its own words — "`path.parts`
+    includes every ancestor above the root, so a repo that happens to live
+    under a directory named `build`, `dist`, `node_modules` or `venv` had
+    EVERY candidate skipped and the scan silently found nothing" — and
+    `find_torchscript` was left checking the absolute parts.
+
+    So the checkpoint scanner returned an empty list for anyone whose models
+    sit under such a path: an answer about where they keep their files,
+    printed as an answer about what they have.
+    """
+    root = _under(tmp_path, ancestor, "my-models")
+    (root / "epoch3.pt").write_bytes(b"x" * 100)
+
+    custom.add_root(str(root))
+    found = custom.find_torchscript()
+
+    assert [f["name"] for f in found] == ["epoch3.pt"]
+
+
+@pytest.mark.parametrize("ancestor", ["venv", "site-packages", "node_modules"])
+def test_an_adapter_under_a_skipped_ancestor_is_still_found(tmp_path, ancestor):
+    """The sibling, which was already correct. Both are pinned so the next
+    fix cannot land in one and miss the other again."""
+    root = _under(tmp_path, ancestor, "my-models")
+    (root / "adapter.py").write_text("def load():\n    return None\n", encoding="utf-8")
+
+    custom.add_root(str(root))
+    found = custom.find_adapters()
+
+    assert any(f["name"] == "adapter.py" for f in found)
+
+
+def test_the_skip_list_still_applies_inside_the_scan_root(tmp_path):
+    """Relative, not absent: a `__pycache__` BELOW the root is still skipped,
+    which is what the list is for."""
+    root = _under(tmp_path, "models")
+    junk = root / "__pycache__"
+    junk.mkdir()
+    (junk / "cached.pt").write_bytes(b"x" * 100)
+    (root / "real.pt").write_bytes(b"x" * 100)
+
+    custom.add_root(str(root))
+    names = [f["name"] for f in custom.find_torchscript()]
+
+    assert "real.pt" in names
+    assert "cached.pt" not in names

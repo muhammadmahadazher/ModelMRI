@@ -251,3 +251,82 @@ def test_the_trace_serialises_for_the_wire(gpt2, data):
     assert doc["temperature"] == 0.7
     assert doc["steps"][0]["masked_fraction"] > 0.99
     assert isinstance(doc["means"], str)
+
+
+# ---------------------------- the cap must not corrupt the last row
+
+
+class _Tok:
+    def decode(self, ids):
+        return f"T{ids[0]}"
+
+
+def _recorder_at_cap(cap: int, total: int):
+    """A recorder driven past `cap` recorded steps, without a model."""
+    rec = grammar.MaskRecorder.__new__(grammar.MaskRecorder)
+    rec.tokenizer = _Tok()
+    rec.trace = grammar.Trace()
+    rec._steps_seen = 0
+    for i in range(total):
+        rec._steps_seen += 1
+        if len(rec.trace.steps) < cap:
+            rec.trace.steps.append(
+                grammar.Step(step=i, top=[{"token": f"T{100 + i}", "p": 0.5}])
+            )
+        rec.record_choice(100 + i)
+    return rec
+
+
+def test_a_token_past_the_step_cap_does_not_overwrite_the_last_row():
+    """`__call__` stops appending at MAX_STEPS and `record_choice` went on
+    writing to `steps[-1]`, so every token past the cap overwrote the last
+    recorded step's choice.
+
+    Step 1,999 ended up showing the token emitted at step 5,000, beside its
+    own `wanted` and its own `top` — one row describing two different moments,
+    which is worse than a row that is simply absent.
+    """
+    rec = _recorder_at_cap(cap=3, total=8)
+    last = rec.trace.steps[-1]
+
+    assert len(rec.trace.steps) == 3
+    assert last.step == 2
+    assert last.chosen == "T102", "the last row took a later step's token"
+    assert last.chosen_id == 102
+
+
+def test_every_recorded_step_keeps_its_own_choice():
+    rec = _recorder_at_cap(cap=4, total=4)
+    for i, step in enumerate(rec.trace.steps):
+        assert step.chosen == f"T{100 + i}"
+
+
+def test_a_chosen_token_outside_the_recorded_top_has_no_probability_not_zero():
+    """`chosen_p` defaulted to 0.0 and is only set when the emitted token
+    appears in `top`, which holds TOP_K rows. A token the grammar forced
+    through from outside that handful therefore read as "the model gave this
+    no probability at all" — the opposite of the truth, and unrecoverable
+    from the record."""
+    rec = grammar.MaskRecorder.__new__(grammar.MaskRecorder)
+    rec.tokenizer = _Tok()
+    rec.trace = grammar.Trace()
+    rec._steps_seen = 1
+    rec.trace.steps.append(
+        grammar.Step(step=0, top=[{"token": "something-else", "p": 0.9}])
+    )
+    rec.record_choice(42)
+
+    step = rec.trace.steps[0]
+    assert step.chosen == "T42"
+    assert step.chosen_p is None, "reported an unrecorded probability as zero"
+    assert step.to_dict()["chosen_p"] is None
+
+
+def test_a_chosen_token_inside_the_top_keeps_its_measured_probability():
+    rec = grammar.MaskRecorder.__new__(grammar.MaskRecorder)
+    rec.tokenizer = _Tok()
+    rec.trace = grammar.Trace()
+    rec._steps_seen = 1
+    rec.trace.steps.append(grammar.Step(step=0, top=[{"token": "T42", "p": 0.37}]))
+    rec.record_choice(42)
+    assert rec.trace.steps[0].chosen_p == 0.37

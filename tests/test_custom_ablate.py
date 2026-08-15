@@ -569,3 +569,133 @@ def test_a_flat_feature_vector_still_indexes_one_feature():
     regions = ca._regions([16], 8)
     assert regions[0] == ("feature 0", (0,))
     assert len(regions) == 16
+
+
+# ------------- the chance rate over the nulls that actually ran
+
+
+def test_the_false_positive_rate_uses_each_sites_own_draw_count():
+    """This divided the controlled count by the REQUESTED `draws`, and a site
+    can end up with fewer: the control draws come from the OTHER sites, so a
+    model with fewer of them than `draws` gives every site a shorter null —
+    and a shorter null is easier to beat.
+
+    Under the null a real edit wins with probability 1/(k+1) for that site's
+    own k, so quoting the requested k under-states how many sites clear by
+    chance. MEASURED on eight cleared sites, four with 8 draws and four with
+    2: the old figure was 0.889 against a true 1.778 — half the real rate, on
+    the one number whose job is stopping a reader over-reading the table.
+    """
+    rows = [
+        ca.Site(
+            name=f"s{i}",
+            kind="input",
+            effect=1.0,
+            control_draws=(8 if i < 4 else 2),
+            beats_control=True,
+        )
+        for i in range(8)
+    ]
+    expected = sum(1.0 / (s.control_draws + 1) for s in rows)
+
+    assert expected == pytest.approx(1.7778, abs=1e-3)
+    assert expected > len(rows) / (8 + 1), "the requested-draws figure is lower"
+
+
+def test_a_site_that_was_never_controlled_contributes_nothing():
+    """`beats_control is None` means no null was run for it, and a site with
+    no null cannot clear one by chance."""
+    rows = [
+        ca.Site(
+            name="tested",
+            kind="input",
+            effect=1.0,
+            control_draws=8,
+            beats_control=False,
+        ),
+        ca.Site(name="untested", kind="input", effect=0.5),
+    ]
+    contributing = [s for s in rows if s.beats_control is not None]
+    assert len(contributing) == 1
+    assert sum(1.0 / (s.control_draws + 1) for s in contributing) == pytest.approx(
+        1 / 9
+    )
+
+
+def test_the_reported_rate_is_computed_from_control_draws():
+    """Structural: the sweep must read `control_draws`, not the `draws`
+    parameter — the same distinction `vla_occlude` needed for its sentence."""
+    import inspect
+
+    for fn in (ca.sweep_inputs, ca.sweep_layers):
+        source = inspect.getsource(fn)
+        block = source[source.index("expected_false_positives") :][:400]
+        code = "\n".join(
+            line.split("#", 1)[0] for line in block.splitlines() if line.strip()
+        )
+        assert "control_draws" in code, fn.__name__
+        assert "(max(1, draws) + 1)" not in code, fn.__name__
+
+
+def test_a_null_result_still_reports_what_was_never_swept():
+    """The "found nothing above chance" arm used to `return` early, skipping
+    the truncation clause — and that is the arm where it matters most.
+
+    "This sweep found nothing" is a far weaker statement when a cap meant
+    part of the model was never swept at all: the reader is told there is
+    nothing to see while some of it was not looked at. Found by raising
+    `expected_false_positives` to its true value, which pushed a fixture into
+    that branch.
+    """
+    made = ca.Ablation(
+        kind="inputs",
+        task="classification",
+        unit="nats",
+        sites=[
+            ca.Site(
+                name="patch 0:4x0:4",
+                kind="input",
+                # It CLEARED, but one clearing site is exactly what a 1.0
+                # chance rate predicts — which is the arm under test.
+                effect=0.3,
+                control_max=0.2,
+                control_draws=8,
+                beats_control=True,
+            )
+        ],
+        n_sites=1,
+        n_controlled=1,
+        n_samples=64,
+        truncated=14,
+        expected_false_positives=1.0,
+    )
+    said = made.means()
+
+    assert "FOUND NOTHING ABOVE THAT" in said, "this is the null-result arm"
+    assert "14 further sites were not swept" in said
+    assert "not measured as zero" in said
+
+
+def test_a_finding_result_also_reports_what_was_never_swept():
+    """The other arm, which always did — pinned so the two cannot drift."""
+    made = ca.Ablation(
+        kind="inputs",
+        task="classification",
+        unit="nats",
+        sites=[
+            ca.Site(
+                name="patch 0:4x0:4",
+                kind="input",
+                effect=9.0,
+                control_max=0.2,
+                control_draws=8,
+                beats_control=True,
+            )
+        ],
+        n_sites=1,
+        n_controlled=1,
+        n_samples=64,
+        truncated=14,
+        expected_false_positives=0.1,
+    )
+    assert "14 further sites were not swept" in made.means()

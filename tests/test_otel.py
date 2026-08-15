@@ -435,3 +435,51 @@ def test_a_full_success_reports_nothing_rejected_rather_than_zero(collector):
     none. Different answers."""
     url, _ = collector
     assert otel.send(_doc(), url).rejected_spans is None
+
+
+def test_every_token_count_the_store_holds_survives_a_round_trip():
+    """FIELDS carried `tokens_in`/`tokens_out` and not the three that arrived
+    with `ledger.py`, so an export dropped them.
+
+    It dropped them INVISIBLY, for exactly the reason recorded in the comment
+    about `parent_id` and `started_ms`: the round-trip test walks FIELDS, so a
+    column missing from FIELDS is both unexported and untested by
+    construction. This asserts against the LEDGER's list instead, so the next
+    count added to the store fails here rather than being silently dropped.
+    """
+    from modelmri import ledger
+
+    step = {
+        "id": "s1",
+        "kind": "llm_call",
+        "name": "gen",
+        "started_ms": 0,
+        "duration_ms": 5,
+        "input": "hi",
+        "output": "yo",
+        "seq": 0,
+    }
+    planted = {name: 7 + i for i, name in enumerate(ledger.FIELDS)}
+    step.update(planted)
+
+    doc = {
+        "id": "t1",
+        "name": "t",
+        "started_at": "2026-01-01T00:00:00Z",
+        "steps": [step],
+    }
+    back = otel.from_otlp(otel.to_otlp(doc))[0]
+
+    for name, sent in planted.items():
+        assert back.get(name) == sent, f"{name} did not survive the export"
+
+
+def test_the_token_fields_are_namespaced_rather_than_squatting_on_semconv():
+    """Cache and reasoning counts are not in a stable `gen_ai.*` semconv, and
+    this file's own rule is not to invent a vocabulary nobody agreed to."""
+    keys = {f.step: f.key for f in otel.FIELDS}
+    for name in ("tokens_cache_read", "tokens_cache_write", "tokens_reasoning"):
+        assert keys[name].startswith("modelmri."), keys[name]
+    # The two that ARE standard keep their semconv names.
+    assert keys["tokens_in"] == "gen_ai.usage.input_tokens"
+    assert keys["tokens_out"] == "gen_ai.usage.output_tokens"
