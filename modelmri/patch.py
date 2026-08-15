@@ -341,7 +341,11 @@ def trace(
     # equals. Measured, a pooled top-24 came back 20 resid, 2 mlp, 2 attn —
     # so the two grids that answer "through what" got almost no verdicts, and
     # the MLP's own peak was one of only two rows it was allowed.
-    per_component = max(1, max_controlled // len(COMPONENTS))
+    # Over the components that were MEASURED, not the three this module knows
+    # about. `ranked` below iterates `grids`, so dividing the budget by 3 when
+    # only two were readable spent two thirds of it and silently controlled
+    # fewer sites than asked for.
+    per_component = max(1, max_controlled // len(grids))
     ranked = [
         (score, c, li, pi)
         for c in grids
@@ -408,9 +412,22 @@ def trace(
         "n_layers": n_layers,
         "n_positions": n_pos,
         "components": list(grids),
+        # OVER `grids`, not over COMPONENTS. The loop above deliberately
+        # catches a PatchError from a component this architecture does not
+        # expose, records it and continues so the rest is still measured --
+        # and then this rebuilt the response from the fixed tuple and raised
+        # `KeyError: 'mlp'`, after every one of the 2 x n_layers x n_positions
+        # forward passes had already been spent. The entire recovery path was
+        # unreachable: a Mixtral or OLMoE, whose blocks name the sublayer
+        # `block_sparse_moe`, paid for the whole trace and got a 500.
         "grids": {
-            c: [[round(v, 6) for v in row] for row in grids[c]] for c in COMPONENTS
+            c: [[round(v, 6) for v in row] for row in grids[c]] for c in grids
         },
+        # And the reader is told which one was dropped and why. `skipped` was
+        # collected, commented, and then never put in the payload -- so even
+        # with the KeyError fixed, two grids would have arrived looking like
+        # the whole answer.
+        "skipped": skipped,
         "sites": sites,
         "controlled": len(sites),
         "dtype": dtype,

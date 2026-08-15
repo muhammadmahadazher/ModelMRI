@@ -257,3 +257,76 @@ def test_the_report_survives_json(traced):
     out = json.loads(json.dumps(traced, allow_nan=False))
     assert out["n_senders"] > 0
     assert out["receiver"] == {"layer": 10, "position": 10}
+
+
+# ------------------- an architecture missing a sublayer still gets an answer
+
+
+@pytest.fixture
+def no_mlp(monkeypatch):
+    """A block that names its feed-forward something other than `mlp`.
+
+    Mixtral and OLMoE call it `block_sparse_moe`, so `_sublayer` refuses
+    'mlp'. Simulated at the detection point rather than by deleting the
+    attribute, because GPT2Block.forward reads `self.mlp` and a model that
+    cannot run tests nothing.
+    """
+    from modelmri import patch as patch_mod
+
+    real = patch_mod._sublayer
+
+    def without_mlp(block, kind):
+        if kind == "mlp":
+            raise patch_mod.PatchError(
+                "this architecture's blocks have no 'mlp' submodule."
+            )
+        return real(block, kind)
+
+    monkeypatch.setattr(patch_mod, "_sublayer", without_mlp)
+    return without_mlp
+
+
+def test_a_missing_sublayer_returns_the_grids_that_were_measured(gpt2, no_mlp):
+    """The skip-and-continue path was unreachable.
+
+    The loop catches a PatchError, records the component in `skipped` and
+    continues so the rest is still measured — and then the response was
+    rebuilt from the fixed COMPONENTS tuple, raising `KeyError: 'mlp'` after
+    all 2 x n_layers x n_positions forward passes had been spent. The route
+    answered 500 with nothing to show for the work.
+    """
+    out = gpt2.patch_trace(CLEAN, CORRUPT)
+
+    assert sorted(out["grids"]) == ["attn", "resid"]
+    assert out["components"] == list(out["grids"])
+    assert out["grids"]["resid"], "the residual grid is the one that answers where"
+
+
+def test_the_dropped_component_is_named_in_the_response(gpt2, no_mlp):
+    """`skipped` was collected and commented and never put in the payload, so
+    even with the KeyError fixed two grids would have arrived looking like the
+    whole answer."""
+    out = gpt2.patch_trace(CLEAN, CORRUPT)
+
+    assert any("mlp" in note for note in out["skipped"])
+    assert "no 'mlp'" in " ".join(out["skipped"])
+
+
+def test_the_control_budget_is_spread_over_what_was_measured(gpt2, no_mlp):
+    """`max_controlled // len(COMPONENTS)` divided by three when only two
+    components were readable, quietly controlling fewer sites than asked."""
+    out = gpt2.patch_trace(CLEAN, CORRUPT)
+    per_component = out["controlled"] / len(out["grids"])
+    assert per_component == int(per_component)
+    assert out["controlled"] > 0
+
+
+def test_a_complete_architecture_is_unaffected(gpt2):
+    """gpt2 has all three, so nothing is skipped and every grid is present.
+
+    `patch_trace`, not the `traced` fixture — that one is a PATH trace and
+    carries senders rather than grids.
+    """
+    node = gpt2.patch_trace(CLEAN, CORRUPT)
+    assert sorted(node["grids"]) == ["attn", "mlp", "resid"]
+    assert node["skipped"] == []
