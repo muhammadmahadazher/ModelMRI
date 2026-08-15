@@ -774,8 +774,26 @@ def _ms(step: dict, field: str, index: int) -> int:
     which names neither the field nor the step it was in, and `int(None)`
     raises TypeError, which the server could only answer as a 500. Same 422,
     a sentence the sender can act on.
+
+    ABSENT IS NOT ZERO. This defaulted a missing field to 0, and its only
+    caller is `started_ms` -- which `import_trace`'s documented shape lists
+    without a `?`, unlike `duration_ms?` beside it, because it is required.
+    A step that never recorded when it started was filed as having started at
+    the very instant the trace did, indistinguishable from one that genuinely
+    did. On the timeline every such step stacks at the left edge; in a search
+    it sorts first; and `patterns.py` reads these offsets to find retry
+    storms, so a handful of fabricated zeros is a burst of activity at t=0
+    that nothing ever did.
+    `_ms_or_none` is the helper for a field that may legitimately be missing,
+    and it tests for absence before it gets here.
     """
-    raw = step.get(field, 0)
+    if field not in step or step.get(field) is None:
+        raise BadRequest(
+            f"step {index}: {field} is required and was not given. A step with "
+            f"no {field} cannot be placed on the timeline, and filing it at 0 "
+            f"would put it at the start of the run."
+        )
+    raw = step[field]
     try:
         return int(raw)
     except (TypeError, ValueError) as err:

@@ -166,6 +166,7 @@ def test_the_step_reports_how_much_was_not_stored(tmp_path):
             "steps": [
                 {
                     "id": "s1",
+                    "started_ms": 0,
                     "kind": "tool_call",
                     "name": "pytest",
                     "output": "y" * 38_412,
@@ -187,7 +188,7 @@ def test_a_step_recorded_bare_has_no_duration(tmp_path):
         {
             "name": "run",
             "started_at": "2026-01-01T00:00:00Z",
-            "steps": [{"id": "s1", "kind": "tool_call"}],
+            "steps": [{"id": "s1", "started_ms": 0, "kind": "tool_call"}],
         }
     )
     assert store.get_trace(tid)["steps"][0]["duration_ms"] is None
@@ -200,7 +201,9 @@ def test_an_explicit_zero_is_still_zero(tmp_path):
         {
             "name": "run",
             "started_at": "2026-01-01T00:00:00Z",
-            "steps": [{"id": "s1", "kind": "tool_call", "duration_ms": 0}],
+            "steps": [
+                {"id": "s1", "started_ms": 0, "kind": "tool_call", "duration_ms": 0}
+            ],
         }
     )
     assert store.get_trace(tid)["steps"][0]["duration_ms"] == 0
@@ -363,6 +366,7 @@ def test_reimporting_does_not_duplicate_index_entries(store):
             "steps": [
                 {
                     "id": "a",
+                    "started_ms": 0,
                     "kind": "tool_call",
                     "name": "pytest",
                     "input": "run the suite",
@@ -421,6 +425,7 @@ def test_search_results_carry_the_truncation_marker(tmp_path):
             "steps": [
                 {
                     "id": "s1",
+                    "started_ms": 0,
                     "kind": "tool_call",
                     "name": "cat",
                     "output": "findme " + "z " * 15_000,
@@ -478,6 +483,7 @@ def test_reimporting_changed_text_does_not_leave_the_old_words_findable(tmp_path
         "steps": [
             {
                 "id": "s1",
+                "started_ms": 0,
                 "kind": "tool_call",
                 "name": "x",
                 "input": "zebra",
@@ -545,10 +551,47 @@ def test_every_hit_carries_the_time_it_happened(tmp_path):
             "name": "run",
             "started_at": "2026-08-13T09:00:00Z",
             "steps": [
-                {"id": "s1", "kind": "tool_call", "name": "x", "input": "needle"}
+                {
+                    "id": "s1",
+                    "started_ms": 0,
+                    "kind": "tool_call",
+                    "name": "x",
+                    "input": "needle",
+                }
             ],
         }
     )
     assert store.search("needle")["results"][0]["trace_started_at"] == (
         "2026-08-13T09:00:00Z"
     )
+
+
+def test_a_step_with_no_started_ms_is_refused_not_filed_at_zero(tmp_path):
+    """`started_ms` appears in `import_trace`'s documented shape without a
+    `?`, unlike `duration_ms?` beside it, and the column is NOT NULL.
+
+    It was defaulted to 0. A step that never recorded when it started was
+    filed as having started the instant the trace did — stacked at the left
+    edge of the timeline, sorted first in a search, and fed to `patterns.py`,
+    which reads these offsets to find retry storms and would see a burst of
+    activity at t=0 that nothing ever did.
+
+    Both real producers — the recorder and the OTel importer — always write
+    it, so what this refuses is a hand-written document that the contract
+    already said was incomplete.
+    """
+    store = TraceStore(tmp_path / "t.db")
+    with pytest.raises(BadRequest) as caught:
+        store.import_trace({"name": "t", "steps": [{"id": "s1", "kind": "tool_call"}]})
+    message = str(caught.value)
+    assert "started_ms" in message
+    assert "step 0" in message
+
+
+def test_an_explicit_zero_start_is_still_zero(tmp_path):
+    """The caller said so, which is different from not having said."""
+    store = TraceStore(tmp_path / "t.db")
+    trace_id = store.import_trace(
+        {"name": "t", "steps": [{"id": "s1", "kind": "tool_call", "started_ms": 0}]}
+    )
+    assert store.get_trace(trace_id)["steps"][0]["started_ms"] == 0
