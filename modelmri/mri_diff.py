@@ -240,7 +240,17 @@ def _diff_attention(a, b) -> Delta:
             f"and these two slices do not overlap.",
         )
 
-    worst_key, worst_gap, worst_floor = shared[0], 0.0, 0.0
+    # Seeded as "nothing looked at yet", NOT as a zero-margin pair. The
+    # replacement test below is `gap - floor > worst_gap - worst_floor`, so a
+    # (0.0, 0.0) seed reduces to `gap > floor` -- and in the SAME case, where
+    # by definition no block exceeds its floor, nothing ever replaced it. The
+    # answer was then reported as `max_abs_diff 0.0, floor 0.0`: a difference
+    # of exactly zero and a quantisation step of exactly zero, neither of
+    # which was measured and the second of which cannot exist. Two files whose
+    # worst block differs by 1.97e-03 against a 3.92e-03 step agree, and are
+    # entitled to have those numbers said about them.
+    worst_key: str | None = None
+    worst_gap = worst_floor = 0.0
     for key in shared:
         block_a, block_b = a.attention[key], b.attention[key]
         # The coarser of the two scales. Neither file can represent a
@@ -254,7 +264,7 @@ def _diff_attention(a, b) -> Delta:
                 NOT_COMPARABLE,
                 f"head map {key} is a different shape in the two files.",
             )
-        if gap - floor > worst_gap - worst_floor:
+        if worst_key is None or gap - floor > worst_gap - worst_floor:
             worst_key, worst_gap, worst_floor = key, gap, floor
 
     measured = {

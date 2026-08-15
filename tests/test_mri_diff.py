@@ -424,3 +424,62 @@ def test_a_file_with_no_lens_is_not_comparable_rather_than_unchanged(pair):
     assert _by_name(mri_diff.diff(a, b))["logit lens"].status == (
         mri_diff.NOT_COMPARABLE
     )
+
+
+# ------------------------------------- an agreement is still a measurement
+
+
+class _Maps:
+    """Just the attribute `_diff_attention` reads."""
+
+    def __init__(self, attention):
+        self.attention = attention
+
+
+def _cell(byte: int, scale: float) -> dict:
+    """A 1x1 stored head map holding one value: `byte * scale`."""
+    import base64
+
+    return {"q": base64.b64encode(bytes([byte])).decode("ascii"), "scale": scale}
+
+
+def test_two_agreeing_files_report_the_gap_and_floor_they_measured():
+    """The SAME branch used to publish a fabricated (0.0, 0.0).
+
+    The seed was `shared[0], 0.0, 0.0` and the replacement test is
+    `gap - floor > worst_gap - worst_floor`, which against that seed reduces
+    to `gap > floor`. In the SAME case nothing exceeds its floor by
+    definition, so nothing ever replaced the seed: the answer came back as a
+    difference of exactly zero at whichever block sorted first, and a floor of
+    exactly zero -- a quantisation step that cannot exist, sitting next to a
+    `floor_from` line describing where it had supposedly been read.
+
+    "Worst" means the largest MARGIN -- gap minus floor, the block that came
+    closest to exceeding what its files can represent -- so both blocks here
+    are given the same floor and 1:1 the larger gap.
+    """
+    a = _Maps({"0:0": _cell(100, 0.004), "1:1": _cell(60, 0.004)})
+    b = _Maps({"0:0": _cell(133, 0.003), "1:1": _cell(79, 0.003)})
+    # floor = max(0.004, 0.003) = 0.004 on both blocks
+    # 0:0 -> |0.400 - 0.399| = 0.001, margin -0.003
+    # 1:1 -> |0.240 - 0.237| = 0.003, margin -0.001  <- worst
+    delta = mri_diff._diff_attention(a, b)
+
+    assert delta.status == mri_diff.SAME
+    assert delta.measured["floor"] > 0, "a uint8 step is never zero"
+    assert delta.measured["max_abs_diff"] > 0, "these files do differ"
+    assert delta.measured["worst_block"] == "1:1", (
+        "the worst block is the one with the largest margin, not the one that "
+        "sorted first"
+    )
+    assert f"{delta.measured['max_abs_diff']:.2e}" in delta.detail
+    assert "0.00e+00" not in delta.detail
+
+
+def test_identical_files_still_report_a_real_floor():
+    """A genuine zero difference is fine; a zero FLOOR never is."""
+    same = {"0:0": _cell(100, 0.004)}
+    delta = mri_diff._diff_attention(_Maps(dict(same)), _Maps(dict(same)))
+    assert delta.status == mri_diff.SAME
+    assert delta.measured["max_abs_diff"] == 0.0
+    assert delta.measured["floor"] == pytest.approx(0.004)
