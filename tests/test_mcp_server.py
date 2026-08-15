@@ -386,3 +386,59 @@ def test_a_tool_that_explodes_does_not_kill_the_session():
     assert "RuntimeError" in out["error"]["message"]
     # The exception's own text must not travel — only its type.
     assert "something deep" not in out["error"]["message"]
+
+
+# ------------------------------------------- the two answers must be one
+
+
+def test_status_is_the_same_document_in_process_and_over_attach():
+    """The whole promise of --attach is that it changes WHERE, not WHAT.
+
+    /api/session wraps the model status in an envelope carrying the server's
+    own name and version. In-process returns the status itself. So `loaded`
+    -- the key this tool's description names -- sat at the top level one way
+    and under `model` the other, and nothing in the response said which.
+
+    Real route, real runtime, no model loaded: the state every agent meets on
+    its first call.
+    """
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    client = TestClient(create_app())
+
+    attached = mcp_server.Server(attach="http://testserver")
+    attached._get = lambda path: client.get(path).json()
+
+    assert attached.call("status", {}) == mcp_server.Server().call("status", {})
+
+
+def test_an_attached_server_whose_session_shape_moved_is_refused():
+    """Reshaping an envelope that is not there would invent a status."""
+    server = mcp_server.Server(attach="http://testserver")
+    server._get = lambda path: {"app": "modelmri", "version": "99.0.0"}
+
+    with pytest.raises(Refusal) as caught:
+        server.call("status", {})
+    assert "/api/session" in str(caught.value)
+
+
+def test_omitting_the_layer_ranks_every_layer_over_attach_too():
+    """`layer` is documented "omit for all" and the route defaults to layer 0.
+
+    Omitting it therefore swept the whole model in-process and ranked layer 0
+    over --attach -- 450 forward passes against 14 on Qwen3-0.6B, and the
+    cheap one came back labelled as if it were the model's.
+    """
+    asked: list[str] = []
+    server = mcp_server.Server(attach="http://testserver")
+    server._get = lambda path: asked.append(path) or {}
+
+    server.call("rank_attention_heads", {})
+    assert "scope=all" in asked[-1]
+
+    # Naming a layer must NOT widen to the whole model.
+    server.call("rank_attention_heads", {"layer": 3})
+    assert "layer=3" in asked[-1]
+    assert "scope=all" not in asked[-1]

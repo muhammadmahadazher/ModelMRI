@@ -215,7 +215,21 @@ class Server:
         args = args or {}
         if name == "status":
             if self.attach:
-                return self._get("/api/session")
+                # /api/session wraps the model status in an envelope carrying
+                # the server's own name and version; in-process returns the
+                # status itself. This tool's description promises `loaded` at
+                # the top level, so the envelope comes off here -- otherwise
+                # the same tool answers `loaded` or `model.loaded` depending
+                # on a flag the calling agent cannot see.
+                envelope = self._get("/api/session")
+                model = envelope.get("model")
+                if not isinstance(model, dict):
+                    raise Refusal(
+                        f"the ModelMRI at {self.attach} answered /api/session "
+                        f"without a `model` object. Refusing rather than "
+                        f"reshaping a response whose shape has moved."
+                    )
+                return model
             status = self.runtime().status()
             return status.to_dict() if hasattr(status, "to_dict") else dict(status)
 
@@ -230,8 +244,14 @@ class Server:
             layer = args.get("layer")
             baseline = str(args.get("baseline") or "zero")
             if self.attach:
+                # This tool's schema says of `layer`: "omit for all". The HTTP
+                # route defaults the other way -- `scope=layer`, meaning layer
+                # 0 -- so omitting it swept the whole model in-process and
+                # ranked layer 0 over --attach. Not just a different cost
+                # (450 passes against 14 on Qwen3-0.6B): a ranking of one
+                # layer, returned as though it were the model's.
                 query = f"?baseline={baseline}" + (
-                    f"&layer={int(layer)}" if layer is not None else ""
+                    f"&layer={int(layer)}" if layer is not None else "&scope=all"
                 )
                 return self._get(f"/api/attention/ablate{query}")
             return self.runtime().ablate_heads(
