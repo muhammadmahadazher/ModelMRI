@@ -500,3 +500,59 @@ def test_a_torchscript_model_is_refused_with_the_reason_it_cannot_be_swept():
     handle.status_.source = "torchscript"
     with pytest.raises(BadRequest, match="needs the adapter that built"):
         handle.ablate("layers")
+
+
+# ------------------------------- an occlusion that occludes the right cells
+
+
+def test_a_patch_covers_its_own_cells_across_every_channel():
+    """The index skipped the channel axis and landed one dimension early.
+
+    `_regions` builds spans over `shape[1:]` — deliberately not channels —
+    and the caller prepends one slice for the batch. That left the row span
+    on the CHANNEL axis: on a [64,3,32,32] batch, `patch 0:4x0:4` wrote to
+    `edited[:, 0:4, 0:4]`, which is every channel, rows 0-3 and every column.
+    A full stripe of 384 cells where the patch is 48.
+    """
+    samples = torch.zeros(4, 3, 32, 32)
+    mean_input = torch.ones(3, 32, 32)
+    regions = dict(ca._regions(list(samples.shape[1:]), 8))
+
+    where = regions["patch 0:4x0:4"]
+    edited = samples.clone()
+    edited[(slice(None),) + where] = mean_input[where]
+    changed = (edited[0] != 0).nonzero()
+
+    assert len(changed) == 3 * 4 * 4
+    assert sorted({int(r) for r in changed[:, 1]}) == [0, 1, 2, 3]
+    assert sorted({int(c) for c in changed[:, 2]}) == [0, 1, 2, 3]
+
+
+def test_no_region_is_a_silent_no_op():
+    """The sharpest half. 56 of 64 regions indexed a 3-long channel axis with
+    spans like 20:24, selected nothing and wrote nothing — so `moved` equalled
+    `base` and the site was reported with effect 0.0. An occlusion that never
+    happened is not evidence that the region does not matter."""
+    samples = torch.zeros(4, 3, 32, 32)
+    mean_input = torch.ones(3, 32, 32)
+
+    for name, where in ca._regions(list(samples.shape[1:]), 8):
+        edited = samples.clone()
+        edited[(slice(None),) + where] = mean_input[where]
+        assert (edited != 0).any(), f"{name} occluded nothing at all"
+
+
+def test_the_regions_tile_the_input_exactly_once():
+    """No cell occluded twice, none never occluded — otherwise the sweep is
+    not a sweep of the input."""
+    covered = torch.zeros(3, 32, 32)
+    for _, where in ca._regions([3, 32, 32], 8):
+        covered[where] += 1
+    assert bool((covered == 1).all())
+
+
+def test_a_flat_feature_vector_still_indexes_one_feature():
+    """The other branch, which was always right and must stay that way."""
+    regions = ca._regions([16], 8)
+    assert regions[0] == ("feature 0", (0,))
+    assert len(regions) == 16

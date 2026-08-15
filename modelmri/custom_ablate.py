@@ -664,7 +664,19 @@ def _regions(shape: list[int], grid: int) -> list[tuple[str, tuple]]:
     def walk(prefix: list[tuple[int, int]], depth: int):
         if depth == len(steps):
             label = "patch " + "x".join(f"{a}:{b}" for a, b in prefix)
-            out.append((label, tuple(slice(a, b) for a, b in prefix)))
+            # A LEADING slice(None) for the channel axis this index skipped.
+            # `spatial` deliberately drops shape[0], so the spans cover
+            # shape[1:] -- but the caller indexes a BATCH, prepending one
+            # slice of its own, and the result landed one axis early: on a
+            # [64,3,32,32] batch, `patch 0:4x0:4` wrote to
+            # `edited[:, 0:4, 0:4]`, which is every channel, rows 0-3 and
+            # EVERY column -- a full stripe, 384 cells where the patch is 48.
+            # Worse, the 56 regions whose first span begins past 3 indexed a
+            # 3-long channel axis with e.g. 20:24, selected nothing, and wrote
+            # nothing: `moved` equalled `base` and the region was reported as
+            # effect 0.0. An occlusion that never happened is not a finding
+            # that the region does not matter.
+            out.append((label, (slice(None),) + tuple(slice(a, b) for a, b in prefix)))
             return
         for span in steps[depth]:
             walk(prefix + [span], depth + 1)
