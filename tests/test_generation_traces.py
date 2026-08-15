@@ -261,7 +261,12 @@ def test_clear_my_runs_removes_them(tmp_path):
     app = app_with(tmp_path)
     c = TestClient(app)
     c.post("/api/model/prompt", json={"prompt": "hi"})
-    assert c.delete("/api/traces?keep_demo=true").json()["deleted"] == 1
+    # The DELETE is hoisted out of the assert on purpose. Inside one, `python
+    # -O` strips the statement and the deletion never happens -- so the check
+    # below would be testing a store nobody cleared, which is this project's
+    # own "a green result from a check that did not run".
+    deleted = c.delete("/api/traces?keep_demo=true").json()["deleted"]
+    assert deleted == 1
     assert traces_of(c) == []
 
 
