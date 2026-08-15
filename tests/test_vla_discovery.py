@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from modelmri import vla
+from modelmri.errors import Refusal
 
 
 def test_it_finds_smolvlas_prefix_without_being_told_it():
@@ -163,3 +164,68 @@ def test_every_frame_accessor_bounds_its_timestep():
     ):
         source = inspect.getsource(getattr(owner, name))
         assert "t must be in" in source, f"{owner.__name__}.{name} bounds nothing"
+
+
+# ---------------- towers that prepend tokens before the patches
+
+
+def _handle_with(prefix: int, grid: int = 4, heads: int = 2):
+    """A tower whose attention row is grid*grid + `prefix` long."""
+    import threading
+
+    import torch
+    import torch.nn as nn
+
+    class Tower(nn.Module):
+        def forward(self, pixel_values, output_attentions=False):
+            n = grid * grid + prefix
+            att = torch.rand(1, heads, n, n)
+            return type("O", (), {"attentions": [att, att]})()
+
+    handle = vla.VLAHandle.__new__(vla.VLAHandle)
+    handle._lock = threading.Lock()
+    handle.model = Tower()
+    handle.status_ = vla.VLAStatus(
+        loaded=True, n_heads=heads, grid=[grid, grid], image_size=8, device="cpu"
+    )
+    handle._attn = None
+    handle._attn_key = None
+    return handle
+
+
+@pytest.mark.parametrize(
+    ("prefix", "family"),
+    [(0, "SigLIP"), (1, "ViT/CLIP class token"), (5, "DINOv2 class + registers")],
+)
+def test_a_tower_that_prepends_tokens_still_produces_a_patch_map(prefix, family):
+    """`reshape(n_heads, grid, grid)` assumed the token axis is exactly the
+    patch grid. True of SigLIP — attention pooling, no class token, which is
+    what SmolVLA uses — and false of ViT, CLIP and DINOv2, which prepend a
+    class token and sometimes registers.
+
+    Those raised a bare RuntimeError, so the module that goes to real lengths
+    to load an architecture nobody here has downloaded answered a 500 for the
+    commonest vision tower there is.
+    """
+    import numpy as np
+
+    handle = _handle_with(prefix)
+    out = handle.analyse(np.zeros((8, 8, 3), dtype="uint8"), ("k", 0, 0))
+
+    assert out["grid"] == [4, 4], family
+    assert out["n_prefix_tokens"] == prefix
+    assert len(handle._attn) == 2
+    assert tuple(handle._attn[0].shape) == (2, 4, 4)
+
+
+def test_a_token_count_smaller_than_the_grid_is_refused():
+    """Fewer tokens than patches cannot be reconciled, and guessing which
+    ones to draw would put the wrong squares on somebody's frame."""
+    import numpy as np
+
+    handle = _handle_with(prefix=-7)  # 16 patches claimed, 9 tokens produced
+    with pytest.raises(Refusal) as caught:
+        handle.analyse(np.zeros((8, 8, 3), dtype="uint8"), ("k", 0, 0))
+    said = str(caught.value)
+    assert "9 attention tokens" in said
+    assert "4x4" in said
