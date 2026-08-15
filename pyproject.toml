@@ -80,6 +80,12 @@ Demo = "https://muhammadmahadazher.github.io/ModelMRI/"
 modelmri = "modelmri.cli:main"
 
 [project.optional-dependencies]
+# Constrained decoding. Optional because it is the ONLY honest way to get a
+# correct token-level mask: a wrong mask is an invisible failure in a tool
+# whose premise is not shipping invisible wrong answers, so ModelMRI will not
+# hand-write one. Pure Python, works offline.
+grammar = ["lm-format-enforcer>=0.10"]
+
 vla-lite = [
     "av>=13,<18",
     # ALOHA and robomimic files. In the LITE extra rather than the full one:
