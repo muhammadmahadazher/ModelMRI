@@ -420,9 +420,7 @@ def trace(
         # forward passes had already been spent. The entire recovery path was
         # unreachable: a Mixtral or OLMoE, whose blocks name the sublayer
         # `block_sparse_moe`, paid for the whole trace and got a 500.
-        "grids": {
-            c: [[round(v, 6) for v in row] for row in grids[c]] for c in grids
-        },
+        "grids": {c: [[round(v, 6) for v in row] for row in grids[c]] for c in grids},
         # And the reader is told which one was dropped and why. `skipped` was
         # collected, commented, and then never put in the payload -- so even
         # with the KeyError fixed, two grids would have arrived looking like
