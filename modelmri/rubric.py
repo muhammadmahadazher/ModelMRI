@@ -214,7 +214,25 @@ def parse(raw) -> list:
             f"Cut it rather than having it cut for you, so you know which "
             f"rules the answer is about."
         )
-    return [parse_rule(r) for r in raw]
+    rules = [parse_rule(r) for r in raw]
+
+    # NAMES MUST BE UNIQUE, because the name is the key. `slow_cut`,
+    # `report.skipped` and `counts()` are all dicts keyed by `rule.name`, so
+    # two rules sharing one collapse into a single entry — measured, a rubric
+    # with two rules called "same" reported `counts() == {"same": 1}` for one
+    # rule that matched and one that did not, and a skipped distribution rule
+    # would suppress an unrelated rule of the same name entirely.
+    seen: dict = {}
+    for rule in rules:
+        if rule.name in seen:
+            raise RubricError(
+                f"two rules are both called {rule.name!r}. The name is what "
+                f"appears beside a matching run and what the counts are keyed "
+                f"by, so two rules sharing one would report as a single "
+                f"result. Rename one."
+            )
+        seen[rule.name] = rule
+    return rules
 
 
 @dataclass
@@ -422,9 +440,14 @@ def _apply(rule: Rule, steps, total_ms: int, slow_cut: dict) -> Hit:
         )
 
     if rule.kind == "duration_over":
+        # `_compare`, not a hardcoded `>`. `parse_rule` VALIDATES `op` against
+        # OPERATORS, so a rubric written with `op: "lt"` parses without
+        # complaint and then silently ran as `>` — measured, a 100 ms run
+        # against `lt 500` did not match. Validating a field and then ignoring
+        # it is worse than not offering it.
         return Hit(
             rule=rule.name,
-            matched=total_ms > rule.value,
+            matched=_compare(total_ms, rule.op, rule.value),
             detail=f"{total_ms} ms of recorded wall clock",
         )
 

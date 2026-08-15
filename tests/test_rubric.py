@@ -317,3 +317,51 @@ def test_the_report_serialises_for_the_wire():
     assert doc["counts"] == {"failed": 1}
     assert doc["rules"][0]["means"]
     assert isinstance(doc["means"], str)
+
+
+# ------------------------- found by an adversarial review of this module
+
+
+def test_duration_over_honours_the_operator_it_validated():
+    """`parse_rule` validates `op` against OPERATORS, so a rubric written with
+    `op: "lt"` parses without complaint. `_apply` then hardcoded `>` and ran a
+    different rule than the one that was accepted — measured, a 100 ms run
+    against `lt 500` did not match. Validating a field and then ignoring it is
+    worse than not offering it."""
+    steps = [_step("s", ms=0, dur=100)]
+    quick = rubric.parse(
+        [{"name": "quick", "kind": "duration_over", "op": "lt", "value": 500}]
+    )
+    assert rubric.score([_run("a", steps=steps)], quick).rows[0].matched == ["quick"]
+
+    slow = rubric.parse(
+        [{"name": "slow", "kind": "duration_over", "op": "gt", "value": 500}]
+    )
+    assert rubric.score([_run("a", steps=steps)], slow).rows[0].matched == []
+
+
+def test_two_rules_cannot_share_a_name():
+    """The name is the key: `slow_cut`, `skipped` and `counts()` are all dicts
+    keyed by it. Measured, two rules called "same" reported
+    `counts() == {"same": 1}` for one that matched and one that did not."""
+    with pytest.raises(BadRequest, match="both called"):
+        rubric.parse(
+            [
+                {"name": "same", "kind": "has_error"},
+                {"name": "same", "kind": "step_count", "op": "gt", "value": 0},
+            ]
+        )
+
+
+def test_a_skipped_rule_cannot_suppress_an_unrelated_one():
+    """`score` skips by name, so a duplicate name would have silenced a rule
+    that was perfectly answerable."""
+    rules = rubric.parse(
+        [
+            {"name": "slowest", "kind": "slowest_percent", "value": 10},
+            {"name": "failed", "kind": "has_error"},
+        ]
+    )
+    out = rubric.score([_run("a", steps=[_step("s", error=True)])], rules)
+    assert "slowest" in out.skipped
+    assert out.counts() == {"failed": 1}, "the answerable rule still answered"
