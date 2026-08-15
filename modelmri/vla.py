@@ -393,6 +393,7 @@ class VLAHandle:
         layer: int = -1,
         head: int = -1,
         key: tuple | None = None,
+        camera: str = "",
     ) -> dict:
         """What the tower's representation DEPENDED on, not what it looked at.
 
@@ -453,6 +454,13 @@ class VLAHandle:
                 attention_map=attention_map,
                 compared_layer=index,
                 compared_head=head,
+                # `key` already identifies the frame -- it is what the
+                # staleness check above compares against -- so the result can
+                # say which frame it is of instead of leaving that to whoever
+                # happens to call this.
+                episode=None if key is None else int(key[0]),
+                timestep=None if key is None else int(key[1]),
+                camera=camera,
             ).to_dict()
 
     def occlusion_cost(self, stride: int = 0) -> dict:

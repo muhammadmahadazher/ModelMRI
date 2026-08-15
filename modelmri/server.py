@@ -1681,10 +1681,12 @@ def create_app(
                 # So a cached attention map from a DIFFERENT frame is not
                 # silently ranked against this frame's causal map.
                 key=(episode, timestep),
+                camera=reader.camera,
             )
-            out["episode"] = episode
-            out["timestep"] = timestep
-            out["camera"] = reader.camera
+            # No post-hoc patching of the three identity fields here any more:
+            # this route was the only caller that filled them in, so every
+            # other one reported episode 0 timestep 0. They are set inside the
+            # sweep now, from the same `key` the staleness check uses.
             return out
 
         try:

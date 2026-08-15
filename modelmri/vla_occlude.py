@@ -78,10 +78,14 @@ class Block:
     # across the episode. Unitless on purpose: a raw L2 in embedding space is
     # a number whose size depends on the tower.
     shift: float
-    # The strongest of `CONTROL_DRAWS` same-area occlusions at random
+    # The strongest of the same-area occlusions drawn for THIS block at random
     # locations. None when this block was not among the strongest and so was
     # never controlled -- NOT 0.0.
     control_max: float | None = None
+    # How many of those draws were usable. Not always `CONTROL_DRAWS`: a draw
+    # that lands on the block itself is not a control, and `draws` is a
+    # parameter. Whatever reports the result reads this rather than the
+    # constant.
     control_draws: int = 0
     clears_control: bool | None = None
     # Mean attention received by the patches under this block, for the layer
@@ -113,8 +117,13 @@ class Occlusion:
     # is not a reportable number. None when nothing was compared.
     compared_layer: int | None = None
     compared_head: int | None = None
-    episode: int = 0
-    timestep: int = 0
+    # WHICH frame was occluded. None rather than 0: these were filled in after
+    # the fact by the HTTP route and by nothing else, so every other caller --
+    # `VLA.occlude` from Python, a test, a script -- got `episode 0, timestep
+    # 0`, which is a real frame in every dataset and reads exactly like one.
+    # They are set at the source now; None means nobody said.
+    episode: int | None = None
+    timestep: int | None = None
     camera: str = ""
 
     def to_dict(self) -> dict:
@@ -147,10 +156,24 @@ class Occlusion:
                 f"of it anywhere."
             )
         else:
+            # The draws each block actually got, not the module's default.
+            # `draws` is a parameter, and a draw that lands on the block
+            # itself is not a control and is discarded -- so the count varies
+            # per block and printing the constant claimed a null that was
+            # never run.
+            counts = sorted({b.control_draws for b in cleared})
+            beat = (
+                f"all {counts[0]} same-area occlusions at random locations"
+                if len(counts) == 1
+                else (
+                    f"every same-area occlusion drawn for it — between "
+                    f"{counts[0]} and {counts[-1]}, because a draw that landed "
+                    f"on the block itself is not a control and was discarded"
+                )
+            )
             parts.append(
                 f"{len(cleared)} of the {len(tested)} blocks tested against "
-                f"chance beat all {CONTROL_DRAWS} same-area occlusions at "
-                f"random locations."
+                f"chance beat {beat}."
             )
         if self.attention_agreement is None:
             parts.append(
@@ -369,6 +392,9 @@ def sweep(
     draws: int = CONTROL_DRAWS,
     max_controlled: int = 12,
     max_blocks: int = MAX_BLOCKS,
+    episode: int | None = None,
+    timestep: int | None = None,
+    camera: str = "",
 ) -> Occlusion:
     """Occlude each block of one frame and report how far the tower moved.
 
@@ -428,7 +454,7 @@ def sweep(
         if agreement is not None:
             agreement = round(agreement, 4)
 
-    # Controls on the strongest blocks only. Nine passes each, and a block
+    # Controls on the strongest blocks only. `draws` passes each, and a block
     # that did not place is not one anybody is about to call hot.
     ranked = sorted(rows, key=lambda b: -b.shift)
     generator = torch.Generator().manual_seed(CONTROL_SEED)
@@ -475,6 +501,9 @@ def sweep(
         # beside a null agreement would read as "layer 11 agreed on nothing".
         compared_layer=compared_layer if agreement is not None else None,
         compared_head=compared_head if agreement is not None else None,
+        episode=None if episode is None else int(episode),
+        timestep=None if timestep is None else int(timestep),
+        camera=str(camera or ""),
     )
 
 

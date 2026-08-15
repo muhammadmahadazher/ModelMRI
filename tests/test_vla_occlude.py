@@ -478,3 +478,82 @@ def test_the_report_survives_json(frames):
     assert doc["baseline"] in occ.BASELINES
     assert "means" in doc
     assert len(doc["blocks"]) == doc["n_blocks"]
+
+
+# ------------------------------------------- which frame, and how many nulls
+
+
+def test_an_occlusion_that_was_not_told_its_frame_says_so(frames):
+    """These three used to default to 0/0/"" and were filled in afterwards by
+    the HTTP route and by nothing else. Every other caller therefore reported
+    episode 0, timestep 0 -- a real frame in every dataset, and it reads like
+    one."""
+    out = occ.sweep(
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=2,
+        max_controlled=2,
+    )
+    assert out.episode is None
+    assert out.timestep is None
+    assert out.camera == ""
+    assert out.to_dict()["episode"] is None
+
+
+def test_an_occlusion_that_was_told_its_frame_carries_it(frames):
+    out = occ.sweep(
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=2,
+        max_controlled=2,
+        episode=5,
+        timestep=100,
+        camera="observation.images.wrist",
+    )
+    assert (out.episode, out.timestep) == (5, 100)
+    assert out.camera == "observation.images.wrist"
+
+
+def test_the_sentence_counts_the_nulls_that_ran_not_the_default(frames):
+    """`draws` is a parameter. The sentence printed CONTROL_DRAWS regardless,
+    so asking for fewer controls still claimed the full eight."""
+    fewer = 3
+    assert fewer != occ.CONTROL_DRAWS
+    out = occ.sweep(
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=1,
+        max_controlled=4,
+        draws=fewer,
+    )
+    cleared = [b for b in out.blocks if b.clears_control]
+    assert cleared, "this tower has a region, so something should clear"
+    assert f"all {fewer} same-area occlusions" in out.means()
+    assert f"all {occ.CONTROL_DRAWS} same-area" not in out.means()
+
+
+def test_blocks_that_got_different_numbers_of_nulls_report_a_range():
+    """A draw landing on the block itself is not a control and is discarded,
+    so the count varies per block. One number for all of them would be wrong
+    for some of them."""
+    made = occ.Occlusion(baseline="midpoint", grid=[8, 8], stride=1)
+    made.n_blocks = 2
+    made.blocks = [
+        occ.Block(row=0, col=0, shift=1.0, control_draws=8, clears_control=True),
+        occ.Block(row=1, col=1, shift=0.9, control_draws=6, clears_control=True),
+    ]
+    said = made.means()
+    assert "between 6 and 8" in said
+    assert "landed on the block itself" in said
