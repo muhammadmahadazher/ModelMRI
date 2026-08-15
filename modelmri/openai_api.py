@@ -84,9 +84,44 @@ MAX_TOP_LOGPROBS = 20
 
 DEFAULT_MAX_TOKENS = 256
 
+# How many ranked heads `{"heads": true}` shows, and the ceiling on asking for
+# more. The cap is not about cost — the ranking is already computed — it is
+# about `shown` staying a number a client can act on.
+DEFAULT_HEADS_SHOWN = 10
+MAX_HEADS_SHOWN = 4096
+DEFAULT_LENS_TOP_K = 5
+MAX_LENS_TOP_K = 100
+
 
 def _now() -> int:
     return int(time.time())
+
+
+def _whole(value, field: str, *, default: int, cap: int) -> int:
+    """A count from the `modelmri` block, or a refusal that names the field.
+
+    Neither of these was checked. `{"heads": -3}` reached `rows[:-3]`, which
+    drops rows off the END of a ranking sorted best-first and then reported
+    `"shown": -3` beside them — a count no client can act on, over a list that
+    had quietly lost its tail. `{"top_k": "5"}` and `{"heads": [1]}` raised
+    ValueError and TypeError from inside the measurement, which the caller
+    turns into a 500: an input mistake reported as a server fault.
+    """
+    if value is True:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise BadRequest(
+            f"'modelmri.{field}' must be a whole number or true, not "
+            f"{type(value).__name__}."
+        )
+    if isinstance(value, float) and value != int(value):
+        raise BadRequest(f"'modelmri.{field}' must be a whole number, not {value}.")
+    count = int(value)
+    if not 1 <= count <= cap:
+        raise BadRequest(
+            f"'modelmri.{field}' must be between 1 and {cap}, or omitted. Got {count}."
+        )
+    return count
 
 
 def _rid(prefix: str) -> str:
@@ -253,8 +288,16 @@ def internals(runtime, ask: dict) -> dict:
     failed: dict = {}
 
     if ask.get("lens"):
+        asked_k = ask.get("top_k")
+        top_k = (
+            DEFAULT_LENS_TOP_K
+            if asked_k is None
+            else _whole(
+                asked_k, "top_k", default=DEFAULT_LENS_TOP_K, cap=MAX_LENS_TOP_K
+            )
+        )
         try:
-            out["lens"] = runtime.logit_lens(int(ask.get("top_k") or 5))
+            out["lens"] = runtime.logit_lens(top_k)
         except (Refusal, BadRequest) as err:
             # Named, not omitted. A block that silently lacks `lens` reads as
             # "the lens found nothing".
@@ -262,9 +305,9 @@ def internals(runtime, ask: dict) -> dict:
 
     heads = ask.get("heads")
     if heads:
+        limit = _whole(heads, "heads", default=DEFAULT_HEADS_SHOWN, cap=MAX_HEADS_SHOWN)
         try:
             ranked = runtime.ablate_heads(None, str(ask.get("baseline") or "zero"))
-            limit = int(heads) if not isinstance(heads, bool) else 10
             rows = ranked.get("ranked") or []
             out["heads"] = {
                 **{k: v for k, v in ranked.items() if k != "ranked"},

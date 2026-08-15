@@ -266,3 +266,50 @@ def test_a_measurement_that_refuses_is_named_not_omitted():
 def test_nothing_asked_for_costs_almost_nothing():
     out = openai_api.internals(_Measuring(), {})
     assert set(out) == {"extra_ms", "means"}
+
+
+# ------------------------------------------ a count a client can act on
+
+
+def test_a_negative_head_count_is_refused_not_sliced():
+    """`rows[:-3]` drops rows off the END of a ranking sorted best-first and
+    then `"shown": -3` was reported beside them. Neither the list nor the
+    count meant anything a client could use."""
+    with pytest.raises(BadRequest) as caught:
+        openai_api.internals(_Measuring(), {"heads": -3})
+    assert "modelmri.heads" in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ["5", [1], {"n": 1}, 2.5, 10**9])
+def test_a_head_count_that_is_not_a_count_is_a_bad_request(bad):
+    """These raised ValueError or TypeError from inside the measurement, which
+    the route turns into a 500 — an input mistake reported as a fault of the
+    server."""
+    with pytest.raises(BadRequest):
+        openai_api.internals(_Measuring(), {"heads": bad})
+
+
+@pytest.mark.parametrize("bad", ["5", -1, 0, [3]])
+def test_a_lens_top_k_that_is_not_a_count_is_a_bad_request(bad):
+    """A negative k reaches torch.topk, which raises from inside the lens."""
+    with pytest.raises(BadRequest):
+        openai_api.internals(_Measuring(), {"lens": True, "top_k": bad})
+
+
+def test_shown_never_exceeds_what_was_ranked():
+    """Asking for more heads than exist is not an error — 100 is inside the
+    cap, and the answer is however many there were."""
+    out = openai_api.internals(_Measuring(), {"heads": 100})
+    assert out["heads"]["shown"] == out["heads"]["of"] == 40
+    assert len(out["heads"]["ranked"]) == 40
+
+
+def test_asking_for_no_heads_asks_for_nothing():
+    """0 and false both mean "do not measure this", and neither is an error."""
+    for nothing in (0, False):
+        assert "heads" not in openai_api.internals(_Measuring(), {"heads": nothing})
+
+
+def test_true_still_means_the_default_slice():
+    out = openai_api.internals(_Measuring(), {"heads": True})
+    assert out["heads"]["shown"] == openai_api.DEFAULT_HEADS_SHOWN
