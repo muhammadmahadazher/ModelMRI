@@ -279,3 +279,49 @@ def test_a_subagent_is_not_counted_beside_its_own_llm_children():
     ]
     assert ledger.roll_up(steps).counts["tokens_in"].total == 10
     assert ledger.subtree_rollups(steps)["sub"].counts["tokens_in"].total == 10
+
+
+# ------------------------- one rule for what counts as a count
+
+
+@pytest.mark.parametrize("bad", [1500.7, True, "n/a", "1500", [1500], None])
+def test_a_value_the_rollup_will_not_count_is_not_billed_either(bad):
+    """`Count.add` refuses a bool, float or string as a recorder bug rather
+    than coercing it; `Price.cost` multiplied whatever was in the field.
+
+    So a step recording `tokens_in: 1500.7` had its tokens reported as "not
+    reported by provider" in one column and billed at 0.0045 in the next, off
+    that same value. Two answers, same module, same number.
+    """
+    price = ledger.Price(model="m", per_million={"tokens_in": 3.0})
+    count = ledger.Count(field="tokens_in")
+    count.add(bad)
+
+    cost, _unrated = price.cost({"tokens_in": bad})
+    assert count.reported == 0, "the rollup counts this as a report"
+    assert cost is None, "billed a value the rollup refuses to count"
+
+
+def test_a_string_token_count_does_not_take_down_the_trace_view():
+    """Nothing validates these on the way in — `import_trace` hands them to
+    SQLite, whose INTEGER affinity leaves a non-numeric string as TEXT — so a
+    str comes back out of `get_trace`. `"n/a" * 3.0` is a TypeError, the route
+    catches BadRequest only, and the whole trace disappeared behind a 500 over
+    a cost column documented as optional."""
+    price = ledger.Price(model="m", per_million={"tokens_in": 3.0})
+    assert price.cost({"tokens_in": "n/a"}) == (None, [])
+
+
+def test_a_real_count_is_still_billed():
+    price = ledger.Price(model="m", per_million={"tokens_in": 3.0})
+    cost, unrated = price.cost({"tokens_in": 1500})
+    assert cost == pytest.approx(0.0045)
+    assert unrated == []
+
+
+def test_one_usable_field_beside_one_unusable_still_prices():
+    """The unusable field is skipped, not fatal — and it is skipped the same
+    way an absent one is, which is what the token column already reports."""
+    price = ledger.Price(model="m", per_million={"tokens_in": 3.0, "tokens_out": 15.0})
+    cost, _ = price.cost({"tokens_in": 1000, "tokens_out": "unknown"})
+    assert cost == pytest.approx(0.003)

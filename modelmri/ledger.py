@@ -73,6 +73,27 @@ ENV_VAR = "MODELMRI_PRICES"
 PER = 1_000_000
 
 
+def _is_count(value) -> bool:
+    """Is this a token count this module will use?
+
+    ONE rule, because there were two. `Count.add` refused a bool, float or
+    string as a recorder bug rather than coercing it into a plausible number
+    -- and `Price.cost` multiplied whatever was in the field. So a step
+    recording `tokens_in: 1500.7` had its tokens reported as "not reported by
+    provider" in one column and billed in the next, off the same value.
+
+    `tokens_in: "n/a"` was worse. Nothing validates these on the way in --
+    `import_trace` hands them to SQLite, whose INTEGER affinity leaves a
+    non-numeric string as TEXT, so it comes back out a str -- and `"n/a" *
+    3.0` raises TypeError from inside a cost column that is documented as
+    optional. The route catches BadRequest only, so the whole trace view
+    answered 500 over an optional column.
+
+    `isinstance(True, int)` is True, which is why bool is excluded by name.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 class PriceError(BadRequest):
     """The price file cannot be read, and the message says which part."""
 
@@ -92,12 +113,7 @@ class Count:
     silent: int = 0
 
     def add(self, value) -> None:
-        if value is None:
-            self.silent += 1
-            return
-        if isinstance(value, bool) or not isinstance(value, int):
-            # A string or float in a token field is a recorder bug, and
-            # coercing it would launder that into a plausible number.
+        if not _is_count(value):
             self.silent += 1
             return
         self.reported += 1
@@ -251,7 +267,11 @@ class Price:
         unrated = []
         for name in PRICED:
             count = counts.get(name)
-            if count is None:
+            # Unusable is unreported, exactly as `Count.add` treats it -- so
+            # the token column saying "not reported by provider" and the cost
+            # column omitting it are the same statement about the same field,
+            # rather than two answers to one question.
+            if not _is_count(count):
                 continue
             rate = self.per_million.get(name)
             if rate is None:
