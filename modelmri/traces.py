@@ -56,18 +56,45 @@ CREATE TABLE IF NOT EXISTS step (
   output TEXT NOT NULL DEFAULT '',
   tokens_in INTEGER,
   tokens_out INTEGER,
+  -- Nullable for the same reason `duration_ms` is. Providers report these
+  -- inconsistently: Anthropic returns cache counts only when a cache was in
+  -- play, and reasoning tokens only from models that reason. `0` would claim
+  -- the provider said zero. NULL says nobody asked or nobody answered, and
+  -- the panel renders that as "not reported by provider".
+  tokens_cache_read INTEGER,
+  tokens_cache_write INTEGER,
+  tokens_reasoning INTEGER,
   error INTEGER NOT NULL DEFAULT 0,
   seq INTEGER NOT NULL,
   meta TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS step_trace ON step(trace_id, seq);
+-- Saved rubrics: a named set of exact predicates the reader wrote. The rules
+-- live as JSON rather than as columns because they are a small document with
+-- a validator of its own (`rubric.parse`), and normalising them into tables
+-- would put a second, weaker validator in the schema.
+CREATE TABLE IF NOT EXISTS rubric (
+  name TEXT PRIMARY KEY,
+  rules TEXT NOT NULL,
+  saved_at TEXT NOT NULL
+);
 """
 
 # Columns added after the table shipped. `CREATE TABLE IF NOT EXISTS` does
 # nothing to a database that already has the table, so a store written by an
 # earlier version keeps its old shape and every INSERT naming the new column
 # fails — which would be an existing user's traces breaking on upgrade.
-_MIGRATIONS = (("step", "meta", "TEXT NOT NULL DEFAULT '{}'"),)
+#
+# The token columns are added WITHOUT a default, so every row an older version
+# wrote reads NULL — "this store predates the column, nobody asked" — rather
+# than 0, which would assert the provider reported no cache use on calls that
+# were never examined for it.
+_MIGRATIONS = (
+    ("step", "meta", "TEXT NOT NULL DEFAULT '{}'"),
+    ("step", "tokens_cache_read", "INTEGER"),
+    ("step", "tokens_cache_write", "INTEGER"),
+    ("step", "tokens_reasoning", "INTEGER"),
+)
 
 
 def _loads(raw) -> dict:
@@ -485,9 +512,10 @@ class TraceStore:
             for seq, s in enumerate(steps):
                 self._db.execute(
                     "INSERT INTO step(id, trace_id, parent_id, kind, name, started_ms,"
-                    " duration_ms, input, output, tokens_in, tokens_out, error, seq,"
-                    " meta)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " duration_ms, input, output, tokens_in, tokens_out,"
+                    " tokens_cache_read, tokens_cache_write, tokens_reasoning,"
+                    " error, seq, meta)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         str(s.get("id") or f"{trace_id}-{seq}"),
                         trace_id,
@@ -500,6 +528,12 @@ class TraceStore:
                         _clip(s.get("output", "")),
                         s.get("tokens_in"),
                         s.get("tokens_out"),
+                        # `.get(...)` with no default, so a key the recorder
+                        # never set stores NULL. A `0` here would be this
+                        # module asserting the provider reported no cache use.
+                        s.get("tokens_cache_read"),
+                        s.get("tokens_cache_write"),
+                        s.get("tokens_reasoning"),
                         1 if s.get("error") else 0,
                         seq,
                         # What the recorder captured about the model that
@@ -560,6 +594,71 @@ class TraceStore:
             for r in rows
         ]
 
+    # ------------------------------------------------------------ rubrics
+
+    def save_rubric(self, name: str, rules: list) -> None:
+        """Store a named rubric. Rules arrive already validated by `rubric`.
+
+        Under the lock like every other writer here — see `list_traces` for
+        what happened the two times a method on this class forgot.
+        """
+        from datetime import datetime, timezone
+
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO rubric(name, rules, saved_at) VALUES(?,?,?)",
+                (
+                    str(name),
+                    json.dumps([r.to_dict() for r in rules]),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            self._db.commit()
+
+    def rubrics(self) -> list:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT name, rules, saved_at FROM rubric ORDER BY name"
+            ).fetchall()
+        # `_loads` treats damage as empty rather than fatal, but a rubric whose
+        # rules will not parse is one that cannot be applied — so it is listed
+        # with an empty rule set rather than dropped, which would make a saved
+        # rubric silently vanish.
+        out = []
+        for name, raw, saved in rows:
+            try:
+                rules = json.loads(raw)
+            except ValueError:
+                rules = []
+            out.append(
+                {
+                    "name": name,
+                    "rules": rules if isinstance(rules, list) else [],
+                    "saved_at": saved,
+                    "readable": bool(rules),
+                }
+            )
+        return out
+
+    def delete_rubric(self, name: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("DELETE FROM rubric WHERE name=?", (str(name),))
+            self._db.commit()
+        return cur.rowcount > 0
+
+    def all_traces_with_steps(self, limit: int = 500):
+        """Every run and its steps, for scoring. Newest first, capped.
+
+        The cap is reported by the caller rather than swallowed here: a rubric
+        answered over 500 of 4,000 runs is a different claim from one answered
+        over all of them, and `slowest_percent` in particular is a claim ABOUT
+        the set it was measured on.
+        """
+        for summary in self.list_traces()[: max(1, int(limit))]:
+            doc = self.get_trace(str(summary.get("id")))
+            if doc is not None:
+                yield summary, doc.get("steps") or []
+
     def delete(self, trace_id: str) -> bool:
         """Remove one trace and its steps. False when it was not there."""
         with self._lock:
@@ -619,7 +718,8 @@ class TraceStore:
                 return None
             rows = self._db.execute(
                 "SELECT id, parent_id, kind, name, started_ms, duration_ms,"
-                " input, output, tokens_in, tokens_out, error, seq, meta"
+                " input, output, tokens_in, tokens_out, error, seq, meta,"
+                " tokens_cache_read, tokens_cache_write, tokens_reasoning"
                 " FROM step WHERE trace_id=? ORDER BY seq",
                 (trace_id,),
             ).fetchall()
@@ -641,6 +741,13 @@ class TraceStore:
                 "truncated_out": _unclip(r[7])[1],
                 "tokens_in": r[8],
                 "tokens_out": r[9],
+                # None travels as None all the way to the panel, which draws
+                # "not reported by provider". Coercing to 0 anywhere on this
+                # path would make a provider that stayed silent look like one
+                # that answered zero.
+                "tokens_cache_read": r[13],
+                "tokens_cache_write": r[14],
+                "tokens_reasoning": r[15],
                 "error": bool(r[10]),
                 "seq": r[11],
                 "meta": _loads(r[12]),

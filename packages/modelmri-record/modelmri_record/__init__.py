@@ -246,6 +246,14 @@ def step(
     duration_ms: int | None = None,
     tokens_in: int | None = None,
     tokens_out: int | None = None,
+    # Same rule as `duration_ms`, one field over. Providers report these only
+    # sometimes -- Anthropic returns cache counts only when a cache was in
+    # play, reasoning tokens only from models that reason -- so None means the
+    # provider said nothing and 0 would mean it said zero. The trace store's
+    # columns are nullable to carry that distinction all the way to the panel.
+    tokens_cache_read: int | None = None,
+    tokens_cache_write: int | None = None,
+    tokens_reasoning: int | None = None,
     error: bool = False,
     started_ms: int | None = None,  # override for backfilled/synthetic traces
     meta: dict | None = None,
@@ -274,6 +282,9 @@ def step(
         "output": _encode(output),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
+        "tokens_cache_read": tokens_cache_read,
+        "tokens_cache_write": tokens_cache_write,
+        "tokens_reasoning": tokens_reasoning,
         "error": error,
         "meta": meta or {},
     }
@@ -300,11 +311,39 @@ def _encode(value: object) -> str:
             return "<unserialisable>"
 
 
-def instrument_anthropic() -> bool:
+def instrument_anthropic(force: bool = False) -> bool:
     """Monkey-patch anthropic.Messages.create to auto-record llm_call steps.
 
-    Returns False (no crash) when the anthropic package is not installed.
+    CHECKS THE SDK FIRST. When an attribute the wrapper reads has moved, this
+    does not patch: it prints one line naming the package, the version and the
+    attribute, and returns False.
+
+    That refusal is the point. The wrapper reads token counts with
+    `getattr(usage, "input_tokens", None)`, and the trace store's columns are
+    nullable so `None` can mean "the provider reported nothing". If the
+    attribute moved, every span would carry that same None — and the ledger
+    would report "not reported by provider" about a provider that reported
+    perfectly well. The absence would be real and the reason would be wrong.
+
+    Returns False (no crash) when anthropic is not installed, and False when
+    the fingerprint does not match. `verify.check()` carries the detail; set
+    MODELMRI_FORCE_INSTRUMENT=1 to patch regardless.
     """
+    from . import verify
+
+    report = verify.check(force=force)
+    if not report.installed:
+        return False
+    if not report.ok:
+        # One line, on stderr, naming what moved. Not an exception: failing to
+        # instrument must not take down the program being traced, and
+        # `_complain` is already the package's answer to "best-effort is not
+        # the same as silent".
+        _complain(f"modelmri-record: {report.reason()}")
+        return False
+    if report.capture != "full":
+        _complain(f"modelmri-record: {report.reason()}")
+
     try:
         from anthropic.resources.messages import Messages
     except Exception:
@@ -312,6 +351,7 @@ def instrument_anthropic() -> bool:
     if getattr(Messages.create, "_modelmri_wrapped", False):
         return True
     original = Messages.create
+    captured = report.capture
 
     def wrapped(self, *args, **kwargs):
         t = _current.get()
@@ -339,6 +379,29 @@ def instrument_anthropic() -> bool:
                 duration_ms=(t.now_ms() - started),
                 tokens_in=getattr(usage, "input_tokens", None),
                 tokens_out=getattr(usage, "output_tokens", None),
+                # Anthropic returns these only when a cache was in play, so a
+                # missing attribute is the ordinary case and `None` is the
+                # honest reading of it. `getattr(..., None)` rather than
+                # `getattr(..., 0)` is the whole distinction: 0 would claim
+                # the API reported no cache use on a call that never had a
+                # cache field at all.
+                tokens_cache_read=getattr(usage, "cache_read_input_tokens", None),
+                tokens_cache_write=getattr(
+                    usage, "cache_creation_input_tokens", None
+                ),
+                # `captured` says whether the recorder could read everything
+                # it reads. A "partial" step's empty token field is the SDK's
+                # shape, not the provider's silence, and the panel needs to be
+                # able to tell those apart.
+                meta={
+                    k: v
+                    for k, v in (
+                        ("model", str(kwargs.get("model", "")) or None),
+                        ("captured", captured),
+                    )
+                    if v
+                }
+                or None,
             )
         return result
 
