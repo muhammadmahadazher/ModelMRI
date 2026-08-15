@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.0
       - name: Audit the Python dependency tree
         run: |
           # The RESOLVED tree, not the declared ranges — what a user actually
@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v9.0.0
+      - uses: astral-sh/setup-uv@v10.0.0
       # A workflow is code that runs with repository credentials. zizmor
       # finds the ways one can be turned against the repo: expression
       # injection from PR titles, over-broad permissions, unpinned actions,
