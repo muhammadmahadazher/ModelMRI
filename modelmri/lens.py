@@ -38,7 +38,7 @@ since it was written. See the comment at `last_is_normed`.
 
 from __future__ import annotations
 
-from .errors import Refusal
+from .errors import BadRequest, Refusal
 
 # Below this many nats between the model's own distribution and the one you get
 # by projecting the last hidden state straight through the unembedding, the
@@ -75,6 +75,16 @@ def _final_norm(model):
 def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
     """Top predictions at every layer for the final position."""
     import torch
+
+    # `torch.topk(probs, k=min(top_k, numel))` accepts 0 and returns nothing,
+    # so every row came back with an empty `tokens` and the code below read
+    # `rows[-1]["tokens"][0]` -- IndexError, which the route can only answer
+    # as a 500. A negative k raises out of torch instead, same 500. The
+    # sibling that takes the same argument, `ModelRuntime.ablate_heads`,
+    # answers "top_k must be at least 1" with a 422; an input mistake gets one
+    # answer here now too.
+    if top_k < 1:
+        raise BadRequest(f"top_k must be at least 1, got {top_k}.")
 
     head = model.get_output_embeddings()
     if head is None:
