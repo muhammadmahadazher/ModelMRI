@@ -126,6 +126,14 @@ class Findings:
     # True when the trace was too long to scan for cycles. Reported, because
     # "no cycles found" and "not looked for" are different answers.
     cycles_scanned: bool = True
+    # The window of cycle lengths that was searched. The constants above call
+    # both bounds "reported rather than silent" and only the step cap was --
+    # these two appeared nowhere but the loop range. An agent that repeats a
+    # 20-step sequence three times therefore read as "no repeating
+    # sequences", which is not "we looked and found none", it is "we looked
+    # for loops of 2 to 12 steps". Carried so a reader can tell those apart.
+    cycle_len_min: int = MIN_CYCLE_LEN
+    cycle_len_max: int = MAX_CYCLE_LEN
     # Hashing the input misses a repeat whose prompt carries a timestamp or a
     # cursor. Carried so the panel can say so rather than implying the count
     # is exhaustive.
@@ -143,6 +151,8 @@ class Findings:
             "n_steps": self.n_steps,
             "retry_window_ms": self.retry_window_ms,
             "cycles_scanned": self.cycles_scanned,
+            "cycle_len_min": self.cycle_len_min,
+            "cycle_len_max": self.cycle_len_max,
             "near_repeats_not_detected": self.near_repeats_not_detected,
             "means": self.means(),
         }
@@ -171,6 +181,17 @@ class Findings:
                 f"CYCLES WERE NOT SCANNED: over {MAX_STEPS_FOR_CYCLES} steps the "
                 f"scan is skipped rather than run partially, because a "
                 f"half-scanned trace reporting 'no cycles' is a wrong answer."
+            )
+        if self.cycles_scanned:
+            # ALWAYS, not only when nothing was found: "no repeating
+            # sequences" and "no repeating sequences between 2 and 12 steps
+            # long" are different claims, and the first one is the one a
+            # reader acts on.
+            parts.append(
+                f"Repeating sequences were searched for at lengths "
+                f"{self.cycle_len_min} to {self.cycle_len_max} steps; a loop "
+                f"longer than {self.cycle_len_max} is not looked for and is "
+                f"not reported as absent."
             )
         parts.append(
             "Repeats are matched on the exact input, so a prompt carrying a "

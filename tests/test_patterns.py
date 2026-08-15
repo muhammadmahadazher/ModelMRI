@@ -304,3 +304,64 @@ def test_findings_serialise_for_the_wire():
     assert doc["n_steps"] == 3
     assert doc["repeats"][0]["count"] == 3
     assert isinstance(doc["means"], str)
+
+
+def test_the_cycle_length_window_is_reported_not_implied():
+    """The constants call both bounds "reported rather than silent" and only
+    the step cap was. MIN/MAX_CYCLE_LEN appeared nowhere but the loop range.
+
+    An agent that repeats a 20-step sequence three times is a real loop and
+    is outside the window — a legitimate limit. What was not legitimate is
+    reporting it as "no sequence repeated back to back", which reads as
+    "we looked and your agent does not loop".
+    """
+    steps = [
+        {
+            "id": str(i),
+            "kind": "tool_call",
+            "name": f"s{i % 20}",
+            "input": f"x{i % 20}",
+        }
+        for i in range(60)
+    ]
+    found = patterns.analyse(steps)
+
+    assert found.cycles == [], "20 is outside the searched window, as designed"
+    said = found.means()
+    assert f"lengths {patterns.MIN_CYCLE_LEN} to {patterns.MAX_CYCLE_LEN} steps" in said
+    assert "not reported as absent" in said
+
+    body = found.to_dict()
+    assert body["cycle_len_min"] == patterns.MIN_CYCLE_LEN
+    assert body["cycle_len_max"] == patterns.MAX_CYCLE_LEN
+
+
+def test_the_window_is_stated_even_when_cycles_were_found():
+    """ "3 repeating sequences" and "3 repeating sequences between 2 and 12
+    steps" are different claims, and the reader acts on the first."""
+    steps = [
+        {
+            "id": str(i),
+            "kind": "tool_call",
+            "name": f"s{i % 3}",
+            "input": f"x{i % 3}",
+        }
+        for i in range(12)
+    ]
+    found = patterns.analyse(steps)
+    assert found.cycles, "a 3-step loop is inside the window"
+    assert "were searched for at lengths" in found.means()
+
+
+def test_a_trace_too_long_to_scan_says_so_and_omits_the_window():
+    """The window describes a scan that ran. When none did, the louder
+    sentence is the one that belongs."""
+    steps = [
+        {"id": str(i), "kind": "tool_call", "name": "s", "input": "x"}
+        for i in range(patterns.MAX_STEPS_FOR_CYCLES + 1)
+    ]
+    found = patterns.analyse(steps)
+    assert found.cycles_scanned is False
+    said = found.means()
+    assert "CYCLES WERE NOT SCANNED" in said
+    assert "were searched for at lengths" not in said
