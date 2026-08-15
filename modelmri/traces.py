@@ -33,6 +33,15 @@ log = logging.getLogger("modelmri")
 # import to hide a cycle works until someone moves it back.
 from .step_kinds import VALID_KINDS  # noqa: E402
 
+# meta["source"] for a run this app performed itself, as opposed to one
+# somebody's own instrumented program posted to /api/traces/import.
+#
+# A NEW KEY, NOT A REUSE OF meta["demo"]. `demo` means "sample data shipped
+# with ModelMRI, not something you produced"; this means the exact opposite —
+# you produced it, here, in this page. Collapsing the two would put your own
+# generations behind the "Remove sample" button.
+SOURCE_APP = "app"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS trace (
   id TEXT PRIMARY KEY,
@@ -576,23 +585,34 @@ class TraceStore:
                 " t.meta"
                 " FROM trace t ORDER BY t.started_at DESC"
             ).fetchall()
-        return [
-            {
-                "id": r[0],
-                "name": r[1],
-                "started_at": r[2],
-                "n_steps": r[3],
-                "total_ms": r[4],
-                "n_errors": r[5],
-                # Scripted sample data must never be indistinguishable from a
-                # run you actually recorded. examples/record_demo.py writes a
-                # deliberately failing `git push` so the timeline has an error
-                # to render, and in the list that looked exactly like your own
-                # agent failing.
-                "demo": bool((json.loads(r[6] or "{}") or {}).get("demo")),
-            }
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            meta = json.loads(r[6] or "{}") or {}
+            out.append(
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "started_at": r[2],
+                    "n_steps": r[3],
+                    "total_ms": r[4],
+                    "n_errors": r[5],
+                    # Scripted sample data must never be indistinguishable
+                    # from a run you actually recorded.
+                    # examples/record_demo.py writes a deliberately failing
+                    # `git push` so the timeline has an error to render, and
+                    # in the list that looked exactly like your own agent
+                    # failing.
+                    "demo": bool(meta.get("demo")),
+                    # Same argument, one step further out: a generation you
+                    # ran in the playground and a run of your own agent code
+                    # both belong here, and they are not the same thing. The
+                    # panel labels the first so the list stays readable when
+                    # it holds both. "" for every trace written before this
+                    # existed, and for anything posted without the key.
+                    "source": str(meta.get("source") or ""),
+                }
+            )
+        return out
 
     # ------------------------------------------------------------ rubrics
 
@@ -764,6 +784,94 @@ class TraceStore:
             "meta": json.loads(t[3]),
             "steps": steps,
         }
+
+
+def record_generation(
+    store: TraceStore,
+    *,
+    model: str,
+    backend: str,
+    prompt: str,
+    output: str,
+    started_at: str,
+    duration_ms: int,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
+    failure: str | None = None,
+) -> str | None:
+    """File one generation made in the app as a trace. Returns the id, or None.
+
+    THE PANEL WAS ONLY EVER HALF A FEATURE.
+
+    Until this, the only way to put anything in the agents panel was to add
+    `modelmri-record` to a program of your own. So the obvious thing — load a
+    model here, generate, look at the panel that says RECORDED RUNS — filled
+    nothing, on any model, ever. That is indistinguishable from broken, and it
+    was reported as broken. A generation IS an llm_call; the store already
+    holds exactly that shape.
+
+    Backend-agnostic on purpose: everything that varies between HF and Ollama
+    (the model id, the token counts, whether there are token counts at all)
+    arrives as an argument. Nothing here knows which one ran.
+
+    NEVER RAISES. The recorder's own contract is that recording cannot crash
+    the host app, and here the host is somebody's generation — the reader
+    watching tokens arrive must not lose them because a SQLite write failed.
+    One log line and the generation stands.
+
+    `failure` is a SENTENCE, NOT AN EXCEPTION, and the name says so because
+    the difference is the whole of test_no_exception_leaks: what lands here is
+    the same text the caller published to the browser — an authored Refusal,
+    or `_INTERNAL` when the cause was internal. A trace is a document people
+    export and attach to issues, so torch's `str(err)` (which names paths on
+    this machine) must never reach it, and there is nothing here that could
+    turn one into a string.
+    """
+    try:
+        # Partial output is kept and the failure is appended to it. A stream
+        # that died after 40 tokens produced those 40 tokens; throwing them
+        # away would leave a trace that says a run failed without showing how
+        # far it got, which is the question you open the timeline to answer.
+        text = output
+        if failure:
+            text = (
+                f"{output}\n\n[failed] {failure}" if output else f"[failed] {failure}"
+            )
+        return store.import_trace(
+            {
+                # The model id is the trace NAME because the panel groups runs
+                # by name — so repeated generations on one model collapse into
+                # one row with a count, which is what the grouping is for.
+                # Also in meta, where a reader parsing the store finds it
+                # without having to guess that the name means a model.
+                "name": model or "generation",
+                "started_at": started_at,
+                "meta": {
+                    "source": SOURCE_APP,
+                    "model": model,
+                    "backend": backend,
+                },
+                "steps": [
+                    {
+                        "kind": "llm_call",
+                        "name": "generate",
+                        "started_ms": 0,
+                        "duration_ms": max(int(duration_ms), 0),
+                        "input": prompt,
+                        "output": text,
+                        "tokens_in": tokens_in,
+                        "tokens_out": tokens_out,
+                        "error": bool(failure),
+                    }
+                ],
+            }
+        )
+    except Exception:
+        # Everything, deliberately — see the docstring. `Exception` rather
+        # than `BaseException` so a Ctrl-C during a write still ends the
+        # process instead of being logged as a failed recording.
+        log.exception("could not record this generation as a trace")
+        return None
 
 
 def _ms(step: dict, field: str, index: int) -> int:

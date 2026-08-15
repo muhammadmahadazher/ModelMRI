@@ -8,7 +8,9 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import asdict
+from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
 
@@ -54,7 +56,7 @@ from .custom import AdapterError, CustomHandle
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
-from .traces import TraceStore
+from .traces import TraceStore, record_generation
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
 from .vla import VLAHandle
 
@@ -241,6 +243,67 @@ class PromptRequest(BaseModel):
     commit: bool = True
 
 
+class _Recording:
+    """One generation, timed as the app performs it, filed as a trace after.
+
+    Both generation paths — POST /api/model/prompt and the /ws/generate
+    socket — stream pieces out of `runtime.generate_stream` and both end in
+    exactly two ways, a completion or a message saying why not. This holds the
+    clock and the pieces so each of them is three lines rather than a second
+    copy of the arithmetic.
+
+    ONLY COMMITTED RUNS. `commit=False` is the steering A/B firing two throwaway
+    completions to compare against each other; the panel is a record of runs
+    you made, not of the tool's internal probes, and four rows per A/B would
+    bury the run they were comparing.
+    """
+
+    def __init__(self, runtime: ModelRuntime, prompt: str) -> None:
+        self._runtime = runtime
+        self.prompt = prompt
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self._t0 = time.perf_counter()
+        self.pieces = 0
+        self._text: list[str] = []
+        # Read NOW, not at filing time. A load can complete while this is
+        # still streaming — the same race `generate_stream` guards its commit
+        # against — and the trace has to name the model that actually ran.
+        self.model = str(runtime.hf_id or "")
+        self.backend = str(runtime.backend or "")
+
+    def piece(self, text: str) -> None:
+        self.pieces += 1
+        self._text.append(text)
+
+    def file(self, store: TraceStore, failure: str | None = None) -> None:
+        """Store what happened. Silent on success, harmless on failure.
+
+        `failure` is the SENTENCE the reader was given, never `str(err)` —
+        see the three arms at each call site, and record_generation's
+        docstring for why a trace in particular must not carry torch's words.
+        """
+        record_generation(
+            store,
+            model=self.model,
+            backend=self.backend,
+            prompt=self.prompt,
+            output="".join(self._text),
+            started_at=self.started_at,
+            duration_ms=int((time.perf_counter() - self._t0) * 1000),
+            # THE BEST COUNT EACH BACKEND CAN HONESTLY GIVE, AND NO MORE.
+            #
+            # In: the local tokenizer, or None on Ollama, which tokenises in
+            # another process and streams text back with no counts in it.
+            # Out: the streamed pieces — which is the same number the
+            # playground puts on screen for this run ("257 tok · 14.12s"), so
+            # the two views of one generation cannot disagree, and it works on
+            # every backend without asking anything of them.
+            tokens_in=self._runtime.count_tokens(self.prompt),
+            tokens_out=self.pieces,
+            failure=failure,
+        )
+
+
 def create_app(
     trace_db: str | None = None, dataset_repo: str = "lerobot/pusht"
 ) -> FastAPI:
@@ -290,6 +353,17 @@ def create_app(
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     traces = TraceStore(db_path)
     app.state.traces = traces
+
+    async def _file(rec: _Recording | None, failure: str | None = None) -> None:
+        """Store a finished generation, off the event loop. Never raises.
+
+        `to_thread` because the store serialises every caller behind one lock
+        and one connection, so a write that happens to queue behind a
+        `GET /api/traces` would otherwise stall the socket still feeding
+        tokens to the browser.
+        """
+        if rec is not None:
+            await asyncio.to_thread(rec.file, traces, failure)
 
     # `modelmri open somebody.mri` hands the file over here, so the page is
     # already showing the analysis when the browser tab opens. Failing to
@@ -666,29 +740,45 @@ def create_app(
         if not runtime.loaded:
             return JSONResponse({"error": "no model loaded"}, status_code=409)
 
+        # A generation you asked for in this app is a run, and the agents
+        # panel is where runs go. See `_Recording` for why `commit` gates it.
+        rec = _Recording(runtime, req.prompt) if req.commit else None
+
         def run() -> str:
-            return "".join(
-                runtime.generate_stream(
-                    req.prompt, req.max_new_tokens, req.temperature, req.commit
-                )
-            )
+            out = []
+            for piece in runtime.generate_stream(
+                req.prompt, req.max_new_tokens, req.temperature, req.commit
+            ):
+                out.append(piece)
+                if rec is not None:
+                    rec.piece(piece)
+            return "".join(out)
 
         try:
-            return {"generation": await asyncio.to_thread(run)}
+            generation = await asyncio.to_thread(run)
         except Refusal as err:
             # Ollama quitting mid-session, Ollama refusing the prompt, no
             # model loaded. `runtime.generate_stream` translates ollama.py's
             # plain RuntimeErrors into Refusals at the call, which is what
             # lets this handler tell them apart from the next arm.
+            await _file(rec, str(err))
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
+            await _file(rec, str(err))
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             # CUDA out of memory, a streamer timeout, an architecture
             # transformers cannot run eagerly. These were 409s carrying
             # "{type}: {err}" — a full GPU reported as a conflict, in torch's
             # words, which can name paths on this machine.
+            #
+            # The trace gets the sentence the reader gets, for the same
+            # reason: torch's text can name paths on this machine, and a
+            # trace is a document people export and attach to issues.
+            await _file(rec, _INTERNAL)
             return _internal(err, "/api/model/prompt")
+        await _file(rec)
+        return {"generation": generation}
 
     @app.get("/api/attention/meta")
     def attention_meta() -> dict:
@@ -2871,6 +2961,11 @@ def create_app(
                 queue: asyncio.Queue[str | None] = asyncio.Queue()
                 loop = asyncio.get_running_loop()
                 failure: list[str] = []
+                # This socket is how the playground generates, so this is the
+                # path that fills the agents panel for a model loaded here.
+                # It always commits — there is no `commit` in the message —
+                # so every run over it is recorded.
+                rec = _Recording(runtime, str(msg.get("prompt", "")))
 
                 def produce(request: dict = msg) -> None:
                     try:
@@ -2880,6 +2975,7 @@ def create_app(
                             float(request.get("temperature", 0.7)),
                         )
                         for piece in pieces:
+                            rec.piece(piece)
                             loop.call_soon_threadsafe(queue.put_nowait, piece)
                     except (Refusal, BadRequest) as err:
                         # A stream that stops mid-sentence has to say why, and
@@ -2921,6 +3017,11 @@ def create_app(
                 threading.Thread(target=produce, daemon=True).start()
                 while (piece := await queue.get()) is not None:
                     await ws.send_json({"type": "token", "text": piece})
+                # Filed BEFORE the terminal frame, so a panel refreshed the
+                # instant the playground says "done" already has the run in
+                # it. A trace that lands a beat after the event that would
+                # make you go and look is a trace you have to reload to see.
+                await _file(rec, failure[0] if failure else None)
                 if failure:
                     await ws.send_json({"type": "error", "message": failure[0]})
                 else:

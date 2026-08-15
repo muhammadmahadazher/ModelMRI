@@ -8,6 +8,23 @@ An agent run is a tree — the model calls a tool, the tool returns, a subagent
 spawns and does the same thing three levels down. Logs flatten that tree into a
 scroll. This puts it back.
 
+## Two things fill the panel
+
+The **Agents** panel shows recorded runs from two places, and you need the
+library for only one of them:
+
+-   **Generations you make in ModelMRI itself.** Every committed generation in
+    the playground is stored as a one-step `llm_call` trace — prompt in,
+    output out, with the model id, the duration and the token counts. Nothing
+    to install and nothing to instrument; load a model, generate, and the run
+    is there. Works on any model and either backend.
+-   **Runs of your own agent code**, recorded with `modelmri-record` and sent
+    to the same store. That is what the rest of this page is about, and it is
+    where the tree — tool calls, subagents, nesting — comes from.
+
+Runs of the first kind are labelled `this app` in the list, so a list holding
+both stays readable.
+
 ## Install
 
 ```bash
