@@ -100,25 +100,44 @@ class Attribution:
     residual_share: float
     norm_kind: str
     components: list[Contribution] = field(default_factory=list)
+    # How many components were DECOMPOSED, against how many are carried here.
+    # `top_k` sorts by magnitude and cuts, and both of these used to be read
+    # off the surviving list: on gpt2 that is 40 rows out of 157, so the
+    # count of unreadable components was taken over the 40 STRONGEST -- the
+    # ones least likely to be unreadable -- and reported as though it were
+    # the whole decomposition. The dropped rows are not gone from the sum
+    # either; they are in `residual`.
+    n_components: int = 0
+    n_unreadable: int = 0
 
     def to_dict(self) -> dict:
         return {
             **{k: v for k, v in asdict(self).items() if k not in ("components",)},
             "components": [c.to_dict() for c in self.components],
-            "n_unreadable": sum(1 for c in self.components if c.unreadable),
             "means": self.means(),
         }
 
     def means(self) -> str:
-        unreadable = sum(1 for c in self.components if c.unreadable)
-        return (
+        unreadable = self.n_unreadable
+        dropped = max(0, self.n_components - len(self.components))
+        cut = (
+            ""
+            if not dropped
+            else (
+                f"{len(self.components)} of {self.n_components} components are "
+                f"listed, the strongest by magnitude; the other {dropped} were "
+                f"decomposed and are not shown. "
+            )
+        )
+        return cut + (
             f"Direct contribution to the logit for {self.token!r}, in logits, "
             f"each shift-corrected against its own vocabulary mean. They sum "
             f"to {self.real_logit - self.residual:.4f} against the model's "
             f"real {self.real_logit:.4f} — a reconstruction residual of "
             f"{self.residual:.4f} ({self.residual_share:.2%}), which is what "
             f"freezing the {self.norm_kind} scale cost on this run. "
-            f"{unreadable} components fall below that residual: their direct "
+            f"{unreadable} of {self.n_components} components fall below that "
+            f"residual: their direct "
             f"effect cannot be told from the approximation's own error, which "
             f"is not the same as their being unimportant. DIRECT-PATH ONLY — "
             f"a head that feeds a later head shows near zero here and can "
@@ -383,11 +402,18 @@ def attribute(model, tokenizer, ids, *, position: int = -1, top_k: int = 0):
     for component in components:
         component.unreadable = abs(component.logits) < floor
 
+    # Counted over EVERY component, before the cut. Both of these describe the
+    # decomposition, not the slice of it that fits in a table.
+    n_components = len(components)
+    n_unreadable = sum(1 for c in components if c.unreadable)
+
     components.sort(key=lambda c: -abs(c.logits))
     if top_k > 0:
         components = components[:top_k]
 
     return Attribution(
+        n_components=n_components,
+        n_unreadable=n_unreadable,
         token=tokenizer.decode([token_id]),
         token_id=token_id,
         position=int(position if position >= 0 else ids.shape[-1] + position),
