@@ -34,6 +34,7 @@ one that found nothing.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 
@@ -62,6 +63,11 @@ KINDS = (
 )
 
 OPERATORS = ("gt", "gte", "lt", "lte", "eq")
+
+# The kinds that compare a measurement against `value`. Derived from the list
+# above rather than written out twice: a new counting kind that forgot to
+# appear here would go back to silently thresholding at zero.
+NUMERIC_KINDS = tuple(k for k in KINDS if k.endswith(("_count", "_over", "_percent")))
 
 
 class RubricError(BadRequest):
@@ -145,8 +151,38 @@ def parse_rule(raw: dict) -> Rule:
             f"{name!r} uses operator {op!r}; use one of {', '.join(OPERATORS)}."
         )
 
+    # Four kinds compare against `value`; the rest read `pattern` or nothing,
+    # and must stay writable without one.
     value = raw.get("value", 0)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if kind in NUMERIC_KINDS:
+        # This used to coerce anything unusable to 0.0, and that is the one
+        # failure this parser cannot afford. `{"kind": "duration_over", "op":
+        # "gt", "value": "500"}` -- a string, the ordinary JSON slip -- became
+        # `duration_over gt 0`, which every run on earth satisfies. The rubric
+        # then reported a full-marks match against a threshold nobody wrote.
+        # Every other malformed field here refuses and names itself; so does
+        # this one now.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RubricError(
+                f"{name!r} is a {kind} rule, so `value` has to be a number. "
+                # `default=repr` because this parser is also called with plain
+                # Python dicts, and a value json cannot serialise would raise
+                # TypeError from inside the error path -- losing the refusal
+                # that was being written.
+                f"It was given {json.dumps(value, default=repr)}, and a "
+                f"threshold this "
+                f"cannot read is not one it will guess at."
+            )
+        if not math.isfinite(value):
+            # NaN loses every comparison and infinity wins every one, in both
+            # cases with nothing on screen saying the rule never really ran.
+            raise RubricError(
+                f"{name!r} has a `value` of {value}, which no measurement can "
+                f"be above or below in any useful sense."
+            )
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        # Unused by this kind: carried as 0 rather than refused, so a rule
+        # that legitimately has no threshold is not asked to invent one.
         value = 0.0
 
     pattern = str(raw.get("pattern") or "")

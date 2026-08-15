@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from modelmri import rubric
+from modelmri import rubric, step_kinds
 from modelmri.errors import BadRequest
 
 
@@ -366,3 +366,58 @@ def test_a_skipped_rule_cannot_suppress_an_unrelated_one():
     out = rubric.score([_run("a", steps=[_step("s", error=True)])], rules)
     assert "slowest" in out.skipped
     assert out.counts() == {"failed": 1}, "the answerable rule still answered"
+
+
+# ------------------------------------------- a threshold nobody wrote
+
+
+def test_a_threshold_that_is_not_a_number_is_refused_not_zeroed():
+    """`"500"` -- a string, the ordinary JSON slip -- used to become 0.0.
+
+    `duration_over gt 0` is satisfied by every run that has ever been
+    recorded, so the rubric reported a full-marks match against a threshold
+    nobody wrote, and the document it came from still read `"500"`.
+    """
+    for bad in ("500", None, True, [500], {"ms": 500}):
+        with pytest.raises(rubric.RubricError) as caught:
+            rubric.parse_rule(
+                {"name": "slow", "kind": "duration_over", "op": "gt", "value": bad}
+            )
+        assert "has to be a number" in str(caught.value)
+
+
+def test_a_nonfinite_threshold_is_refused():
+    """NaN loses every comparison and inf wins every one, both in silence."""
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(rubric.RubricError):
+            rubric.parse_rule(
+                {"name": "odd", "kind": "step_count", "op": "gt", "value": bad}
+            )
+
+
+def test_every_counting_kind_is_covered_by_the_number_check():
+    """Derived from KINDS, so a new counting kind cannot quietly opt out."""
+    for kind in rubric.KINDS:
+        rule = {"name": "r", "kind": kind, "value": "nonsense"}
+        if kind.endswith("_matches"):
+            rule["pattern"] = "x"
+        if kind == "kind_count":
+            rule["step_kind"] = sorted(step_kinds.VALID_KINDS)[0]
+
+        if kind in rubric.NUMERIC_KINDS:
+            with pytest.raises(rubric.RubricError):
+                rubric.parse_rule(rule)
+        else:
+            # No threshold to misread: these read `pattern` or nothing, and
+            # must stay writable without a `value` at all.
+            assert rubric.parse_rule(rule).value == 0.0
+
+
+def test_a_rule_with_no_threshold_to_compare_still_parses():
+    assert rubric.parse_rule({"name": "any", "kind": "has_error"}).value == 0.0
+    assert (
+        rubric.parse_rule(
+            {"name": "grep", "kind": "output_matches", "pattern": "boom"}
+        ).value
+        == 0.0
+    )
