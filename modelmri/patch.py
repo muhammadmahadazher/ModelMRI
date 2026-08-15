@@ -727,6 +727,12 @@ def path_trace(
             {
                 "control_max": round(worst, 6),
                 "control_min": round(min(control), 6),
+                # EVERY draw, not just the two extremes. The spread is the
+                # finding: at one site on the reference pair the eight ran from
+                # -0.02 to 0.28, and a verdict quoted as "beat 0.28" hides that
+                # seven of them were nowhere near it. Eight floats per
+                # controlled sender, at most `max_controlled` per receiver.
+                "controls": [round(c, 6) for c in control],
                 "control_draws": draws,
                 "shifted_position": round(shifted, 6),
                 "clears_control": bool(row["recovery"] > worst),

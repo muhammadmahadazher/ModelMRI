@@ -279,6 +279,7 @@ export default function App() {
         onModelChange={refresh}
         replay={session.open}
         sessionPatch={session.patch}
+        sessionPatchGraph={session.patch_graph}
         sessionGround={session.ground}
         onGenerated={() => setRuns((n) => n + 1)}
       />

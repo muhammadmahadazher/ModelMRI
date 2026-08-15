@@ -72,6 +72,11 @@ export interface SessionState {
    *  this tool that is causal rather than correlational was the one you could
    *  not send anybody. */
   patch?: { available: boolean; clean: string; corrupt: string };
+  /** A recorded PATCHING GRAPH, a separate section from `patch` above. It
+   *  costs ~1,500 forward passes to build and cannot be rebuilt from a `.mri`
+   *  at all, so the panel needs to know the file has one rather than offering
+   *  a button whose only outcome is a refusal. */
+  patch_graph?: { available: boolean; n_nodes: number; n_edges: number };
   /** Whether the recording carries a grounding result, and what it asked.
    *  The document itself is NOT in the file — a `.mri` carries passage
    *  previews, deliberately, because a grounded document is usually the
@@ -2275,6 +2280,88 @@ export const pathTrace = (body: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then((r) => json<PathTrace>(r));
+
+/** #52 — a PATCHING graph, walked backwards from the node grid's own sites.
+ *
+ *  NOT `Graph` above, which is somebody else's transcoder attribution graph
+ *  read out of a `.pt`. Two different objects from two different measurements,
+ *  and the type names keep them apart for the same reason the `.mri` sections
+ *  do.
+ */
+export interface PatchGraphNode {
+  id: string;
+  layer: number;
+  /** null for an MLP or a residual site. */
+  head: number | null;
+  position: number;
+  /** "seed" for a site the node grid flagged, "sender" otherwise. */
+  role: string;
+  depth: number;
+}
+
+export interface PatchGraphEdge {
+  source: string;
+  target: string;
+  /** The SAME recovery fraction the node grid and `path_trace` report. */
+  recovery: number;
+  /** The strongest of `control_draws` same-norm random patches at this site.
+   *  Every drawn edge has one — an edge with a score and no verdict is pruned
+   *  server-side rather than drawn as though it had passed. */
+  control_max: number | null;
+  /** EVERY draw, not just the strongest. The spread is the finding: a verdict
+   *  quoted as "beat 0.28" reads differently once you can see that seven of
+   *  the eight were nowhere near it. Absent on a `.mri` written before they
+   *  travelled — the verdict still rests on `control_max`, which is there. */
+  controls?: number[];
+  control_draws: number;
+  /** `false` is a real verdict and the panel draws it differently. */
+  clears_control: boolean | null;
+  clears_position: boolean | null;
+  tested?: boolean;
+}
+
+export interface PatchGraphView {
+  nodes: PatchGraphNode[];
+  edges: PatchGraphEdge[];
+  clean: string;
+  corrupt: string;
+  answer: string;
+  depth: number;
+  max_receivers: number;
+  n_receivers_expanded: number;
+  n_nodes: number;
+  n_edges: number;
+  /** Senders scored against edges kept. The difference is the prune, and it
+   *  is reported rather than implied. */
+  n_scored: number;
+  n_pruned: number;
+  n_weak: number;
+  n_untested: number;
+  passes: number;
+  seconds: number;
+  prune_threshold: number;
+  prune_from: string;
+  /** Receivers that still had senders when the depth ran out. NOT an empty
+   *  edge list: "nothing wrote this" and "we did not ask" differ. */
+  frontier: string[];
+  seeding: string;
+  means: string;
+  /** Set when the graph came out of an open `.mri` rather than the model. */
+  recorded?: boolean;
+  receipt?: Receipt | null;
+}
+
+export const patchGraph = (body: {
+  clean: string;
+  corrupt: string;
+  depth?: number;
+  max_receivers?: number;
+}) =>
+  fetch("/api/patch/graph", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<PatchGraphView>(r));
 
 /** #12 — a hidden state described in words, with two controls. */
 export interface Patchscope {

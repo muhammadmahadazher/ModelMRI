@@ -15,6 +15,7 @@ import FeaturesPanel from "./FeaturesPanel";
 import GroundPanel from "./GroundPanel";
 import ProbePanel from "./ProbePanel";
 import PatchscopePanel from "./PatchscopePanel";
+import PatchGraphPanel from "./PatchGraphPanel";
 import PatchPanel from "./PatchPanel";
 import ModelPicker from "./ModelPicker";
 import { DEMO } from "./demo";
@@ -27,6 +28,9 @@ interface Props {
   replay?: boolean;
   /** The recorded patching trace that `.mri` carries, if it carries one. */
   sessionPatch?: { available: boolean; clean: string; corrupt: string };
+  /** The recorded patching GRAPH, which is a separate section and can be
+   *  present without the grid or absent beside it. */
+  sessionPatchGraph?: { available: boolean; n_nodes: number; n_edges: number };
   sessionGround?: { available: boolean; question: string };
   /**
    * A generation finished — succeeded or failed, the server records both.
@@ -48,6 +52,7 @@ export default function Playground({
   onModelChange,
   replay,
   sessionPatch,
+  sessionPatchGraph,
   sessionGround,
   onGenerated,
 }: Props) {
@@ -480,6 +485,10 @@ export default function Playground({
           recording, only when the file actually carries a trace — a panel
           whose one button can only apologise is worse than no panel. */}
       {introspectable && !replay && <PatchPanel epoch={epoch} />}
+      {/* Directly under the grid it walks backwards from, and gated the same
+          way: it seeds from the grid's own flagged sites, so it needs the same
+          live model the grid does. */}
+      {introspectable && !replay && <PatchGraphPanel epoch={epoch} />}
       {/* Two surfaces of their own, deliberately.
 
           A probe fits to YOUR labelled examples rather than to the current
@@ -506,6 +515,12 @@ export default function Playground({
       )}
       {replay && sessionPatch?.available && (
         <PatchPanel epoch={epoch} recorded={sessionPatch} />
+      )}
+      {/* Same rule again. The graph cost ~1,500 forward passes to build and
+          the recipient has no weights to rebuild it with, so the panel appears
+          only when the file actually carries one. */}
+      {replay && sessionPatchGraph?.available && (
+        <PatchGraphPanel epoch={epoch} recorded={sessionPatch ?? undefined} />
       )}
       {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel

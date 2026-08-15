@@ -40,11 +40,18 @@ would turn "we tested this and it did not survive" into "we never saw this",
 and those are different findings. The panel draws them differently; it does not
 hide them.
 
-Controlling every drawn edge also decouples the picture from the dtype. Pruning
-on recovery alone means the graph's size is set by what the arithmetic can
-express -- MEASURED on gpt2, bfloat16's resolution of 0.25 cut 402 of 403
-senders where float32's 3e-06 would have kept nearly all of them. A graph that
-changes shape with the precision is not a measurement of the model.
+Controlling every drawn edge also decouples the picture's SIZE from the
+arithmetic. Pruning on recovery alone leaves the edge count set by whatever the
+resolution happens to be on this pair, and that number is not a constant of the
+dtype: MEASURED in bfloat16 on both, Qwen3-1.7B reads 0.006231 on the Eiffel /
+Colosseum pair and gpt2 reads 0.25 on the same one -- two orders of magnitude
+apart in the same number format, because the resolution is one representable
+step of the GAP between the two runs' answers, and the gap differs per model
+and per pair. Bounding the graph by what was controlled instead makes its size
+a function of `max_controlled`, which is a number this module chose and
+reports. The resolution still cuts below it, because a recovery the arithmetic
+cannot separate from zero is not a measurement -- it is just no longer what
+decides how big the picture is.
 
 ## Depth is bounded and the bound is reported
 
@@ -111,6 +118,11 @@ class Edge:
     # None when this edge was scored but never controlled -- NOT 0.0, which
     # would read as "random noise here does nothing".
     control_max: float | None = None
+    # EVERY draw, not just the strongest. ROADMAP #52 asks for the eight
+    # controls to be clickable behind an edge, and the SPREAD is the finding:
+    # a verdict quoted as "beat 0.28" reads differently once you can see that
+    # seven of the eight were nowhere near it.
+    controls: list[float] = field(default_factory=list)
     control_draws: int = 0
     # None when untested, for the same reason. False is a real verdict.
     clears_control: bool | None = None
@@ -389,12 +401,11 @@ def build(
                 # DRAWN MEANS CONTROLLED. `path_trace` runs its eight
                 # same-norm draws on the strongest few per receiver, and an
                 # edge without them has a score and no verdict -- there would
-                # be nothing behind it to click. Keeping those would also make
-                # the graph's size a function of the dtype rather than of the
-                # model: MEASURED on gpt2, the bfloat16 resolution is 0.25 and
-                # cut 402 of 403 senders, where float32's 3e-06 would have
-                # kept nearly all of them. A picture that changes size with
-                # the precision is not a measurement of the model.
+                # be nothing behind it to click. Keeping those would also hand
+                # the graph's SIZE to the resolution, which is not a constant:
+                # MEASURED in bfloat16 on both, Qwen3-1.7B reads 0.006231 on
+                # the reference pair and gpt2 reads 0.25 on the same one. See
+                # the module docstring.
                 if row.get("clears_control") is None:
                     graph.n_pruned += 1
                     continue
@@ -426,6 +437,11 @@ def build(
                             if row.get("control_max") is None
                             else float(row["control_max"])
                         ),
+                        controls=[
+                            float(c)
+                            for c in (row.get("controls") or [])
+                            if isinstance(c, (int, float)) and not isinstance(c, bool)
+                        ],
                         control_draws=int(row.get("control_draws") or 0),
                         clears_control=row.get("clears_control"),
                         clears_position=row.get("clears_position"),
