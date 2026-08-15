@@ -229,3 +229,66 @@ def test_the_preview_serialises_for_the_wire():
     assert out["n_redactions"] == 1
     assert out["redactions"][0]["label"] == "api-key"
     assert isinstance(out["means"], str)
+
+
+# ------------------- two reasons a step is missing, said apart
+
+
+def test_a_malformed_entry_is_not_reported_as_a_length_cap():
+    """`len(steps) - len(kept)` folded two different facts into one count and
+    then explained it with only one of them.
+
+    A five-step trace carrying two entries that are not objects reported
+    "2 step(s) are NOT in this file: the trace section holds 500 and the run
+    was longer" — false about the cause and false about the length, in a file
+    whose entire purpose is stating exactly what is in it.
+    """
+    trace = {
+        "id": "t",
+        "name": "run",
+        "steps": [
+            {"id": "a", "kind": "tool_call"},
+            "junk",
+            {"id": "b", "kind": "tool_call"},
+            42,
+            {"id": "c", "kind": "tool_call"},
+        ],
+    }
+    found = bundle.preview(trace)
+
+    assert found.n_steps == 3
+    assert found.n_steps_dropped == 0, "nothing was cut for length"
+    assert found.n_steps_malformed == 2
+
+    said = found.means()
+    assert "the run was longer" not in said
+    assert "not objects" in said
+
+
+def test_a_run_over_the_cap_still_reports_the_cap():
+    """The other cause, which was always reported correctly and must stay
+    that way."""
+    trace = {
+        "id": "t",
+        "name": "run",
+        "steps": [
+            {"id": str(i), "kind": "tool_call"}
+            for i in range(bundle.MAX_TRACE_STEPS + 7)
+        ],
+    }
+    found = bundle.preview(trace)
+
+    assert found.n_steps == bundle.MAX_TRACE_STEPS
+    assert found.n_steps_dropped == 7
+    assert found.n_steps_malformed == 0
+    assert "the run was longer" in found.means()
+
+
+def test_a_clean_trace_claims_neither():
+    trace = {"id": "t", "name": "run", "steps": [{"id": "a", "kind": "tool_call"}]}
+    found = bundle.preview(trace)
+    assert found.n_steps_dropped == 0
+    assert found.n_steps_malformed == 0
+    said = found.means()
+    assert "the run was longer" not in said
+    assert "not objects" not in said

@@ -441,3 +441,59 @@ def test_cancelled_partials_are_removed(tmp_path, monkeypatch):
     assert freed == 4096 + 2048
     assert not list(repo.glob("*.incomplete"))
     assert keep.exists(), "a completed download was deleted"
+
+
+def test_an_unreadable_gpu_is_not_reported_as_an_absent_one(tmp_path):
+    """The comment above this branch says the two states "say different
+    things about them" — and the code still collapsed them.
+
+    `vram` is 0.0 both when the accelerator's memory could not be read and
+    when there is no accelerator, so branching on its truthiness printed
+    "this machine has no GPU" at somebody whose GPU is sitting right there
+    and merely did not answer. That sends them to buy hardware they already
+    own, over a driver or permissions problem the true sentence names.
+
+    `vram_gb is None` alone does not separate the two: `devices._cpu()`
+    returns None for a genuinely CPU-only machine, and an Intel XPU whose
+    properties could not be read returns None too — deliberately, keeping its
+    name, because "an Intel GPU we cannot describe is still an Intel GPU".
+    The NAME is the discriminator, which is what this pins.
+    """
+    with pytest.raises(capacity.TooBig) as unreadable:
+        capacity.guard(
+            140 * 10**9,
+            tmp_path,
+            label="a 70B model",
+            vram_gb=None,
+            accel_name="NVIDIA RTX 4060",
+            free_override=10**15,
+        )
+    with pytest.raises(capacity.TooBig) as absent:
+        capacity.guard(
+            140 * 10**9,
+            tmp_path,
+            label="a 70B model",
+            vram_gb=0.0,
+            free_override=10**15,
+        )
+
+    said_unreadable = str(unreadable.value)
+    said_absent = str(absent.value)
+    assert said_unreadable != said_absent
+    assert "could not be read" in said_unreadable
+    assert "NVIDIA RTX 4060" in said_unreadable
+    assert "no GPU" not in said_unreadable
+    assert "this machine has no GPU" in said_absent
+
+
+def test_a_readable_gpu_still_reports_its_size(tmp_path):
+    with pytest.raises(capacity.TooBig) as caught:
+        capacity.guard(
+            140 * 10**9,
+            tmp_path,
+            label="a 70B model",
+            vram_gb=8.0,
+            accel_name="NVIDIA RTX 4060",
+            free_override=10**15,
+        )
+    assert "NVIDIA RTX 4060 has 8.0 GB" in str(caught.value)

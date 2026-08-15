@@ -126,11 +126,32 @@ def guard(
     vram = vram_gb if vram_gb is not None else 0.0
     ceiling = max(VRAM_MULTIPLE * vram, MIN_INTERESTING_GB)
     if need_gb > ceiling and not confirm:
-        machine = (
-            f"{accel_name or 'your GPU'} has {vram:,.1f} GB"
-            if vram
-            else "this machine has no GPU"
+        # THREE states, not two. The comment above says these are different
+        # and the code still collapsed them: `vram` is 0.0 for an unreadable
+        # accelerator AND for a machine with no GPU, so branching on its
+        # truthiness printed "this machine has no GPU" at somebody whose GPU
+        # is sitting right there and merely did not answer -- sending them to
+        # buy hardware they own, over a driver or permissions problem.
+        #
+        # `vram_gb is None` alone does NOT separate them, which is the part
+        # worth being careful about: `devices._cpu()` returns None for a real
+        # CPU-only machine, and an Intel XPU whose properties could not be
+        # read returns None too, deliberately, with its name intact ("an Intel
+        # GPU we cannot describe is still an Intel GPU"). The NAME is what
+        # tells them apart.
+        named_accelerator = bool(accel_name) and accel_name.strip().lower() not in (
+            "cpu",
+            "none",
         )
+        if vram:
+            machine = f"{accel_name or 'your GPU'} has {vram:,.1f} GB"
+        elif vram_gb is None and named_accelerator:
+            machine = (
+                f"the amount of memory on {accel_name} could not be read, so "
+                f"this is being judged as if there were none"
+            )
+        else:
+            machine = "this machine has no GPU"
         raise TooBig(
             f"{label} is {_human(need_gb)} to download, and {machine}. It "
             f"would take a very long time and then fail to load. Load it "
