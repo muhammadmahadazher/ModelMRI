@@ -96,6 +96,19 @@ FIELDS: tuple[Field, ...] = (
     Field("output", "gen_ai.output.messages", "str"),
     Field("tokens_in", "gen_ai.usage.input_tokens", "int"),
     Field("tokens_out", "gen_ai.usage.output_tokens", "int"),
+    # The other three counts the store holds. They arrived with `ledger.py`
+    # and never reached this table, so an export dropped them -- and it did so
+    # invisibly, for exactly the reason the comment below records about
+    # parent_id and started_ms: the round-trip test walks FIELDS, so a column
+    # missing from FIELDS is both unexported and untested by construction.
+    #
+    # Under `modelmri.*` rather than `gen_ai.*`: cache and reasoning counts
+    # are not in a stable semconv, and this file's own rule is not to squat on
+    # a vocabulary nobody agreed to. A collector that does not know them
+    # carries them as ordinary attributes; ModelMRI reads them back exactly.
+    Field("tokens_cache_read", "modelmri.usage.cache_read_tokens", "int"),
+    Field("tokens_cache_write", "modelmri.usage.cache_write_tokens", "int"),
+    Field("tokens_reasoning", "modelmri.usage.reasoning_tokens", "int"),
     # ModelMRI's own, namespaced because they are not in anybody's semconv and
     # squatting on `gen_ai.*` for them would make this file the source of a
     # vocabulary nobody agreed to.
