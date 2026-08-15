@@ -427,3 +427,72 @@ def test_a_missing_file_is_unreadable_not_gguf(tmp_path):
     from modelmri.custom import checkpoint_kind
 
     assert checkpoint_kind(tmp_path / "absent.gguf") == "unreadable"
+
+
+# --------------- where the tensor blob actually starts
+
+
+def test_the_header_records_where_the_blob_begins(tmp_path):
+    """`data_offset` is the end of the tensor-info table rounded up to
+    `general.alignment`, and only the parser can know it.
+
+    Discarding it forced `quantdiff` to reverse-engineer the base from the
+    file size — `file_size - (last offset + size)` — which is right only if
+    the file ends exactly at the last tensor. GGUF writers pad after it.
+    """
+    path = build(
+        tmp_path,
+        metadata={"general.architecture": (gguf_read._STRING, "llama")},
+        tensors=[("blk.0.attn_q.weight", 0, [32, 32], 0)],
+    )
+    head = gguf_read.read(path)
+
+    assert head.data_offset > 0
+    assert head.data_offset % 32 == 0, "the blob starts on an alignment boundary"
+    # It is the HEADER's end, not the file's end minus the tensors.
+    assert head.data_offset < path.stat().st_size
+
+
+def test_the_recorded_offset_survives_trailing_padding(tmp_path):
+    """The builder writes 64 bytes after the header, which is what a real
+    writer's alignment padding looks like. The old inference ran long by
+    exactly that much and then rounded up again."""
+    tensor = ("blk.0.attn_q.weight", 0, [32, 32], 0)
+    path = build(
+        tmp_path,
+        metadata={"general.architecture": (gguf_read._STRING, "llama")},
+        tensors=[tensor],
+    )
+    head = gguf_read.read(path)
+    sized = [t for t in head.tensors if t.bytes is not None]
+    assert sized, "the fixture tensor must be sizeable for this to mean anything"
+
+    file_size = path.stat().st_size
+    end = max(t.offset + (t.bytes or 0) for t in sized)
+    inferred = file_size - end
+    inferred += (-inferred) % 32
+
+    assert head.data_offset != inferred, (
+        "the file-size inference happens to agree here, so this fixture no "
+        "longer exercises the case"
+    )
+    # On this fixture the inference does not merely run long -- it goes
+    # NEGATIVE, because the header declares a 4 KiB tensor and the file
+    # carries 64 bytes after the table. A negative base reads from before the
+    # start of the file. The recorded offset is a real boundary inside it.
+    assert inferred < 0
+    assert 0 < head.data_offset < file_size
+
+
+def test_a_custom_alignment_is_honoured(tmp_path):
+    """`general.alignment` is a metadata field, not a constant."""
+    path = build(
+        tmp_path,
+        metadata={
+            "general.architecture": (gguf_read._STRING, "llama"),
+            "general.alignment": (gguf_read._UINT32, 64),
+        },
+        tensors=[("blk.0.attn_q.weight", 0, [32, 32], 0)],
+    )
+    head = gguf_read.read(path)
+    assert head.data_offset % 64 == 0

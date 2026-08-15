@@ -303,9 +303,30 @@ def compare(
             f"{qpath.name} uses only ggml types this reader cannot size, so no "
             "tensor can be located in the file."
         )
+    # READ FROM THE HEADER, not inferred from the file size. This used to do
+    # `base = file_size - max(offset + size)`, which is only correct when the
+    # file ends exactly at the last tensor -- and GGUF writers pad to
+    # `general.alignment` after it. Trailing padding made the inferred base
+    # run long by that many bytes, and `base += (-base) % align` then rounded
+    # it UP again, so every tensor was read from past its true start. Not a
+    # crash: dequantising misaligned bytes produces numbers, and the
+    # quantisation-damage report would have been computed on them.
+    base = int(getattr(header, "data_offset", 0) or 0)
+    if not base:
+        # A header parsed before `data_offset` existed. The old inference,
+        # kept as a fallback and named as one.
+        end = max(t.offset + (t.bytes or 0) for t in sized)
+        base = file_size - end
+        base += (-base) % align
+
+    # Whatever the source, the blob has to actually fit.
     end = max(t.offset + (t.bytes or 0) for t in sized)
-    base = file_size - end
-    base += (-base) % align
+    if base + end > file_size:
+        raise Refusal(
+            f"{qpath.name} says its tensors end at byte {base + end:,} and the "
+            f"file is {file_size:,} bytes. Refusing to read past the end "
+            f"rather than returning numbers from whatever is there."
+        )
 
     report = Report(quantised=str(qpath), original=str(odir))
     if limit:
