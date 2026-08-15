@@ -101,3 +101,30 @@ def test_no_module_class_is_named_in_the_loader():
     )
     assert "AutoModel.from_config" in code
     assert "SmolVLMVisionTransformer" not in code
+
+
+def test_a_base_install_is_told_which_extra_encodes_a_frame(monkeypatch):
+    """Pillow is in the vla-lite extra; `encode_png` is on three code paths.
+
+    A base install used to get `ModuleNotFoundError: No module named 'PIL'`,
+    which names a module the user never asked for and no way to fix it. This
+    also caught a real CI hole: torch is a BASE dependency, so the VLA tests
+    run everywhere, and they reached this line on a runner where nothing had
+    pulled Pillow in.
+    """
+    import sys
+
+    import numpy as np
+
+    from modelmri.errors import Refusal
+    from modelmri.vla_data import encode_png
+
+    for name in [n for n in sys.modules if n == "PIL" or n.startswith("PIL.")]:
+        monkeypatch.delitem(sys.modules, name)
+    # A None entry is what makes `import PIL` raise, so the import inside
+    # encode_png fails the same way it does where Pillow was never installed.
+    monkeypatch.setitem(sys.modules, "PIL", None)
+
+    with pytest.raises(Refusal) as caught:
+        encode_png(np.zeros((4, 4, 3), dtype="uint8"))
+    assert "modelmri[vla-lite]" in str(caught.value)

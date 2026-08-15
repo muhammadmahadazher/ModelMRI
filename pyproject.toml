@@ -126,6 +126,13 @@ dev = [
     "pytest-xdist>=3.6",
     "httpx>=0.27",
     "playwright>=1.48",
+    # Pillow ships in the vla-lite extra, which `uv sync --dev` does not
+    # install -- but torch is a BASE dependency, so the VLA tests get past
+    # their `importorskip("torch")` and reach `encode_png` on every runner.
+    # They passed anywhere something else happened to pull Pillow in and
+    # failed on macos/3.11, where nothing did. Guarding the tests with a
+    # skip would have turned that into a check that quietly stopped running.
+    "pillow>=10",
     # tomllib landed in 3.11. The version-drift test parses pyproject.toml, and
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".

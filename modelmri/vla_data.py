@@ -415,8 +415,20 @@ class LeRobotV3Reader:
 
 
 def encode_png(rgb) -> str:
-    """RGB ndarray -> data URL (96x96 PNG is ~5 KB, fine for JSON)."""
-    from PIL import Image
+    """RGB ndarray -> data URL (96x96 PNG is ~5 KB, fine for JSON).
+
+    Pillow lives in the vla-lite extra, so a base install reaching this raised
+    a bare ModuleNotFoundError naming a module the user never asked for. It is
+    reached from three places -- the frame server, `VLA.share_payload` and the
+    HDF5 reader -- and every one of them is somebody looking at a robot frame.
+    """
+    try:
+        from PIL import Image
+    except ImportError as err:
+        raise Refusal(
+            "Encoding a robot frame as PNG needs Pillow. Install it with "
+            "`pip install modelmri[vla-lite]`."
+        ) from err
 
     buf = io.BytesIO()
     Image.fromarray(rgb).save(buf, format="PNG", optimize=True)
