@@ -1226,7 +1226,19 @@ def find_torchscript(limit: int = 40) -> list[dict]:
             for path in sorted(base.rglob(pattern)):
                 if len(out) >= limit:
                     return out
-                if any(part in skip for part in path.parts):
+                # Relative to the scan root, not the absolute path -- the
+                # same fix `find_adapters` above already carries, in its own
+                # words: "`path.parts` includes every ancestor above the root,
+                # so a repo that happens to live under a directory named
+                # `build`, `dist`, `node_modules` or `venv` had EVERY
+                # candidate skipped and the scan silently found nothing".
+                #
+                # It was fixed there and left here, so the checkpoint scanner
+                # still returned an empty list for anyone whose models sit
+                # under a path with `venv` or `site-packages` anywhere above
+                # them -- an answer about where they keep their files, printed
+                # as an answer about what they have.
+                if any(part in skip for part in path.relative_to(base).parts):
                     continue
                 try:
                     key = path.resolve()

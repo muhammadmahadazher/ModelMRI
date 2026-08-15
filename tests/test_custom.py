@@ -597,3 +597,62 @@ def test_an_entirely_nonfinite_output_still_says_so():
     assert out["nonfinite"] is True
     assert out["n_nonfinite"] == 2
     assert "argmax" not in out
+
+
+# ------------- a scan that answers about your files, not about their address
+
+
+def _under(tmp_path, *parts):
+    root = tmp_path.joinpath(*parts)
+    root.mkdir(parents=True)
+    return root
+
+
+@pytest.mark.parametrize("ancestor", ["venv", "site-packages", "node_modules", ".git"])
+def test_a_checkpoint_under_a_skipped_ancestor_is_still_found(tmp_path, ancestor):
+    """`find_adapters` documents this fix in its own words — "`path.parts`
+    includes every ancestor above the root, so a repo that happens to live
+    under a directory named `build`, `dist`, `node_modules` or `venv` had
+    EVERY candidate skipped and the scan silently found nothing" — and
+    `find_torchscript` was left checking the absolute parts.
+
+    So the checkpoint scanner returned an empty list for anyone whose models
+    sit under such a path: an answer about where they keep their files,
+    printed as an answer about what they have.
+    """
+    root = _under(tmp_path, ancestor, "my-models")
+    (root / "epoch3.pt").write_bytes(b"x" * 100)
+
+    custom.add_root(str(root))
+    found = custom.find_torchscript()
+
+    assert [f["name"] for f in found] == ["epoch3.pt"]
+
+
+@pytest.mark.parametrize("ancestor", ["venv", "site-packages", "node_modules"])
+def test_an_adapter_under_a_skipped_ancestor_is_still_found(tmp_path, ancestor):
+    """The sibling, which was already correct. Both are pinned so the next
+    fix cannot land in one and miss the other again."""
+    root = _under(tmp_path, ancestor, "my-models")
+    (root / "adapter.py").write_text("def load():\n    return None\n", encoding="utf-8")
+
+    custom.add_root(str(root))
+    found = custom.find_adapters()
+
+    assert any(f["name"] == "adapter.py" for f in found)
+
+
+def test_the_skip_list_still_applies_inside_the_scan_root(tmp_path):
+    """Relative, not absent: a `__pycache__` BELOW the root is still skipped,
+    which is what the list is for."""
+    root = _under(tmp_path, "models")
+    junk = root / "__pycache__"
+    junk.mkdir()
+    (junk / "cached.pt").write_bytes(b"x" * 100)
+    (root / "real.pt").write_bytes(b"x" * 100)
+
+    custom.add_root(str(root))
+    names = [f["name"] for f in custom.find_torchscript()]
+
+    assert "real.pt" in names
+    assert "cached.pt" not in names
