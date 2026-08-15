@@ -77,6 +77,10 @@ def _doc(meta=None):
         "steps": [
             {
                 "id": "s1",
+                # Required by import_trace's documented shape, and no longer
+                # defaulted to 0 — a step with no place on the timeline is not
+                # a step that started when the trace did.
+                "started_ms": 0,
                 "kind": "llm_call",
                 "name": "plan",
                 "input": "The capital of France is",
@@ -185,7 +189,13 @@ def _step(**meta):
         "n_prompt_tokens": 5,
     }
     base.update(meta)
-    return {"id": "s1", "kind": "llm_call", "input": base["prompt"], "meta": base}
+    return {
+        "id": "s1",
+        "started_ms": 0,
+        "kind": "llm_call",
+        "input": base["prompt"],
+        "meta": base,
+    }
 
 
 def test_adopting_sets_the_state_every_panel_reads(runtime):
@@ -298,7 +308,7 @@ def test_a_missing_step_is_a_404_not_a_500(client):
             "id": "t1",
             "name": "run",
             "started_at": "2026-01-01T00:00:00Z",
-            "steps": [{"id": "s1", "kind": "llm_call", "input": "x"}],
+            "steps": [{"id": "s1", "started_ms": 0, "kind": "llm_call", "input": "x"}],
         },
     )
     traces = client.get("/api/traces").json()
@@ -316,7 +326,7 @@ def test_a_hosted_step_refuses_with_409_not_500(client):
             "id": "t1",
             "name": "run",
             "started_at": "2026-01-01T00:00:00Z",
-            "steps": [{"id": "s1", "kind": "llm_call", "input": "x"}],
+            "steps": [{"id": "s1", "started_ms": 0, "kind": "llm_call", "input": "x"}],
         },
     )
     tid = client.get("/api/traces").json()[0]["id"]
