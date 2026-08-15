@@ -503,3 +503,42 @@ def test_a_file_with_no_lens_reads_as_an_empty_one():
     parsed = s.parse(_lens_doc([]))
     assert parsed.lens == []
     assert parsed.lens_info == {}
+
+
+def test_an_attention_block_with_nothing_to_draw_is_refused_at_parse():
+    """`parse` checked that each block IS a dict and stopped there, so
+    `{"0:0": {"layer": 0}}` opened cleanly and then
+    `_dequantise(block["q"], block["scale"], ...)` raised KeyError on the
+    first request for that head — a 500, out of a file the reader had just
+    been told opened.
+
+    That is the failure the comment above this check already describes for
+    the index itself, one level further in.
+    """
+    for damaged in ({"layer": 0}, {"q": "AAAA"}, {"scale": 0.004}, {}):
+        raw = json.loads(gzip.decompress(_build()))
+        key = next(iter(raw["attention"]))
+        raw["attention"][key] = damaged
+        blob = gzip.compress(json.dumps(raw).encode())
+        with pytest.raises(session.SessionError) as caught:
+            session.parse(blob)
+        assert "cannot be drawn" in str(caught.value), f"accepted {damaged!r}"
+
+
+def test_a_scale_that_is_not_a_number_is_refused():
+    """`True` is an int in Python, and a bool scale would dequantise every
+    cell to 0 or 1."""
+    for hostile in (True, "0.004", None, [0.004]):
+        raw = json.loads(gzip.decompress(_build()))
+        key = next(iter(raw["attention"]))
+        raw["attention"][key] = {"q": "AAAA", "scale": hostile}
+        blob = gzip.compress(json.dumps(raw).encode())
+        with pytest.raises(session.SessionError):
+            session.parse(blob)
+
+
+def test_an_intact_file_still_opens():
+    """The guard must not turn a good file away."""
+    parsed = session.parse(_build())
+    assert parsed.attention
+    assert parsed.attention_slice(0, 0)["matrix"]

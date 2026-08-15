@@ -1823,6 +1823,23 @@ def parse(data: bytes) -> Session:
     ):
         raise SessionError("the session's attention index is missing or malformed")
 
+    # And each block has the two fields it will be READ for. The check above
+    # stops at "is a dict", so `{"0:0": {"layer": 0}}` parsed cleanly and then
+    # `_dequantise(block["q"], block["scale"], ...)` raised KeyError on the
+    # first request for that head -- a 500, from a file the reader was told
+    # had opened. Exactly the failure the comment above describes, one level
+    # further in. `verify.dequantise` reads the same two keys, so validating
+    # here covers both.
+    for key, block in attention.items():
+        scale = block.get("scale")
+        if not isinstance(block.get("q"), str) or (
+            not isinstance(scale, (int, float)) or isinstance(scale, bool)
+        ):
+            raise SessionError(
+                f"the session's attention block {key!r} has no stored matrix "
+                f"and scale to read, so it cannot be drawn"
+            )
+
     # These reach the UI as loop bounds. A float, a negative, or 1e20 is not
     # a shape — it is a hang or a crash in whatever renders it.
     counts = {}
