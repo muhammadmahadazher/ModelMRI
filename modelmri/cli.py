@@ -21,7 +21,6 @@ def diff_sessions(
     arithmetic. That is what makes it usable as a CI step -- a job that has to
     install torch to check a regression is a job nobody adds.
     """
-    import json
 
     from . import mri_diff
     from .errors import BadRequest, Refusal
@@ -61,7 +60,6 @@ def run_sweep(
     time to press ctrl-c -- not after.
     """
     import datetime
-    import json
     import uuid
 
     from . import sweep as sweep_mod
@@ -171,7 +169,6 @@ def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     a missing PyAV is a fact about the machine, and exiting non-zero for it
     would make the gate about the environment rather than the data.
     """
-    import json as _json
 
     from . import vla_audit
 
@@ -200,7 +197,7 @@ def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
 
     report = vla_audit.audit(reader)
     if as_json:
-        print(_json.dumps(report.to_dict(), indent=2, allow_nan=False))
+        print(json.dumps(report.to_dict(), indent=2, allow_nan=False))
         return 1 if report.broken else 0
 
     mark = {vla_audit.OK: "OK  ", vla_audit.BROKEN: "FAIL", vla_audit.UNCHECKED: "--  "}
@@ -267,7 +264,6 @@ def verify_session(path, *, as_json: bool = False) -> int:
     not a failure of the file, and exiting non-zero for it would make `verify`
     useless in CI the moment somebody ran it on a different accelerator.
     """
-    import json
 
     from . import verify as verify_mod
     from .errors import BadRequest, Refusal
@@ -305,7 +301,6 @@ def inspect_session(path, *, as_json: bool = False) -> int:
     rewritten in the first place was that 26 seconds of imports to read a
     54 KB file reads as a hang, and somebody pressed ctrl-c.
     """
-    import json
     from pathlib import Path
 
     from . import session
@@ -564,7 +559,6 @@ def export_trace(
     and the answer has to travel with the spans and be visible at the moment
     of sending.
     """
-    import json
 
     from . import otel, paths
     from .errors import BadRequest, Refusal
