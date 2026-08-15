@@ -37,6 +37,7 @@ never "used here".
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 
 from .errors import BadRequest, Refusal
@@ -225,6 +226,30 @@ def _split(vectors, labels, *, seed: int):
     return torch.tensor(sorted(train)), torch.tensor(sorted(test))
 
 
+def _percentile(ordered: list[float], p: float) -> float:
+    """Nearest-rank percentile of an already-sorted list.
+
+    The ceiling used to be `band[min(n - 1, round(n * p / 100))]`, one rank
+    too high at every n -- and at the default 20 permutations that lands on
+    index 19 of 0..19, which is the MAXIMUM. The comment beside NULL_HIGH
+    rules that out in as many words: "with 20 refits the single best shuffle
+    is the best of 20 draws and using it as the ceiling would make the null
+    wider every time more permutations were run." The code did exactly what
+    the comment says it must not.
+
+    It is not only mislabelling. `expected_false_positives` is derived as
+    `n_layers * (100 - NULL_HIGH) / 100`, which assumes the ceiling really is
+    the 95th percentile; against the max of 20 draws the true rate is 1/21,
+    and the two only agree by coincidence at this one value of
+    `n_permutations`. Raising it would have moved the real rate and left the
+    reported one alone.
+    """
+    if not ordered:
+        raise ValueError("a percentile of nothing is not a number")
+    rank = math.ceil(p / 100 * len(ordered)) - 1
+    return float(ordered[min(len(ordered) - 1, max(0, rank))])
+
+
 def _fit(x, y, *, steps: int = STEPS, lr: float = LR, l2: float = L2):
     """A logistic probe, in torch. Returns (weights, bias).
 
@@ -338,9 +363,9 @@ def sweep(
             null_scores.append(
                 _accuracy(n_weights, n_bias, n_mean, n_std, x_test, y_test)
             )
-        band = torch.tensor(sorted(null_scores))
-        low = float(band[max(0, round(len(band) * NULL_LOW / 100) - 1)])
-        high = float(band[min(len(band) - 1, round(len(band) * NULL_HIGH / 100))])
+        band = sorted(null_scores)
+        low = _percentile(band, NULL_LOW)
+        high = _percentile(band, NULL_HIGH)
 
         rows.append(
             LayerProbe(

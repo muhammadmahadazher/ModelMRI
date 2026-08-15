@@ -351,3 +351,58 @@ def test_a_saved_direction_carries_the_probe_evidence(gpt2, tmp_path, monkeypatc
         "a saved direction comes from a layer that beat its own null"
     )
     assert "READABLE IS NOT USED" in stored["note"]
+
+
+# --------------------------- the ceiling is the 95th, not the best shuffle
+
+
+def test_the_null_ceiling_is_not_the_best_of_the_shuffles():
+    """The comment beside NULL_HIGH rules this out in as many words: "with 20
+    refits the single best shuffle is the best of 20 draws and using it as the
+    ceiling would make the null wider every time more permutations were run."
+
+    `band[min(n - 1, round(n * 95 / 100))]` is one rank too high at every n,
+    and at the default 20 permutations it is index 19 of 0..19 — the maximum.
+    """
+    band = [i / 100 for i in range(probe.N_PERMUTATIONS)]
+    ceiling = probe._percentile(band, probe.NULL_HIGH)
+    assert ceiling < band[-1], "the ceiling is the best shuffle of the batch"
+    assert ceiling == band[18]
+
+
+@pytest.mark.parametrize("n", [20, 50, 100, 200])
+def test_the_ceiling_never_lands_on_the_maximum_at_any_permutation_count(n):
+    """The failure mode the comment predicts: a band that widens as more
+    permutations are run, because the estimator keeps picking the extreme."""
+    band = [i / n for i in range(n)]
+    assert probe._percentile(band, probe.NULL_HIGH) < band[-1]
+
+
+def test_the_reported_rate_matches_the_band_it_describes():
+    """`expected_false_positives` is `n_layers * (100 - NULL_HIGH) / 100`,
+    which assumes the ceiling is genuinely the 95th percentile. Against the
+    max of 20 draws the true rate is 1/21 — the two agreed only by coincidence
+    at that one permutation count, and raising it would have moved the real
+    rate and left the reported one alone."""
+    band = [i / 1000 for i in range(1000)]
+    ceiling = probe._percentile(band, probe.NULL_HIGH)
+    above = sum(1 for v in band if v > ceiling)
+    assert above / len(band) == pytest.approx((100 - probe.NULL_HIGH) / 100, abs=0.002)
+
+
+def test_the_floor_is_the_low_percentile_and_not_the_worst_shuffle():
+    band = [i / 100 for i in range(100)]
+    floor = probe._percentile(band, probe.NULL_LOW)
+    assert floor == band[4]
+    assert floor > band[0]
+
+
+def test_a_single_permutation_still_answers():
+    """n=1 has one rank; the estimator must not index past it or below zero."""
+    assert probe._percentile([0.7], probe.NULL_HIGH) == 0.7
+    assert probe._percentile([0.7], probe.NULL_LOW) == 0.7
+
+
+def test_a_percentile_of_nothing_is_refused_rather_than_invented():
+    with pytest.raises(ValueError):
+        probe._percentile([], probe.NULL_HIGH)
