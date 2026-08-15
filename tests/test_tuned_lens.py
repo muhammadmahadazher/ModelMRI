@@ -109,6 +109,7 @@ def _info(**over) -> tl.TunedLensInfo:
         n_sequences=12,
         n_tokens=200,
         n_held_out=3,
+        n_held_out_scored=3,
         steps=100,
         lr=1e-3,
         seconds=5.0,
@@ -347,3 +348,64 @@ def test_an_unknown_kind_is_refused(gpt2):
     )
     with pytest.raises(BadRequest, match="unknown lens kind"):
         gpt2.logit_lens(3, "sharper")
+
+
+# ------------- the numbers describe what was measured, not what was there
+
+
+def test_the_sentence_says_how_many_held_out_sequences_were_actually_scored():
+    """`hidden_and_target(held_texts[:8])` caps the evaluation at one batch
+    while `n_held_out` reported the whole held-out set.
+
+    On a 200-sequence corpus `_split` holds back 50 and the sentence read
+    "Held-out KL on 50 sequences the translator never saw" over a measurement
+    taken on 8 — and always the same 8, because `_split` sorts before
+    striding. That is a silent cap on the one number this module's docstring
+    calls the only one that counts.
+    """
+    said = _info(n_held_out=50, n_held_out_scored=8).means()
+    assert "8 of the 50 sequences" in said
+    assert "on 50 sequences" not in said
+
+
+def test_no_cut_is_claimed_when_the_whole_held_out_set_was_scored():
+    said = _info(n_held_out=6, n_held_out_scored=6).means()
+    assert "on 6 sequences" in said
+    assert " of the " not in said
+
+
+def test_the_cap_is_a_named_constant_rather_than_a_literal():
+    """It was `[:8]` inline, which is how it stayed out of the output."""
+    import inspect
+
+    source = inspect.getsource(tl.train)
+    assert "HELD_OUT_SCORED" in source
+    assert "held_texts[:8]" not in source
+
+
+def test_tokens_are_counted_over_the_text_the_fit_actually_consumed():
+    """`n_tokens` tokenized every text untruncated, counting the held-out
+    quarter and everything past `max_length`.
+
+    MEASURED on a 200-sequence corpus of 500-token sequences at max_length
+    128: 80,699 tokens counted against 19,200 consumed, a 4.2x over-count.
+    That ratio feeds `tokens_per_parameter`, which gates `caution` at 1.0 —
+    so on a 5,200-sequence corpus the old count reported 3.5569 tokens per
+    parameter and stayed silent where the true 0.8453 should have warned.
+    """
+    import inspect
+
+    source = inspect.getsource(tl.train)
+    counted = source[source.index("n_tokens = sum(") :][:300]
+    assert "train_texts" in counted, "counted the held-out text as well"
+    assert "truncation=True" in counted, "counted tokens past max_length"
+    assert "max_length=max_length" in counted
+
+
+def test_the_caution_fires_on_a_ratio_below_one():
+    """The gate itself, so the fix above has something to protect."""
+    per_layer = 768 * 768 + 768
+    quiet = _info(n_tokens=per_layer * 2)
+    loud = _info(n_tokens=per_layer // 2)
+    assert quiet.caution == ""
+    assert "tokens per parameter" in loud.caution

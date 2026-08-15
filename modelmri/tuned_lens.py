@@ -55,6 +55,18 @@ from .errors import BadRequest, Refusal
 # small enough to leave a corpus worth training on.
 HELD_OUT_SHARE = 0.25
 
+# How many held-out sequences the KL is actually computed over. One batch,
+# because the evaluation runs the whole model with `output_hidden_states=True`
+# and holds every layer's states at once -- which is what the training loop is
+# already sized around.
+#
+# It was `held_texts[:8]` inline, and `n_held_out` reported `len(held_texts)`.
+# On a 200-sequence corpus the sentence read "Held-out KL on 50 sequences the
+# translator never saw" over a measurement taken on 8 -- and always the same
+# 8, because `_split` sorts before striding. That is a silent cap on the one
+# number this module's own docstring calls the only one that counts.
+HELD_OUT_SCORED = 8
+
 # Below this many sequences there is no honest split: one held-out sequence
 # gives a held-out KL with no spread, which is the number this module exists
 # to make trustworthy.
@@ -98,8 +110,16 @@ class TunedLensInfo:
     corpus_label: str
     corpus_sha256: str
     n_sequences: int
+    # Tokens the translator was ACTUALLY fitted from: train sequences only,
+    # truncated the same way `hidden_and_target` truncates them. It used to
+    # tokenize every text untruncated, which counted the held-out quarter and
+    # everything past `max_length` -- inflating `tokens_per_parameter` and so
+    # suppressing the `caution` that fires below 1.0.
     n_tokens: int
+    # Held back by `_split`, against actually scored. They differ whenever the
+    # held-out set is larger than one batch, and `means()` says both.
     n_held_out: int
+    n_held_out_scored: int
     steps: int
     lr: float
     seconds: float
@@ -151,8 +171,16 @@ class TunedLensInfo:
     def means(self) -> str:
         """The sentence that has to travel with these numbers."""
         improved = len(self.helped)
+        # Both numbers when they differ. "50 sequences" over a measurement
+        # taken on 8 is the claim this sentence used to make.
+        scored = self.n_held_out_scored or self.n_held_out
+        on = (
+            f"{scored} sequences"
+            if scored >= self.n_held_out
+            else f"{scored} of the {self.n_held_out} sequences"
+        )
         return (
-            f"Held-out KL on {self.n_held_out} sequences the translator never "
+            f"Held-out KL on {on} the translator never "
             f"saw, in nats. The tuned lens is closer to the model on "
             f"{improved} of {len(self.layers)} layers. It was trained on "
             f"{self.corpus_label} ({self.n_tokens:,} tokens), so it is a lens "
@@ -378,7 +406,8 @@ def train(
 
     fits: list[LayerFit] = []
     with _torch.no_grad():
-        states, target, mask = hidden_and_target(held_texts[:8])
+        scored_texts = held_texts[:HELD_OUT_SCORED]
+        states, target, mask = hidden_and_target(scored_texts)
         for layer in range(n_layers):
             weight, bias = translators[layer]
             hidden = states[layer]
@@ -397,7 +426,16 @@ def train(
                 )
             )
 
-    n_tokens = sum(len(tokenizer(t)["input_ids"]) for t in texts)
+    # What the fit CONSUMED, not what the corpus contains. This tokenized
+    # every text with no truncation, so it counted the held-out quarter the
+    # translator never saw and every token past `max_length` that
+    # `hidden_and_target` drops. Both inflate `tokens_per_parameter`, and that
+    # ratio gates the `caution` at 1.0 -- so the warning saying the corpus is
+    # too small for the fit was suppressed by counting text the fit never used.
+    n_tokens = sum(
+        len(tokenizer(t, truncation=True, max_length=max_length)["input_ids"])
+        for t in train_texts
+    )
     info = TunedLensInfo(
         model_id="",  # filled by the caller, which knows the id
         dtype=str(next(model.parameters()).dtype).removeprefix("torch."),
@@ -408,6 +446,7 @@ def train(
         n_sequences=len(texts),
         n_tokens=n_tokens,
         n_held_out=len(held_texts),
+        n_held_out_scored=len(scored_texts),
         steps=steps,
         lr=lr,
         seconds=round(time.perf_counter() - started, 1),
