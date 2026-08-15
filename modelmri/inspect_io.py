@@ -454,9 +454,25 @@ def read_sample(path, sample_id: str = "", epoch: int = 0) -> Imported:
                 wanted = ref
                 break
         if wanted is None:
+            # The listing is capped at MAX_SAMPLES_LISTED and this sentence
+            # used to quote `len(refs)` as the log's size -- so a 6,000-sample
+            # log told the reader it "carries 5000 sample(s)", a false claim
+            # about their file, while looking like the authoritative answer to
+            # "is my sample in here?". The header's own total is the real
+            # count; when the two differ the cap is stated rather than
+            # substituted.
+            total = header(path).n_samples or len(refs)
+            capped = (
+                ""
+                if len(refs) >= total
+                else (
+                    f" Only the first {len(refs)} are listed, so a sample past "
+                    f"that point is not searched here."
+                )
+            )
             raise InspectError(
                 f"no sample {sample_id!r} in this log. It carries "
-                f"{len(refs)} sample(s)."
+                f"{total} sample(s).{capped}"
             )
 
     with _open(path) as archive:

@@ -380,3 +380,39 @@ def test_reading_leaves_no_open_handle(tmp_path):
     # If any handle were still open this raises PermissionError on Windows.
     path.unlink()
     assert not path.exists()
+
+
+def test_a_capped_listing_does_not_report_its_cap_as_the_logs_size(
+    tmp_path, monkeypatch
+):
+    """`samples()` stops at MAX_SAMPLES_LISTED and this sentence quoted
+    `len(refs)` as the log's size.
+
+    So a log larger than the cap told the reader it "carries 5000 sample(s)"
+    — a false statement about their file, delivered as the authoritative
+    answer to "is my sample in here?". The header's own `total_samples` is
+    the real count, and when the two differ the cap is stated rather than
+    quietly substituted.
+    """
+    monkeypatch.setattr(inspect_io, "MAX_SAMPLES_LISTED", 3)
+    made = [_sample(sid=f"s{i}") for i in range(6)]
+    path = _log(tmp_path, samples=made)
+
+    assert len(inspect_io.samples(path)) == 3, "the cap still applies"
+
+    with pytest.raises(inspect_io.InspectError) as caught:
+        inspect_io.read_sample(path, sample_id="nope")
+    said = str(caught.value)
+    assert "carries 6 sample(s)" in said, "quoted the cap as the size"
+    assert "Only the first 3 are listed" in said
+
+
+def test_an_uncapped_listing_says_nothing_about_a_cap(tmp_path):
+    """The clause is for a log that was actually cut."""
+    made = [_sample(sid=f"s{i}") for i in range(3)]
+    path = _log(tmp_path, samples=made)
+    with pytest.raises(inspect_io.InspectError) as caught:
+        inspect_io.read_sample(path, sample_id="nope")
+    said = str(caught.value)
+    assert "carries 3 sample(s)" in said
+    assert "Only the first" not in said
