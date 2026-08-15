@@ -385,3 +385,92 @@ def test_asking_for_one_feature_returns_all_three_readouts(
     assert out["evidence"]["feature"] == 7451
     assert out["logit_weights"]["feature"] == 7451
     assert out["logit_weights"]["exact"] is True
+
+
+# ------------------------------ the SAE's own side of the block
+
+
+def _rig(point: str):
+    """A block whose output is unmistakably not its input, so the two sides
+    cannot be confused for one another by coincidence."""
+    import torch
+    import torch.nn as nn
+
+    class Block(nn.Module):
+        def forward(self, x):
+            return x * 3.0 + 1.0
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = Block()
+
+        def forward(self, ids):
+            return self.block(torch.ones(1, ids.shape[-1], 4))
+
+    class Tok:
+        def __call__(self, text, return_tensors=None):
+            return {"input_ids": torch.tensor([[1, 2, 3]])}
+
+        def decode(self, t):
+            return "x"
+
+    class SAE:
+        def __init__(self):
+            self.point = point
+
+        def encode(self, x):
+            # Identity, so the test reads the tensor the sweep actually fed it.
+            return x
+
+    model = Model()
+    return model, model.block, Tok(), SAE()
+
+
+def test_the_corpus_sweep_reads_the_hook_point_the_sae_was_trained_at():
+    """It called `patch._capture` — a forward PRE hook, the block's INPUT —
+    for every SAE regardless of `point`.
+
+    `saes.py` records this same bug being found and fixed, and the fix reached
+    `runtime.py` and `feature_ablate.py` and not this module. A resid_post SAE
+    was encoded from the block's input with no error and no warning, so the
+    never-fired count, the firing-rate table, the evidence spans and histogram
+    and the rows written to `feature_activation` all described activations the
+    SAE was never trained on.
+    """
+    pytest.importorskip("torch")
+
+    seen = {}
+    for point in ("resid_pre", "resid_post"):
+        model, block, tok, sae = _rig(point)
+        rows = list(fc._activations(model, block, tok, sae, ["hello"], "cpu"))
+        seen[point] = rows[0][2][0].tolist()
+
+    # The block computes x*3+1 over a tensor of ones.
+    assert seen["resid_pre"] == [1.0, 1.0, 1.0, 1.0]
+    assert seen["resid_post"] == [4.0, 4.0, 4.0, 4.0]
+    assert seen["resid_pre"] != seen["resid_post"], (
+        "both points captured the same tensor, so one of them is the wrong "
+        "side of the block"
+    )
+
+
+def test_no_sae_capture_site_ignores_the_hook_point():
+    """The structural version, because this bug has now been fixed twice in
+    two different modules and reintroduced by a third.
+
+    Anything that installs a capture for an SAE must route through
+    `feature_ablate._register_capture`, which branches on the point, rather
+    than `patch._capture`, which is unconditionally resid_pre.
+    """
+    import inspect
+
+    from modelmri import feature_corpus
+
+    source = inspect.getsource(feature_corpus._activations)
+    code = "\n".join(
+        line.split("#", 1)[0] for line in source.splitlines() if line.strip()
+    )
+    assert "_register_capture" in code
+    assert "sae.point" in code
+    assert "patch import _capture" not in code

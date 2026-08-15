@@ -237,24 +237,35 @@ def _activations(model, block, tokenizer, sae, texts: list[str], device):
     """
     import torch
 
-    from .patch import _capture
+    # AT THE SAE'S OWN HOOK POINT. This used to call `patch._capture`, which
+    # is a forward PRE hook -- the stream ENTERING the block, i.e. resid_pre --
+    # for every SAE regardless of where it was trained. `saes.py` records that
+    # exact bug being found and fixed ("the hook POINT was previously
+    # discarded... for a resid_post SAE that is the wrong side of the block"),
+    # and the fix reached `runtime.py` and `feature_ablate.py` and not this
+    # module. So a resid_post SAE loaded here was encoded from the block's
+    # input: no error, no warning, and every number downstream -- the
+    # never-fired count, the firing-rate table, the evidence spans and
+    # histogram, and the rows written to the feature_activation table --
+    # described activations the SAE was never trained on.
+    #
+    # `encode` does not catch it. It calibrates the input CONVENTION, which is
+    # the same on both sides of a block; which side is a different question.
+    from .feature_ablate import _register_capture
 
     for index, text in enumerate(texts):
         ids = tokenizer(text, return_tensors="pt")["input_ids"].to(device)
         if ids.shape[-1] == 0:
             continue
-        sink: dict = {}
-        handle = _capture(block, 0, sink)
+        sink: list = []
+        handle = _register_capture(block, sae.point, sink)
         try:
             with torch.no_grad():
                 model(ids)
         finally:
             handle.remove()
-        if 0 not in sink:
+        if not sink:
             raise Refusal("this model produced no residual stream at the SAE's layer.")
-        # `encode` calibrates on first use and refuses an SAE fed the wrong
-        # convention -- inherited rather than re-implemented, so this cannot
-        # show features from a mis-fed SAE the way every other dashboard can.
         acts = sae.encode(sink[0][0].float().cpu())
         yield index, [tokenizer.decode([int(t)]) for t in ids[0]], acts
 
