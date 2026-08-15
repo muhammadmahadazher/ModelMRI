@@ -7,6 +7,7 @@ dead-unit count is real.
 
 from __future__ import annotations
 
+import math
 import textwrap
 
 import pytest
@@ -564,7 +565,9 @@ def test_a_partly_nonfinite_output_does_not_name_the_nan_as_the_answer():
     assert out["argmax"] == 2, "the NaN slot was named as the prediction"
     assert out["top_index"] == [2, 3, 0]
     assert out["top_value"] == [0.9, 0.3, 0.1]
-    assert all(v == v and abs(v) != float("inf") for v in out["top_value"])
+    # `math.isfinite`, not `v == v`: the NaN idiom reads as a tautology,
+    # which is what CodeQL flags, and this covers inf in the same call.
+    assert all(math.isfinite(v) for v in out["top_value"])
 
 
 def test_the_count_of_unusable_outputs_travels_with_the_answer():
