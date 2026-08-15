@@ -11,6 +11,16 @@ export interface ModelStatus {
    *  continues text rather than answering — the usual reason an answer
    *  looks wrong when nothing is broken. */
   instruct?: boolean;
+  /** Present only when this model was built from a GGUF. Every number
+   *  measured on it then describes the QUANTISED weights, not the original —
+   *  which is a caveat about the numbers, not about the model, so it rides
+   *  with the status rather than being recomputed per panel. */
+  gguf?: GgufLoaded | null;
+  /** Transformer blocks in the loaded model. A property of the MODEL, not of
+   *  a run — `/api/attention/meta` carries the same number but only after a
+   *  generation, and the probe and patchscope panels both need to offer a
+   *  layer before there is anything to generate from. */
+  n_layers?: number | null;
 }
 
 export interface SessionInfo {
@@ -62,6 +72,11 @@ export interface SessionState {
    *  this tool that is causal rather than correlational was the one you could
    *  not send anybody. */
   patch?: { available: boolean; clean: string; corrupt: string };
+  /** Whether the recording carries a grounding result, and what it asked.
+   *  The document itself is NOT in the file — a `.mri` carries passage
+   *  previews, deliberately, because a grounded document is usually the
+   *  private half of the pair. */
+  ground?: { available: boolean; question: string };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -187,13 +202,49 @@ export const getAttention = (layer: number, head: number) =>
  *  prediction — measured on gpt2 layer 0, the twelve per-head scores sum to
  *  1.995 while ablating the whole layer gives 0.208.
  */
+export type Baseline = "zero" | "mean" | "resample";
+
 export interface HeadScore {
   layer: number;
   head: number;
+  /** For `resample` this is the MEDIAN over draws, not a single run. */
   kl: number;
   p_top_before: number;
-  p_top_after: number;
+  /** Null under `resample`: there is no single "after" across eight draws. */
+  p_top_after: number | null;
   flips_top: boolean;
+  /** Resample only — the spread across draws. Head 10 on gpt2 layer 0 ranged
+   *  0.027 to 0.335 around a median of 0.036, so one draw could have reported
+   *  any of those as the head's score. */
+  kl_min?: number;
+  kl_max?: number;
+  draws?: number;
+}
+
+/** What produced one number: the setup, stamped onto the measurement rather
+ *  than printed on the page. Every field that can genuinely fail to resolve is
+ *  nullable AND paired with a note saying why, because "no revision" and
+ *  "several revisions were cached so naming one would be a guess" send the
+ *  reader to different places. Optional on every response: a `.mri` written
+ *  before receipts existed carries none, and an older file must read as
+ *  "no provenance recorded" rather than failing to open. */
+export interface Receipt {
+  op: string;
+  request?: Record<string, unknown>;
+  tool_version?: string | null;
+  model?: string | null;
+  revision?: string | null;
+  revision_note?: string | null;
+  dtype?: string | null;
+  device?: string | null;
+  attn_implementation?: string | null;
+  /** null is "not seeded", which is NOT the same as seed 0. */
+  seed?: number | null;
+  tokenizer_sha256?: string | null;
+  tokenizer_note?: string | null;
+  prompt_sha256?: string | null;
+  n_prompt_tokens?: number | null;
+  measured_at?: string | null;
 }
 
 export interface Ablation {
@@ -207,6 +258,47 @@ export interface Ablation {
   elapsed_s: number;
   ranked: HeadScore[];
   means: string;
+  /** Resample only. Part of the measurement, not provenance: the same head
+   *  scores differently against a different corpus. */
+  corpus?: string;
+  draws?: number;
+  receipt?: Receipt | null;
+}
+
+/** One pair of baselines, and how far apart they rank the same heads. */
+export interface BaselinePair {
+  baselines: [string, string];
+  /** Null when one side is constant — "uncorrelated" and "that is not a
+   *  ranking" are different statements. */
+  spearman: number | null;
+  heads_compared: number;
+  top_k: number;
+  top_k_shared: number;
+  top_k_disagree: number;
+}
+
+export interface BaselineComparison {
+  pairs: BaselinePair[];
+  means: string;
+  rankings: Record<string, HeadScore[]>;
+}
+
+/** What a sweep would cost on THIS machine, before starting it. */
+export interface CostEstimate {
+  estimate: {
+    passes: number;
+    seconds: number | null;
+    peak_bytes: number | null;
+    free_bytes: number | null;
+    fraction_of_free: number | null;
+    verdict: "ok" | "tight" | "refuse" | "unknown";
+    basis: string;
+    unmeasured: string;
+    notes: string[];
+  };
+  baseline: string;
+  layers: number;
+  n_heads: number;
 }
 
 /** One run's attention minus another's, over the same token sequence. */
@@ -237,12 +329,31 @@ export const getAttentionDiff = (
 
 export const rankHeads = (
   layer: number,
-  baseline: "zero" | "mean" = "zero",
+  baseline: Baseline = "zero",
   scope: "layer" | "all" = "layer",
 ) =>
   fetch(
     `/api/attention/ablate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
   ).then((r) => json<Ablation>(r));
+
+/** Price the sweep before running it. `resample` is eight times the work. */
+export const estimateAblation = (
+  layer: number,
+  baseline: Baseline = "zero",
+  scope: "layer" | "all" = "layer",
+) =>
+  fetch(
+    `/api/attention/ablate/estimate?layer=${layer}&baseline=${baseline}&scope=${scope}`,
+  ).then((r) => json<CostEstimate>(r));
+
+/** Run every baseline on one layer and report how much they disagree.
+ *
+ *  Deliberately not called on load: it runs all three, and resample dominates
+ *  the total. */
+export const compareBaselines = (layer: number) =>
+  fetch(`/api/attention/baselines?layer=${layer}`).then((r) =>
+    json<BaselineComparison>(r),
+  );
 
 /** How far masking one token moves the answer at one position.
  *
@@ -383,6 +494,10 @@ export async function exportSession(
   layer: number,
   head: number,
   note: string,
+  /** Bundle an agent run alongside the mechanistic snapshot, and optionally
+   *  name the step that failed. The recipient clicks it and lands in the
+   *  attention view of the generation that produced the bad argument. */
+  bundle?: { trace_id: string; step_ref?: string },
 ): Promise<{ blob: Blob; filename: string }> {
   // This one call wants bytes and a Content-Disposition, so it never went
   // through the patched fetch — which meant "Share this view" 404'd on the
@@ -394,9 +509,16 @@ export async function exportSession(
     if (!blob) throw new ApiError(409, "this demo bundle carries no .mri");
     return { blob, filename: "modelmri-demo.mri" };
   }
-  const r = await fetch(
-    `/api/session/export?layer=${layer}&head=${head}&note=${encodeURIComponent(note)}`,
-  );
+  const params = new URLSearchParams({
+    layer: String(layer),
+    head: String(head),
+    note,
+  });
+  if (bundle?.trace_id) {
+    params.set("trace_id", bundle.trace_id);
+    if (bundle.step_ref) params.set("step_ref", bundle.step_ref);
+  }
+  const r = await fetch(`/api/session/export?${params}`);
   if (!r.ok) throw new ApiError(r.status, await r.text());
   const disposition = r.headers.get("Content-Disposition") || "";
   const match = /filename="([^"]+)"/.exec(disposition);
@@ -662,6 +784,7 @@ export interface FeatureAblation {
   n_clearing_control: number;
   control_means: string;
   means: string;
+  receipt?: Receipt | null;
 }
 
 /** Rank the SAE's features by how far removing one moves the answer.
@@ -998,25 +1121,284 @@ export interface TraceStep {
   kind: "llm_call" | "tool_call" | "subagent" | "mcp_call" | "user_turn" | "error";
   name: string;
   started_ms: number;
-  duration_ms: number;
+  /** Null when the step was recorded without one. Not 0 — "not recorded" and
+   *  "took no measurable time" are different facts, and the column used to
+   *  flatten them together. */
+  duration_ms: number | null;
   input: string;
   output: string;
+  /** Characters `traces._clip` did not store. 0 when nothing was cut. Shown
+   *  as a marker, because a truncated tool output that reads as a complete
+   *  one is how you debug the wrong thing for an hour. */
+  truncated_in?: number;
+  truncated_out?: number;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** Providers report these only sometimes — Anthropic returns cache counts
+   *  only when a cache was in play, reasoning tokens only from models that
+   *  reason. **null is "the provider said nothing", 0 is "it said zero"**, and
+   *  the panel must never print one as the other. */
+  tokens_cache_read: number | null;
+  tokens_cache_write: number | null;
+  tokens_reasoning: number | null;
   error: boolean;
   seq: number;
+  /** True when this step was produced by a model on THIS machine and carries
+   *  the token ids needed to reopen it in the mechanistic panels. False for a
+   *  hosted-API call — the weights are not here, and that is a sentence to
+   *  print rather than a button to disable. */
+  adoptable?: boolean;
+  /** Machine facts the recorder captured: model, ids, dtype, device. Never
+   *  prompt or completion text — redaction covers input/output only. */
+  meta?: Record<string, unknown>;
 }
+
+/** One token field summed over a set of steps.
+ *
+ *  `total` is **null when nothing in the set reported it** — not 0. `reported`
+ *  and `silent` are both carried so "3 of 11 calls said nothing" is answerable
+ *  without re-walking the steps. */
+export interface TokenCount {
+  field: string;
+  total: number | null;
+  reported: number;
+  silent: number;
+}
+
+export interface TokenRollup {
+  counts: Record<string, TokenCount>;
+  n_steps: number;
+  n_llm_steps: number;
+}
+
+/** What a run cost, and how much of it is actually known.
+ *
+ *  There is no bundled price map: a map goes stale between releases and a user
+ *  on a six-month-old install would see six-month-old prices with no way to
+ *  know. Cost appears only when `MODELMRI_PRICES` points at the user's own
+ *  file, matched by EXACT model id — never a prefix or a regex, because a
+ *  regex matching the wrong model produces a plausible figure with no signal
+ *  it is wrong. */
+export interface TraceCost {
+  total: number | null;
+  currency: string;
+  n_calls: number;
+  n_priced: number;
+  unpriced_models: string[];
+  partial: boolean;
+  means: string;
+  /** Set when the price file itself could not be read. The token counts are
+   *  complete and useful without it, so this is a field rather than a failed
+   *  request. */
+  error?: string;
+}
+
+/** One exact predicate over recorded runs. No model, so nothing is a verdict.
+ *
+ *  A rule says a run MATCHED. It does not say the run was good, bad or
+ *  wasteful — the name is the reader's own words, and appears as theirs. */
+export interface RubricRule {
+  name: string;
+  kind: string;
+  pattern?: string;
+  step_kind?: string;
+  op?: string;
+  value?: number;
+  means?: string;
+}
+
+export interface RubricReport {
+  rows: {
+    trace_id: string;
+    name: string;
+    matched: string[];
+    hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
+  }[];
+  n_traces: number;
+  n_traces_available: number;
+  truncated: number;
+  rules: RubricRule[];
+  /** Rules that could not be ANSWERED, keyed by name, with why. A
+   *  distribution rule below its minimum n lands here rather than reporting
+   *  "no matches" — which reads identically to having looked. */
+  skipped: Record<string, string>;
+  counts: Record<string, number>;
+  means: string;
+}
+
+export const scoreRubric = (rules: RubricRule[]) =>
+  fetch("/api/rubric/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  }).then((r) => json<RubricReport>(r));
+
+/** One UK AISI Inspect `.eval` sample, read onto this timeline.
+ *
+ *  Reader only, and version-gated: an unrecognised schema version is refused
+ *  with the version named rather than guessed at. `mapping.dropped` counts
+ *  every event kind that has no step kind here — Inspect's schema is not
+ *  frozen, and "we showed you what we understood" is only honest when the
+ *  rest is on screen too. */
+export interface InspectImport {
+  trace_id: string;
+  trace: TraceDoc;
+  mapping: {
+    mapped: Record<string, number>;
+    dropped: Record<string, number>;
+    means: string;
+  };
+  scores: Record<string, string | number | boolean>;
+  failed: boolean;
+  error: string;
+  header: {
+    version: number;
+    task: string;
+    model: string;
+    created: string;
+    status: string;
+    n_samples: number;
+  };
+  samples: { name: string; id: string; epoch: number }[];
+  means: string;
+}
+
+export const importInspect = (file: File, sampleId = "") =>
+  fetch(
+    `/api/traces/import/inspect${sampleId ? `?sample_id=${encodeURIComponent(sampleId)}` : ""}`,
+    { method: "POST", body: file },
+  ).then((r) => json<InspectImport>(r));
+
+/** What a shared bundle would contain — fetched BEFORE anything is written.
+ *
+ *  This is the one path in the project where data leaves the machine, so the
+ *  panel shows what is in the file before offering to save it. A share button
+ *  that ships a file without showing its contents asks the user to trust a
+ *  process they cannot see. */
+export interface BundlePreview {
+  n_steps: number;
+  n_steps_dropped: number;
+  n_payloads_clipped: number;
+  chars_clipped: number;
+  redactions: { label: string; count: number }[];
+  n_redactions: number;
+  fields_scanned: number;
+  means: string;
+}
+
+export const bundlePreview = (traceId: string) =>
+  fetch(`/api/traces/${traceId}/bundle/preview`).then((r) =>
+    json<BundlePreview>(r),
+  );
 
 export interface TraceDoc {
   id: string;
   name: string;
   started_at: string;
   steps: TraceStep[];
+  /** Rolled up over the whole run, and per step over its own subtree. */
+  tokens?: TokenRollup;
+  tokens_by_step?: Record<string, TokenRollup>;
+  cost?: TraceCost;
 }
 
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
+/** What the last generation cost, including what watching it cost.
+ *
+ *  Every field may be null and none is ever faked — CPU has no allocator to
+ *  ask, and a 0 in a memory column is a claim that nothing was used. */
+export interface TelemetryReport {
+  available: boolean;
+  reason?: string;
+  prompt_tokens: number;
+  generated_tokens: number;
+  prompt_ms: number | null;
+  decode_ms: number | null;
+  tokens_per_s: number | null;
+  peak_bytes: number | null;
+  reserved_bytes: number | null;
+  memory_note: string;
+  context_used: number;
+  context_limit: number | null;
+  context_fraction: number | null;
+  /** `n_layers x n_heads x S^2 x dtype` — the attention scores ModelMRI asks
+   *  for and a plain runner never allocates. */
+  introspection_bytes: number | null;
+  introspection_note: string;
+  device: string;
+  dtype: string;
+  notes: string[];
+  means: string;
+}
+
+export const getTelemetry = () =>
+  fetch("/api/telemetry").then((r) => json<TelemetryReport>(r));
+
+/** One step that matched a search, with the run it belongs to. */
+export interface SearchHit {
+  step_id: string;
+  trace_id: string;
+  trace_name: string;
+  kind: TraceStep["kind"];
+  name: string;
+  started_ms: number;
+  duration_ms: number | null;
+  input: string;
+  output: string;
+  truncated_by: number;
+  error: boolean;
+  seq: number;
+  /** The run's wall clock. `started_ms` is milliseconds since that run's own
+   *  start, so it cannot order hits across runs — results are sorted by this. */
+  trace_started_at: string;
+}
+
+export interface SearchResult {
+  /** Which engine answered. FTS5 matches whole words; the substring scan
+   *  matches inside them and gets slower as the store grows. Named because a
+   *  feature that quietly becomes a different feature is worse than one that
+   *  says it degraded. */
+  engine: "fts5" | "substring-scan";
+  results: SearchHit[];
+  note: string;
+  query: Record<string, unknown>;
+}
+
+/** Search every recorded step on this machine.
+ *
+ *  Free text plus filters — `kind:tool_call`, `error:true`, `duration>2000`,
+ *  `name:pytest`. A filter binds only with no space after the colon, so a
+ *  pasted log line like "error: connection refused" stays plain text. */
+export const searchTraces = (q: string) =>
+  fetch(`/api/traces/search?q=${encodeURIComponent(q)}`).then((r) =>
+    json<SearchResult>(r),
+  );
+
+/** What `adopt` gives back once the panels are pointed at a recorded step. */
+export interface Adopted {
+  adopted: true;
+  model: string;
+  step_id: string;
+  kind: string;
+  n_tokens: number;
+  n_prompt_tokens: number;
+  prompt: string;
+  generation: string;
+  means: string;
+}
+
+/** Point every mechanistic panel at the generation this agent step made.
+ *
+ *  Nothing is re-run: these are the recorded token ids, verified against the
+ *  loaded tokenizer. 409 when the weights are not on this machine, when the
+ *  wrong model is loaded, or when re-tokenising disagrees with the recording. */
+export const adoptStep = (traceId: string, stepId: string) =>
+  fetch(`/api/traces/${traceId}/steps/${stepId}/adopt`, { method: "POST" }).then(
+    (r) => json<Adopted>(r),
+  );
 
 export type StreamHandlers = {
   onToken: (text: string) => void;
@@ -1160,6 +1542,221 @@ export interface CustomStatus {
   roots: string[];
 }
 
+/** One tensor from a GGUF's own table. */
+export interface GgufTensor {
+  name: string;
+  ggml_type: number;
+  type_name: string;
+  dims: number[];
+  elements: number;
+  /** Null when the ggml type is one the reader does not know. Not 0 — an
+   *  unknown type has an unknown size, and a guess corrupts every roll-up. */
+  bytes: number | null;
+  bpw: number | null;
+  offset: number;
+}
+
+export interface GgufSummary {
+  architecture: string | null;
+  name: string | null;
+  quantisation_label: string | null;
+  /** Exact regardless of quantisation: element counts come from the tensor
+   *  shapes and do not depend on the ggml type. */
+  parameters: number;
+  measured_parameters: number;
+  /** Null when any tensor could not be sized — a byte total over the parts
+   *  that happened to be recognised is not the file's byte total. */
+  tensor_bytes: number | null;
+  effective_bpw: number | null;
+  by_type: Record<
+    string,
+    { tensors: number; elements: number; bytes: number; bpw: number | null }
+  >;
+  by_type_covers_whole_file: boolean;
+  dominant_type: string | null;
+  why_unmeasured: string | null;
+  context_length: number | null;
+  block_count: number | null;
+  embedding_length: number | null;
+  head_count: number | null;
+  head_count_kv: number | null;
+  tokenizer: string | null;
+  higher_precision_tensors: { name: string; type: string; bpw: number }[];
+  unmeasured_tensors: number;
+  means: string;
+}
+
+export interface GgufReport {
+  path: string;
+  version: number;
+  tensor_count: number;
+  metadata: Record<string, unknown>;
+  tensors: GgufTensor[];
+  unknown_types: number[];
+  summary: GgufSummary;
+}
+
+/** Read a GGUF's header. Nothing is loaded and no GPU is touched — a few
+ *  hundred milliseconds and well under a megabyte for a multi-gigabyte file. */
+export const readGguf = (path: string) =>
+  fetch(`/api/gguf?path=${encodeURIComponent(path)}`).then((r) =>
+    json<GgufReport>(r),
+  );
+
+/** What loading a GGUF would cost, computed from its header alone.
+ *
+ *  Two figures because they fail at different moments. `resident_bytes` is
+ *  parameters x dtype bytes and has to sit on the device afterwards;
+ *  `peak_host_bytes` is parameters x 4 and has to fit in host RAM while the
+ *  dequantiser runs. Neither is the file size, and the file size is what
+ *  people budget against — measured, a 0.397 GB Q4_K_M file becomes 1.192 GB
+ *  of bfloat16 tensors. */
+export interface GgufPlan {
+  path: string;
+  architecture: string | null;
+  parameters: number;
+  file_bytes: number;
+  dtype: string;
+  resident_bytes: number;
+  peak_host_bytes: number;
+  expansion: number | null;
+  device: string;
+  /** null, never 0 — "we could not ask" and "there is none left" are
+   *  different answers and only one is a reason to refuse. */
+  device_free_bytes: number | null;
+  host_free_bytes: number | null;
+  host_total_bytes: number | null;
+  verdict: "fits" | "tight" | "will not fit" | "unknown";
+  why: string;
+  notes: string[];
+  means: string;
+  /** This file is already the loaded model. The verdict is then about loading
+   *  a SECOND copy beside the first, which is not the question being asked. */
+  already_loaded?: boolean;
+}
+
+/** The plan again, plus what the module actually weighed. The prediction is
+ *  arithmetic on a header; this is the check against reality. */
+export interface GgufLoaded {
+  plan: GgufPlan;
+  measured_resident_bytes: number;
+  prediction_error: number | null;
+  load_seconds: number;
+}
+
+/** Ask what a GGUF would cost. Reads the header only — no GPU is touched. */
+export const planGguf = (path: string, dtype?: string) =>
+  fetch(
+    `/api/gguf/plan?path=${encodeURIComponent(path)}` +
+      (dtype ? `&dtype=${encodeURIComponent(dtype)}` : ""),
+  ).then((r) => json<GgufPlan>(r));
+
+/** Load a GGUF as a full torch module, so every panel works on it.
+ *
+ *  `confirm` overrides a tight fit and only a tight fit — "will not fit" is
+ *  that the RAM needed exceeds the RAM that exists. */
+export const loadGguf = (path: string, dtype?: string, confirm = false) =>
+  fetch("/api/gguf/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, dtype, confirm }),
+  }).then((r) => json<ModelStatus>(r));
+
+/** One position's disagreement between two models on the same token ids. */
+export interface PositionDiff {
+  index: number;
+  token: string;
+  /** Nats. The same quantity `ablate` reports for a head. */
+  kl: number;
+  top_a: string;
+  top_b: string;
+  p_a: number;
+  p_b: number;
+  flipped: boolean;
+  /** top-1 minus top-2 on each side. */
+  margin_a: number;
+  margin_b: number;
+  /** A flip where the reference model's own margin was under 0.05 — a tie
+   *  being broken rather than an answer being changed. */
+  contested: boolean;
+}
+
+export interface QuantBehaviour {
+  model_a: string;
+  model_b: string;
+  prompt: string;
+  tokens: string[];
+  positions: PositionDiff[];
+  flips: PositionDiff[];
+  /** null, not an empty list, when either model returned no attention. */
+  attention: { layer: number; mean_abs_diff: number }[] | null;
+  attention_means: string | null;
+  notes: string[];
+  summary: {
+    positions: number;
+    flips: number;
+    contested_flips: number;
+    decisive_flips: number;
+    mean_kl: number;
+    median_kl: number;
+    max_kl: number;
+    max_kl_at: { index: number; token: string };
+    worst_layer: { layer: number; mean_abs_diff: number } | null;
+    means: string;
+  };
+}
+
+/** What quantisation cost this model's behaviour, on one prompt.
+ *
+ *  Expensive and destructive: it loads two models one after the other and
+ *  unloads whatever is currently held to make room. */
+export const compareQuantisation = (
+  quantised: string,
+  original: string,
+  prompt: string,
+  attention = true,
+) =>
+  fetch("/api/quantdiff/behaviour", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ quantised, original, prompt, attention }),
+  }).then((r) => json<QuantBehaviour>(r));
+
+/** An attribution graph read from another tool's file.
+ *
+ *  `available: false` is a state, not an error — most sessions have no graph.
+ *  `provenance.measured_by` is guaranteed present when `available` is true:
+ *  both the server and the viewer refuse to report a graph without it. */
+export interface GraphView {
+  available: boolean;
+  error?: string;
+  n_nodes?: number;
+  edges?: { source: number; target: number; weight: number }[];
+  provenance?: {
+    file?: string;
+    producer?: string;
+    model?: string | null;
+    scan?: string | null;
+    measured_by?: string;
+  };
+  prompt?: string;
+  summary?: {
+    nodes?: number;
+    possible_edges?: number;
+    nonzero_edges?: number;
+    density?: number | null;
+    max_abs_weight?: number | null;
+    returned_edges?: number;
+    truncated?: boolean;
+    means?: string;
+  };
+  notes?: string[];
+}
+
+/** The attribution graph carried by the open session, if any. */
+export const getGraph = () =>
+  fetch("/api/graph").then((r) => json<GraphView>(r));
+
 export interface CustomCandidate {
   path: string;
   name: string;
@@ -1170,8 +1767,50 @@ export interface CustomCandidate {
   /** What the file actually is, read from its archive index rather than
    *  guessed from `.pt` vs `.pth` — which are the same container and say
    *  nothing about the contents. */
-  kind?: "torchscript" | "checkpoint" | "legacy" | "unreadable";
+  kind?: "gguf" | "torchscript" | "checkpoint" | "legacy" | "unreadable";
 }
+
+/** #15 — one thing that was ablated in a network you trained yourself. */
+export interface AblationSite {
+  name: string;
+  kind: string;
+  /** The task's unit: nats for a classifier, output-spread for a regressor. */
+  effect: number;
+  /** The strongest control draw at this site. **null**, never 0, when this
+   *  site was not among the strongest and so was never tested — "random edits
+   *  here do nothing" is a claim, and nothing measured it. */
+  control_max: number | null;
+  control_draws: number;
+  /** null when untested. */
+  beats_control: boolean | null;
+}
+
+export interface Ablation {
+  kind: "layers" | "inputs";
+  task: string;
+  unit: string;
+  sites: AblationSite[];
+  n_sites: number;
+  n_controlled: number;
+  n_samples: number;
+  passes: number;
+  seconds: number;
+  /** Sites past the cap. Missing from the list, NOT measured as zero. */
+  truncated: number;
+  control_ceiling: number | null;
+  /** n_tested / (draws + 1) — each site is compared against the strongest of
+   *  its draws, so under a null where every site is equivalent the real edit
+   *  wins one time in nine. */
+  expected_false_positives: number;
+  means: string;
+}
+
+export const ablateCustom = (kind: "layers" | "inputs", grid = 0) =>
+  fetch("/api/custom/ablate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, grid }),
+  }).then((r) => json<Ablation>(r));
 
 export interface CustomRun {
   layers: CustomLayer[];
@@ -1259,13 +1898,607 @@ export interface LensRow {
   entropy: number;
 }
 
-export const getLens = (topK = 5) =>
-  fetch(`/api/lens?top_k=${topK}`).then((r) =>
+/** #44 — one occluded block of the camera frame. */
+export interface OcclusionBlock {
+  row: number;
+  col: number;
+  /** Shift in the tower's pooled embedding, in units of its own spread. */
+  shift: number;
+  /** **null**, never 0, when this block was never controlled. */
+  control_max: number | null;
+  control_draws: number;
+  clears_control: boolean | null;
+  attention: number | null;
+}
+
+export interface OcclusionMap {
+  baseline: string;
+  grid: number[];
+  stride: number;
+  blocks: OcclusionBlock[];
+  n_blocks: number;
+  n_controlled: number;
+  passes: number;
+  seconds: number;
+  scale: number;
+  scale_frames: number;
+  /** Spearman between the causal map and the attention map for THIS frame.
+   *  null when no attention map was supplied — a state, not a zero. */
+  attention_agreement: number | null;
+  /** WHICH attention map that was. The agreement is layer-dependent, so the
+   *  Spearman is not reportable without it. null when nothing was compared. */
+  compared_layer: number | null;
+  compared_head: number | null;
+  means: string;
+}
+
+export const occludeFrame = (body: {
+  episode: number;
+  t: number;
+  baseline?: string;
+  stride?: number;
+  layer?: number;
+  head?: number;
+}) =>
+  fetch("/api/vla/occlude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<OcclusionMap>(r));
+
+export const occlusionCost = (stride = 0) =>
+  fetch(`/api/vla/occlude/cost?stride=${stride}`).then((r) =>
+    json<{ blocks: number; passes: number; stride: number; grid: number[] }>(r),
+  );
+
+/** #48 — one frame of a cross-episode sweep. */
+export interface SweepRow {
+  episode: number;
+  timestep: number;
+  value: number;
+}
+
+export interface VLASweep {
+  metric: string;
+  unit: string;
+  rows: SweepRow[];
+  n_frames: number;
+  n_episodes: number;
+  frames_total: number;
+  episode_stride: number;
+  frame_stride: number;
+  seconds: number;
+  failed: { episode: number; timestep: number; why: string }[];
+  means: string;
+  strip: {
+    rows: { episode: number; timesteps: number[]; values: number[] }[];
+    low: number;
+    high: number;
+    frame_stride: number;
+    /** Episodes have different lengths, so the strip is ragged rather than
+     *  padded with zeros that would read as measured lows. */
+    ragged: boolean;
+  };
+}
+
+export const runVlaSweep = (body: {
+  metric: string;
+  episode_stride?: number;
+  frame_stride?: number;
+}) =>
+  fetch("/api/vla/sweep", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<VLASweep>(r));
+
+export const vlaSweepCost = (metric: string, frameStride: number) =>
+  fetch(
+    `/api/vla/sweep/cost?metric=${metric}&frame_stride=${frameStride}`,
+  ).then((r) =>
+    json<{
+      frames: number;
+      frames_total: number;
+      passes: number;
+      coverage: number;
+      seconds: number | null;
+      seconds_from: string;
+    }>(r),
+  );
+
+/** #46 — a robot finding as a `.mri` somebody else can open. */
+export const shareVlaFinding = (body: {
+  episode: number;
+  t: number;
+  layer?: number;
+  head?: number;
+  occlusion?: unknown;
+  note?: string;
+}) =>
+  fetch("/api/vla/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    if (!r.ok) throw new ApiError(r.status, await r.text());
+    return r.blob();
+  });
+
+/** #20 — one prompt of a finetune comparison. Never reported on its own. */
+export interface DiffPromptResult {
+  prompt: string;
+  n_tokens: number;
+  mean_kl: number;
+  max_kl: number;
+  flips: number;
+  /** Where this prompt's residual cosine falls furthest in one step. No
+   *  threshold is involved. null when the curve never decreases. */
+  first_divergent_layer: number | null;
+  drop: number;
+  cosine: number[];
+}
+
+export interface DiffSpread {
+  name: string;
+  median: number;
+  low: number;
+  high: number;
+  n: number;
+  n_nonzero: number;
+}
+
+export interface DiffLayer {
+  layer: number;
+  median: number;
+  low: number;
+  high: number;
+  n: number;
+  /** On how many prompts this layer was where the cosine fell furthest. */
+  n_first: number;
+}
+
+export interface DiffHead {
+  layer: number;
+  head: number;
+  median_a: number;
+  median_b: number;
+  shift: number;
+  n: number;
+  top_a: number;
+  top_b: number;
+}
+
+export interface DiffToken {
+  prompt_index: number;
+  index: number;
+  token: string;
+  kl_a: number;
+  kl_b: number;
+  shift: number;
+  /** Crossed its own side's noise floor. The two models have different
+   *  floors, so this is the only comparison that survives. */
+  newly_used: boolean;
+  newly_ignored: boolean;
+}
+
+export interface ModelDiffReport {
+  model_a: string;
+  model_b: string;
+  n_prompts: number;
+  n_layers: number;
+  prompts: DiffPromptResult[];
+  layers: DiffLayer[];
+  kl: DiffSpread | null;
+  flips: DiffSpread | null;
+  consensus_layer: number | null;
+  consensus_share: number;
+  heads: DiffHead[];
+  head_passes: number;
+  tokens: DiffToken[];
+  seconds: number;
+  notes: string[];
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const diffModels = (body: {
+  a: string;
+  b: string;
+  prompts?: string[];
+  file?: string;
+  include_heads?: boolean;
+  include_tokens?: boolean;
+}) =>
+  fetch("/api/diff/models", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ModelDiffReport>(r));
+
+/** #14 — one passage of your document, and what it did to the answer. */
+export interface GroundScore {
+  index: number;
+  preview: string;
+  n_tokens: number;
+  /** Nats. How far the answer moved when this passage was masked out. */
+  dependence: number;
+  /** Share of the answer position's attention that landed here, meaned over
+   *  every layer and head. **null**, never 0, when this model's attention
+   *  implementation never builds the score matrix — a passage nothing looked
+   *  at and a number that was never returned are different facts. */
+  attention: number | null;
+  depended_on: boolean;
+  /** Attention on it, no causal dependence on it — the signature of an answer
+   *  coming from the weights rather than from your document.
+   *
+   *  **null** means the reading could not be taken: without the attention
+   *  half there is no "looked at", and with a noise floor of exactly 0.0
+   *  every passage that moved the answer counts as depended-on, so the flag
+   *  can never fire. `false` would read as "this passage is fine", which on
+   *  either of those runs nothing measured. */
+  looked_not_used: boolean | null;
+}
+
+export interface Grounding {
+  question: string;
+  answer: string;
+  answer_p: number;
+  position: number;
+  chunks: GroundScore[];
+  n_chunks: number;
+  n_prompt_tokens: number;
+  noise_floor: number;
+  /** Every passage masked at once. Printed beside the parts precisely because
+   *  it is not their sum — which is why nothing here is a percentage. */
+  joint: number;
+  attention_share: number | null;
+  attention_available: boolean;
+  attention_note: string;
+  /** The repeat pass reproduced the answer bit for bit, so the floor is 0.0
+   *  and "cleared the floor" degrades to "moved the answer at all". */
+  floor_degenerate: boolean;
+  ungrounded: boolean;
+  passes: number;
+  seconds: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const groundAnswer = (body: {
+  document?: string;
+  file?: string;
+  question: string;
+  max_chunks?: number;
+}) =>
+  fetch("/api/ground", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<Grounding>(r));
+
+/** #10 — a probe at every layer, with the two references behind the curve. */
+export interface LayerProbe {
+  layer: number;
+  accuracy: number;
+  null_low: number;
+  null_high: number;
+  /** The field the feature exists for: this layer did not beat what the same
+   *  fit achieves on shuffled labels. */
+  inside_null: boolean;
+  beats_majority: boolean;
+  /** The shuffled fit reached the top of the scale, so NO accuracy could have
+   *  cleared it — untestable with this many examples, not uninformative. */
+  null_saturated: boolean;
+}
+
+export interface ProbeReport {
+  layers: LayerProbe[];
+  majority: number;
+  n_train: number;
+  n_test: number;
+  n_permutations: number;
+  /** null when nothing cleared anywhere, which is a result. */
+  best_layer: number | null;
+  n_readable_layers: number;
+  n_underpowered_layers: number;
+  /** n_layers x 5%: sweeping every layer against a 95th-percentile band is a
+   *  multiple comparison, so this many clear by chance. */
+  expected_false_positives: number;
+  means: string;
+  saved?: { name: string; path: string; dims: number };
+  receipt?: Receipt | null;
+}
+
+export const runProbe = (body: {
+  examples: { text: string; label: number }[];
+  n_permutations?: number;
+  save_as?: string;
+}) =>
+  fetch("/api/probe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ProbeReport>(r));
+
+/** #11 — one component's contribution into a later block's residual input. */
+export interface PathSender {
+  layer: number;
+  head: number | null;
+  name: string;
+  recovery: number;
+  delta_norm: number;
+  control_max?: number;
+  control_min?: number;
+  control_draws?: number;
+  shifted_position?: number;
+  clears_control?: boolean;
+  clears_position?: boolean;
+}
+
+export interface PathTrace {
+  receiver: { layer: number; position: number };
+  senders: PathSender[];
+  n_senders: number;
+  n_controlled: number;
+  gap: number;
+  /** Two senders closer than this are TIED, not ranked. */
+  recovery_resolution: number;
+  seeding: string;
+  scope: string;
+  means: string;
+  passes: number;
+  seconds: number;
+  receipt?: Receipt | null;
+}
+
+export const pathTrace = (body: {
+  clean: string;
+  corrupt: string;
+  layer: number;
+  position: number;
+}) =>
+  fetch("/api/patch/path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<PathTrace>(r));
+
+/** #12 — a hidden state described in words, with two controls. */
+export interface Patchscope {
+  source: {
+    prompt: string;
+    layer: number;
+    position: number;
+    tokens: string[];
+    norm: number;
+  };
+  /** Returned with EVERY response, because two decodes taken under
+   *  different targets are not comparable and a hidden default would make
+   *  that invisible. */
+  target: {
+    prompt: string;
+    layer: number;
+    position: number;
+    tokens: string[];
+  };
+  decode: string;
+  controls: { identity: string; random: string[]; draws: number };
+  same_as_identity: boolean;
+  same_as_random: boolean;
+  /** How much of the decode's vocabulary each control already used. Reported,
+   *  never thresholded. */
+  overlap_identity: number;
+  overlap_random: number;
+  informative: boolean;
+  cross_layer: boolean;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const runPatchscope = (body: {
+  prompt: string;
+  layer: number;
+  position?: number;
+  target?: string;
+  target_layer?: number | null;
+  max_new_tokens?: number;
+}) =>
+  fetch("/api/patchscope", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<Patchscope>(r));
+
+/** #13 — what a feature fires on in YOUR corpus, and what it promotes. */
+export interface FeatureSpan {
+  text: string;
+  token: string;
+  activation: number;
+  position: number;
+  sequence: number;
+  /** Character index of the firing token inside `text`. Not the same as
+   *  `text.indexOf(token)` — a span can contain the same word twice and only
+   *  one of those positions fired. */
+  offset: number;
+}
+
+export interface FeatureEvidence {
+  corpus: {
+    corpus_label: string;
+    n_tokens: number;
+    n_sequences: number;
+    n_features: number;
+    n_never_fired: number;
+    never_fired_share: number;
+    truncated: boolean;
+    means: string;
+  };
+  top_by_firing_rate: {
+    feature: number;
+    n_fired: number;
+    max_activation: number;
+  }[];
+  evidence?: {
+    feature: number;
+    spans: FeatureSpan[];
+    n_fired: number;
+    n_tokens: number;
+    firing_rate: number;
+    max_activation: number;
+    histogram: number[];
+    bin_edges: number[];
+    /** false when the feature fires on more than a fifth of tokens — not a
+     *  concept, whatever its top spans look like. */
+    selective: boolean;
+    means: string;
+    /** Always null. Naming the concept is the reader's job. */
+    label: null;
+  };
+  logit_weights?: {
+    feature: number;
+    promotes: { token: string; logit: number }[];
+    suppresses: { token: string; logit: number }[];
+    exact: boolean;
+    means: string;
+  };
+  receipt?: Receipt | null;
+}
+
+export const featureEvidence = (body: {
+  texts?: string[];
+  file?: string;
+  label?: string;
+  feature?: number;
+  top_k?: number;
+}) =>
+  fetch("/api/features/evidence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<FeatureEvidence>(r));
+
+/** A behavioural label for one head, with the evidence it cleared. */
+export interface HeadTypeLabel {
+  layer: number;
+  head: number;
+  /** null is "no type detected", which is the finding for most heads — not a
+   *  label that went missing. */
+  label: string | null;
+  /** Standard deviations above this head's own null. Null when unlabelled;
+   *  0 would read as "exactly at the null", which is a measurement. */
+  margin?: number | null;
+  /** The winning pattern's score as a multiple of chance under the causal
+   *  mask. Significance and effect size are both required, and both shown. */
+  times_chance?: number | null;
+  /** The most attention this head puts on any single target. A label is only
+   *  attached when the pattern's offset IS this peak. */
+  peak?: number;
+  /** "repeat" (gated on non-repeating sequences) or "chance" (gated on chance
+   *  under the causal mask). Not interchangeable. */
+  null_kind?: string;
+  scores?: Record<string, number>;
+}
+
+export interface HeadTypes {
+  labels: HeadTypeLabel[];
+  counts: Record<string, number>;
+  n_layers: number;
+  n_heads: number;
+  seq_len: number;
+  n_sequences: number;
+  margin_sigma: number;
+  means: string;
+  recorded?: boolean;
+  receipt?: Receipt | null;
+}
+
+export const getHeadTypes = () =>
+  fetch("/api/attention/types").then((r) => json<HeadTypes>(r));
+
+/** One component's direct push on the predicted token, in logits. */
+export interface DirectContribution {
+  name: string;
+  kind: "embed" | "head" | "mlp";
+  layer: number | null;
+  head: number | null;
+  /** Signed, and already shift-corrected against this component's own
+   *  vocabulary mean — a component that lifts the whole vocabulary equally
+   *  has changed nothing, because softmax ignores a constant. */
+  logits: number;
+  /** Under the reconstruction residual: this component's direct effect cannot
+   *  be told from the error the approximation already makes. NOT a claim that
+   *  the component does not matter. */
+  unreadable: boolean;
+}
+
+export interface DirectAttribution {
+  token: string;
+  token_id: number;
+  position: number;
+  real_logit: number;
+  bias: number;
+  /** The gap between every component summed and the logit the model really
+   *  produced — what freezing the normalisation scale cost on this run. The
+   *  panel must show it: without it the chart claims a decomposition it does
+   *  not have. */
+  residual: number;
+  residual_share: number;
+  norm_kind: string;
+  components: DirectContribution[];
+  n_unreadable: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const getDirectAttribution = (topK = 40) =>
+  fetch(`/api/attention/direct?top_k=${topK}`).then((r) =>
+    json<DirectAttribution>(r),
+  );
+
+/** What a translator was fitted to, and what it bought on held-out text. */
+export interface TunedLensInfo {
+  corpus_label?: string;
+  corpus_sha256?: string;
+  n_tokens?: number;
+  n_held_out?: number;
+  n_layers_improved?: number;
+  n_layers?: number;
+  /** Tokens of text per translator parameter. Under 1 means the fit is
+   *  under-determined, and `caution` then says so in a sentence. */
+  tokens_per_parameter?: number;
+  caution?: string;
+  means?: string;
+  seconds?: number;
+  cached?: boolean;
+  layers?: { layer: number; plain_kl: number; tuned_kl: number; gain: number }[];
+}
+
+export const trainTunedLens = (body: { texts?: string[]; file?: string; steps?: number }) =>
+  fetch("/api/lens/tune", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<TunedLensInfo>(r));
+
+export const tunedLensStatus = () =>
+  fetch("/api/lens/tuned").then((r) =>
+    json<{ trained: boolean; info?: TunedLensInfo }>(r),
+  );
+
+export const getLens = (topK = 5, kind: "plain" | "tuned" | "both" = "plain") =>
+  fetch(`/api/lens?top_k=${topK}&kind=${kind}`).then((r) =>
     json<{
       layers: LensRow[];
       n_layers: number;
       final: string;
       settled_at: number | null;
+      receipt?: Receipt | null;
+      /** BESIDE the plain rows, never instead of them: `layers` is the plain
+       *  reading on every kind. Align by `layer`, not by index — the plain
+       *  lens has one more row (the model's own final state), which has no
+       *  translator because it is the answer rather than a guess at it. */
+      tuned?: LensRow[] | null;
+      tuned_info?: TunedLensInfo | null;
     }>(r),
   );
 
@@ -1372,6 +2605,7 @@ export interface PatchTrace {
   passes: number;
   seconds: number;
   notes: string[];
+  receipt?: Receipt | null;
 }
 
 export const patchTrace = (clean: string, corrupt: string) =>

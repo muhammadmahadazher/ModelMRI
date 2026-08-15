@@ -176,3 +176,32 @@ def test_every_method_that_touches_the_connection_serialises_it():
         "these touch the shared sqlite3 connection without holding the lock, "
         "which is what produced short rows under concurrency: " + ", ".join(offenders)
     )
+
+
+def test_the_store_opens_on_a_machine_that_has_never_run_this_before(
+    tmp_path, monkeypatch
+):
+    """`modelmri serve` died on first run for every genuinely new user.
+
+    `paths.data_dir()` answers where the database belongs and creates nothing
+    -- `paths.ensure` is the creator, by design. None of the three TraceStore
+    call sites called it, so opening the database on a machine with no
+    `~/.modelmri` raised `unable to open database file` inside `create_app`,
+    before the server printed its URL. It went unnoticed because every machine
+    it was tried on had already been an older version's machine and had the
+    legacy directory sitting there.
+
+    `tmp_path` here is a directory that exists but is EMPTY, which is exactly
+    the state of a new install.
+    """
+    from modelmri import paths
+    from modelmri.traces import TraceStore
+
+    monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
+    db = paths.trace_db_path()
+    assert not db.parent.exists(), "this test is only meaningful on a fresh home"
+
+    store = TraceStore(db)
+    assert db.exists()
+    # And it is a working database, not merely a file that opened.
+    assert store.list_traces() == []

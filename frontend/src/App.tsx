@@ -15,6 +15,9 @@ import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
+import GraphPanel from "./GraphPanel";
+import ModelDiffPanel from "./ModelDiffPanel";
+import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
 import ThemeToggle from "./ThemeToggle";
@@ -120,8 +123,22 @@ export default function App() {
       ? `${model.hf_id} · ${model.device}`
       : "no model loaded";
 
+  // A model built from a GGUF is the QUANTISED weights, dequantised — so every
+  // number in every panel below describes that, not the original of the same
+  // name. The plan block in the reader says so, but it is one panel deep and
+  // disappears when you navigate away, which left the caveat attached to
+  // nothing while the whole page reported on a model it never qualified.
+  // `status.gguf` was already being sent and simply never read.
+  const q = model?.loaded ? model.gguf : null;
+
   return (
     <main>
+      {/* Reads the page rather than being told what is on it, so it is right
+          in the viewer build, the demo build and mid-run — three states with
+          three different sets of panels. Placed inside <main> only because
+          that is where React needs it; it positions itself against the
+          viewport. */}
+      <SectionNav />
       <div className="topbar">
         <span className="logomark">
           <span className="ast">✳</span> ModelMRI
@@ -181,6 +198,20 @@ export default function App() {
         {freed && <span className="pill freed">{freed}</span>}
       </div>
 
+      {q && (
+        <div className="quantised-banner">
+          <span className="pill warn">quantised</span>
+          <span className="meta">
+            Every measurement below describes the dequantised{" "}
+            <code>{q.plan.dtype}</code> weights of this GGUF —{" "}
+            {(q.plan.file_bytes / 1e9).toFixed(2)} GB on disk became{" "}
+            {(q.measured_resident_bytes / 1e9).toFixed(2)} GB resident — not the
+            original model of the same name. Point <code>quantdiff</code> at
+            both to see how far apart they are.
+          </span>
+        </div>
+      )}
+
       <div className="hero">
         <AsciiField modelId={model?.hf_id ?? null} />
         <h1 className="headline">
@@ -232,21 +263,44 @@ export default function App() {
       </div>
 
       <SessionBar session={session} onChange={setSession} />
+
+      {/* Renders only when the open session carries one, which is why it sits
+          unconditionally here: the panel decides, and it returns null when
+          there is no graph or no provenance to show it under. */}
+      <GraphPanel key={`graph-${session.open}-${resetKey}`} />
       <Playground
         key={resetKey}
         model={model}
         onModelChange={refresh}
         replay={session.open}
         sessionPatch={session.patch}
+        sessionGround={session.ground}
       />
       {/* The viewer has no machine behind it. Panels that can only ever say
           "install ModelMRI" are worse than absent — the one thing this page
           does, it should do without three dead ends around it. */}
       {!VIEWER && (
         <>
-          <CustomPanel />
+          {/* Loading a GGUF makes it the live model, so the header and
+              every panel have to re-ask. `refresh` updates the status;
+              bumping resetKey remounts the playground, which is the same
+              path the adopt button takes. */}
+          <CustomPanel
+            onModelChange={() => {
+              void refresh();
+              setResetKey((k) => k + 1);
+            }}
+          />
+          {/* Its own surface, and one that needs nothing loaded: it runs
+              its own two models and its own prompts, so it sits beside the
+              custom-model panel rather than inside the playground. */}
+          <ModelDiffPanel epoch={resetKey} />
           <VLAPanel />
-          <AgentsPanel />
+          {/* Adopting a step makes the server's current generation that
+              step's. Remounting the playground is what gets the panels to
+              re-ask what the server can answer — the same path a page reload
+              already takes, without the reload. */}
+          <AgentsPanel onAdopted={() => setResetKey((k) => k + 1)} />
         </>
       )}
       <footer>

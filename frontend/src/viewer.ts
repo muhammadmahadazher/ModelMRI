@@ -79,6 +79,35 @@ interface Doc {
   n_heads?: number;
   attention?: Record<string, { q: string; scale: number }>;
   lens?: unknown[];
+  /** An attribution graph THIS TOOL DID NOT COMPUTE, read from a
+   *  circuit-tracer file. Optional and additive, like `patch`: a file written
+   *  before it simply has no key, which is why the format version does not
+   *  move. `provenance` is not optional -- see the shim below. */
+  graph?: {
+    n_nodes?: number;
+    edges?: { source: number; target: number; weight: number }[];
+    provenance?: Record<string, unknown>;
+    prompt?: string;
+    summary?: Record<string, unknown>;
+    notes?: string[];
+  };
+  /** The agent run this analysis belongs to, and which step failed. Optional
+   *  and additive like `graph`.
+   *
+   *  This is the half no hosted platform can ship: every competitor's share
+   *  artefact is a link into their own trace UI, which dies when the account
+   *  lapses. Here the recipient opens the file with nothing installed, clicks
+   *  the failing tool call, and lands in the attention view of the generation
+   *  that produced the bad argument. */
+  trace?: {
+    id?: string;
+    name?: string;
+    started_at?: string;
+    steps?: Record<string, unknown>[];
+    n_steps_total?: number;
+    truncated?: number;
+    step_ref?: string;
+  };
 }
 
 let open: Doc | null = null;
@@ -243,6 +272,42 @@ export async function viewerFetch(
     });
   }
 
+  if (p === "/api/graph") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const g = open.graph;
+    if (!g || !g.n_nodes) return ok({ available: false });
+    // Refused here as well as in session.py, because this copy runs in the
+    // RECIPIENT'S browser on a file a stranger forwarded — and the claim it
+    // guards is the one the whole feature rests on. A graph rendered under
+    // ModelMRI's chrome without saying who computed it is the confusion the
+    // section exists to prevent, so an absent provenance is an error rather
+    // than a missing caption.
+    // A non-empty STRING. `measured_by: true` passes a truthiness test and
+    // React renders a boolean as nothing, so the graph would appear under
+    // ModelMRI's chrome with a blank disclaimer.
+    const claim = g.provenance?.measured_by;
+    if (typeof claim !== "string" || !claim.trim()) {
+      return {
+        status: 422,
+        payload: {
+          error:
+            "this session carries an attribution graph with no provenance. A " +
+            "graph ModelMRI did not compute must say who did, so it is not " +
+            "rendered rather than shown as if it were ours.",
+        },
+      };
+    }
+    return ok({
+      available: true,
+      n_nodes: g.n_nodes,
+      edges: g.edges ?? [],
+      provenance: g.provenance,
+      prompt: g.prompt ?? "",
+      summary: g.summary ?? {},
+      notes: g.notes ?? [],
+    });
+  }
+
   if (p === "/api/attention/meta") {
     if (!open) return ok({ available: false });
     return ok({
@@ -316,7 +381,46 @@ export async function viewerFetch(
   if (p === "/api/custom") return ok({ loaded: false, roots: [] });
   if (p === "/api/vla") return ok({ loaded: false });
   if (p === "/api/vla/datasets") return ok({ datasets: [] });
-  if (p === "/api/traces") return ok({ traces: [] });
+  // A LIST, not `{traces: []}`. The real route returns a bare array and
+  // `api.ts` types it as one, so the object this used to return made the
+  // agents panel call `.map` on a non-array in the standalone viewer.
+  if (p === "/api/traces") {
+    const t = open?.trace;
+    if (!t?.steps?.length) return ok([]);
+    return ok([
+      {
+        id: t.id || "bundled",
+        name: t.name || "the bundled run",
+        started_at: t.started_at || "",
+        n_steps: t.steps.length,
+      },
+    ]);
+  }
+  if (p.startsWith("/api/traces/")) {
+    const t = open?.trace;
+    if (!t?.steps?.length) {
+      // 404, matching the app's own route for an id it does not hold. A
+      // refusal here would read as "the viewer cannot do this", when the
+      // truth is that this particular file carries no run.
+      return {
+        status: 404,
+        payload: { error: "this file carries no agent run" },
+      };
+    }
+    // Patterns and token rollups are computed server-side in the app. The
+    // viewer has no Python, so it serves the steps and omits those keys
+    // rather than shipping a second implementation that could disagree with
+    // the first — the exact drift `viewer_check.py` exists to prevent.
+    return ok({
+      id: t.id || "bundled",
+      name: t.name || "the bundled run",
+      started_at: t.started_at || "",
+      steps: t.steps,
+      step_ref: t.step_ref || "",
+      truncated: t.truncated || 0,
+      n_steps_total: t.n_steps_total ?? t.steps.length,
+    });
+  }
   if (p === "/api/paths") {
     return ok({
       override: null,

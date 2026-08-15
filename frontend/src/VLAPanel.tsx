@@ -39,6 +39,8 @@ function vec(xs: number[]): string {
   return xs.map((v) => v.toFixed(dp)).join(", ");
 }
 
+import VLACausal from "./VLACausal";
+
 export default function VLAPanel() {
   const [vla, setVla] = useState<VLAStatus | null>(null);
   const [ds, setDs] = useState<VLADataset | null>(null);
@@ -357,6 +359,16 @@ export default function VLAPanel() {
           )}
         </div>
       </div>
+
+      {/* Directly under the attention map, on purpose: the causal map is
+          meant to be read against it, and the number that matters most is how
+          far apart the two rank the same blocks. */}
+      <VLACausal
+        episode={episode}
+        timestep={t}
+        layer={layer}
+        ready={Boolean(vla?.loaded)}
+      />
 
       {err && <div className="hint">{err}</div>}
       <div className="hint">

@@ -341,7 +341,11 @@ def trace(
     # equals. Measured, a pooled top-24 came back 20 resid, 2 mlp, 2 attn —
     # so the two grids that answer "through what" got almost no verdicts, and
     # the MLP's own peak was one of only two rows it was allowed.
-    per_component = max(1, max_controlled // len(COMPONENTS))
+    # Over the components that were MEASURED, not the three this module knows
+    # about. `ranked` below iterates `grids`, so dividing the budget by 3 when
+    # only two were readable spent two thirds of it and silently controlled
+    # fewer sites than asked for.
+    per_component = max(1, max_controlled // len(grids))
     ranked = [
         (score, c, li, pi)
         for c in grids
@@ -390,6 +394,9 @@ def trace(
 
     elapsed = time.perf_counter() - t0
     dtype = str(next(model.parameters()).dtype).removeprefix("torch.")
+    # The same blind spot the edge trace has, in the same formula: two sites
+    # closer than this are tied rather than ranked.
+    resolution = recovery_resolution(model, clean_logits, gap)
     return {
         "clean": {
             "prompt": clean,
@@ -405,12 +412,28 @@ def trace(
         "n_layers": n_layers,
         "n_positions": n_pos,
         "components": list(grids),
-        "grids": {
-            c: [[round(v, 6) for v in row] for row in grids[c]] for c in COMPONENTS
-        },
+        # OVER `grids`, not over COMPONENTS. The loop above deliberately
+        # catches a PatchError from a component this architecture does not
+        # expose, records it and continues so the rest is still measured --
+        # and then this rebuilt the response from the fixed tuple and raised
+        # `KeyError: 'mlp'`, after every one of the 2 x n_layers x n_positions
+        # forward passes had already been spent. The entire recovery path was
+        # unreachable: a Mixtral or OLMoE, whose blocks name the sublayer
+        # `block_sparse_moe`, paid for the whole trace and got a 500.
+        "grids": {c: [[round(v, 6) for v in row] for row in grids[c]] for c in grids},
+        # And the reader is told which one was dropped and why. `skipped` was
+        # collected, commented, and then never put in the payload -- so even
+        # with the KeyError fixed, two grids would have arrived looking like
+        # the whole answer.
+        "skipped": skipped,
         "sites": sites,
         "controlled": len(sites),
         "dtype": dtype,
+        # Two sites closer than this are tied, not ranked. On gpt2 in bfloat16
+        # the logits reach 128, where one representable step is 1.0, so a
+        # recovery fraction lands on a grid of `step / gap` -- 0.125 on the
+        # reference pair. Every score in `grids` and `sites` shares it.
+        "recovery_resolution": round(resolution, 6),
         "passes": passes,
         "seconds": round(elapsed, 2),
         # Not decoration. Layer 0's input IS the embedding, so patching every
@@ -454,4 +477,597 @@ def trace(
                 f"steps of an eighth. Compare within a dtype, not across one."
             ),
         ],
+    }
+
+
+# ---------------------------------------------------------------- edges
+#
+# The node grid answers WHERE: "position 7, layer 12 carries the answer". It
+# cannot answer what put it there, because patching a residual stream restores
+# everything that ever wrote into it at once.
+#
+# Path patching splits that. Take one bright cell as the RECEIVER, then for
+# each earlier component -- one attention head, or one MLP -- add just that
+# component's clean contribution into the receiver's residual input, with
+# everything else still corrupt. A sender that recovers the answer on its own
+# is the thing that wrote it. "Position 7 layer 12 matters" becomes "head 9.6
+# wrote it."
+
+
+# How many senders get the full control treatment. Same reasoning as
+# MAX_CONTROLLED for nodes: every sender is scored, but the eight same-norm
+# draws plus the shifted-position pass cost nine more forward passes each, and
+# running them on a sender that scored near zero buys nothing. What is left
+# out is NAMED in the response rather than implied by its absence.
+MAX_CONTROLLED_EDGES = 12
+
+
+def _write_of_head(projection, packed, position: int, head: int, head_dim: int):
+    """What one head wrote into the residual stream at `position`.
+
+    The out-projection's INPUT is the heads side by side; after it they are
+    summed and no slice belongs to any one of them. `ablate.head_geometry`
+    supplies the width because `hidden_size // n_heads` is wrong by 2x on
+    Qwen3-0.6B and wrong on gemma-3-270m-it, and a wrong head_dim silently
+    reads half of one head and half of the next.
+    """
+    weight = projection.weight.detach()
+    # Conv1D (GPT-2) stores [in, out]; nn.Linear stores [out, in]. Getting
+    # this backwards attributes every head to a different head's slot.
+    if getattr(projection, "in_features", None) is None:
+        weight = weight.T
+    span = slice(head * head_dim, (head + 1) * head_dim)
+    return weight[:, span].float() @ packed[0, position, span].float()
+
+
+def _add_at(block: torch.nn.Module, pos: int, delta: torch.Tensor):
+    """Add a vector into one position of a block's residual INPUT.
+
+    A pre-hook and an ADDITION, not a replacement. The receiver's residual
+    input on the corrupt run already holds everything the corrupt prompt
+    wrote; replacing it would restore every sender at once, which is the node
+    patch and the thing this is trying to take apart. Adding
+    (clean_sender - corrupt_sender) swaps exactly one contribution.
+    """
+
+    def pre(module, args):
+        stream = args[0]
+        if pos >= stream.shape[1]:
+            return None
+        edited = stream.clone()
+        edited[0, pos, :] = edited[0, pos, :] + delta.to(edited.dtype).to(edited.device)
+        return (edited,) + args[1:]
+
+    return block.register_forward_pre_hook(pre)
+
+
+def recovery_resolution(model: Any, logits: torch.Tensor, gap: float) -> float:
+    """The smallest change in a recovery fraction this dtype can express.
+
+    A recovery is `(gap_of(out) - ld_corrupt) / gap`, and every term is a
+    difference of logits. In bfloat16 a logit near 128 has a representable
+    step of 1.0 -- so the numerator moves in whole units and the fraction
+    lands on a grid of `step / gap`.
+
+    MEASURED, not predicted: on gpt2 with the reference pair, every sender in
+    a path trace scored a multiple of 0.125 and a dozen of them tied exactly.
+    Ranking those against each other is reading noise, and without this number
+    on screen there is nothing to say so. It is reported beside the scores so
+    a reader can see which part of the ordering is real.
+    """
+    step = float(logits.abs().max()) * float(
+        torch.finfo(next(model.parameters()).dtype).eps
+    )
+    return step / gap if gap else 0.0
+
+
+def path_trace(
+    model: Any,
+    tokenizer: Any,
+    blocks: list,
+    clean: str,
+    corrupt: str,
+    *,
+    device: Any,
+    receiver_layer: int,
+    receiver_position: int,
+    draws: int = CONTROL_DRAWS,
+    max_controlled: int = MAX_CONTROLLED_EDGES,
+) -> dict:
+    """Which earlier component wrote what makes this receiver matter.
+
+    Scored with the SAME fraction `trace` uses -- (gap_of(out) - ld_corrupt) /
+    gap -- so an edge number and a node number are on one scale and can be read
+    together. Both of `trace`'s controls run here too: eight same-norm random
+    draws, and the same edit taken from a different position.
+
+    V1 DOES NOT SPLIT Q/K/V. A sender is patched into the receiver's residual
+    input as a whole, so this says "head 9.6 wrote what layer 12 reads", not
+    "head 9.6 reached layer 12 through its query". Freezing q/k/v across GQA,
+    fused QKV and rotary embeddings in arbitrary HuggingFace architectures is
+    the fiddliest thing this package could attempt, and getting it subtly wrong
+    produces confident, ordered, plausible and wrong numbers. The scope that
+    ran is named in the response rather than left to be assumed.
+    """
+    from . import ablate
+
+    t0 = time.perf_counter()
+    n_layers = len(blocks)
+    if not 0 <= receiver_layer < n_layers:
+        raise PatchError(f"layer {receiver_layer} is outside this model's {n_layers}.")
+    if receiver_layer == 0:
+        raise PatchError(
+            "layer 0 has no earlier component to have written into it. Pick a "
+            "receiver deeper than the first block."
+        )
+
+    clean_ids = tokenizer(clean, return_tensors="pt")["input_ids"].to(device)
+    corrupt_ids = tokenizer(corrupt, return_tensors="pt")["input_ids"].to(device)
+    if clean_ids.shape != corrupt_ids.shape:
+        raise PatchError(
+            f"these prompts tokenise to {clean_ids.shape[-1]} and "
+            f"{corrupt_ids.shape[-1]} tokens. Patching needs position N to "
+            f"mean the same thing in both runs."
+        )
+    n_pos = int(clean_ids.shape[-1])
+    if not 0 <= receiver_position < n_pos:
+        raise PatchError(
+            f"position {receiver_position} is outside these {n_pos} tokens."
+        )
+
+    n_heads = int(model.config.num_attention_heads)
+    senders = range(receiver_layer)
+
+    def capture(ids):
+        """Per-layer out-projection inputs and MLP outputs for one run."""
+        packed: dict[int, torch.Tensor] = {}
+        mlp: dict[int, torch.Tensor] = {}
+        handles = []
+
+        def catch(layer: int):
+            def pre(module, args):
+                packed[layer] = args[0].detach().clone()
+
+            return ablate.out_projection(blocks[layer]).register_forward_pre_hook(pre)
+
+        try:
+            for layer in senders:
+                handles.append(catch(layer))
+                handles.append(
+                    _capture_out(_sublayer(blocks[layer], "mlp"), layer, mlp)
+                )
+            with torch.no_grad():
+                logits = model(ids).logits[0, -1].float()
+        finally:
+            for handle in handles:
+                handle.remove()
+        return packed, mlp, logits
+
+    clean_packed, clean_mlp, clean_logits = capture(clean_ids)
+    corrupt_packed, corrupt_mlp, corrupt_logits = capture(corrupt_ids)
+
+    a = int(clean_logits.argmax())
+    b = int(corrupt_logits.argmax())
+    if a == b:
+        raise PatchError(
+            "both prompts predict the same token, so there is no answer for a "
+            "patch to restore. Pick a pair whose answers actually differ."
+        )
+
+    def gap_of(logits: torch.Tensor) -> float:
+        return float(logits[a] - logits[b])
+
+    ld_clean, ld_corrupt = gap_of(clean_logits), gap_of(corrupt_logits)
+    gap = ld_clean - ld_corrupt
+    if gap < MIN_GAP:
+        raise PatchError(
+            f"The two prompts disagree by only {gap:.4f} logits, which is too "
+            f"little to divide by: a patch that moves the answer a fraction of "
+            f"that would read as a large share of it. Pick a pair whose "
+            f"answers differ more clearly."
+        )
+
+    passes = 2
+
+    def run_with(delta: torch.Tensor) -> float:
+        nonlocal passes
+        handle = _add_at(blocks[receiver_layer], receiver_position, delta)
+        try:
+            with torch.no_grad():
+                out = model(corrupt_ids).logits[0, -1].float()
+        finally:
+            handle.remove()
+        passes += 1
+        return (gap_of(out) - ld_corrupt) / gap
+
+    def delta_of(layer: int, head: int | None, position: int):
+        """(clean - corrupt) for one sender at one position."""
+        if head is None:
+            return (
+                clean_mlp[layer][0, position, :].float()
+                - corrupt_mlp[layer][0, position, :].float()
+            )
+        projection = ablate.out_projection(blocks[layer])
+        head_dim = ablate.head_geometry(blocks[layer], n_heads)
+        return _write_of_head(
+            projection, clean_packed[layer], position, head, head_dim
+        ) - _write_of_head(projection, corrupt_packed[layer], position, head, head_dim)
+
+    scored: list[dict] = []
+    for layer in senders:
+        for head in list(range(n_heads)) + [None]:
+            delta = delta_of(layer, head, receiver_position)
+            scored.append(
+                {
+                    "layer": layer,
+                    "head": head,
+                    "name": f"L{layer}H{head}" if head is not None else f"L{layer} MLP",
+                    "recovery": round(run_with(delta), 6),
+                    "delta_norm": round(float(delta.norm()), 6),
+                }
+            )
+
+    scored.sort(key=lambda row: -row["recovery"])
+    gen = torch.Generator().manual_seed(CONTROL_SEED)
+    controlled = 0
+    for row in scored[:max_controlled]:
+        delta = delta_of(row["layer"], row["head"], receiver_position)
+        norm = delta.norm()
+        control = []
+        for _ in range(draws):
+            noise = torch.randn(delta.shape, generator=gen).to(delta.device)
+            control.append(run_with(noise / noise.norm() * norm))
+        # The same second question the node grid asks: is it THIS position, or
+        # would this sender's writing anywhere do? One pass, and it separates a
+        # sender that carries the fact from one that is simply loud.
+        alt = (receiver_position + 1) % n_pos
+        shifted = run_with(delta_of(row["layer"], row["head"], alt))
+        worst = max(control)
+        row.update(
+            {
+                "control_max": round(worst, 6),
+                "control_min": round(min(control), 6),
+                "control_draws": draws,
+                "shifted_position": round(shifted, 6),
+                "clears_control": bool(row["recovery"] > worst),
+                "clears_position": bool(row["recovery"] > shifted),
+            }
+        )
+        controlled += 1
+
+    return {
+        "receiver": {"layer": receiver_layer, "position": receiver_position},
+        "clean": {
+            "prompt": clean,
+            "tokens": _tokens(tokenizer, clean_ids),
+            "answer": _answer(clean_logits, tokenizer),
+        },
+        "corrupt": {
+            "prompt": corrupt,
+            "tokens": _tokens(tokenizer, corrupt_ids),
+            "answer": _answer(corrupt_logits, tokenizer),
+        },
+        "gap": round(gap, 6),
+        # Differences below this are not a ranking. See `recovery_resolution`.
+        "recovery_resolution": round(recovery_resolution(model, clean_logits, gap), 6),
+        "senders": scored,
+        "n_senders": len(scored),
+        "n_controlled": controlled,
+        "passes": passes,
+        "seconds": round(time.perf_counter() - t0, 2),
+        # THE SEEDING RULE, STATED. Edge count is quadratic in the general
+        # case; this is linear only because the receiver is fixed to the one
+        # site you asked about. Saying which edges were even considered is the
+        # difference between "head 9.6 is the strongest sender" and "head 9.6
+        # is the strongest sender we looked at".
+        "seeding": (
+            f"every attention head and MLP in layers 0-{receiver_layer - 1} "
+            f"was scored as a sender into layer {receiver_layer} at position "
+            f"{receiver_position} — {len(scored)} edges, all of them. Controls "
+            f"ran on the top {controlled} by recovery; the rest carry a score "
+            f"and no verdict."
+        ),
+        # THE SCOPE, NAMED. See the docstring: q/k/v is not split in v1.
+        "scope": (
+            "residual receivers only. A sender is patched into the receiver's "
+            "residual input as a whole, so this says which component WROTE "
+            "what the receiver reads — not which of its query, key or value "
+            "paths carried it. Splitting those across GQA, fused QKV and "
+            "rotary embeddings would produce confident and subtly wrong "
+            "numbers, so it is not attempted here."
+        ),
+        "means": (
+            f"Share of the clean-to-corrupt gap ({gap:.4f} logits) recovered by "
+            f"restoring ONE component's contribution into layer "
+            f"{receiver_layer} at position {receiver_position}, with everything "
+            f"else still corrupt. Same fraction the node grid reports, so the "
+            f"two are comparable. A sender clears its controls when it beats "
+            f"all {draws} same-norm random draws AND the same edit taken from a "
+            f"neighbouring position — the first says the number is not the size "
+            f"of the edit, the second that it is not just this layer being "
+            f"loud. RESOLUTION "
+            f"{recovery_resolution(model, clean_logits, gap):.3f}: two senders "
+            f"closer than that are tied, not ranked — a recovery is a "
+            f"difference of logits divided by the gap, and "
+            f"{str(next(model.parameters()).dtype).removeprefix('torch.')} "
+            f"cannot express a finer step at this logit magnitude."
+        ),
+    }
+
+
+# ----------------------------------------------------------- patchscopes
+#
+# Every other reading in this file asks the model a question in numbers. This
+# one asks it in words: take a hidden state from somewhere in one run, splice
+# it into a second prompt built to make the model describe whatever it is
+# holding, and read what comes out.
+#
+# The method's known failure is that a good target prompt describes ANYTHING
+# fluently. Hand it a random vector and it will still produce a confident
+# sentence. So a decode on its own is not evidence, and this never returns one
+# alone.
+
+
+# The identity target from Ghandeharioun et al. -- a few-shot pattern with
+# nothing but "x -> x", so the model's only job at the final position is to
+# say what is in front of it. VISIBLE AND EDITABLE, never a hidden constant:
+# the target prompt is part of the result, and two decodes taken under
+# different targets are not comparable. It is returned with every response for
+# that reason.
+DEFAULT_TARGET = "cat -> cat\n1135 -> 1135\nhello -> hello\n?"
+
+
+def _overlap(a: str, b: str) -> float:
+    """How much two decodes share, as a fraction of the smaller vocabulary.
+
+        An EXACT-MATCH check is not enough on its own and measuring it showed why.
+        Splicing a layer-8 state into the identity target gave ", hello, hello,
+        hello" while the UNTOUCHED target gave " -> hello
+    ? -> hello": different
+        strings, so an equality test called the decode informative -- and both are
+        plainly the few-shot pattern talking rather than anything about the state.
+        A reader looking at the two would see it instantly; a boolean would not.
+
+        Reported rather than thresholded. There is no principled cut-off for "the
+        same", so the number goes on screen beside both decodes and the reader
+        judges. Word-level and case-folded, because the failure being caught is
+        the target prompt's vocabulary reappearing, not its punctuation.
+    """
+
+    # STRIPPED, not merely filtered. The first version used `.strip()` as the
+    # test and kept the original word, so "hello," never matched "hello" --
+    # which defeats the whole check, since the failure it exists to catch is
+    # the target prompt's own words coming back in slightly different
+    # punctuation. Caught by a test, not by reading it.
+    def words(text: str) -> set[str]:
+        stripped = (w.strip(".,:;!?\"'()->") for w in text.lower().split())
+        return {w for w in stripped if w}
+
+    left, right = words(a), words(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def _splice_prefill(block: torch.nn.Module, pos: int, vec: torch.Tensor):
+    """Replace one position of a block's residual input, ON THE PREFILL ONLY.
+
+    A separate helper from `_splice`, and the difference is generation.
+    `trace` runs one forward pass per patch, so the sequence dimension is
+    always the whole prompt and a plain splice is right. A patchscope
+    GENERATES: after the prefill the model runs with a KV cache and each step
+    passes a single new token, so the stream arrives with sequence length 1
+    and writing at position 14 raises IndexError -- inside a generation
+    worker thread, where it surfaces as a streamer timeout rather than as the
+    bug it is. Measured exactly that way.
+
+    Skipping the decode steps is also the correct semantics: the patch goes
+    into the PROMPT's residual stream, and the continuation should flow from
+    that rather than have the same vector stamped over every new token.
+
+    `_splice` is left alone rather than given this guard, because a silent
+    no-op on an out-of-range position would hide a real mistake for its
+    single-pass callers.
+    """
+
+    def pre(module, args):
+        x = args[0]
+        if pos >= x.shape[1]:
+            return None
+        edited = x.clone()
+        edited[:, pos, :] = vec.to(edited.dtype).to(edited.device)
+        return (edited,) + args[1:]
+
+    return block.register_forward_pre_hook(pre)
+
+
+def patchscope(
+    model: Any,
+    tokenizer: Any,
+    blocks: list,
+    decode: Any,
+    source_prompt: str,
+    *,
+    device: Any,
+    source_layer: int,
+    source_position: int,
+    target_prompt: str = DEFAULT_TARGET,
+    target_layer: int | None = None,
+    target_position: int = -1,
+    draws: int = 1,
+) -> dict:
+    """Ask the model to describe a hidden state, with two controls beside it.
+
+    `decode` is a callable taking a prompt and returning generated text --
+    supplied by the caller so this module keeps no generation logic of its own.
+    It must be GREEDY: three decodes are being compared, and sampling would put
+    a second source of difference between them.
+
+    Returns the patched decode and both controls:
+
+      identity   the target prompt with its OWN activation, untouched
+      random     the target prompt with a same-norm random vector
+
+    A decode that reads the same across all three is the TARGET PROMPT TALKING,
+    and the response says so rather than leaving the reader to notice.
+    """
+    t0 = time.perf_counter()
+    n_layers = len(blocks)
+    if not 0 <= source_layer < n_layers:
+        raise PatchError(
+            f"source layer {source_layer} is outside this model's {n_layers}."
+        )
+    if target_layer is None:
+        target_layer = source_layer
+    if not 0 <= target_layer < n_layers:
+        raise PatchError(
+            f"target layer {target_layer} is outside this model's {n_layers}."
+        )
+
+    source_ids = tokenizer(source_prompt, return_tensors="pt")["input_ids"].to(device)
+    n_source = int(source_ids.shape[-1])
+    if not -n_source <= source_position < n_source:
+        raise PatchError(
+            f"source position {source_position} is outside the "
+            f"{n_source} tokens of that prompt."
+        )
+    at = source_position if source_position >= 0 else n_source + source_position
+
+    target_ids = tokenizer(target_prompt, return_tensors="pt")["input_ids"].to(device)
+    n_target = int(target_ids.shape[-1])
+    if not -n_target <= target_position < n_target:
+        raise PatchError(
+            f"target position {target_position} is outside the "
+            f"{n_target} tokens of the target prompt."
+        )
+    into = target_position if target_position >= 0 else n_target + target_position
+
+    # The source state, read at the pre-hook point every other measurement in
+    # this file uses, so a patchscope reads the same stream the grid patches.
+    sink: dict = {}
+    handle = _capture(blocks[source_layer], source_layer, sink)
+    try:
+        with torch.no_grad():
+            model(source_ids)
+    finally:
+        handle.remove()
+    if source_layer not in sink:
+        raise PatchError(
+            f"layer {source_layer} produced no residual stream on this model."
+        )
+    state = sink[source_layer][0, at, :].clone()
+    norm = float(state.norm())
+
+    def decode_with(vec: torch.Tensor | None) -> str:
+        if vec is None:
+            return decode(target_prompt)
+        handle = _splice_prefill(blocks[target_layer], into, vec)
+        try:
+            return decode(target_prompt)
+        finally:
+            handle.remove()
+
+    patched = decode_with(state)
+    identity = decode_with(None)
+
+    gen = torch.Generator().manual_seed(CONTROL_SEED)
+    randoms = []
+    for _ in range(max(1, draws)):
+        r = torch.randn(state.shape, generator=gen).to(state.device, state.dtype)
+        randoms.append(decode_with(r / r.norm() * norm))
+
+    # The verdict the reader would otherwise have to reach by eye, and often
+    # would not: a decode identical to the untouched target prompt means the
+    # patch changed nothing, and one identical to the random control means the
+    # target prompt says this whatever it is handed.
+    same_as_identity = patched.strip() == identity.strip()
+    same_as_random = any(patched.strip() == r.strip() for r in randoms)
+    overlap_identity = _overlap(patched, identity)
+    overlap_random = max(_overlap(patched, r) for r in randoms)
+
+    return {
+        "source": {
+            "prompt": source_prompt,
+            "layer": source_layer,
+            "position": at,
+            "tokens": _tokens(tokenizer, source_ids),
+            "norm": round(norm, 4),
+        },
+        "target": {
+            # RETURNED, ALWAYS. The target prompt is part of the result: two
+            # decodes taken under different targets are not comparable, and a
+            # hidden default would make that invisible.
+            "prompt": target_prompt,
+            "layer": target_layer,
+            "position": into,
+            "tokens": _tokens(tokenizer, target_ids),
+        },
+        "decode": patched,
+        "controls": {
+            "identity": identity,
+            "random": randoms,
+            "draws": len(randoms),
+        },
+        "same_as_identity": same_as_identity,
+        "same_as_random": same_as_random,
+        # How much of the decode's vocabulary the controls already had. The
+        # exact-match booleans above catch only the clearest case; these are
+        # what a reader actually needs when the decode merely ECHOES the
+        # target prompt in different words.
+        "overlap_identity": round(overlap_identity, 3),
+        "overlap_random": round(overlap_random, 3),
+        # Differs from both controls as a string AND says at least one word
+        # neither of them already said.
+        #
+        # The string test alone was not enough, measured on gpt2: a layer-8
+        # state decoded as ", hello, hello, hello" against an untouched target
+        # that was also nothing but "hello" repeated. Different strings, so it
+        # was flagged informative -- with 100% of its vocabulary already in
+        # the control.
+        # Complete containment is a test, not a tuned threshold: the decode
+        # used no word the target prompt was not already using.
+        "informative": bool(
+            not same_as_identity
+            and not same_as_random
+            and overlap_identity < 1.0
+            and overlap_random < 1.0
+        ),
+        "cross_layer": source_layer != target_layer,
+        "seconds": round(time.perf_counter() - t0, 2),
+        "means": (
+            f"The model was shown a prompt built to make it describe whatever "
+            f"is in front of it, with the layer-{source_layer} state from "
+            f"position {at} of your prompt spliced in at layer {target_layer}. "
+            + (
+                f"SOURCE LAYER {source_layer} INTO TARGET LAYER {target_layer}: "
+                f"the two streams are only comparable where the model treats "
+                f"them alike, and nothing here checks that they do. "
+                if source_layer != target_layer
+                else ""
+            )
+            + (
+                "THE DECODE MATCHES A CONTROL, so it is not about the state: "
+                + (
+                    "it is identical to the untouched target prompt, meaning "
+                    "the patch changed nothing. "
+                    if same_as_identity
+                    else "it is identical to what a same-norm RANDOM vector "
+                    "produced, meaning the target prompt says this whatever it "
+                    "is handed. "
+                )
+                if (same_as_identity or same_as_random)
+                else "It differs from both controls — the untouched target "
+                "prompt and a same-norm random vector — so it is at least "
+                "responding to what was patched. "
+            )
+            + (
+                f"It shares {overlap_identity:.0%} of its words with the "
+                f"untouched target and {overlap_random:.0%} with the random "
+                f"control — read those beside the decodes themselves, which "
+                f"are all three on screen for exactly this reason. "
+            )
+            + "A DECODE IS A GENERATION AND THEREFORE A SAMPLE. It is what the "
+            "model said when handed this state through this target prompt, not "
+            "what the state means."
+        ),
     }

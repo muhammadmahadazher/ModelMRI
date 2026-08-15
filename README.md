@@ -63,19 +63,43 @@ Type a prompt, watch it stream, then hover any token — arcs show which earlier
 144 heat maps and no reason to open any of them is a browsing tool. **Rank heads** zeroes each head in a layer, runs the model again, and measures how far the answer moves — so the dropdown arrives ordered and the top head is already selected.
 
 ```
-gpt2 · "The capital of France is" · zero-ablation · bf16
+Qwen3-1.7B · "The capital of France is" · answer " Paris" · zero-ablation · bf16
 
-Rank heads → L0 H7  KL 0.898   p(" the") 0.098 → 0.057
-             L0 H10 KL 0.535
-             L0 H9  KL 0.412
+Rank heads → L0 H3  KL 1.954   p(" Paris") 0.539 → 0.029   changes the answer
+             L0 H9  KL 0.096   p(" Paris") 0.539 → 0.345
+             L0 H1  KL 0.054   p(" Paris") 0.539 → 0.475
+             L0 H5  KL 0.044
+             L0 H11 KL 0.035
+             18 forward passes · 5.6 s · noise floor 0.0
 ```
 
-The setup line is not decoration. The same three heads on the same model score
-0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
-generation — a KL depends on the prompt, the dtype and the sequence, so a
-figure quoted without them cannot be checked by anyone.
+One head in the first layer carries most of it: removing L0 H3 alone takes
+`" Paris"` from 0.539 to 0.029 and the model answers something else. The next
+head down moves it by a twentieth as much.
 
-A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-0.6B is 450. What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
+The setup line is not decoration. Measured on gpt2, its own top three heads
+score 0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
+generation — the same heads, the same model, three different sets of numbers. A
+KL depends on the model, the prompt, the dtype and the sequence, so a figure
+quoted without them cannot be checked by anyone.
+
+**Three baselines, and how much they disagree is itself a property of the
+model.** Zeroing a head is one choice; replacing it with its own mean is
+another; replacing it with what it really computes on a different sentence
+(`resample`, eight draws) is the only one that keeps the model on its own
+distribution. On `Qwen3-1.7B` layer 0 they broadly agree — Spearman 0.81 to
+0.91, and the top five differ by at most one head. On `gpt2` layer 0 they do
+not: Spearman 0.34 to 0.47, and the top five disagree on two or three. The
+panel reports that number so the choice of baseline is visible rather than
+silently deciding the ranking.
+
+Resampling also shows its own spread, because one donor is a coin flip. Head 3
+on `Qwen3-1.7B` scored between **3.016 and 5.904** across the eight draws
+around a median of 4.540, and head 10 on `gpt2` ranged 0.027 to 0.335 — a
+twelvefold spread. A single draw could have reported any number in those
+ranges as the head's importance.
+
+A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-1.7B is 450 (28 layers x 16 heads). What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
 
 Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
 
@@ -105,8 +129,20 @@ Three grids, because *where* and *through what* are different questions — and 
 | `gpt2` | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
 | `Qwen2.5-0.5B-Instruct` | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
 | `gemma-3-270m-it` | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
+| `Qwen3-1.7B` | +0.967 · L3 · `el` | +0.651 · L20 · `of` | **+0.444 · L22 · `of`** |
 
-The MLP peak sits on a **subject** token in an early layer in all three — `um`, `os` and `osseum` are all pieces of "Colosseum" — while the attention peak sits on the **last** token, late. Early MLP writes the fact; late attention carries it to where the prediction is made. The residual grid contains both and shows only the destination.
+Across the first three, the MLP peak sat on a **subject** token in an early
+layer — `um`, `os` and `osseum` are all pieces of "Colosseum" — while the
+attention peak sat on the **last** token, late. That was a tidy story, and
+`Qwen3-1.7B` breaks it: its MLP peak is at **layer 22 on the final token**, and
+its residual peak moved the other way, to **layer 3 on a subject token**.
+
+Three models is not a result. The generalisation is left here with the model
+that falsifies it rather than quietly rewritten, because the shape of this
+table is the actual finding: *where a fact lives is a property of the
+architecture, not of transformers*. Run it on yours — the panel does this on
+whatever you have loaded, and the answer is not knowable from the first
+three.
 
 The score is **signed**, and it is the one ranking here that is not a KL: a patch can push the answer further away, and 5 of 132 sites did. It is also not capped at 1.0 — a single site can overshoot, and `gemma-3-270m-it` reads 1.010.
 
@@ -266,6 +302,9 @@ command says so.
 | `modelmri traces` | List agent runs recorded here, newest first. Instant. | — |
 | `modelmri open FILE.mri` | Open an analysis somebody sent you, in a browser. No model, no GPU, ~0.3s. | — |
 | `modelmri inspect FILE.mri` | Print what a `.mri` holds and exit — model, shape, what was captured, the prompt. `--json` for the lot. ~0.2s. | — |
+| `modelmri diff A.mri B.mri` | **Compare two analyses of the same prompt** and exit non-zero when something moved. `--fail-over X` for CI. No torch — instant. | — |
+| `modelmri sweep PROMPTS` | **Run one measurement over many prompts** and report each head as median, IQR, n and top-k rate instead of one number. `--metric`, `--layer`, `--jsonl`, `--out-dir`. | a model |
+| `modelmri verify FILE.mri` | **Re-run the measurements in a `.mri` on this machine** and report, per number, whether it came back the same. `--json` for CI. Loads the model. | the file's model |
 | `modelmri doctor` | What this machine can and cannot run, and why. Run it before you file a bug. | — |
 | `modelmri where` | Every directory ModelMRI reads or writes, and the variables that move them. | — |
 | `modelmri uninstall` | Remove everything ModelMRI has written here. `--models` takes the weights too. Asks first. | — |
@@ -282,7 +321,105 @@ modelmri serve         # look inside one of them
 ```bash
 modelmri inspect gpt2.mri     # what is in this file?
 modelmri open gpt2.mri        # show me
+modelmri verify gpt2.mri      # do these numbers come back on my machine?
 ```
+
+**Checking a finding instead of trusting it**
+
+```bash
+modelmri verify gpt2.mri
+```
+
+```
+gpt2.mri — measured on gpt2
+  file: bfloat16 on cuda:0    here: bfloat16 on cuda:0
+  commit: 607a30d783df  (same weights)
+
+  ✓ generation: reproduced
+      greedy decoding produced the same 4 tokens.
+  ✓ attention: reproduced
+      all 144 stored head maps match. The worst, 6:9, is off by 2.00e-03
+      against a 3.92e-03 tolerance.
+  ✓ patching: reproduced
+      all 3 grids match to 0.00e+00, inside a 0.00e+00 floor measured by
+      running the same trace twice here.
+  – head ranking: not verifiable
+      this file records that a head ranking ran, but the `.mri` carries
+      attention, patching and the generation — not the ranking itself.
+
+  3 reproduced · 0 differ · 1 not verifiable
+```
+
+Three verdicts and no pass/fail, because bit-exact reproduction across two
+machines is not achievable — kernel selection, cuDNN version and TF32 all move
+the last digits. **Every tolerance above was measured on the machine running
+the command**, never asserted from a constant: each check runs the same
+computation twice locally and takes the spread, and for attention the file
+supplies a second floor of its own, since it stores each map as uint8 against
+that map's maximum. Exit 1 only for a real disagreement — a file this machine
+cannot check is not a broken file.
+
+No hosted platform can offer this. It can hand you its own assertion; it can
+never hand you the re-run.
+
+**One prompt is an anecdote**
+
+```bash
+modelmri sweep prompts.txt --model gpt2 --layer 0
+```
+
+```
+heads over 5 prompts on gpt2 · baseline zero
+  5 measured · 0 could not be measured
+
+  head          median       IQR               range    n  top5
+  L0H7         1.06260   0.20091  0.38243–2.03443      5  5/5 (100%)
+  L0H10        0.55359   0.15838  0.53501–0.76216      5  5/5 (100%)
+  L0H9         0.30114   0.07043  0.17363–0.41155      5  5/5 (100%)
+  L0H2         0.17921   0.09322  0.03475–0.37399      5  3/5 (60%)
+  L0H0         0.05418   0.04382  0.03673–1.71640      5  3/5 (60%)
+```
+
+Read the fifth row. **L0H0 has a median of 0.054 and a maximum of 1.716** — it
+carried one prompt almost entirely and did nothing on the rest. That is the
+head worth looking at, and it is the head a mean would have buried. This is
+what "a number measured once is a sample, not a property" looks like as
+behaviour rather than as a line in a readme.
+
+Three rules it enforces rather than documents: never a mean without a spread;
+a prompt that could not be measured is a **row** carrying the reason, never a
+gap; and a token-position sweep is never aggregated across prompts, because
+position 3 is a different word in every one of them.
+
+**Did my quantisation change the model?**
+
+```bash
+modelmri diff baseline.mri after-quantising.mri --fail-over 0.05
+```
+
+```
+baseline.mri → after-quantising.mri
+
+  = generation: same
+  ≠ head ranking: changed
+      the top 5 changed: L0H4 entered and L0H7 left. 12 of 12 heads moved
+      past the 0.00e+00 noise floor.
+  = attention: same
+  ≠ patching: changed
+      3 patching sites changed sign — a site that recovered the clean answer
+      and now pushes away from it is a different causal story.
+```
+
+Exit 1, in the pull request that did it. Nothing else in the category has a
+regression concept for model internals; the state of the art for this question
+is a Reddit thread. It imports **no torch** — both sides are already measured
+and comparing them is arithmetic — so it is a CI step you would actually add.
+[The guide has a workflow you can paste.](docs/guides/regression-ci.md)
+
+It refuses rather than guesses: two different prompts exit 2 instead of being
+diffed into numbers that look like a regression, a sampled run is refused
+because it differs for reasons that are not the model, and a section one file
+lacks reports **"not comparable"**, never "same".
 
 A `.mri` is one analysis without the model — attention, the logit lens, the
 generation, and the activation-patching trace if you ran one. It is how you

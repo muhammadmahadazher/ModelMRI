@@ -20,6 +20,8 @@ import {
   SAEStatus,
   setSteer,
 } from "./api";
+import ReceiptLine from "./ReceiptLine";
+import FeatureEvidencePanel from "./FeatureEvidence";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
@@ -709,6 +711,16 @@ export default function FeaturesPanel({
         </>
       )}
 
+      {/* What it fires on in YOUR text, and what it promotes — sited here
+          rather than in a panel of its own because the third readout is
+          already on this page. The causal ranking above measures what removing
+          the feature does; a claim that survives activation, weights AND
+          ablation is worth something a claim resting on top activations alone
+          is not. */}
+      {featSel >= 0 && !DEMO && !VIEWER && (
+        <FeatureEvidencePanel feature={featSel} epoch={epoch} />
+      )}
+
       {featSel >= 0 && (
         <div className="row" style={{ marginTop: 14 }}>
           <span className="meta">steer #{featSel}</span>
@@ -1069,6 +1081,10 @@ function FeatureRanking({
       <div className={a.removal_verified ? "hint" : "hint err"}>
         {a.removal_check}
       </div>
+      {/* The SAE is as much a part of this measurement as the model, and the
+          receipt names both -- the same prompt through a different SAE ranks
+          different features. */}
+      <ReceiptLine receipt={a.receipt} />
     </div>
   );
 }

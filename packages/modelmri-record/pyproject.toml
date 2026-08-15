@@ -19,6 +19,15 @@ classifiers = [
 # that instrumenting an agent should not pull a deep-learning stack.
 dependencies = []
 
+# The `mri_trace` fixture, available to any pytest run once this package is
+# installed. Registering it here rather than asking for a conftest import
+# means a CI step gets it from `pip install modelmri-record` alone.
+#
+# The plugin imports nothing at module scope beyond pytest and this package,
+# so a test suite that never touches ModelMRI pays nothing for its presence.
+[project.entry-points.pytest11]
+modelmri_record = "modelmri_record.pytest_plugin"
+
 [project.urls]
 Homepage = "https://github.com/muhammadmahadazher/ModelMRI"
 Source = "https://github.com/muhammadmahadazher/ModelMRI"

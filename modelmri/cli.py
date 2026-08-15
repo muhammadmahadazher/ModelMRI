@@ -3,10 +3,293 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from pathlib import Path
 
 from . import __version__
+
+
+def diff_sessions(
+    path_a, path_b, *, fail_over: float | None = None, as_json: bool = False
+) -> int:
+    """Compare two `.mri` and exit non-zero when something moved.
+
+    Like `inspect` and unlike `verify`, this pays for NO torch: a `.mri` is
+    gzipped JSON, both sides are already measured, and comparing them is
+    arithmetic. That is what makes it usable as a CI step -- a job that has to
+    install torch to check a regression is a job nobody adds.
+    """
+
+    from . import mri_diff
+    from .errors import BadRequest, Refusal
+
+    try:
+        report = mri_diff.diff(path_a, path_b)
+    except (BadRequest, Refusal) as err:
+        print(f"modelmri: {err}", file=sys.stderr)
+        return 2
+
+    print(
+        json.dumps(report.to_dict(), indent=2, allow_nan=False)
+        if as_json
+        else mri_diff.render(report, fail_over)
+    )
+    return report.exit_code(fail_over)
+
+
+def run_sweep(
+    prompts_path,
+    *,
+    model: str,
+    metric: str = "heads",
+    baseline: str = "zero",
+    layer: int | None = None,
+    max_new_tokens: int = 8,
+    out_dir=None,
+    jsonl=None,
+    yes: bool = False,
+    as_json: bool = False,
+) -> int:
+    """Run one measurement over many prompts and report the distribution.
+
+    Prints the projected pass count BEFORE anything runs. Cost is N prompts x
+    per-prompt cost and the resample baseline multiplies through every row, so
+    a sweep that is about to take an hour should say so while there is still
+    time to press ctrl-c -- not after.
+    """
+    import datetime
+    import uuid
+
+    from . import sweep as sweep_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    try:
+        prompts = sweep_mod.load_prompts(prompts_path)
+        job = sweep_mod.Job(
+            model=model,
+            prompts=prompts,
+            metric=metric,
+            baseline=baseline,
+            layer=layer,
+            max_new_tokens=max_new_tokens,
+            out_dir=Path(out_dir) if out_dir else None,
+        ).validated()
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load(model, confirm=True)
+        projection = sweep_mod.plan(job, runtime)
+        print(
+            f"{projection['prompts']} prompts x "
+            f"{projection['passes_per_prompt']:,} passes = "
+            f"{projection['passes_total']:,} forward passes",
+            file=sys.stderr,
+        )
+        if not projection["aggregatable"]:
+            print(
+                f"  a {metric} sweep is per-prompt only: position 3 is a "
+                f"different token in every prompt, so it is not aggregated",
+                file=sys.stderr,
+            )
+        if projection["passes_total"] > 20_000 and not yes:
+            # Refused rather than started. A sweep that cannot finish inside
+            # anybody's patience is worse than one that never began, because
+            # the half-finished one has already cost the time.
+            print(
+                "  that is a lot of passes. Re-run with --yes if you meant "
+                "it, or narrow it with --layer.",
+                file=sys.stderr,
+            )
+            return 2
+
+        rows = sweep_mod.run(
+            job,
+            runtime,
+            on_row=lambda row, total: print(
+                f"  [{row.index + 1}/{total}] "
+                + ("ok" if row.measured else f"refused: {row.could_not_measure}"),
+                file=sys.stderr,
+            ),
+        )
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+    finally:
+        try:
+            runtime.unload()
+        except Exception:  # noqa: S110 - the rows are already collected
+            pass
+
+    stats = (
+        sweep_mod.aggregate(rows, metric=job.metric, top_k=job.top_k)
+        if job.metric in sweep_mod.AGGREGATABLE
+        else []
+    )
+    sweep_id = uuid.uuid4().hex[:12]
+    sweep_mod.save(
+        job,
+        rows,
+        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        sweep_id=sweep_id,
+    )
+    if jsonl:
+        written = sweep_mod.write_jsonl(rows, jsonl)
+        print(f"  rows written to {written}", file=sys.stderr)
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "id": sweep_id,
+                    "projection": projection,
+                    "rows": [r.to_dict() for r in rows],
+                    "stats": [s.to_dict() for s in stats],
+                },
+                indent=2,
+                allow_nan=False,
+            )
+        )
+    else:
+        print(sweep_mod.render(job, rows, stats))
+    # Every prompt refused is a failure of the run, not a finding.
+    return 0 if any(r.measured for r in rows) else 1
+
+
+def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
+    """Prove a robot dataset is intact, or say exactly where it is not.
+
+    Exit code is 1 when a check FAILED and 0 otherwise, so this drops into a
+    pre-training script. A check that could not run here is NOT a failure --
+    a missing PyAV is a fact about the machine, and exiting non-zero for it
+    would make the gate about the environment rather than the data.
+    """
+
+    from . import vla_audit
+
+    # Imported here rather than at module scope, like every other command in
+    # this file: `cli.py` is what `modelmri --help` runs, and pulling errors
+    # (and through it the rest of the package) at import time would put a
+    # second of torch on the front of every invocation.
+    from .errors import BadRequest, Refusal
+    from .vla_data import LeRobotV3Reader
+
+    try:
+        reader = LeRobotV3Reader.discover(repo_id=repo_id or None)
+    except ImportError as err:
+        # `err.name` and never `err` — the same rule `_missing_reader_dep`
+        # already follows on the HTTP side. The module name is the useful half
+        # and is bounded; the exception's own prose is free-form text about
+        # this machine, and a leak test walks every sink in the package
+        # looking for exactly that interpolation. Caught by it, not by review.
+        what = f" ({err.name} is missing)" if getattr(err, "name", None) else ""
+        print(f"Reading a LeRobot dataset needs pyarrow and av{what}.")
+        print("  pip install 'modelmri[vla-lite]'")
+        return 2
+    except (Refusal, BadRequest) as err:
+        print(err)
+        return 2
+
+    report = vla_audit.audit(reader)
+    if as_json:
+        print(json.dumps(report.to_dict(), indent=2, allow_nan=False))
+        return 1 if report.broken else 0
+
+    mark = {vla_audit.OK: "OK  ", vla_audit.BROKEN: "FAIL", vla_audit.UNCHECKED: "--  "}
+    print(
+        f"{report.repo_id} — {report.n_episodes} episodes, "
+        f"{report.n_frames} frames, {report.seconds}s"
+    )
+    print()
+    for check in report.checks:
+        print(f"  {mark[check.verdict]} {check.name}")
+        for line in _wrap(check.detail, 72):
+            print(f"         {line}")
+    print()
+    for line in _wrap(report.means(), 76):
+        print(f"  {line}")
+    return 1 if report.broken else 0
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(text, width=width) or [""]
+
+
+def check_trace(args) -> int:
+    """`modelmri check` — structural assertions, for a CI step.
+
+    Imports nothing heavy: no torch, no transformers, no network. The point is
+    that this runs in a build container with no account, so anything that
+    would need one is not allowed in this path.
+    """
+    from . import check as check_mod
+
+    result, code, error = check_mod.check(
+        args.target,
+        no_errors=args.no_errors,
+        max_steps=args.max_steps,
+        no_retry_storms=args.no_retry_storms,
+        no_loops=args.no_loops,
+        max_repeat=args.max_repeat,
+        max_ms=args.max_ms,
+    )
+    if result is None:
+        # Unreadable is its own exit code: a missing file is a broken
+        # pipeline, not a broken agent.
+        if args.json:
+            print(json.dumps({"error": error, "ok": False}, indent=2))
+        else:
+            print(error, file=sys.stderr)
+        return code
+    print(json.dumps(result.to_dict(), indent=2) if args.json else result.report())
+    return code
+
+
+def verify_session(path, *, as_json: bool = False) -> int:
+    """Re-run a `.mri`'s measurements here and report what came back the same.
+
+    Unlike `inspect` and `open`, this one DOES pay for torch and transformers,
+    and there is no way around it: verifying a measurement means taking the
+    measurement, through the same `ModelRuntime` methods the server calls. A
+    second implementation would be verifying itself.
+
+    Exit 1 only for a real disagreement. A file this machine cannot check is
+    not a failure of the file, and exiting non-zero for it would make `verify`
+    useless in CI the moment somebody ran it on a different accelerator.
+    """
+
+    from . import verify as verify_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    runtime = ModelRuntime()
+    try:
+        report = verify_mod.verify(path, runtime)
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+    finally:
+        # The model is several gigabytes and this is a one-shot command, so it
+        # goes back before the process does rather than at interpreter exit.
+        try:
+            runtime.unload()
+        except Exception:  # noqa: S110 - the report is already printed
+            # The process is about to exit and the OS reclaims the memory
+            # regardless. Turning a tidy-up failure into a non-zero exit would
+            # report a verification failure that did not happen.
+            pass
+
+    print(
+        json.dumps(report.to_dict(), indent=2) if as_json else verify_mod.render(report)
+    )
+    return report.exit_code()
 
 
 def inspect_session(path, *, as_json: bool = False) -> int:
@@ -18,7 +301,6 @@ def inspect_session(path, *, as_json: bool = False) -> int:
     rewritten in the first place was that 26 seconds of imports to read a
     54 KB file reads as a hang, and somebody pressed ctrl-c.
     """
-    import json
     from pathlib import Path
 
     from . import session
@@ -67,6 +349,20 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         },
         "prompt": parsed.prompt,
         "generation": parsed.generation,
+        # A graph is somebody else's measurement, so `inspect` -- which is
+        # triage, run before opening anything -- has to say so. A file whose
+        # only content is a graph would otherwise print as an empty session.
+        "graph": (
+            {
+                "present": True,
+                "n_nodes": parsed.graph.get("n_nodes"),
+                "edges": len(parsed.graph.get("edges") or []),
+                "producer": (parsed.graph.get("provenance") or {}).get("producer"),
+                "model": (parsed.graph.get("provenance") or {}).get("model"),
+            }
+            if parsed.has_graph()
+            else {"present": False}
+        ),
     }
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -96,6 +392,11 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         line("patching", ", ".join(summary["patch"]["components"]))
         line("  clean", summary["patch"]["clean"])
         line("  corrupt", summary["patch"]["corrupt"])
+    if summary["graph"]["present"]:
+        g = summary["graph"]
+        line("graph", f"{g['n_nodes']:,} nodes, {g['edges']:,} edges carried")
+        line("  computed by", f"{g['producer']} on {g['model'] or 'an unnamed model'}")
+        line("", "NOT measured by ModelMRI")
     print()
     # Truncated on purpose: `inspect` is triage, and a 4,000-token prompt
     # scrolling past is the opposite of it. `--json` gives the whole thing.
@@ -149,6 +450,234 @@ def list_models() -> int:
     print(f"\n  searched: {', '.join(str(r) for r in roots) or 'nothing'}")
     print(f"  downloads go to: {paths.hf_hub_cache()}")
     return 0
+
+
+def open_graph(target, *, host="127.0.0.1", port=5900, browser=True) -> int:
+    """Print what somebody else's attribution graph contains.
+
+    The banner is the feature. A graph ModelMRI did not compute must never be
+    mistakable for one it did, so the provenance -- file, producing tool,
+    model, transcoder set -- prints before any number, and the disclaimer
+    prints whether or not the file named a model.
+
+    Nothing is loaded and no model is touched: this reads a tensor archive
+    with a restricted unpickler and reduces on the tensor.
+    """
+    from pathlib import Path
+
+    from . import circuit
+    from .errors import BadRequest, Refusal
+
+    try:
+        graph = circuit.read(target)
+    except (Refusal, BadRequest) as err:
+        print(f"modelmri: {err}", file=sys.stderr)
+        return 2
+
+    p = graph.provenance
+    print(f"ModelMRI {__version__} — reading {p['file']}")
+    print()
+    print("  PROVENANCE")
+    print(f"    produced by   {p['producer']}")
+    print(f"    model         {p['model'] or 'not named in the file'}")
+    print(f"    transcoders   {p['scan'] or 'not named in the file'}")
+    print(f"    {p['measured_by']}")
+    print()
+
+    s = graph.summary()
+    print("  GRAPH")
+    print(f"    nodes         {graph.n_nodes:,}")
+    if graph.prompt:
+        print(f"    prompt        {_clip(graph.prompt)}")
+    print(
+        f"    edges         {s['nonzero_edges']:,} non-zero of "
+        f"{s['possible_edges']:,} possible"
+        + (f"  (density {s['density']})" if s.get("density") is not None else "")
+    )
+    if s.get("max_abs_weight") is not None:
+        print(f"    strongest     {s['max_abs_weight']:.6f}")
+    strongest = graph.edges(limit=5)
+    if strongest:
+        print()
+        print("  STRONGEST EDGES")
+        for e in strongest:
+            print(f"    {e['source']:>6} -> {e['target']:<6}  {e['weight']:+.6f}")
+    for note in graph.notes:
+        print()
+        print(f"  note: {note}")
+    if graph.foreign_classes:
+        # Named because it is the evidence for `producer`, and because it is
+        # the list of classes the reader refused to import.
+        print()
+        print(
+            "  classes named by the file and NOT imported: "
+            f"{', '.join(graph.foreign_classes)}"
+        )
+
+    # Then render it, in the same viewer as everything else. Written to a
+    # temporary `.mri` rather than served from memory because that is how
+    # every other finding travels -- and because it means the graph a person
+    # is looking at is a file they can forward, with the provenance welded on.
+    import tempfile
+
+    from . import circuit as _circuit
+
+    blob = _circuit.to_session(graph)
+    # `mkdtemp`, not a guessable name in the shared temp root. The old path
+    # was `gettempdir()/<stem>.mri` -- fixed, predictable, world-writable
+    # parent, and `write_bytes` follows symlinks, so another user could
+    # pre-create it as a link and have an arbitrary file overwritten with this
+    # caller's privileges (CWE-377/CWE-59). The file also holds the stranger's
+    # prompt, so a 0700 directory is the right home for it.
+    tmp = (
+        Path(tempfile.mkdtemp(prefix="modelmri-graph-"))
+        / f"{Path(graph.path).stem}.mri"
+    )
+    tmp.write_bytes(blob)
+    print()
+    print(f"  written as {tmp}  ({len(blob) / 1024:.1f} KB) — forwardable")
+    print("  no model will be loaded — this is somebody else's measurement")
+    print()
+    serve_viewer(tmp, host=host, port=port, browser=browser)
+    return 0
+
+
+def export_trace(
+    trace_id: str | None,
+    *,
+    endpoint: str,
+    headers: list[str],
+    service_name: str = "modelmri",
+    dry_run: bool = False,
+) -> int:
+    """Hand one recorded run to the collector the team already runs.
+
+    Prints the semconv generation it targeted. That is not decoration: the
+    `gen_ai.*` conventions were moved out of the main semantic-conventions
+    repo on 2026-06-12 into one with no releases and no tags, so "which
+    vocabulary do these spans speak" is a real question a consumer will have,
+    and the answer has to travel with the spans and be visible at the moment
+    of sending.
+    """
+
+    from . import otel, paths
+    from .errors import BadRequest, Refusal
+    from .traces import TraceStore
+
+    db = paths.trace_db_path()
+    if not db.exists():
+        print(f"No trace database yet ({db}).")
+        print("  Record one:  uv run python examples/record_demo.py")
+        return 1
+
+    store = TraceStore(db)
+    if not trace_id:
+        rows = store.list_traces()
+        if not rows:
+            print(f"No traces recorded yet ({db})")
+            return 1
+        trace_id = rows[0]["id"]
+        print(f"No id given, so: the most recent, {rows[0]['name']!r} ({trace_id})")
+
+    doc = store.get_trace(trace_id)
+    if doc is None:
+        print(f"No trace with id {trace_id!r}. `modelmri traces` lists them.")
+        return 1
+
+    try:
+        extra = _parse_headers(headers)
+        if dry_run:
+            body = otel.to_otlp(doc, service_name=service_name)
+            print(json.dumps(body, indent=2))
+            spans = body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+            print(
+                f"\n{len(spans)} spans, semconv {otel.SEMCONV_GENERATION}, "
+                "nothing sent (--dry-run)"
+            )
+            return 0
+        result = otel.send(doc, endpoint, headers=extra, service_name=service_name)
+    except (Refusal, BadRequest) as err:
+        print(f"{err}")
+        return 1
+
+    print(f"{result.spans} spans -> {result.endpoint}  (HTTP {result.status})")
+    print(f"  semconv generation: {result.semconv}")
+    if result.rejected_spans:
+        # A 200 does not mean accepted. OTLP returns partialSuccess in the
+        # body, and a collector over quota or running a filter uses it to say
+        # it dropped spans while still answering 200 -- so "N spans -> ok"
+        # without reading it is a claim nobody checked.
+        print(
+            f"  the collector REJECTED {result.rejected_spans} of "
+            f"{result.spans}; {result.accepted} accepted"
+            + (f" — {result.reject_message}" if result.reject_message else "")
+        )
+    if result.epoch_fallback:
+        print(
+            "  this trace's start time could not be parsed, so every span "
+            "sits at the epoch (1970) in your collector. The spans are "
+            "correct relative to each other and wrong absolutely."
+        )
+    if result.undated_spans:
+        # Said out loud rather than left in an attribute nobody reads. OTLP
+        # has no way to express "the end time is unknown", so these went as
+        # zero-length spans, and a zero-length span on a waterfall reads as an
+        # instantaneous operation -- a claim about something nobody measured.
+        print(
+            f"  {result.undated_spans} of {result.spans} had no recorded "
+            f"duration and were sent as zero-length, marked "
+            f"`modelmri.duration.recorded=false`. OTLP cannot say "
+            f'"unknown" for an end time.'
+        )
+    return 0
+
+
+def _parse_headers(pairs: list[str]) -> dict[str, str]:
+    """`K=V` strings into a dict, refusing the ones that are not.
+
+    A silently dropped auth header is a 401 several minutes later against a
+    hosted collector, so a malformed one stops here with the offending text.
+    """
+    from .errors import BadRequest
+
+    out: dict[str, str] = {}
+    for raw in pairs or []:
+        if "=" not in raw:
+            raise BadRequest(f"--header wants K=V, got {raw!r}")
+        key, _, value = raw.partition("=")
+        key, value = key.strip(), value.strip()
+        if not key:
+            raise BadRequest(f"--header has an empty name in {raw!r}")
+        # `.strip()` only removes the ENDS. An interior newline survived it,
+        # and http.client then either raises ValueError (which escaped as a
+        # traceback rather than a refusal) or -- for newline-space, which its
+        # regex deliberately permits as obs-fold -- puts a folded header on
+        # the wire. Header smuggling through a proxy sitting in front of the
+        # collector is the thing that buys.
+        for text, what in ((key, "name"), (value, "value")):
+            bad = next((c for c in text if ord(c) < 0x20 or ord(c) == 0x7F), None)
+            if bad is not None:
+                raise BadRequest(
+                    f"--header {what} contains a control character "
+                    f"({bad!r}) in {raw!r}. A newline in a header value is "
+                    "how a second header gets smuggled onto the wire."
+                )
+        if not value:
+            # The 401-several-minutes-later this function exists to prevent.
+            raise BadRequest(
+                f"--header {key!r} has an empty value. An empty auth header "
+                "is refused by a collector minutes later and reads as a "
+                "network problem."
+            )
+        if key.lower() == "content-type":
+            # Would override the JSON body's own type and make the collector
+            # parse it as something it is not.
+            raise BadRequest(
+                "--header cannot set Content-Type: this sends OTLP/HTTP with "
+                "a JSON body and the type has to match it."
+            )
+        out[key] = value
+    return out
 
 
 def list_traces() -> int:
@@ -228,7 +757,17 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
         raise SystemExit(1)
 
     payload = Path(target).read_bytes()
-    name = "session.mri"
+    # Derived from the file, not fixed. `session.mri` for everything meant the
+    # URL said nothing about what was open, and a graph served as "session"
+    # is the one thing this release is trying not to do.
+    #
+    # Sanitised hard, because `name` becomes both a served path and a `?f=`
+    # value: anything outside this alphabet could walk the path or smuggle a
+    # query, so it is rebuilt character by character rather than escaped.
+    stem = "".join(c if c.isalnum() or c in "-_" else "-" for c in Path(target).stem)[
+        :60
+    ]
+    name = f"{stem or 'session'}.mri"
 
     # Said once, plainly, rather than assumed. The docstring above promises
     # loopback; --host takes anything, and a recording is somebody's prompts.
@@ -534,14 +1073,30 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
+    audit = sub.add_parser(
+        "audit",
+        help="Prove a robot dataset is intact, or say exactly where it is not",
+    )
+    audit.add_argument(
+        "dataset",
+        nargs="?",
+        default="",
+        help="a cached LeRobot repo id, e.g. lerobot/pusht",
+    )
+    audit.add_argument(
+        "--json", action="store_true", help="machine-readable, for a CI gate"
+    )
+
     serve = sub.add_parser("serve", help="Start the ModelMRI server")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=5900)
 
     opener = sub.add_parser(
-        "open", help="Open a shared analysis (.mri) — no model needed"
+        "open",
+        help="Open a shared analysis (.mri) or an attribution graph (.pt) — "
+        "no model needed",
     )
-    opener.add_argument("file", help="the .mri someone sent you")
+    opener.add_argument("file", help="the .mri or circuit-tracer .pt someone sent you")
     opener.add_argument("--host", default="127.0.0.1")
     opener.add_argument("--port", type=int, default=5900)
     opener.add_argument(
@@ -562,10 +1117,156 @@ def main() -> None:
         help="emit the summary as JSON instead of text",
     )
 
+    differ = sub.add_parser(
+        "diff",
+        help="Compare two .mri of the same prompt and exit non-zero when "
+        "something moved",
+    )
+    differ.add_argument("a", help="the baseline .mri")
+    differ.add_argument("b", help="the .mri to check against it")
+    differ.add_argument(
+        "--fail-over",
+        type=float,
+        default=None,
+        metavar="X",
+        help="exit 1 only when a metric moved by more than X, in that "
+        "metric's own units. Omit to fail on anything past the files' own "
+        "noise floor.",
+    )
+    differ.add_argument("--json", action="store_true", help="emit JSON")
+
+    sweeper = sub.add_parser(
+        "sweep",
+        help="Run one measurement over many prompts and report the "
+        "distribution, not one number",
+    )
+    sweeper.add_argument("prompts", help="a .jsonl (objects with `prompt`) or .txt")
+    sweeper.add_argument("--model", required=True, help="which model to load")
+    sweeper.add_argument(
+        "--metric",
+        default="heads",
+        choices=("heads", "tokens", "features"),
+        help="heads: the ablation ranking (default). features: SAE features. "
+        "tokens: per-prompt only, never aggregated",
+    )
+    sweeper.add_argument(
+        "--baseline", default="zero", help="heads only: zero, mean or resample"
+    )
+    sweeper.add_argument(
+        "--layer", type=int, default=None, help="one layer; omit to sweep all"
+    )
+    sweeper.add_argument("--max-new-tokens", type=int, default=8)
+    sweeper.add_argument("--out-dir", default=None, help="write one .mri per prompt")
+    sweeper.add_argument("--jsonl", default=None, help="write one row per prompt")
+    sweeper.add_argument(
+        "--yes", action="store_true", help="run even when the projection is large"
+    )
+    sweeper.add_argument("--json", action="store_true", help="emit JSON")
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="Speak MCP over stdio, so an agent can call the measurements "
+        "directly (read-only)",
+    )
+    mcp.add_argument(
+        "--attach",
+        default="",
+        metavar="URL",
+        help="drive an already-running `modelmri serve` instead of loading a "
+        "second copy of the model, e.g. http://127.0.0.1:5900",
+    )
+
+    gate = sub.add_parser(
+        "check",
+        help="Gate a merge on structural facts about a recorded run "
+        "(exits non-zero when an assertion fails)",
+    )
+    gate.add_argument("target", help="a trace id in this machine's store, or a .json")
+    gate.add_argument(
+        "--no-errors", action="store_true", help="fail if any step recorded an error"
+    )
+    gate.add_argument(
+        "--max-steps", type=int, default=None, help="fail above this many steps"
+    )
+    gate.add_argument(
+        "--no-retry-storms",
+        action="store_true",
+        help="fail if one name failed twice in a row inside the retry window",
+    )
+    gate.add_argument(
+        "--no-loops",
+        action="store_true",
+        help="fail if any sequence of steps repeated back to back",
+    )
+    gate.add_argument(
+        "--max-repeat",
+        type=int,
+        default=None,
+        help="fail if a step ran more than N times with the same input",
+    )
+    gate.add_argument(
+        "--max-ms",
+        type=int,
+        default=None,
+        help="OPT-IN AND FLAKY: fail above this total wall-clock. A shared CI "
+        "runner is slow for reasons unrelated to your diff, and a gate that "
+        "goes red on a noisy neighbour teaches people to ignore the check",
+    )
+    gate.add_argument(
+        "--json", action="store_true", help="emit the report as JSON instead of text"
+    )
+
+    checker = sub.add_parser(
+        "verify",
+        help="Re-run the measurements in a .mri on this machine and report "
+        "what reproduced",
+    )
+    checker.add_argument("file", help="the .mri to check")
+    checker.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the report as JSON instead of text",
+    )
+
     sub.add_parser(
         "models", help="List the models on this machine, and what will not load"
     )
     sub.add_parser("traces", help="List agent runs recorded on this machine")
+
+    export = sub.add_parser(
+        "export",
+        help="Send a recorded run to an OTLP collector (Langfuse, Phoenix, "
+        "Grafana, Honeycomb)",
+    )
+    export.add_argument(
+        "trace_id",
+        nargs="?",
+        help="which run; omit for the most recent",
+    )
+    export.add_argument(
+        "--otlp",
+        required=True,
+        metavar="ENDPOINT",
+        help="OTLP/HTTP endpoint, e.g. http://localhost:4318 (port 4317 is "
+        "gRPC and is not spoken)",
+    )
+    export.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="K=V",
+        help="extra request header, repeatable — for a hosted collector's auth token",
+    )
+    export.add_argument(
+        "--service-name",
+        default="modelmri",
+        help="service.name on the exported resource (default: modelmri)",
+    )
+    export.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the OTLP body and send nothing",
+    )
 
     sub.add_parser("where", help="Print every directory ModelMRI reads or writes")
 
@@ -634,6 +1335,21 @@ def main() -> None:
             print(f"modelmri: no such file: {target}", file=sys.stderr)
             raise SystemExit(2)
 
+        # A circuit-tracer attribution graph is a different file entirely, so
+        # it takes its own reader and its own banner. Routed by extension
+        # rather than by sniffing: a `.pt` that turns out not to be a graph is
+        # refused by `circuit.read` with a sentence about what it actually
+        # holds, which is more useful than a gzip error from `session.parse`.
+        if target.suffix.lower() in (".pt", ".pth"):
+            raise SystemExit(
+                open_graph(
+                    target,
+                    host=args.host,
+                    port=args.port,
+                    browser=not args.no_browser,
+                )
+            )
+
         # Parse before starting anything. Someone who was sent the wrong file
         # should get one sentence, not a server they then have to shut down.
         try:
@@ -659,10 +1375,49 @@ def main() -> None:
         return
     elif args.command == "inspect":
         raise SystemExit(inspect_session(args.file, as_json=args.json))
+    elif args.command == "diff":
+        raise SystemExit(
+            diff_sessions(args.a, args.b, fail_over=args.fail_over, as_json=args.json)
+        )
+    elif args.command == "sweep":
+        raise SystemExit(
+            run_sweep(
+                args.prompts,
+                model=args.model,
+                metric=args.metric,
+                baseline=args.baseline,
+                layer=args.layer,
+                max_new_tokens=args.max_new_tokens,
+                out_dir=args.out_dir,
+                jsonl=args.jsonl,
+                yes=args.yes,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "mcp":
+        from . import mcp_server
+
+        raise SystemExit(mcp_server.serve(attach=args.attach))
+    elif args.command == "check":
+        raise SystemExit(check_trace(args))
+    elif args.command == "verify":
+        raise SystemExit(verify_session(args.file, as_json=args.json))
+    elif args.command == "audit":
+        raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":
         raise SystemExit(list_traces())
+    elif args.command == "export":
+        raise SystemExit(
+            export_trace(
+                args.trace_id,
+                endpoint=args.otlp,
+                headers=args.header,
+                service_name=args.service_name,
+                dry_run=args.dry_run,
+            )
+        )
     elif args.command == "uninstall":
         raise SystemExit(uninstall(yes=args.yes, models=args.models))
     elif args.command == "where":

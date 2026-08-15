@@ -402,6 +402,17 @@ class LeRobotV3Reader:
         match = next((e for e in eps if e.index == episode), None)
         if match is None:
             raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
+        # The same bound `frame()` above enforces, and `HDF5Reader.raw_frame`
+        # enforces, and this one did not. LeRobot v3.0 concatenates many
+        # episodes into ONE mp4, so an episode is a span inside a file: a `t`
+        # past the end resolves to `from_ts + t/fps`, which lands inside the
+        # NEXT episode and decodes a real frame from it. No error, a picture
+        # on screen, and it is the method the analysis and occlusion paths
+        # call -- so the causal map, the attention comparison and the shared
+        # .mri would all be of a frame belonging to another episode, labelled
+        # with this one.
+        if not 0 <= t < match.length:
+            raise BadRequest(f"t must be in [0,{match.length}) for episode {episode}")
         with self._lock:
             return self._decode(match.from_ts + t / self.fps, match)
 
@@ -415,8 +426,20 @@ class LeRobotV3Reader:
 
 
 def encode_png(rgb) -> str:
-    """RGB ndarray -> data URL (96x96 PNG is ~5 KB, fine for JSON)."""
-    from PIL import Image
+    """RGB ndarray -> data URL (96x96 PNG is ~5 KB, fine for JSON).
+
+    Pillow lives in the vla-lite extra, so a base install reaching this raised
+    a bare ModuleNotFoundError naming a module the user never asked for. It is
+    reached from three places -- the frame server, `VLA.share_payload` and the
+    HDF5 reader -- and every one of them is somebody looking at a robot frame.
+    """
+    try:
+        from PIL import Image
+    except ImportError as err:
+        raise Refusal(
+            "Encoding a robot frame as PNG needs Pillow. Install it with "
+            "`pip install modelmri[vla-lite]`."
+        ) from err
 
     buf = io.BytesIO()
     Image.fromarray(rgb).save(buf, format="PNG", optimize=True)

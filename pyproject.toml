@@ -80,10 +80,29 @@ Demo = "https://muhammadmahadazher.github.io/ModelMRI/"
 modelmri = "modelmri.cli:main"
 
 [project.optional-dependencies]
+# Constrained decoding. Optional because it is the ONLY honest way to get a
+# correct token-level mask: a wrong mask is an invisible failure in a tool
+# whose premise is not shipping invisible wrong answers, so ModelMRI will not
+# hand-write one. Pure Python, works offline.
+grammar = ["lm-format-enforcer>=0.10"]
+
 vla-lite = [
     "av>=13,<18",
+    # ALOHA and robomimic files. In the LITE extra rather than the full one:
+    # reading an HDF5 dataset needs no policy, no GPU and no lerobot, which is
+    # the whole distinction this extra draws.
+    "h5py>=3.8",
     "pillow>=10",
     "pyarrow>=15",
+]
+# Only for measuring quantisation damage, which has to dequantise real weights.
+# `modelmri.gguf_read` reads a GGUF's header with the stdlib and needs none of
+# this — reading the table describing tensors and unpacking the tensors
+# themselves are different jobs, and only the second one earns a dependency.
+gguf = [
+    "gguf>=0.10",
+    "numpy>=1.24",
+    "safetensors>=0.4",
 ]
 
 [dependency-groups]
@@ -100,13 +119,60 @@ dev = [
     # a change worth reading the diff of.
     "ruff>=0.15.20",
     "pytest>=8",
+    # Parallel test execution. The suite is 883 tests over ~30 files and was
+    # taking 345s serially, of which 68s is collection -- almost all of that
+    # importing torch. Workers pay the import once each, in parallel, so the
+    # win is real but sublinear. Measured in pyproject's pytest config below.
+    "pytest-xdist>=3.6",
     "httpx>=0.27",
     "playwright>=1.48",
+    # Pillow ships in the vla-lite extra, which `uv sync --dev` does not
+    # install -- but torch is a BASE dependency, so the VLA tests get past
+    # their `importorskip("torch")` and reach `encode_png` on every runner.
+    # They passed anywhere something else happened to pull Pillow in and
+    # failed on macos/3.11, where nothing did. Guarding the tests with a
+    # skip would have turned that into a check that quietly stopped running.
+    "pillow>=10",
     # tomllib landed in 3.11. The version-drift test parses pyproject.toml, and
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".
     "tomli>=2; python_version < '3.11'",
 ]
+
+# ------------------------------------------------------------------ the suite
+# There was no [tool.pytest.ini_options] at all, so every run took whatever
+# pytest defaulted to -- which meant serial, and the suite had grown to 871
+# tests over 47 files and four and a half minutes. Measured on a 24-core
+# machine with 16.9 GB of RAM, same tree, same 870 passing:
+#
+#     serial          275.7s   peak python RSS 4.93 GB
+#     -n 4            112.3s   peak python RSS 6.79 GB
+#     -n 8             79.5s   peak python RSS 6.04 GB
+#
+# Sublinear because roughly 20s of every worker is importing torch, and each
+# worker pays that separately. 3.5x is still 3.5x.
+[tool.pytest.ini_options]
+addopts = [
+  # `auto` reads the machine, so a 2-core CI runner gets 2 workers and a
+  # workstation gets more. The cap is about MEMORY, not cores: each worker is
+  # a fresh interpreter with its own torch, and 24 of those would ask for
+  # more RAM than the machine measured above has. 8 was the fastest count
+  # tried and the cap is set there rather than higher on no evidence.
+  "-n", "auto",
+  "--maxprocesses=8",
+  # Per FILE, not per test. Three test modules use `scope="module"` fixtures,
+  # and the default `load` scheduler would split a module across workers and
+  # rebuild those fixtures per worker -- correct but wasteful. It also keeps
+  # anything file-local from interleaving. Verified there is nothing worse
+  # hiding behind it: every test in the suite writes under `tmp_path`, and
+  # the ones touching real config redirect MODELMRI_HOME and HF_HUB_CACHE to
+  # `tmp_path` first, so workers cannot collide on a shared path.
+  "--dist", "loadfile",
+]
+
+# Pass `-n 0` to turn all of that off, which is what you want when a test is
+# actually failing: serial output stays in order, `-x` stops where you expect,
+# and `--pdb` gets a terminal.
 
 # ------------------------------------------------------------------- the gate
 # There was no [tool.ruff] here at all, which meant `uv run ruff check .` in CI

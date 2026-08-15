@@ -205,3 +205,90 @@ def test_an_open_session_survives_a_page_reload():
     c.post("/api/session/open", content=a_session())
     assert c.get("/api/session/state").json()["open"] is True
     assert c.get("/api/session").json()["model"]["loaded"] is False
+
+
+# ------------------------------------------- the block count is a model fact
+
+
+def test_the_layer_count_rides_with_the_loaded_model_not_with_a_run():
+    """`/api/attention/meta` carries it too, but only AFTER a generation --
+    attention is read off a real run and there is nothing to read before one.
+
+    The probe and patchscope panels both need to offer a layer before there is
+    anything to generate from, and reading the count from the attention route
+    left their layer pickers EMPTY on a freshly loaded model: the one control
+    neither panel works without was dead until the user generated something
+    they did not need.
+    """
+    from modelmri.runtime import ModelStatus
+
+    assert "n_layers" in ModelStatus(loaded=False).to_dict()
+
+
+def test_an_unloaded_model_reports_no_layer_count_rather_than_zero():
+    """Zero blocks is a claim about a model. No model is the absence of one,
+    and a UI that renders 0 offers a dropdown with nothing in it."""
+    from modelmri.runtime import ModelStatus
+
+    assert ModelStatus(loaded=False).to_dict()["n_layers"] is None
+
+
+def test_the_count_survives_a_model_with_no_config_at_all():
+    """`self.model.config` is not a given.
+
+    A TorchScript module, an adapter-loaded network and the stub the load
+    tests use all have parameters and NO config, and reaching through it
+    raised AttributeError from inside `status()` -- the one method every route
+    calls, so a missing block count took the whole session endpoint down
+    rather than reporting an unknown. Behaviour, not source text: the first
+    version of this test asserted the exact getattr expression and went stale
+    the moment the expression was fixed.
+    """
+    import torch
+
+    from modelmri.runtime import ModelRuntime
+
+    class _Param:
+        dtype = torch.float32
+
+        def numel(self):
+            return 1
+
+    class _NoConfig:
+        """Parameters, no `.config`. Exactly what a TorchScript module is."""
+
+        def parameters(self):
+            return iter([_Param()])
+
+    rt = ModelRuntime()
+    rt.model = _NoConfig()
+    rt.tokenizer = object()
+    status = rt.status().to_dict()
+    assert status["loaded"] is True, "the status must still be readable"
+    assert status["n_layers"] is None, "unknown, not zero"
+
+
+def test_a_config_without_a_block_count_reports_unknown_rather_than_zero():
+    """0 is the positive claim "this model has no blocks", which the UI
+    renders as an empty dropdown. None is the absence of a number, which it
+    renders as a plain field the server will validate."""
+    import torch
+
+    from modelmri.runtime import ModelRuntime
+
+    class _Param:
+        dtype = torch.float32
+
+        def numel(self):
+            return 1
+
+    class _Odd:
+        config = type("C", (), {})()
+
+        def parameters(self):
+            return iter([_Param()])
+
+    rt = ModelRuntime()
+    rt.model = _Odd()
+    rt.tokenizer = object()
+    assert rt.status().to_dict()["n_layers"] is None

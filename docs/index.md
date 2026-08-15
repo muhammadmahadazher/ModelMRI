@@ -104,6 +104,7 @@ measurement supports.
 
 | model | params | shape | row sum |
 |---|---|---|---|
+| Qwen3-1.7B | 1.72B | 28 layers × 16 heads | 1.000 |
 | Qwen3-0.6B | 596M | 28 layers × 16 heads | 1.001 |
 | Qwen2.5-0.5B-Instruct | 494M | 24 × 14 | 1.000 |
 | SmolLM2-360M-Instruct | 362M | 32 × 15 | 1.002 |

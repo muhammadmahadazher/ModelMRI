@@ -331,21 +331,17 @@ class VLAHandle:
         `rgb` is an HxWx3 uint8 ndarray. Returns shape metadata; the maps are
         served by `attention()`.
         """
-        import numpy as np
         import torch
 
         if self.model is None:
             raise Refusal("No VLA policy loaded. POST /api/vla/load first.")
 
-        size = self.status_.image_size
         grid = self.status_.grid[0]
-        # letterbox to the square input the tower expects, then normalise to [-1,1]
-        arr = np.asarray(rgb, dtype=np.float32) / 255.0
-        img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        img = torch.nn.functional.interpolate(
-            img, size=(size, size), mode="bilinear", align_corners=False
-        )
-        img = (img * 2.0 - 1.0).to(self.status_.device)
+        # Through `_prepare`, which the occlusion sweep also uses. Two copies
+        # of this normalisation would mean the causal map and the attention
+        # map beside it describe different images, and nothing on screen
+        # would say so.
+        img = self._prepare(rgb)
 
         t0 = time.time()
         with self._lock, torch.no_grad():
@@ -367,6 +363,115 @@ class VLAHandle:
             "grid": [grid, grid],
             "latency_ms": int((time.time() - t0) * 1000),
         }
+
+    def _prepare(self, rgb):
+        """One camera frame as the tower's normalised [1,3,S,S] input.
+
+        Lifted out of `analyse` so the occlusion sweep feeds the tower exactly
+        what the attention path feeds it. Two normalisations would mean the
+        causal map and the attention map beside it describe different images,
+        and nothing on screen would say so.
+        """
+        import numpy as np
+        import torch
+
+        size = self.status_.image_size
+        arr = np.asarray(rgb, dtype=np.float32) / 255.0
+        img = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
+        img = torch.nn.functional.interpolate(
+            img, size=(size, size), mode="bilinear", align_corners=False
+        )
+        return (img * 2.0 - 1.0).to(self.status_.device)
+
+    def occlude(
+        self,
+        rgb,
+        scale_rgb: list,
+        *,
+        baseline: str = "episode_mean",
+        stride: int = 0,
+        layer: int = -1,
+        head: int = -1,
+        key: tuple | None = None,
+        camera: str = "",
+    ) -> dict:
+        """What the tower's representation DEPENDED on, not what it looked at.
+
+        `scale_rgb` are other frames of the same episode; they set the unit —
+        the score is a shift in the tower's own embedding spread across them,
+        because a raw L2 in embedding space means nothing on its own.
+
+        PERCEPTION ONLY, and the returned sentence says so: without the action
+        expert there is no action to affect.
+        """
+        from . import vla_occlude
+
+        if self.model is None:
+            raise Refusal("No VLA policy loaded. POST /api/vla/load first.")
+
+        # The attention map for the same frame, when one has been taken, so
+        # the two can be ranked against each other without a second request.
+        #
+        # A layer outside the tower is REFUSED rather than quietly dropped. It
+        # used to fall through to attention_map=None, and the panel then said
+        # "no attention map for this frame, run the policy on it first" — which
+        # sends somebody to do a thing that cannot help, for a mistake that is
+        # in their layer number.
+        #
+        # And the cached map has to be THIS frame's. The cache holds whatever
+        # was analysed last — a cross-episode sweep overwrites it wholesale —
+        # so without this check the headline Spearman could rank one frame's
+        # causal map against a different frame's attention and report it as
+        # this one's. Comparing the two maps is the whole point of the
+        # measurement, and it is only a comparison when they share a frame.
+        attention_map = None
+        index = None
+        stale = (
+            key is not None
+            and self._attn_key is not None
+            and tuple(key) != tuple(self._attn_key)
+        )
+        if self._attn and not stale:
+            layers = len(self._attn)
+            index = layers - 1 if layer < 0 else layer
+            if not 0 <= index < layers:
+                raise BadRequest(
+                    f"layer must be in [0,{layers}) to compare against "
+                    f"attention, or -1 for the last."
+                )
+            attention_map = self.attention(index, head)["heat"]
+
+        with self._lock:
+            return vla_occlude.sweep(
+                self.model,
+                self.status_.device,
+                self._prepare(rgb),
+                grid=self.status_.grid,
+                patch=self.status_.patch_size,
+                scale_frames=[self._prepare(f) for f in scale_rgb],
+                baseline=baseline,
+                stride=stride or vla_occlude.DEFAULT_STRIDE,
+                attention_map=attention_map,
+                compared_layer=index,
+                compared_head=head,
+                # `key` already identifies the frame -- it is what the
+                # staleness check above compares against -- so the result can
+                # say which frame it is of instead of leaving that to whoever
+                # happens to call this.
+                episode=None if key is None else int(key[0]),
+                timestep=None if key is None else int(key[1]),
+                camera=camera,
+            ).to_dict()
+
+    def occlusion_cost(self, stride: int = 0) -> dict:
+        """What the sweep would cost, before anybody waits for it."""
+        from . import vla_occlude
+
+        if not self.status_.loaded:
+            raise Refusal("No VLA policy loaded.")
+        return vla_occlude.estimate(
+            self.status_.grid, stride or vla_occlude.DEFAULT_STRIDE
+        )
 
     def attention_meta(self) -> dict:
         if not self.status_.loaded:
@@ -406,6 +511,146 @@ class VLAHandle:
             "head": head,
             "grid": self.status_.grid,
             "heat": [[round(float(v), 4) for v in row] for row in norm.tolist()],
+            # The SAME grid before normalisation. `heat` is stretched to [0,1]
+            # so it can be drawn, and that subtracts this frame's own minimum
+            # -- fine for a picture, wrong for any statistic. Anything that
+            # computes over the distribution reads this instead; `vla_sweep`'s
+            # entropy read `heat` and reported a frame's spread as a function
+            # of its own darkest patch.
+            "values": [[float(v) for v in row] for row in m.tolist()],
             "min": lo,
             "max": hi,
         }
+
+
+# The frame travels at the resolution the POLICY SAW, not at the camera's.
+# Anything larger is downsampled and the section says so -- a causal map is
+# drawn over the frame, and a frame silently shrunk puts every block in the
+# wrong place, which looks exactly like a finding.
+MAX_SHARE_EDGE = 512
+
+
+def share_payload(
+    handle,
+    reader,
+    *,
+    episode: int,
+    timestep: int,
+    layer: int = -1,
+    head: int = -1,
+    occlusion: dict | None = None,
+) -> dict:
+    """Everything a robot finding needs to be readable on somebody else's laptop.
+
+    The camera frame, the per-layer attention, the causal map with its control
+    band, and exactly which policy revision, dataset, episode, timestep and
+    camera produced them. `session._vla` refuses this shape if any of those is
+    missing, so the section cannot be written without them.
+    """
+    import numpy as np
+
+    from . import vla_data
+
+    status = handle.status()
+    if not status.loaded:
+        raise Refusal("No VLA policy loaded, so there is nothing to share.")
+
+    rgb = np.asarray(reader.raw_frame(episode, timestep))
+    height, width = int(rgb.shape[0]), int(rgb.shape[1])
+    downsampled = False
+    note = ""
+    if max(height, width) > MAX_SHARE_EDGE:
+        from PIL import Image
+
+        scale = MAX_SHARE_EDGE / max(height, width)
+        new = (max(1, int(width * scale)), max(1, int(height * scale)))
+        rgb = np.asarray(Image.fromarray(rgb).resize(new, Image.BILINEAR))
+        note = (
+            f"the camera frame was {width}x{height} and is stored at "
+            f"{new[0]}x{new[1]}; the occlusion grid is in PATCH coordinates "
+            f"and is unaffected, but do not measure pixels off this image"
+        )
+        downsampled = True
+        height, width = int(rgb.shape[0]), int(rgb.shape[1])
+
+    # The cache holds the LAST analysed frame, which a cross-episode sweep
+    # overwrites. Shipping it beside a different frame's picture would put two
+    # frames in one file with nothing saying so, and the whole point of the
+    # file is that somebody else can trust what is in it.
+    maps = []
+    fresh = handle._attn_key is None or tuple(handle._attn_key) == (episode, timestep)
+    if handle._attn and fresh:
+        wanted = range(len(handle._attn)) if layer < 0 else [layer]
+        for index in wanted:
+            if 0 <= index < len(handle._attn):
+                maps.append(handle.attention(index, head)["heat"])
+
+    payload: dict = {
+        "provenance": {
+            # `repo` and not a friendly name: two checkpoints of the same
+            # policy are different models, and a finding attributed to the
+            # wrong one is worse than an unattributed one.
+            "policy": status.repo or "",
+            # The REAL commit, read from the local cache the same way every
+            # receipt in this project reads one — never the network. Two
+            # checkpoints of the same repo are different models, and a
+            # finding attributed to "lerobot/smolvla_base" with no commit is
+            # attributed to whichever copy the reader happens to have.
+            #
+            # Falls back to the repo id when the cache cannot say, because an
+            # unknown revision is still better than refusing to share.
+            "revision": _revision_of(status.repo) or (status.repo or ""),
+            "dataset": getattr(reader, "repo_id", ""),
+            "camera": getattr(reader, "camera", ""),
+            "episode": int(episode),
+            "timestep": int(timestep),
+        },
+        "frame": vla_data.encode_png(rgb),
+        "frame_size": [width, height],
+        "frame_downsampled": downsampled,
+    }
+    if note:
+        payload["frame_note"] = note
+    if maps:
+        payload["attention"] = maps
+    if occlusion:
+        payload["occlusion"] = {
+            k: v
+            for k, v in occlusion.items()
+            if k
+            in (
+                "baseline",
+                "grid",
+                "stride",
+                "blocks",
+                "n_blocks",
+                "n_controlled",
+                "passes",
+                "scale",
+                "attention_agreement",
+                # The agreement is layer-dependent, so a shared .mri carrying
+                # the Spearman without the layer it came from is not a
+                # reproducible claim.
+                "compared_layer",
+                "compared_head",
+                "means",
+            )
+        }
+    return payload
+
+
+def _revision_of(repo: str | None) -> str:
+    """The cached commit for this policy, or "" when it cannot be read."""
+    if not repo:
+        return ""
+    try:
+        from . import receipts
+
+        commit, _ = receipts.revision_of(repo)
+    except Exception:
+        # Deliberately broad and silent: every failure here means "the cache
+        # cannot say", and the caller already has a fallback. A share button
+        # that raises because a ref file is missing would be worse than one
+        # that records an unknown revision.
+        return ""
+    return commit or ""

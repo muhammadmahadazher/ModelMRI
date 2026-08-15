@@ -6,6 +6,1129 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **#13, completed: feature evidence from your own corpus.**
+  `POST /api/features/evidence` sweeps a local `.txt`/`.jsonl` through the
+  already-calibrated SAE and gives one feature three independent readouts: the
+  spans it fires on in *your* text with a firing rate and histogram, the tokens
+  it promotes and suppresses in vocabulary space, and a pointer to the causal
+  ranking `feature_ablate` already produces. A claim surviving all three is
+  worth something a claim resting on one is not.
+
+  The vocabulary half is **exact** — `W_dec[f]` through the final norm and the
+  unembedding is pure weight math, no corpus and nothing to be a sample of.
+
+  **Nothing is downloaded**, and the corpus is part of the result: its name,
+  token count and the fraction of features that never fired travel with every
+  number. On gpt2 at layer 8 over an 8-sequence corpus, **21,801 of 24,576
+  features never fired** — reported as *not seen in this corpus*, never *dead*,
+  because dead means the feature does nothing and not seen means the text never
+  showed it anything.
+
+  `selective` is false above a fifth of tokens. Measured: the most frequently
+  firing feature fired on **68% of tokens** and promoted an unrelated scatter of
+  vocabulary — not a concept, and its top spans would read as one without the
+  flag. All three readouts agreed, which is the argument for having three.
+
+  **No natural-language labels.** The sweep holds no activation history —
+  `[n_tokens, d_sae]` for a 24,576-feature SAE over 200K tokens is 52 GB — so
+  it accumulates per-feature statistics as it streams and a second pass
+  collects one feature's spans on request.
+
+- **#12, completed: Patchscopes, as its own labelled experiment.**
+  `POST /api/patchscope` splices a hidden state into a prompt built to make the
+  model describe what it is holding — the identity target from Ghandeharioun et
+  al. — and reads the decode.
+
+  **Never a decode alone.** The method's known failure is a target prompt that
+  describes anything fluently, so every response carries the target prompt with
+  its *own* activation and the target prompt with a *same-norm random vector*.
+  Both were necessary, measured on gpt2: a layer-2 state decoded **byte-
+  identically to the random control**, and a layer-8 decode differed from the
+  untouched target as a string while using **100% of its vocabulary**. Neither
+  says anything about the state, and the tool reports that rather than
+  interpreting them.
+
+  `overlap_identity` and `overlap_random` are reported, not thresholded — there
+  is no principled cut-off for "the same". `informative` requires differing
+  from both controls *and* saying at least one word neither already said;
+  complete containment is a test, not a tuned number.
+
+  The target prompt is returned with every response because it is part of the
+  result, a cross-layer splice is flagged since the two streams are only
+  comparable where the model treats them alike, and the response states that a
+  decode is a **generation and therefore a sample** — what the model said when
+  handed this state through this target, never what the state means. Sited as
+  its own surface rather than a lens column, which would read as a second
+  measurement of the same thing.
+
+### Fixed
+
+- **A splice held across an autoregressive generation raised inside the worker
+  thread.** After the prefill the model runs with a KV cache and each step
+  passes a single token, so a hook writing at position 14 hit `IndexError` on a
+  sequence of length 1 — surfacing as a streamer timeout rather than as the bug
+  it was. Patchscopes is the first caller to generate *through* a splice; it
+  now uses a prefill-only variant, which is also the correct semantics (the
+  patch goes into the prompt's stream, and the continuation should flow from
+  that rather than have the vector stamped over every new token). `_splice` is
+  left strict for its single-pass callers.
+
+- **#11, completed: edge-level path patching.** `POST /api/patch/path` takes a
+  bright cell from the node grid as a receiver and asks what put it there:
+  for each earlier attention head and MLP, it adds just that component's clean
+  contribution into the receiver's residual input with everything else still
+  corrupt. *"Position 7 layer 12 matters"* becomes *"head 9.6 wrote it."*
+
+  Scored with the same recovery fraction the node grid uses, with the same
+  eight same-norm control draws and the same shifted-position control, so edge
+  and node numbers are on one scale and can be read together. On gpt2 with the
+  reference pair: 130 senders in 240 forward passes, 10.4s, L9 MLP strongest at
+  +0.250 and clearing both controls.
+
+  **`seeding` and `scope` are in the response, not the docs.** Edge count is
+  quadratic in general and this is linear only because the receiver is fixed —
+  saying which edges were considered is the difference between "the strongest
+  sender" and "the strongest sender we looked at". And v1 does not split q/k/v:
+  a sender is patched in as a whole, so this says which component *wrote* what
+  the receiver reads, not which path carried it. Freezing q/k/v across GQA,
+  fused QKV and rotary embeddings would produce confident and subtly wrong
+  numbers, so it is refused rather than approximated.
+
+### Fixed
+
+- **A recovery fraction is quantised by the dtype, and nothing said so.**
+  Measured while building the edge trace: on gpt2 in bfloat16 the logits reach
+  128, where one representable step is 1.0 — so with a gap of 4.0 every score
+  lands on a grid of 0.25, and **23 senders sat within one step of the top**.
+  Ranking those against each other is reading noise. Both traces now report
+  `recovery_resolution` and say that differences below it are ties rather than
+  an ordering. The node grid had the identical blind spot in the identical
+  formula and gets the same field.
+
+- **#10, completed: layer-sweep linear probes with a permutation null and a
+  majority-class line.** `POST /api/probe` fits a probe at every layer and
+  draws the usual "where does this information appear" curve — with two
+  references behind it that decide whether the curve means anything.
+
+  The point is not having probes. It is **reporting when your curve is inside
+  the null**: K refits on shuffled labels, same fit, same examples, at the same
+  layer. A layer that does not clear its own band comes back `inside_null` and
+  is not counted, and `best_layer` is `null` when nothing cleared anywhere —
+  which is a result, not a gap.
+
+  **Three refusals to overclaim, and two of them came from running it.**
+  `null_saturated` marks a layer where the shuffled fit reached the top of the
+  scale, so no accuracy could have cleared it: at six held-out examples the
+  null hit 1.00 at five of gpt2's twelve layers, making READABLE a coin flip.
+  `expected_false_positives` reports `n_layers × 5%`, because sweeping every
+  layer against a 95th-percentile band is a multiple comparison — 0.6 on a
+  12-layer model, so one readable layer is roughly what noise produces and the
+  response says so. `MIN_PER_CLASS` and `MIN_TEST` are enforced in code.
+
+  **Readable is not used.** A direction can be linearly present and play no
+  part in the answer; the ablation follow-up is the only thing that upgrades
+  the claim. `save_as` exports the fitted direction into the same store the
+  steering harness reads — and is **refused** when no layer beat its null,
+  because a vector fitted there is fitted to noise and the store is exactly
+  where it would later be used with none of this context beside it.
+
+  The fit is pure torch, so the runtime dependencies stay torch, transformers
+  and fastapi, and it runs on the CPU: the sweep does `n_layers × (1 + K)`
+  fits and every one of them would otherwise be competing with the model for
+  VRAM.
+
+- **#7, completed: head type labels, gated on measured nulls.**
+  `GET /api/attention/types` labels heads as induction, previous-token,
+  duplicate-token or sink — or, for most of them, "no type detected", which is
+  a result rather than a gap. On gpt2 it finds the canonical induction heads
+  the literature names: L5H5 (0.930 of its attention on the induction offset),
+  L7H10 (0.902), L5H1 (0.893), L6H9 (0.884), and L4H11 as a textbook
+  previous-token head at 0.993.
+
+  **Three gates, and each exists because the previous ones were measured and
+  found insufficient.** The σ gate alone labelled 138 of gpt2's 144 heads: the
+  null for a repetition-dependent pattern is ~0.0008 with almost no spread, so
+  any score clears three of them, and a head putting **0.15× chance** on the
+  induction offset was labelled an induction head at 201σ. That is significance
+  without effect size — the same failure as having no null at all, arrived at
+  from the other side. So a label now needs σ above its own null, **and** more
+  attention than chance under the causal mask, **and** that offset being the
+  single target the head attends to most.
+
+  **Two nulls, because the patterns fail differently.** Induction and
+  duplicate-token are gated on matched non-repeating sequences, which is the
+  right null for offsets that are only special because the sequence repeats.
+  A previous-token head attends to i−1 whether or not anything repeats and a
+  sink attends to position 0 always, so their non-repeating "null" is the same
+  number again and they would never clear it. Those are gated on chance under
+  the causal mask instead. Which null a label cleared travels with the label.
+
+  A byte-level tokenizer is refused rather than measured badly, and the report
+  states that these are **behaviour on repeated random tokens, not claims about
+  real text** — and that a label must never be read as explaining the ablation
+  ranking, since a head can be labelled and irrelevant or unlabelled and
+  load-bearing.
+
+  When one label lands on most of a model's heads the report says so: gpt2
+  attends to the first token throughout, so 90 of 144 heads have position 0 as
+  their peak. True, and useless read as "these 90 are special".
+
+  Labels render as a chip beside each head in the ablation ranking — a
+  separate chip on purpose, never folded into the KL line, because the two are
+  different measurements that disagree. The chip's tooltip carries the
+  evidence: "9.85x chance, 9.69σ above its chance null — a behavioural label
+  from random repeated tokens, which does NOT explain the KL beside it".
+
+  They travel in the `.mri` and a recording serves them with no model loaded.
+  **A label without its evidence is refused** rather than carried: the whole
+  value of the section is that a name was earned against a measured null, and
+  a row with the name and not the margin is exactly the bare assertion the
+  feature exists to replace.
+
+  Unlike every other measurement in the runtime, the labels **survive a new
+  generation**. They are measured on the detector's own random sequences and
+  say nothing about the current prompt; a model swap invalidates them and the
+  epoch already means precisely that.
+
+- **#6, completed: direct logit attribution, sited inside the ablation panel.**
+  `GET /api/attention/direct` decomposes the predicted token's logit across
+  every head and MLP, as signed bars from a centre line. On gpt2 predicting
+  ` Paris`, the MLPs dominate — L10 +2.41, L9 +1.65, L11 +1.24 — ahead of any
+  individual head.
+
+  It lives inside the ablation block rather than in its own panel because the
+  two measurements **disagree, and that is the point**: the ranking says what
+  breaks when a head is removed, this says what a head put into the logit
+  directly, and a head can be near zero here and still decide the answer by
+  feeding a later head. In a separate panel either number would read as the
+  whole story.
+
+  **The reconstruction residual is mandatory.** Direct attribution is exact
+  only if the final normalisation is linear, and it is not. TransformerLens
+  makes it exact by folding LayerNorm into the weights, which changes the model
+  you are studying and cannot be checked from the output. Here the model is
+  untouched, the norm is frozen at the scale a hook recorded from the real
+  pass, and the gap is measured and shown: 1.11% on the reference run. Without
+  it the chart is a fabricated 100%.
+
+  **The residual is also the floor.** A component contributing less than the
+  reconstruction error cannot be distinguished from that error, so it is
+  labelled unreadable rather than small — "direct-path attribution cannot see
+  indirect effects", not "this head contributed nothing".
+
+  Contributions are signed, and shift-corrected against each component's own
+  vocabulary mean for the reason `ablate.py` gives for using KL: softmax
+  ignores a constant added to every logit.
+
+### Fixed
+
+- **Labelling every head took 68 seconds through the route**, and the browser
+  gave up at 30. Two causes, both mine: the standard deviation of the null was
+  computed by re-measuring every null sequence individually, on top of the pass
+  that had already measured them together, and the inner loop did a GPU→CPU
+  transfer per (position, layer) — 288 per sequence on gpt2. The profiles are
+  now gathered in one operation per layer and the mean and spread come out of
+  the same pass. **1.1s**, and the induction scores are unchanged to the last
+  digit.
+
+  The rewrite also corrected a real bias: attention at a far offset was divided
+  by every scored position rather than by the positions that could actually
+  reach it, understating it. Fixing that tightened the label set — 78 heads now
+  read "no type detected" where 19 did before.
+
+- **The frozen-norm reconstruction is verified before any number is reported**,
+  and the check caught two real bugs in this feature while it was being built.
+  The first version decomposed `hidden_states[-1]`, which is **already
+  normalised** — the trap `lens.py` documents at length, and the reconstruction
+  missed by 0.716. The second used a 1e-3 absolute tolerance and refused gpt2
+  on a bfloat16 load: it differed by 0.347 at a magnitude of 199, which is
+  better than one representable bf16 step, so the check was measuring the dtype
+  rather than the model. `lens.py` records finding that same bug in its own
+  agreement check. The tolerance is now derived from the dtype's own precision.
+
+- **#5, completed: a tuned lens, trained on your own text, shown beside the
+  plain one — never instead.** `POST /api/lens/tune` fits a per-layer affine
+  translator on the Belrose objective (minimising KL(final ‖ head(norm(A·h+b))))
+  and `GET /api/lens?kind=both` returns both columns. On gpt2 over twelve
+  sentences, held-out KL at the embedding layer fell from 41.88 to 6.28 nats.
+
+  **Both columns always stay on screen.** A translator fitted to minimise
+  disagreement with the final distribution *will* reduce disagreement with the
+  final distribution — that is the method, not a flaw in it. If the tuned lens
+  silently replaced the plain one, every early layer would suddenly look like
+  it already knew the answer and nothing on screen would say whether that is
+  the model or the fit. `layers` is the plain reading on every `kind`.
+
+  **The only number reported is held-out KL**, measured on sequences the
+  translator never saw. Training loss appears nowhere. A layer the translator
+  made worse shows a negative gain rather than being clamped to zero, and a
+  corpus small relative to the fit raises a `caution` naming the ratio — twelve
+  sentences against 590,592 parameters per layer is 0.0003 tokens per
+  parameter, and the held-out numbers are real but they are about that text.
+
+  **Nothing is downloaded.** Pretrained lenses exist on the Hub; fetching one
+  would break the offline promise the rest of this package keeps, so training
+  is local and explicit. Lenses cache as safetensors keyed by model, dtype,
+  corpus hash and token count — all four, because all four change the lens —
+  and loading one fitted to a different model or dtype is refused.
+
+  The translator is initialised to the identity, so an untrained one *is* the
+  plain lens rather than making step 0 worse than doing nothing.
+
+- **The logit lens now travels in a `.mri`, and a recording serves it with no
+  model loaded.** The section existed in the format from the beginning and was
+  never written, because `export_session` did not pass it — so `lens` was
+  always `[]` and the hole was invisible. `verify` re-reads the trajectory and
+  `diff` compares it: the layer where two runs first disagree, and separately
+  the layer the answer settles at, which can move while every leading token
+  stays the same.
+
+### Fixed
+
+- **The logit lens's replay guard was duplicated in `server.py`**, because the
+  lens was the one measurement computed outside `ModelRuntime`. `server.py`
+  recorded how that failed: with a recording open *and* a model loaded, the
+  lens reported the live model's layers inside a session every other panel was
+  drawing from the file. It is a runtime method now, with one guard in the same
+  place as every other measurement's.
+
+- **The lens section of a `.mri` was never validated.** It reaches the viewer
+  as a table of tokens and a bar per probability, and nothing checked that a
+  row's tokens and probabilities were the same length — mismatched, the panel
+  renders a token with somebody else's probability beside it.
+
+- **#19, completed: `modelmri diff a.mri b.mri`, with a CI exit code.** Compares
+  two saved analyses of the same prompt — which heads moved in the ablation
+  ranking, which patching sites changed sign, whether the model still says the
+  same thing — and exits non-zero when something moved. A repo can check in a
+  baseline `.mri` and have the pull request that changed the model say so.
+  `docs/guides/regression-ci.md` has a workflow to paste.
+
+  **It imports no torch and no transformers.** Both sides are already measured
+  and comparing them is arithmetic, so this stays instant on a cold cache. A
+  regression check that has to install torch is a check nobody adds; the test
+  suite pins the property in a subprocess rather than trusting it.
+
+  **The floor is not invented.** `session._quantise` stores each attention
+  matrix as uint8 against its own maximum, so a comparison of two files cannot
+  be finer than the coarser of their two scales, and the ranking is judged
+  against the larger of the two recorded noise floors. There is no epsilon in
+  the module that somebody chose. `--fail-over X` is in each metric's own units
+  — nats for the ranking and patching, attention weight for attention — and
+  omitting it fails on anything past the files' own floor.
+
+  **A changed generation fails at any threshold**, because there is no
+  magnitude at which "the model now says something else" is within tolerance.
+
+  What it refuses: two different prompts (different tokens, `n_prompt`,
+  `n_layers` or `n_heads`) exit 2 rather than being diffed into numbers that
+  look like a regression; a sampled run is refused, checked against the
+  `generate` receipt's `greedy` flag rather than assumed; and a dtype or commit
+  difference is reported as a note, since `patch.py` records bf16 moving a
+  reference gap from 4.000 to 4.467 and changing the reference token itself.
+
+  **A missing block is never a zero.** A section one file lacks reports "not
+  comparable" naming which side lacked it — never "same". That is precisely the
+  0.10 bug class, where an absent value read as a default showed 206 robot
+  episodes as one video.
+
+- **#16, completed: `modelmri sweep`.** Runs one measurement over a set of
+  prompts and reports each head as **median, IQR, n and how often it reached
+  the top five** instead of as a number. Headless — a `ModelRuntime` directly,
+  no FastAPI and no browser — so it works over SSH. `--jsonl` writes one row
+  per prompt, `--out-dir` writes one `.mri` per prompt so any single row can be
+  opened, forwarded or verified like any other finding, and every row carries
+  the receipt that produced it.
+
+  "A number measured once is a sample, not a property" was a line in the
+  README. This is it as behaviour. On five prompts through gpt2 layer 0, L0H0
+  came back with a median of 0.054 and a maximum of 1.716 — a head that carried
+  one prompt almost entirely and did nothing on the other four. A mean would
+  have buried it.
+
+  Three rules it enforces rather than documents. **Never a mean without a
+  spread**: every aggregate is an order statistic. **A refusal is a row, not a
+  gap**: a prompt the measurement cannot be taken on is written out with the
+  sentence saying why in `could_not_measure`, because skipping them leaves a
+  file that quietly describes only the prompts that happened to work.
+  **Position metrics are not aggregated across prompts**: layer 6 head 9 is the
+  same head everywhere and feature 4021 is the same feature, but token position
+  3 is a different word in every prompt, so a `tokens` sweep is refused at the
+  aggregate rather than computed and captioned with a warning.
+
+  The projected pass count prints before anything runs, and a sweep past 20,000
+  forward passes is refused unless `--yes` — the resample baseline multiplies
+  its draws through every prompt, and a sweep that cannot finish inside
+  anybody's patience is worse than one that never began.
+
+- **A `.mri` now carries the head ranking it measured.** The file recorded that
+  a ranking had run and carried none of it, so `modelmri verify` could name the
+  headline measurement and not re-run it — the one number in the file nobody
+  could audit was the one people quote. `verify` now re-takes it and checks two
+  things separately, because they fail differently: the per-head scores against
+  the noise floor measured on this run, and the ORDER, since the top-k set can
+  change while every score stays inside the floor. A reordering is reported as
+  "a different claim about which head carries the answer", with the Spearman
+  correlation, rather than as a difference in the last digits.
+
+  A recording also serves its ranking with no model loaded, the way a recorded
+  patch trace already does. Refusing a file that holds the answer was the
+  format failing, not the reader asking for too much.
+
+- **#18, completed: `modelmri verify FILE.mri`.** Re-runs the measurements in a
+  recording on the machine you run it on and reports, per number, whether it
+  came back the same. The other half of #17: a receipt says what produced a
+  number, and this is the thing that acts on one.
+
+  **Three verdicts and no pass/fail.** Bit-exact reproduction across two
+  machines is not achievable — kernel selection, cuDNN version, TF32 and
+  reduction order all move the last digits, and `ablate.py` already records
+  measuring 4.863085746765137 against 4.863086102936881 for the identical
+  computation. So a number is `reproduced`, `differs`, or `not verifiable`,
+  and the last one always says which.
+
+  **Every tolerance is measured, never asserted.** There is not a hardcoded
+  epsilon in the module. Each check establishes its own floor by running the
+  same computation twice on this machine and taking the spread — the technique
+  `ablate.rank_heads` already uses for its noise floor. Attention gets a second
+  floor the file supplies itself: `session._quantise` stores each map as uint8
+  against that map's own maximum, so its `scale` is the finest difference the
+  file can represent, and the per-block tolerance is the larger of the two.
+
+  **It refuses to claim a check it did not run.** A sampled generation is not
+  compared, because a different continuation would be the sampler and not the
+  model. A file whose dtype or resolved commit differs from this machine's
+  blocks every numeric check with a sentence naming both. Attention depends on
+  re-establishing the run, so when the generation cannot be reproduced the
+  attention check says exactly that rather than reporting a difference it
+  cannot attribute; patching runs its own forwards and is checked either way.
+  The head ranking is reported as unverifiable rather than skipped — the `.mri`
+  records that a ranking ran and does not carry it, and silence would read as
+  "it reproduced". Every stored head map is checked, not a sample of one.
+
+  Exit 1 only for a real disagreement. A file this machine cannot check is not
+  a broken file, and exiting non-zero for it would make `verify` useless in CI
+  the moment somebody ran it on a different accelerator.
+
+- **The generation now carries a receipt of its own**, including `temperature`
+  and an explicit `greedy` flag. It is the receipt every other one depends on:
+  each names a prompt, and this says how that prompt was answered. Without it
+  `verify` cannot tell a model that changed from a sampler that rolled
+  differently, and no sampling configuration was recorded anywhere before.
+
+- **#17, completed: receipts on every number.** Each measurement now carries a
+  machine-readable record of what produced it — model, resolved HF revision
+  sha, dtype, device, attention implementation, seed, tokenizer hash, prompt
+  hash, ModelMRI version and the exact request — returned on every measurement
+  route and written into the `.mri`.
+
+  Every panel already printed its setup in prose for whoever was looking at the
+  screen at the time. None of that survived an export, and none of it could be
+  checked by anything. This is what makes `modelmri verify` (#18) possible at
+  all: you cannot re-run a measurement whose setup you have to infer.
+
+  **It does not guess.** Three fields can genuinely fail to resolve, and each
+  answers `null` with a sentence saying why rather than a plausible default. The
+  revision is read from the local cache and never the network, so it works
+  air-gapped; `refs/main` is consulted first, and when several revisions are
+  cached with no ref to disambiguate them the answer is "naming one would be a
+  guess" rather than the newest directory. The tokenizer hash covers the full
+  fast-tokenizer definition where there is one and SAYS SO when it could only
+  reach the vocabulary — two tokenizers with the same vocabulary and different
+  normalisers produce different token ids, so the two hashes must not be
+  compared. A `seed` of `null` means the measurement was not seeded, which is
+  not seed `0`.
+
+  Receipts carry no filesystem paths and no usernames. `hf_id` is an absolute
+  path for a model loaded from a folder, and the `.mri`'s own `model_id` field
+  had already shipped that leak once; the reduction happens in `stamp` rather
+  than only at export, so it holds for every route and not just the one writing
+  a file. Any absolute path inside `request` is reduced the same way — found by
+  the leak test rather than by review, after `rank_features` put a local SAE
+  directory in its receipt.
+
+  A collapsed one-line "measured by" strip appears under the head ranking,
+  feature ranking, patching grid and logit lens, expanding to the full record.
+  A measurement whose revision could not be established is marked, because a
+  finding that cannot be re-run against the same weights is the single fact
+  there most worth noticing.
+
+### Fixed
+
+- **A patch trace could be exported into a `.mri` describing a different
+  prompt.** `_patch_for_export` guards on the epoch, and its docstring says the
+  guard exists so that "a trace measured on an earlier prompt" is not written
+  beside a different run's tokens — but the epoch moves on load and unload and
+  deliberately NOT on generation, so the guard never fired for the case it
+  describes. Measured: patching "The Eiffel Tower is in the city of", then
+  generating "Bananas are yellow because", produced a file whose tokens and
+  attention were the bananas and whose patch section was the Eiffel Tower, with
+  nothing downstream able to tell. `adopt_step` clears it on the same rebase;
+  the generate path was the one rebase that did not.
+
+- **A section navigator, because the page is now nine panels deep.** Every
+  panel was reachable only by scrolling past the ones above it. A rail in the
+  left gutter lists the sections, marks the one being read, and jumps; ⌘K /
+  CtrlK opens a filterable palette from anywhere, and below the width where
+  the gutter exists the rail gives way to a single button so it never overlaps
+  what it navigates.
+
+  **It reads the page rather than carrying a list of sections.** The set of
+  panels here is not a constant — it is decided at runtime by the viewer and
+  demo builds, by whether anything has been run yet, by whether the model is
+  introspectable, by replay, and by whether an open session carries a graph. A
+  hand-written list would offer entries that jump to nothing and would silently
+  omit whatever panel is added next; discovering them from the DOM means a new
+  panel appears in the rail without anybody editing the navigator. Section
+  colour is taken from the `.dot.d-*` class each section already carries, so
+  the one place a colour is defined stays the one place.
+
+
+- **#42, completed: point any OpenTelemetry exporter at ModelMRI.**
+  `POST /api/otel/v1/traces` reads an OTLP/HTTP JSON export, so a team that is
+  already instrumented gets the agents panel without this project writing an
+  integration for their stack:
+
+      OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5900/api/otel
+      OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+
+  **Which vocabulary a span spoke is recorded, never assumed.** There is no
+  single spelling for the prompt: OpenLLMetry writes `gen_ai.prompt`,
+  OpenInference writes `input.value`, the semantic conventions write
+  `gen_ai.input.messages`, the Vercel AI SDK writes `ai.prompt`. Each field is
+  tried in order and **the key that matched is stored in `meta.otel_keys`**, so
+  a reader can tell which vocabulary a step was read through rather than
+  trusting that it was read at all. A span that does not say which semconv
+  generation it was written against is recorded as `unstated` and the trace
+  carries a note saying so — `gen_ai.*` left the main semconv repo on
+  2026-06-12 and the names have churned since, so "I do not know" is a real
+  and common answer here, and the honest one.
+
+  An operation with no ModelMRI step kind is filed as `tool_call` with the
+  original kept in `meta.otel_operation`, rather than being invented into a
+  closer-sounding fit. A span whose end equals its start reads back as unknown
+  duration, not as a measured zero. Protobuf bodies are refused with a 415 that
+  names the limit and the one-line fix, instead of being mis-parsed into a
+  trace that looks real.
+
+### Fixed
+
+- **`modelmri serve` failed on first run for every new user.** `paths.data_dir()`
+  answers where the trace database belongs and creates nothing — `paths.ensure`
+  is the creator, by design — and none of the three `TraceStore` call sites
+  called it. On a machine with no legacy `~/.modelmri`, opening the database
+  raised `unable to open database file` inside `create_app`, before the server
+  printed its URL. It survived this long because every machine it had been run
+  on had already been an older version's machine. `TraceStore` now creates its
+  own parent directory, which is the moment of writing the design intends.
+
+- **An OTLP span id is only unique within its trace**, but `step.id` is the
+  primary key of the whole table, so two different exports reusing a span id
+  collided. Step ids imported from OTLP are namespaced by their trace.
+
+### Added
+
+- **#53, completed: a graph travels in a `.mri` and renders in the viewer.**
+  `modelmri open graph.pt` now writes a forwardable `.mri` and serves it in
+  the same viewer as every other finding, and `modelmri inspect` reports a
+  graph rather than printing an apparently-empty session.
+
+  The section is additive like `patch`, so the format version does not move
+  and an older reader ignores the key. One rule is new and specific to it:
+  **`provenance.measured_by` is required.** A `.mri` that renders somebody
+  else's attributions under ModelMRI's chrome without saying so is exactly
+  the confusion the feature exists to prevent, so a graph without it is
+  refused — by `session.build` when writing, by `session.parse` when reading,
+  by the server route, and by the viewer's own shim. Four copies, because the
+  last one runs in the recipient's browser on a file a stranger forwarded.
+
+  The writer is as strict as the reader on purpose. Dropping the section
+  instead would hand back a file the caller believes carries a graph and which
+  does not, silently — and the reason it was dropped is the one guarantee the
+  section makes.
+
+  Bounds like the rest of `parse`: an edge pointing outside the declared node
+  count, a non-numeric or non-finite weight, an edge list that is not a list,
+  a node count that is not an integer, and more than 50,000 edges are each
+  refused with the reason. Indices reach the viewer as array subscripts.
+
+  The panel draws the provenance first and above every number, in the file's
+  own words — the disclaimer is rendered from the payload, never composed in
+  the UI, because one assembled in a component is one a refactor can drop.
+  Edge bars are signed: an edge that suppresses is not a weak edge that
+  promotes, and a bar drawn from the absolute value loses that.
+
+  Also: the viewer's served filename now derives from the file instead of
+  being fixed at `session.mri`, so the URL says what is open.
+
+- **#53 Open somebody else's circuit-tracer attribution graph.**
+  `modelmri open graph.pt` reads one and prints it behind a banner naming the
+  file, the tool that produced it and the model it was computed on. Nothing
+  outside circuit-tracer's own Neuronpedia flow opens these.
+
+  **The banner is the feature, not chrome.** A graph ModelMRI did not compute
+  must never be mistakable for one it did, so provenance is a required field
+  of the result — `measured_by` is a sentence inside the payload rather than a
+  flag the UI has to remember to interpret, and it prints before any number.
+
+  **Reading a pickle from a stranger.** A `.pt` is a pickle and unpickling
+  runs code. The roadmap said `torch.load(weights_only=True)`; measured, that
+  refuses a real circuit-tracer graph outright, because `cfg` is a
+  `UnifiedConfig` and `logit_targets` are `LogitTarget` objects:
+
+      UnpicklingError: Unsupported global: GLOBAL ...UnifiedConfig was not an
+      allowed global by default
+
+  Refusing means never reading the model name the banner needs;
+  `weights_only=False` means executing whatever the file says. So the
+  unpickler is restricted instead: `find_class` allows torch's tensor-rebuild
+  machinery and answers every other class with an inert stub **this module**
+  defines, so the named module is never imported and none of its code runs.
+  The attributes still arrive, which is how `cfg.model_name` reaches the
+  banner without trusting the file.
+
+  Proved with a control. A `__reduce__` payload that writes a file on unpickle
+  is neutralised by the reader — and the same payload through plain
+  `pickle.loads` fires, so the test cannot pass against a payload that never
+  worked.
+
+  **Nothing materialises the matrix.** A graph is nodes x nodes; at 10,000
+  nodes that is 400 MB, and `.tolist()` on it is several gigabytes of Python
+  floats. `summary()` reduces on the tensor and `edges()` uses `topk` on a
+  flattened view, so a 1,000-node graph — a million possible edges — returns
+  under 20 kB of JSON. The cap is reported, so a pruned graph is never
+  mistaken for a whole one, and a zero edge is dropped rather than reported as
+  an edge of no weight.
+
+  Refusals with the same posture as `session.parse`: a ragged (non-square)
+  adjacency matrix, a non-tensor one, a wrong number of dimensions, a node
+  count above the bound (checked against the shape, before anything squares
+  it), a torch file that is not a dict, and a dict missing the required keys —
+  which names what the file *does* hold. Non-finite weights are reported and
+  not cleaned; an unknown key is noted rather than refused, so a newer
+  circuit-tracer still opens and an unread field is never mistaken for an
+  absent one.
+
+- **#51 Emit OTLP, version-stamped.** `modelmri export --otlp
+  http://localhost:4318` hands a recorded run to whatever the team already
+  runs -- Langfuse, Phoenix, Grafana, Honeycomb -- and `modelmri-record` gains
+  an opt-in `deliver_otlp=` that is **off by default**.
+
+  This is not an "ahead" feature and is not sold as one. Every competitor in
+  the tracing category ingests; a local tool that cannot hand its traces
+  onward is a dead end for anyone with an existing collector.
+
+  Three things make it honest rather than merely working.
+
+  **One table, both directions.** `otel.FIELDS` is the single mapping between
+  a recorded step and its OTLP attributes, and `to_otlp` and `from_otlp` both
+  read it. Two hand-written mappings drift -- one gains a key, the other does
+  not, and a column disappears through a round trip while both functions still
+  look correct alone. The test round-trips a document and compares over
+  `FIELDS` itself, so the table is what is under test.
+
+  **The vocabulary is stamped on every span.** `gen_ai.*` was deprecated out
+  of the main semantic-conventions repo on 2026-06-12 into a repo with no
+  releases, no tags and nothing marked stable. That objection is real and does
+  not go away. What makes it survivable is that every span carries
+  `modelmri.semconv.generation` and the CLI prints it, so a consumer can
+  always tell which vocabulary a span speaks. The stamp is a date, not a
+  version, because there is no released version to cite.
+
+  **JSON only, stdlib only.** OTLP/HTTP with a JSON body over `urllib`. No
+  OpenTelemetry SDK, which is what keeps `modelmri-record` importable into
+  somebody else's agent -- it still declares `dependencies = []`. A collector
+  that accepts protobuf only is refused with a sentence naming the limit
+  rather than approximated.
+
+  Absences survive the wire. A missing token count is **omitted**, never sent
+  as 0 -- `gen_ai.usage.input_tokens: 0` is a claim that the call used none. A
+  step with no recorded duration is the harder case: OTLP requires an end time
+  and cannot say "unknown", so it goes as a zero-length span, which on a
+  waterfall reads as an instantaneous operation. It is marked
+  `modelmri.duration.recorded=false` and the CLI prints how many spans carry
+  it, which is the most the format allows.
+
+  Verified against a real HTTP collector, not a mock: valid 32/16-hex ids,
+  times as strings (proto3's JSON mapping), parent links preserved, auth
+  headers delivered, and every refusal path exercised -- 415 (protobuf),
+  unreachable host, a bare `localhost:4317` (that is gRPC), and a malformed
+  `--header`.
+
+  `deliver_otlp=` needs `modelmri` importable, and says so if it is not rather
+  than silently doing nothing. It runs after the normal delivery and cannot
+  affect it: a collector being down must not cost you the trace. It exports
+  the **redacted** document -- shipping raw payloads to a third party while
+  the local copy is scrubbed would be the redactor working backwards.
+
+- **#36, the other half: what quantisation cost your model's BEHAVIOUR.** The
+  weight half shipped last release and answers how far the numbers moved.
+  This answers the question people actually have -- whether the model still
+  says the same thing -- and the join between them is the point. A tensor can
+  move a long way in RMS and change no answer; a tensor can barely move and
+  flip the argmax at the one position that mattered.
+
+  Three measurements over one identical token sequence: per-position KL
+  between the two next-token distributions (`ablate.kl_nats`, so it is the
+  same quantity a head ranking reports), every position where the argmax
+  flipped with **both** candidates and both probabilities, and per-layer mean
+  attention divergence so damage can be located in depth rather than totalled.
+
+  Measured on `SmolLM2-135M-Instruct-Q4_K_M.gguf` against
+  `HuggingFaceTB/SmolLM2-135M-Instruct`, RTX 4060 / bfloat16, "The capital of
+  France is":
+
+  | | |
+  |---|---|
+  | positions | 5 |
+  | median KL / max KL | 0.0357 / 0.0641 nats |
+  | answers actually changed | **0** |
+  | ties broken | 1 |
+  | most divergent attention | layer 22 of 30 |
+
+  That split is the feature. A naive report says "1 of 5 tokens changed",
+  which sounds like real damage. The one flip sits at a **0.038 margin** --
+  the original ranked `,` at 0.322 against ` is` at 0.319 -- so quantisation
+  broke a coin-flip, it did not change the model's mind. A flip is called
+  CONTESTED when the reference model's own top-1 beat its top-2 by under 0.05,
+  and both counts are reported rather than netted into one that has quietly
+  decided for the reader. The final answer, ` Paris`, is unchanged.
+
+  **Two models never sit in memory at once.** Load, capture to CPU, tear down,
+  load, capture, compare -- and the currently-held model is unloaded first,
+  because it is a third. On an 8 GB card the alternative is a comparison that
+  only runs when the model fits three times, which excludes every model worth
+  comparing.
+
+  Refusals where a number would otherwise be meaningless: different
+  tokenisations (a GGUF carries its own tokeniser, and the refusal names the
+  first position where they diverge), different vocabulary sizes (a KL over
+  different supports is undefined), and the same file on both sides. Missing
+  attention is `null` and noted, never 0 -- a zero would read as "identical".
+
+  And it says what it is not: this measures the quantiser through
+  HuggingFace's kernels, not llama.cpp's end-to-end damage, which uses its
+  own. One prompt is one sample, so the prompt travels with every response and
+  the per-position series is returned whole rather than averaged.
+
+- **Run a GGUF through the whole stack, and see what it costs first.** The
+  reader could tell you what was inside a GGUF and then nothing could open it.
+  `gguf_load.py` dequantises one into an ordinary torch module, so the logit
+  lens, the head sweep, the patching grid and attention all work on it.
+
+  The number nobody expects comes with it. A 4-bit GGUF does not load as a
+  4-bit model — transformers has no kernels for these types, so it dequantises
+  every tensor on the way in. **0.397 GB on disk becomes 1.192 GB of bfloat16
+  tensors**, three times the file, because the whole checkpoint is
+  materialised as float32 before anything is cast — so asking for bfloat16
+  does not avoid the float32 transit.
+
+  The resident figure is arithmetic on the header — `parameters × dtype bytes`
+  — and it is exact: 1,192,099,840 bytes predicted, 1,192,099,840 weighed,
+  error 0.000000, and the same on SmolLM2-135M. The load report carries that
+  comparison rather than asserting it.
+
+  The transit figure is a different kind of number and this entry originally
+  blurred them. `parameters × 4` is a *prediction*; the process RSS that
+  results is a *measurement*, and they disagree in both directions:
+
+  | | predicted | sampled RSS delta | error |
+  |---|---|---|---|
+  | Qwen3-0.6B-Q4_K_M | 2.384 GB | 2.30 GB | −3.5% |
+  | SmolLM2-135M-Q4_K_M | 0.538 GB | 0.585 GB | +8.6% |
+
+  Opposite signs, so there is no correction factor to fold in — RSS also
+  carries the tokeniser and the allocator's own release timing. `Loaded` now
+  reports both and their signed error, and `scripts/measure_docs.py --gguf`
+  prints them, which it did not before: the measured peak was quoted in prose
+  that no command in this repo could reproduce. That is the failure this
+  project exists to be about, sitting in the feature about not doing it.
+
+  Everything is still computable before the download from a few hundred
+  kilobytes of header, which is the point — a projection good to about ten
+  percent is what a refusal needs.
+
+  Worked example of the refusal, on the machine this was written on: Gemma 4
+  E2B is 4.63 **billion** raw parameters behind an "E2B" name, so its 2.83 GB
+  Q4_0 file wants 9.26 GB resident and an 18.51 GB float32 transit. Against
+  16.94 GB of total RAM the answer is "will not fit", and it says *total*
+  rather than *free*, because closing other programs cannot change it.
+
+  Refusals by name rather than by stack trace for the things a GGUF repo ships
+  beside the model — `mmproj-*` projectors, `mtp-*` speculative heads, split
+  `-00001-of-*` shards, architectures transformers has no config for (asked at
+  runtime, not hardcoded), and a directory holding several quantisations, which
+  is refused rather than guessed at because which file you load is which file
+  your measurements describe.
+
+  Every result says so, too: a loaded GGUF is the quantised weights
+  dequantised, not the original model, and `quantdiff` measures the gap.
+
+- **A third ablation baseline, and the number that says the baseline is
+  deciding.** `ablate.py` has documented since it was written that zero- and
+  mean-ablation disagree, and done nothing about it — so every ranking this
+  tool has shown was one of several answers with nothing on screen saying the
+  others existed. `resample` is the on-distribution third: replace a head with
+  what it really computes on a different sentence, eight times, and report the
+  median with its spread. Measured on gpt2 layer 0, bf16, "The capital of
+  France is", against 8 plain sentences — zero ranks H7, H10, H9; mean ranks
+  H1, H8, H2; resample ranks H7, H8, H10. Spearman between pairs runs 0.34 to
+  0.47 and the top five disagree on two or three heads in every pair.
+
+  Head 10 in that run scored between **0.0274 and 0.3349** across the eight
+  draws, around a median of 0.0355 — a twelvefold spread, so a single donor
+  could have reported any number in that range as the head's importance. One
+  draw is a coin flip, which is why there are eight, and why the corpus is
+  named in every response: the same head scores differently against different
+  donors, so a resample number quoted without its corpus cannot be checked.
+
+  Refusals rather than fallbacks throughout — no corpus, a donor shorter than
+  the prompt (both lengths named), a donor missing a layer. Padding a short
+  donor would score the padding; falling back to `mean` would return a
+  different measurement under this one's name.
+
+- **A cost preflight, so an analysis is priced before you pay for it.** One
+  probe pass on this machine, multiplied by the pass count the analysis already
+  knows. Time multiplies across sequential passes; **peak memory does not** —
+  measured on gpt2 over the full 146-pass sweep, the loop's peak was 2.00x one
+  pass, not 146x, so multiplying the peak would have refused every analysis this
+  tool offers. Projection called 146 passes exactly, 4.90 s against 4.46 s
+  actual and 1.1 MB against 1.8 MB. Labelled as one sample, and CPU/MPS report
+  what they could not measure rather than a confident zero.
+
+- **A fit calculator that shows its arithmetic and grades itself.** Weight
+  bytes from the safetensors header, KV cache as
+  `2 x layers x kv_heads x head_dim x seq_len x dtype`, and the eager-attention
+  buffer ModelMRI itself forces — every term printed with its formula, and the
+  longest context that fits your card by binary search (5,313 tokens for gpt2
+  on an 8.6 GB 4060). MLA, sliding-window and hybrid-SSM architectures are
+  refused by name rather than approximated; pointed at a real cache it declined
+  `gemma-3-270m-it`, which genuinely has a 512-token window.
+
+- **A random-weight control.** The same architecture built from `config.json`
+  alone — no weights fetched, works offline — seeded, and run through the
+  identical `rank_heads`. Measured on gpt2 layer 0, seed 0: the trained model
+  ranks H7 0.898, H10 0.535, H9 0.412 while the untrained twin ranks H3 0.016,
+  H0 0.015, H1 0.015. Spearman -0.50, sharing 1 of the top 5, and the twin's
+  scores are fifty times smaller and nearly uniform. The ranking survives,
+  which is the outcome you want and not the guaranteed one.
+
+- **A telemetry bar, with the cost of being watched broken out.** Tokens/sec
+  measured over the streamed tokens, prompt processing kept apart from decode,
+  peak allocator memory, and context fullness against the model's real limit.
+  Live telemetry is table stakes — TextGen, LM Studio and llama-server all
+  have it — so the differentiated line is the other one: **what introspection
+  costs.**
+
+  ModelMRI is slower than Ollama for a specific, nameable reason rather than a
+  vague one. It forces `attn_implementation="eager"` and asks for
+  `output_attentions=True`, which materialises an `n_layers x n_heads x S x S`
+  tensor a plain runner never allocates. That figure is computed from the
+  shape and shown as its own line, with a warning available *before* a run
+  that would not fit rather than an explanation after the allocation fails. At
+  4,096 tokens on a 12-layer, 12-head model it is 4.8 GB — larger than the
+  weights of most models this runs on.
+
+  Every number is labelled for what it is. Memory reads `allocated by
+  PyTorch`, never "VRAM used": the caching allocator's view is not the
+  driver's and other processes are invisible to it. The rate travels with the
+  prompt length and sequence length it was measured at, because one generation
+  is one sample. A cell that could not be measured says so — CPU has no
+  allocator to ask, and a 0 in a memory column is a claim that nothing was
+  used. `tokenizer.model_max_length` is rejected when it is a sentinel (several
+  tokenizers report 1000000000000000019884624838656) rather than turned into a
+  confident 0.0% of context.
+
+- **The GGUF reader has a panel now, and the scanner actually lists them.**
+  "Click any `.gguf` the scanner already found" was not true: `find_torchscript`
+  globbed only `.pt`, `.pth` and `.torchscript`, so the format most people
+  running models locally actually have was never in the list at all. It globs
+  `*.gguf` too, and `checkpoint_kind` decides by the file's magic bytes rather
+  than by extension — a GGUF is not a zip, so the archive logic would have
+  called it unreadable.
+
+  Clicking one opens a reader rather than attempting a load: the headline
+  numbers, a by-quantisation-type table, the tensors sitting above the
+  headline, a sortable and filterable table of all of them, and every metadata
+  key behind a disclosure. Read is deliberately a different verb from load —
+  transformers cannot run a quantised GGUF, and one button for both would
+  promise something that can only refuse.
+
+  Driven in a browser against a real 0.52 GB qwen3-0.6B blob: 311 tensors,
+  751,632,384 parameters, 5.499 effective bpw, and the table showing where that
+  comes from — Q4_K 4.5 bpw across 155 tensors and 294.0 MB, Q6_K 6.562 across
+  15 and 163.8 MB, F16 16 across 28 and 58.7 MB. An unsized tensor renders
+  "unknown type", never a dash that could be read as zero.
+
+- **Open a GGUF and read what is inside it.** The scanner has always found
+  `.gguf` files — the format most people running models on their own machine
+  actually have — and then refused them with a note. It still cannot *run*
+  one, but "cannot run" and "cannot tell you anything" are different claims and
+  only the first was ever true. Every metadata key, a full tensor table with
+  each tensor's ggml type, shape, byte count and file offset, and per-type
+  roll-ups.
+
+  **Bits-per-weight is arithmetic, not a label.** Ollama, LM Studio, Jan and
+  Open WebUI show a quant preset name and a file size. Measured on this
+  machine's own Ollama blobs: a `qwen3-0.6B` whose dominant type is Q4_K reads
+  **5.499 bpw effective**, because 164 MB of it sits in Q6_K and 59 MB in F16
+  against 294 MB at the 4.5 headline. The tensors above the headline are named
+  rather than averaged into it.
+
+  Stdlib only, and deliberately not the `gguf` pip package: nothing here reads
+  tensor data, only the length-prefixed table describing it, so there is no
+  dependency to add and nothing that a release versioned against llama.cpp can
+  break. Reading a 0.82 GB blob's header took 963 ms and the tensor byte counts
+  account for 98.2% of the file. An unknown ggml type renders as
+  `ggml type N (unknown)` with its size omitted — never bucketed into the
+  nearest familiar thing, since a wrong bits-per-weight computed confidently is
+  worse than an absent one.
+
+- **Search every recorded step, from a pip install.** Free text plus
+  allow-listed filters — `kind:tool_call`, `error:true`, `duration>2000`,
+  `name:pytest` — over every trace on the machine. Results are steps rather
+  than runs, because what somebody is looking for is the tool call that
+  failed, not the hour it happened in, and clicking one opens that run with
+  the step selected.
+
+  Backed by SQLite FTS5, which is compiled into essentially every CPython
+  build — Langfuse needs ClickHouse for this and Braintrust built a bespoke
+  columnar store. "Essentially every" is not "every", so a build without FTS5
+  degrades to a substring scan and the response **names the engine that
+  answered**, rather than quietly becoming a slower, differently-matching
+  feature. Filters are an allow-list of five column names, never string
+  interpolation; every value is a bound parameter.
+
+  A filter binds only with no space after the colon, so a pasted log line —
+  `error: connection refused`, the single most likely thing anybody types into
+  a search box — stays plain text. With loose binding it parsed as
+  `error:connection` and was refused. And an unparseable filter is named
+  rather than dropped: `error:maybe` silently matching nothing looks exactly
+  like a trace with no failures.
+
+- **A recorded agent step opens in the mechanistic panels.** The two halves of
+  this tool have sat beside each other doing nothing for one another: a
+  timeline of agent steps on one side, attention and ablation and patching on
+  the other, and no way to get from a failing step to what the model was doing
+  when it produced it. `modelmri_record.instrument_transformers()` now records
+  a local `generate()` call's actual token ids, and `adopt_step` re-establishes
+  that generation as the current one — so every existing panel reads it
+  unchanged, with nothing re-run.
+
+  Demonstrated end to end on gpt2: instrument, generate inside a `trace()`,
+  store, reload, adopt, and rank heads on the result — H7, KL 0.898, on a
+  sequence nobody typed into the UI.
+
+  This is the one join no hosted platform can build, and the reason is
+  structural rather than clever: LangSmith, Langfuse, Phoenix, Braintrust,
+  Weave, Opik and Laminar all stop at the API boundary and none of them ever
+  holds the weights.
+
+  Four refusals, because every panel downstream reads `last_ids` and none of
+  them checks where it came from. A hosted-API step says the weights are not on
+  this machine rather than offering a button that can only fail. A step from a
+  different model is refused by name — reading one model's ids through
+  another's weights produces numbers about nothing and no panel would show
+  that it had. Re-tokenising the prompt is checked against the recorded ids and
+  a mismatch refuses, naming the likely cause, because adopting near-identical
+  ids would point every panel at a sequence the model never saw. And there is
+  **no substitute-model path**: replaying a hosted model's prompt through
+  whatever happens to be loaded is a machine for confident wrong conclusions,
+  however loudly it is labelled.
+
+  `meta` carries ids and numbers only, never prompt or completion text —
+  `redact.py` runs over `input` and `output` at delivery and nothing else, so
+  text smuggled through `meta` would leave the machine unredacted. One
+  consequence worth stating: if redaction rewrites a prompt, the step becomes
+  un-adoptable, because re-tokenising the redacted text no longer reproduces
+  the recorded ids. That is correct — the model saw the unredacted text and
+  this tool should not reconstruct it.
+
+- **Steering for the models that have no SAE, which is almost all of them.**
+  Contrastive prompt pairs give a direction without an SAE and without a
+  training run — but difference-of-means *always* returns a direction, and
+  adding any large vector to a residual stream changes the output, so nothing
+  about the result looks different when there was no signal. Every direction is
+  therefore scored against its own **label-shuffled null**: refit eight times
+  with the labels reassigned, and report a direction that does not beat its
+  shuffles as *not measured* rather than as a small finding. Fitted on half the
+  pairs and scored on the other half, because a direction scored on its own
+  fitting set separates it by construction.
+
+  Measured on gpt2, bf16, twelve sentiment pairs: CAA has 11 of 12 layers beat
+  their null (best at layer 9, +3.326 against a null max of 2.185), RepE 11 of
+  12 (best at layer 10). Splitting the same 24 sentences at random instead of
+  by sentiment: **0 of 12** survive. Layer 0 fails in both, which is correct —
+  that is the embedding, before anything has been computed.
+
+  Directions persist with the provenance needed to judge them later — model,
+  revision, layer, dtype, hidden size, method, and whether they beat their
+  null. Loading one onto a model whose residual stream is a different width is
+  refused by name rather than reshaped; loading onto a *different* model of the
+  same width warns loudly rather than blocking, because cross-checkpoint
+  transfer is a legitimate experiment when the person running it knows that is
+  what they are doing.
+
+- **Every logit-lens row reports its own error.** `kl_to_final` is the KL from
+  the model's real next-token distribution to that layer's lens distribution.
+  On gpt2 with "The Eiffel Tower is located in the city of": layer 0 is 21.58
+  nats away reading ' destro', layers 9-11 turn ' Rome' -> ' London' ->
+  ' Paris', and 0.96 at layer 11 is the closest the lens gets. Past a stated
+  threshold the panel calls the lens unusable instead of rendering a confident
+  ranked list that describes nothing.
+
+### Fixed
+
+- **Three more from a second audit of the areas the first one skipped.** The
+  first audit named what it had NOT exercised, which is the only reason these
+  were findable: `budget.py`'s projection arithmetic, `nullmodel.py`,
+  `corpus.py`, the steering null, `spearman`, the lens normed check, and React
+  hook ordering.
+
+  - **`nullmodel.teardown` did not free the twin.** `del twin` unbinds the
+    function's own parameter; the caller's variable is still a live reference,
+    so `gc.collect()` collected nothing and `empty_cache()` had nothing to
+    release. Measured on a real gpt2 twin: 255.3 MB allocated, 255.3 MB still
+    allocated after teardown returned — while its docstring claimed the memory
+    came back immediately. On an 8 GB card that is the difference between the
+    next analysis running and refusing. Moves the parameters to CPU first now,
+    which frees the CUDA storage however many references survive: 256.2 MB in,
+    0.0 MB retained.
+
+  - **The steering gate's false-positive rate is now measured and published.**
+    With eight draws the smallest attainable permutation p-value is 1/9, so the
+    gate cannot assert better than 0.111 however clean the data. Measured over
+    200 trials per method on structureless clouds with no direction in them:
+    CAA passes 16.0%, RepE 12.0%, against 50/50 detection of a real 4-sigma
+    separation. It is a useful screen and it is not a significance test, and
+    that number now appears in the module rather than being left for a user to
+    discover. Every direction also reports `p_value` alongside `beats_null`,
+    because a boolean hides whether the call was 1/9 or 9/9.
+
+  - **A verdict drawn from nothing.** `nullmodel.verdict` took its
+    "mostly the architecture" branch on a high correlation even when no top
+    heads had been compared, printing "sharing 0 of the top 0". Unreachable
+    from `compare_baselines` as it stands — a ranking short enough to give
+    top_k 0 is also too short for Spearman to be defined — so this is a guard
+    rather than a live fix.
+
+  Checked and clean, with what was run: `spearman` and `_ranks` against
+  scipy over 800 random vectors (exact match on ranks, 5e-5 on rho, and the
+  four undefined cases agreeing with scipy's `nan`); `compare_baselines`
+  invariants over 300 random cases; the budget projection against real sweeps
+  at 1, 3 and 12 layers (pass counts exact, 0.88x-1.02x on time); the lens
+  normed check across fp32/bf16/fp16 on CUDA and fp32/bf16 on CPU (correct top
+  token and a ~0 floor in all five); and React hook ordering across all four
+  panels, checked per component with brace depth rather than by grepping
+  returns — the first pass flagged ten violations that were all `useEffect`
+  cleanups or a nested component.
+
+- **Nine defects found by an adversarial audit of this branch before it was
+  pushed.** Six independent lenses over the diff, every candidate attacked by
+  one reviewer trying to reproduce it and one trying to refute it, keeping only
+  what survived both. 20 candidates, 10 verified, 9 confirmed. The blocking one:
+
+  - **Trace search returned nothing for every trace you already had.**
+    `SELECT count(*) FROM step_fts` does not count index rows — `step_fts` is
+    an external-content table, so an unqualified scan reads through to `step`
+    and returns the CONTENT count. On any store an earlier version wrote,
+    `indexed` therefore equalled `stored`, the backfill never ran, and it never
+    ran on any later start either. Search answered `engine: "fts5"` with an
+    empty list while a filter-only query (which takes the substring path)
+    returned the same traces, so the store visibly contained what the search
+    box said did not exist. Now counts `step_fts_docsize` and backfills with
+    FTS5's own idempotent `'rebuild'`. Verified on a 40-trace store written in
+    the old shape: 0 hits before, 40 after.
+
+  - **Tokens/sec was fabricated and the token count was always one too many.**
+    A `TextIteratorStreamer` yields one chunk per token *plus* a final flush
+    from `TextStreamer.end()`, and the rate divided that inflated count by a
+    window spanning only `n-1` intervals. Measured on gpt2: 8 real tokens
+    reported as 9, and at `max_new_tokens=1` a machine doing 31 tok/s reported
+    308. The count now comes from `generate`'s own output ids, the rate divides
+    by intervals, and a single token reports no rate at all rather than an
+    unbounded one.
+
+  - **Trace search promised "newest first" and sorted by offset-within-run.**
+    `step.started_ms` is milliseconds since that run's own start, so a step
+    nine minutes into last month's run outranked one a second into today's —
+    and the LIMIT then dropped today entirely. A full page of stale hits that
+    looks complete, which is worse than an empty one. Now orders by
+    `trace.started_at`, and every hit carries it.
+
+  - **The GGUF summary averaged the tensors it happened to understand.**
+    Element counts are read from `dims` before the ggml type is consulted, so
+    they are as known for an unknown type as for F32 — but `parameters` was
+    summed over sized tensors only. A 1.44B model whose bulk tensors use a type
+    newer than this table (llama.cpp is at 39; shipping gpt-oss GGUFs use
+    MXFP4) reported 131,072 parameters, wrong by 11,009x. Parameters now count
+    every tensor; byte totals and bits-per-weight are withheld entirely, with
+    the reason, when anything could not be sized.
+
+  Five more, each reproduced: `import_trace` retracted from the search index
+  *after* `INSERT OR REPLACE` had already cascade-deleted the rows, leaving
+  stale terms bound to reused rowids; `adopt_step` cleared every derived cache
+  except `_feats`, so the previous generation's SAE activations were served
+  against the adopted tokens; the recorder's `result[0]` assumed a bare tensor
+  and silently recorded nothing under `return_dict_in_generate=True`;
+  `fit.py`'s architecture guards read the top-level config only, so a nested
+  multimodal `text_config` escaped the sliding-window refusal and overstated KV
+  by 5.8x; and `adopt_step` treated a recorded `n_prompt_tokens` of 0 as
+  absent, disabling the id-verification guard it exists for.
+
+
+- **The logit lens double-normed its final row on every bfloat16 load.** The
+  check that decides whether the last hidden state is already normalised
+  compared *logits* with `allclose(atol=1e-3, rtol=1e-3)`. Measured on gpt2,
+  cuda: in float32 the two vectors differ by 0.00007 and it passed; in bfloat16
+  they differ by 0.5 and it failed — but the logits are ~128 and bf16's
+  precision there is `128 * 2^-8 = 0.5`, so that IS agreement to the last
+  representable digit. The check was reading the dtype, not the model.
+
+  The consequence is the exact failure that block was written to prevent, and
+  it had been shipping: the final row read `' the'` where gpt2 actually says
+  `' Paris'`, and both `final` and `settled_at` are derived from that row. bf16
+  is the default on every current NVIDIA GPU, so this was wrong for most users,
+  silently, on the one row a reader can check by eye.
+
+  Now compared as **distributions** rather than logits — softmax is scale-free,
+  so bf16 rounding lands near 1e-4 nats while a genuine double-norm measures
+  2.12. Found by the new `kl_to_final`: the last row is the model, so its KL is
+  an arithmetic floor that has to read ~0, and it read 2.12.
+
+- **`/api/attention/ablate/estimate?baseline=resample` answered 500.** The
+  probe built its hook with no donor, so the resample arm indexed `None` inside
+  a forward pass. Found by driving the browser, not by a unit test — the
+  estimator had only ever been called with the default baseline.
+
+- **A truncated tool output read as a complete one.** `traces._clip` caps
+  payloads at 20,000 characters and appends `… [+N]`, and the inspector
+  rendered that suffix as if the agent had produced it — so a clipped result
+  ended mid-sentence with a bracketed number after it and nothing saying the
+  rest existed. Parsed out server-side now and rendered as a marker that names
+  how much is missing and why there is a cap at all.
+
+- **`duration_ms` could not say "not recorded".** The column was
+  `INTEGER NOT NULL DEFAULT 0`, so a step recorded bare was indistinguishable
+  from one that took no measurable time — the same class as the
+  `.get(name, 0.0)` above. It is nullable now, absence survives the round
+  trip, and the inspector prints "duration not recorded" instead of `0ms`.
+  SQLite cannot relax `NOT NULL` with `ALTER TABLE`, so existing stores get a
+  real table rebuild.
+
+- **The trace store's lock is now reentrant.** Several helpers touch the
+  connection while their caller already holds it, and with a plain `Lock` the
+  honest fix — every method takes the lock — self-deadlocks. The alternative
+  was a list of remembered exemptions in the test that guards this, which is
+  precisely how the 0.10 data race survived review. An `RLock` serialises
+  other threads identically and lets the invariant have no exceptions.
+
+- **An empty `t.sqlite` was committed at the repo root.** A trace store left
+  behind by a test run; the test itself writes to a temp directory, and nothing
+  referenced the root copy. Removed, and `*.sqlite` added to `.gitignore`.
+
 ## [0.10.1] — 2026-08-12
 
 ### Fixed

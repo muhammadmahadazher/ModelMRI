@@ -319,3 +319,71 @@ def test_import_costs_nothing_heavy():
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "[]", f"pulled heavy deps: {out.stdout.strip()}"
+
+
+# ---------------------------------------------------------------------------
+# deliver_otlp: opt-in, and it must never cost you the trace
+# ---------------------------------------------------------------------------
+
+
+def test_otlp_delivery_is_off_by_default():
+    """This package is imported into other people's agents. A recorder that
+    starts talking to the network because it can is one nobody should
+    install."""
+    import inspect
+
+    sig = inspect.signature(rec.trace)
+    assert sig.parameters["deliver_otlp"].default is None
+
+
+def test_a_missing_modelmri_is_said_not_swallowed(monkeypatch, capsys):
+    """The OTLP mapping lives in `modelmri` in one table, so emit and ingest
+    cannot drift; copying it here would be the second copy that drifts. This
+    package therefore keeps `dependencies = []` and the export is optional —
+    but "you asked for an export and got nothing, silently" is the worst
+    possible answer, so the absence is named."""
+    import builtins
+
+    real = builtins.__import__
+
+    def no_modelmri(name, *a, **kw):
+        if name == "modelmri" or name.startswith("modelmri."):
+            raise ImportError("no modelmri")
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", no_modelmri)
+
+    t = rec._Trace("x", "http://127.0.0.1:1/none", None, None, "http://127.0.0.1:1")
+    rec._deliver_otlp(t, {"id": "t", "name": "x", "steps": []})
+
+    said = capsys.readouterr()
+    assert "not importable" in (said.err + said.out)
+    assert "pip install modelmri" in (said.err + said.out)
+
+
+def test_a_failing_export_does_not_raise(monkeypatch):
+    """An export is a convenience. A collector being down must not cost
+    somebody the trace itself, and must never crash the host app."""
+    t = rec._Trace("x", "http://127.0.0.1:1/none", None, None, "http://127.0.0.1:1")
+    # Unreachable on purpose; the point is that this returns rather than raises.
+    rec._deliver_otlp(t, {"id": "t", "name": "x", "steps": []})
+
+
+def test_no_endpoint_means_no_attempt(monkeypatch):
+    """Off is off: nothing is imported and nothing is sent."""
+    called = []
+    monkeypatch.setattr(rec, "_complain", lambda m: called.append(m))
+    t = rec._Trace("x", "http://127.0.0.1:1/none", None, None, None)
+    rec._deliver_otlp(t, {"id": "t", "name": "x", "steps": []})
+    assert called == []
+
+
+def test_the_exported_document_is_the_redacted_one():
+    """Exporting raw payloads to a third-party collector while the local copy
+    is scrubbed would be the redactor working exactly backwards. `_deliver`
+    redacts once and hands the SAME document to both paths."""
+    import inspect
+
+    src = inspect.getsource(rec._deliver)
+    # The redaction happens before either delivery, and both are passed `doc`.
+    assert src.index("redact_document") < src.index("_deliver_otlp(t, doc)")

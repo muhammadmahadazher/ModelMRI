@@ -11,8 +11,12 @@ import {
   loadCustom,
   runCustom,
   unloadCustom,
+  readGguf,
+  GgufReport,
 } from "./api";
 import { useScanOnData } from "./useScanOnData";
+import CustomAblate from "./CustomAblate";
+import GgufReader from "./GgufReader";
 import RestingSketch from "./RestingSketch";
 
 /** Health of one layer, in the order a person would notice it. */
@@ -39,7 +43,13 @@ function shapeText(s: number[]): string {
   return s.length ? s.join("×") : "—";
 }
 
-export default function CustomPanel() {
+export default function CustomPanel({
+  onModelChange,
+}: {
+  /** Called when this panel has changed which model the server holds — today
+   *  only the GGUF loader does. Optional so the panel stays usable standalone. */
+  onModelChange?: () => void;
+} = {}) {
   const [status, setStatus] = useState<CustomStatus | null>(null);
   const [cands, setCands] = useState<{
     adapters: CustomCandidate[];
@@ -55,6 +65,10 @@ export default function CustomPanel() {
   // is not a setting that should quietly persist.
   const [folder, setFolder] = useState("");
   const [manual, setManual] = useState("");
+  // A GGUF the reader opened. Kept beside the candidate list rather than
+  // replacing the panel, so "back to the list" is one click and the scan is
+  // not lost.
+  const [gguf, setGguf] = useState<GgufReport | null>(null);
   // A counter, not layers.length: two runs of the same model have the same
   // layer count, and a scan that never fires again says nothing.
   const [runId, setRunId] = useState(0);
@@ -103,10 +117,31 @@ export default function CustomPanel() {
     }
   }
 
+  /** Read a GGUF's header instead of trying to load it.
+   *
+   *  Kept as its own path rather than a branch inside `onLoad`, because these
+   *  are different verbs with different outcomes: loading builds a model this
+   *  tool can run, and a quantised GGUF is not one. Offering the same button
+   *  for both would promise something that can only refuse.
+   */
+  async function onRead(path: string) {
+    setBusy(path);
+    setErr("");
+    try {
+      setGguf(await readGguf(path));
+    } catch (e) {
+      setErr(errorText(e));
+      setGguf(null);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function onLoad(path: string) {
     setBusy(path);
     setErr("");
     setRun(null);
+    setGguf(null);
     try {
       const s = await loadCustom(path);
       setStatus(s);
@@ -211,6 +246,15 @@ export default function CustomPanel() {
           </div>
         ) : (
           <div className="cand-wrap">
+            {/* The reader sits above the list rather than replacing the panel,
+                so "back to the list" costs one click and the scan survives. */}
+            {gguf && (
+              <GgufReader
+                report={gguf}
+                onClose={() => setGguf(null)}
+                onLoaded={onModelChange}
+              />
+            )}
             {cands.adapters.length === 0 && cands.torchscript.length === 0 && (
               <p className="resting-empty">
                 Nothing found under {cands.roots.join(", ")}. An adapter is a
@@ -254,25 +298,41 @@ export default function CustomPanel() {
                       key={c.path}
                       className="cand"
                       disabled={busy !== ""}
-                      onClick={() => void onLoad(c.path)}
+                      // A GGUF is read first and loaded only on request:
+                      // dequantising costs about 3x the file in memory, so the
+                      // reader prices it before offering the button. Older
+                      // copy here said transformers could not
+                      // run a quantised one, and offering the same button for
+                      // both would promise something that can only refuse.
+                      onClick={() =>
+                        void (c.kind === "gguf" ? onRead(c.path) : onLoad(c.path))
+                      }
                       title={c.path}
                     >
                       <span className="cand-name">{c.name}</span>
                       <span className="pill tiny">{c.mb} MB</span>
                       {c.kind && (
                         <span
-                          className={`pill tiny ${c.kind === "torchscript" ? "ok" : ""}`}
+                          className={`pill tiny ${
+                            c.kind === "torchscript" || c.kind === "gguf" ? "ok" : ""
+                          }`}
                           title={
-                            c.kind === "torchscript"
-                              ? "A TorchScript archive — it loads, but PyTorch strips the hooks this panel reads activations through"
-                              : c.kind === "checkpoint"
-                                ? "Weights only. It needs an adapter that builds your model class and loads them in."
-                                : c.kind === "legacy"
-                                  ? "Saved by a torch older than 1.6, or not a torch file at all"
-                                  : "Could not be read as an archive"
+                            c.kind === "gguf"
+                              ? "Open it for architecture, every metadata key, and a full tensor table with real bits-per-weight — then load it for the lens, attention and patching. Dequantising costs about 3x the file in memory, and the panel says how much before you commit."
+                              : c.kind === "torchscript"
+                                ? "A TorchScript archive — it loads, but PyTorch strips the hooks this panel reads activations through"
+                                : c.kind === "checkpoint"
+                                  ? "Weights only. It needs an adapter that builds your model class and loads them in."
+                                  : c.kind === "legacy"
+                                    ? "Saved by a torch older than 1.6, or not a torch file at all"
+                                    : "Could not be read as an archive"
                           }
                         >
-                          {c.kind === "checkpoint" ? "weights only" : c.kind}
+                          {c.kind === "checkpoint"
+                            ? "weights only"
+                            : c.kind === "gguf"
+                              ? "open it"
+                              : c.kind}
                         </span>
                       )}
                       <span className="spacer" />
@@ -452,6 +512,13 @@ export default function CustomPanel() {
           </div>
         </>
       )}
+
+      {/* The causal half, sited under the map rather than beside it. The map
+          says what each layer emitted; this says what the answer would be
+          without it, and reading the second without having seen the first is
+          how a reader ends up believing a dead layer was load-bearing. Shown
+          only once a model is loaded — there is nothing to sweep before. */}
+      {status.loaded && <CustomAblate epoch={runId} />}
 
       <div className="hint">
         one real forward pass, hooked at every leaf module · dead = exactly

@@ -212,3 +212,21 @@ def test_the_norm_is_found_under_either_container():
 
     assert _final_norm(LlamaShaped()) is not None
     assert _final_norm(GPTShaped()) is not None
+
+
+def test_a_top_k_below_one_is_a_bad_request_not_a_500():
+    """`torch.topk(probs, k=min(top_k, numel))` accepts 0 and returns nothing,
+    so every layer came back with empty `tokens` and the code then read
+    `rows[-1]["tokens"][0]` — IndexError, which the route can only answer as a
+    500. A negative k raises out of torch instead, same 500.
+
+    `ModelRuntime.ablate_heads` takes the same argument and answers
+    "top_k must be at least 1" with a 422.
+    """
+    pytest.importorskip("torch")
+    from modelmri import lens
+    from modelmri.errors import BadRequest
+
+    for bad in (0, -1, -100):
+        with pytest.raises(BadRequest, match="at least 1"):
+            lens.logit_lens(None, None, None, top_k=bad)

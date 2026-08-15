@@ -4,6 +4,30 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Documentation-only changes cannot break the test suite, and running a
+    # four-way OS matrix plus a Playwright browser to prove that wastes about
+    # twelve minutes per push. Anything that can affect behaviour is listed;
+    # when in doubt the path is included, because a missed run is worse than
+    # a redundant one.
+    paths:
+      - "modelmri/**"
+      - "packages/**"
+      - "tests/**"
+      - "frontend/**"
+      - "scripts/**"
+      - "examples/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/ci.yml"
+
+# Cancel superseded runs. Without this every push to a branch started a full
+# matrix and the old one kept going -- on a branch with ten commits that is
+# nine complete duplicate runs, all of them emailing on failure. The `main`
+# group is keyed differently so a queued release build is never cancelled by
+# the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Read-only. Nothing here writes to the repository, and a workflow that runs
 # on pull_request runs code from forks — the token it holds should be able to
@@ -24,6 +48,11 @@ jobs:
       # action here does publish them, which is why this one line looks
       # inconsistent and is not.
       - uses: astral-sh/setup-uv@v10.0.0
+        with:
+          # Keyed on uv.lock, so it is a miss exactly when dependencies move.
+          # torch alone is several hundred megabytes to resolve and fetch.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Lint, format, test
         run: |
           uv sync --dev
@@ -69,6 +98,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@v10.0.0
+        with:
+          # Keyed on uv.lock, so it is a miss exactly when dependencies move.
+          # torch alone is several hundred megabytes to resolve and fetch.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       # bash on all three runners, so this is one script rather than three.
       # GitHub ships Git Bash on the Windows images; without this the block
       # would run under pwsh there and the syntax would differ.
@@ -87,13 +121,22 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - name: Lint & build (skips until frontend exists)
+          # `npm ci` re-downloaded the whole tree on every run in two separate
+          # jobs. The lockfile is the cache key, so this is only a miss when
+          # the dependencies actually changed.
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # Lint only. This job used to build as well, and so does `ui` below --
+      # the same Vite build ran twice per PR for no extra coverage, because a
+      # build that fails here fails there identically. Lint is the fast signal
+      # (about 20 seconds against three minutes), so it stays on its own and
+      # the build lives where its output is actually used.
+      - name: Lint (skips until frontend exists)
         run: |
           if [ -f frontend/package.json ]; then
             cd frontend
             npm ci
             npm run lint --if-present
-            npm run build --if-present
           else
             echo "Frontend not scaffolded yet — skipping."
           fi
@@ -110,7 +153,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          # `npm ci` re-downloaded the whole tree on every run in two separate
+          # jobs. The lockfile is the cache key, so this is only a miss when
+          # the dependencies actually changed.
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       - uses: astral-sh/setup-uv@v10.0.0
+        with:
+          # Keyed on uv.lock, so it is a miss exactly when dependencies move.
+          # torch alone is several hundred megabytes to resolve and fetch.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
       - name: Build the UI and the viewer
         run: |
           cd frontend

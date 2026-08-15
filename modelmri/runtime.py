@@ -33,13 +33,17 @@ from . import (
     ablate,
     attribute,
     capacity,
+    corpus,
     devices,
     feature_ablate,
+    nullmodel,
     ollama,
     patch,
     paths,
     progress,
+    receipts,
     session,
+    telemetry,
 )
 from .errors import BadRequest, Refusal
 from .saes import SAEHandle, SAEStatus
@@ -387,6 +391,20 @@ class ModelStatus:
     # question, and a UI that does not say so invites the reader to conclude
     # the tool is broken when the tool is working exactly as intended.
     instruct: bool | None = None
+    # The load plan, when this model was built from a GGUF: file size against
+    # resident size, the expansion between them, and the standing caveat that
+    # every measurement below describes the quantised weights. None otherwise,
+    # never {} -- an empty dict reads as "from a GGUF, nothing to say".
+    gguf: dict | None = None
+    # How many transformer blocks this model has. A property of the LOADED
+    # MODEL, not of a run -- which is why it lives here and not on
+    # /api/attention/meta, where it needs a generation to have happened first.
+    # The probe and patchscope panels both need to offer a layer before there
+    # is anything to generate from, and without this their layer pickers were
+    # empty until the user generated something they did not need.
+    #
+    # None for backends with no blocks to count (ollama serves text only).
+    n_layers: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -401,6 +419,14 @@ class ModelRuntime:
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
         self.backend: str = "hf"  # "hf" (full introspection) | "ollama" (text only)
+        # Set when the loaded model came from a GGUF. NOT a third backend: a
+        # dequantised GGUF is an ordinary torch module and every panel works on
+        # it unchanged, so gating fifteen call sites on a new backend value
+        # would be inventing a difference that does not exist. What IS
+        # different is what the numbers describe -- the quantised weights, not
+        # the original -- and that is provenance, so it rides here and appears
+        # in status(). None on every other load.
+        self.gguf: dict | None = None
         # GPU when one is usable (NVIDIA / AMD ROCm / Intel / Apple), else CPU
         self.accel = devices.detect()
         self.device = self.accel.torch_device
@@ -411,6 +437,39 @@ class ModelRuntime:
         # just quietly reports numbers about nothing.
         self.epoch = 0
         self._last_patch: dict = {}
+        self._last_ranking: dict = {}
+        self._last_lens: dict = {}
+        # Head type labels. Tagged with the epoch and NOT cleared on
+        # generation, unlike everything else here -- deliberately. These are
+        # measured on random sequences of the module's own making and say
+        # nothing about the current prompt, so a new generation does not
+        # invalidate them. A model change does, and the epoch moves on load
+        # and unload and not on generation, which is exactly that rule.
+        self._last_types: dict = {}
+        # The last grounding run. Epoch-scoped like the head labels and for
+        # the same reason: it is measured on ITS OWN document and question,
+        # not on the current generation, so a new generation does not
+        # invalidate it -- but a model swap does, and the epoch moves on load
+        # and unload and deliberately not on generation.
+        self._last_ground: dict = {}
+        # The last finetune-vs-base comparison. NOT epoch-scoped, and that is
+        # the one piece of state here that is not: a diff names its own two
+        # models and is a claim about neither the model loaded here nor the
+        # prompt in front of it. Loading a third model does not invalidate it.
+        self._last_model_diff: dict = {}
+        # A trained translator, when one has been fitted or loaded for THIS
+        # model. Cleared on every load: a lens fitted to one model reads
+        # another one's residual stream as confident nonsense.
+        self._tuned: dict = {}
+        self._tuned_info: dict = {}
+        # One receipt per measurement that has run, keyed by the operation, so
+        # `export_session` can put the setup of every number in the `.mri`
+        # beside the number. Each carries the epoch it was taken under and is
+        # filtered on that at export -- the same rule `_last_patch` keeps, and
+        # for the same reason: a receipt describing the model that WAS loaded,
+        # riding along with an export of the one that is, would be a lie told
+        # in the one field a reader is meant to be able to trust.
+        self._receipts: dict[str, dict] = {}
         # Base vs instruction-tuned for an Ollama model, from Ollama itself.
         # None until asked, and None again on any HF load.
         self._ollama_instruct: bool | None = None
@@ -426,6 +485,10 @@ class ModelRuntime:
         # by 25,563x (measured on Qwen3-0.6B, see `_user_span`), so a panel that
         # cannot tell them apart has to say that rather than pick one.
         self.last_user_span: tuple[int, int] | None = None
+        # What the last generation cost, including what watching it cost.
+        # None until something has been generated -- a telemetry bar with
+        # zeros in it is a claim about a run that never happened.
+        self.last_telemetry: telemetry.Telemetry | None = None
         # One entry per intervention: "live", "steered", "ablate:L.H".
         # Comparing two runs means holding two, and they must all be dropped
         # together — a stale "live" beside a fresh "steered" would render a
@@ -475,6 +538,29 @@ class ModelRuntime:
             dtype=str(next(self.model.parameters()).dtype).removeprefix("torch."),
             n_params=sum(p.numel() for p in self.model.parameters()),
             instruct=bool(getattr(self.tokenizer, "chat_template", None)),
+            gguf=self.gguf,
+            # TWO getattrs, not one. `self.model.config` is not a given: a
+            # TorchScript module, an adapter-loaded network and the stub the
+            # load tests use all have parameters and no config, and reaching
+            # through it raised AttributeError from inside `status()` -- which
+            # is the one method every route calls, so a missing block count
+            # took the whole session endpoint down rather than reporting an
+            # unknown. Caught by the load test, not by review.
+            #
+            # `or None` on the outside: a missing count is "unknown", and 0
+            # would be the positive claim "this model has no blocks", which
+            # the UI renders as an empty dropdown.
+            n_layers=(
+                int(
+                    getattr(
+                        getattr(self.model, "config", None),
+                        "num_hidden_layers",
+                        0,
+                    )
+                    or 0
+                )
+                or None
+            ),
         )
 
     def unload(self) -> dict:
@@ -499,6 +585,7 @@ class ModelRuntime:
             self.tokenizer = None
             self.hf_id = None
             self.backend = None
+            self.gguf = None
             self.replay = None
             self.last_ids = None
             self.last_user_span = None
@@ -627,6 +714,7 @@ class ModelRuntime:
                 self.model = None
                 self.tokenizer = None
                 self.backend = "ollama"
+                self.gguf = None
                 self.hf_id = hf_id
                 # Asked once per load, from Ollama's own metadata. None when
                 # it cannot be determined — never assumed.
@@ -639,6 +727,10 @@ class ModelRuntime:
                 self.sae = None
                 self._feats = None
                 self._steer = None
+                self._tuned = {}
+                self._tuned_info = {}
+                self._last_types = {}
+                self._last_ground = {}
             return self.status()
 
         with self._load_slot(hf_id):
@@ -762,6 +854,10 @@ class ModelRuntime:
             progress.TRACKER.finish()
             self.epoch += 1
             self.backend = "hf"
+            # Cleared, not left: loading an HF model after a GGUF one would
+            # otherwise leave the previous file's provenance attached to it,
+            # and the UI would caption a full-precision model as quantised.
+            self.gguf = None
             self.tokenizer, self.model, self.hf_id = tokenizer, model, hf_id
             self.replay = None
             self.last_ids = None
@@ -880,6 +976,16 @@ class ModelRuntime:
                 # moves on every load, unload and generation: a trace measured
                 # against a different model or a different run must not ride
                 # along with an export and be read as belonging to it.
+                # Both prompts are hashed into the receipt, not just the clean
+                # one: a patching result is a statement about a PAIR, and the
+                # single `prompt_sha256` every other receipt carries would
+                # describe half of what was measured.
+                result["receipt"] = self.receipt(
+                    "patch_trace",
+                    prompt=clean,
+                    clean_sha256=receipts.digest(clean),
+                    corrupt_sha256=receipts.digest(corrupt),
+                )
                 self._last_patch = {
                     **result,
                     "clean": clean,
@@ -890,7 +996,9 @@ class ModelRuntime:
             except patch.PatchError as err:
                 # A pair this measurement cannot be taken on, not a failure of
                 # the code. Every one of these names what to change.
-                raise BadRequest(str(err)) from err
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""
@@ -997,14 +1105,43 @@ class ModelRuntime:
         if self._steer is not None and self.sae is not None:
             steer_handle = self._steer_handle()
 
+        # Timed around the loop rather than inside `generate`, because the
+        # boundary that separates prompt processing from decode is the arrival
+        # of the FIRST streamed token and there is nowhere else to observe it.
+        run = telemetry.Run(self.accel.kind)
         try:
             worker = threading.Thread(target=_generate, daemon=True)
             worker.start()
-            yield from streamer
+            with run:
+                for chunk in streamer:
+                    run.token()
+                    yield chunk
             worker.join(timeout=30)
         finally:
             if steer_handle is not None:
                 steer_handle.remove()
+
+        cfg = getattr(self.model, "config", None)
+        n_prompt = int(inputs["input_ids"].shape[1])
+        # From `generate`'s own output ids, NOT from counting stream chunks.
+        # A TextIteratorStreamer yields one chunk per token plus a final flush
+        # from `TextStreamer.end()`, so the chunk count is always one too many —
+        # measured: 8 real tokens reported as 9, and at max_new_tokens=1 the
+        # inflated count divided by a near-zero decode window produced 308
+        # tok/s on a machine doing 31. None when the worker did not deliver
+        # ids, which reports the count as approximate rather than inventing it.
+        produced = result.get("ids")
+        generated = int(produced.shape[1]) - n_prompt if produced is not None else None
+        self.last_telemetry = run.finish(
+            prompt_tokens=n_prompt,
+            generated_tokens=generated,
+            n_layers=int(getattr(cfg, "num_hidden_layers", 0) or 0),
+            n_heads=int(getattr(cfg, "num_attention_heads", 0) or 0),
+            dtype_bytes=2 if self.accel.dtype in ("float16", "bfloat16") else 4,
+            device=self.accel.torch_device,
+            dtype=self.accel.dtype,
+            context=telemetry.context_limit(self.model, self.tokenizer),
+        )
 
         ids = result.get("ids")
         if ids is None or not commit:
@@ -1040,6 +1177,46 @@ class ModelRuntime:
         self._attn_variants.clear()  # recomputed on demand
         self._attn_tokens = None
         self._feats = None
+        # A receipt describes a measurement taken against a PARTICULAR
+        # generation -- its prompt hash and token count are two of its fields
+        # -- so a new generation invalidates every one of them. The epoch
+        # cannot carry this on its own: the epoch moves on load and unload and
+        # deliberately NOT on generation, so a receipt from the previous
+        # prompt would still match and would be exported beside these tokens.
+        self._receipts.clear()
+        # The patch trace has exactly the same problem, and had it before this
+        # commit. `_patch_for_export` guards on the epoch and its docstring
+        # says the guard is there so that "a trace measured on an earlier
+        # prompt ... would not be written into the file beside a different
+        # run's tokens" -- but the epoch does not move on generation, so that
+        # guard never fired for the case it describes. MEASURED, not argued:
+        # patching "The Eiffel Tower is in the city of", then generating
+        # "Bananas are yellow because", produced a `.mri` whose tokens and
+        # attention were the bananas and whose patch section was the Eiffel
+        # Tower, with nothing downstream able to tell. `adopt_step` clears it
+        # on the same rebase for the same reason; the generate path was the
+        # one rebase that did not.
+        self._last_patch = {}
+        self._last_ranking = {}
+        self._last_lens = {}
+        # The generation itself gets a receipt, and it is the one every other
+        # receipt depends on: each of them names a prompt, and this says how
+        # that prompt was answered. `temperature` is the field `verify` cannot
+        # work without -- a generation that differs on re-run says nothing
+        # about the model if it was sampled, and the `.mri` recorded no
+        # sampling configuration at all before this.
+        self.receipt(
+            "generate",
+            prompt=prompt,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            # Named rather than left to be inferred from `temperature > 0`,
+            # which is the rule TODAY and is exactly the sort of thing that
+            # changes without the reader of a two-year-old file being told.
+            greedy=temperature <= 0,
+            n_prompt_tokens=self.last_n_prompt_tokens,
+            n_generated_tokens=int(self.last_ids.shape[0]) - self.last_n_prompt_tokens,
+        )
 
     # ---------------- attention ----------------
 
@@ -1140,7 +1317,9 @@ class ModelRuntime:
                         )
                     )
                 except ablate.AblationError as err:
-                    raise Refusal(str(err)) from err
+                    raise Refusal(
+                        str(err)
+                    ) from err  # leak-ok: authored, see test_no_machine_leaks
             elif variant == "steered":
                 if self._steer is None or self.sae is None:
                     raise Refusal(
@@ -1342,9 +1521,21 @@ class ModelRuntime:
         that make the number honest.
         """
         if self.replay is not None:
+            # A recording that CARRIES a ranking can serve it, the same way a
+            # recorded patch trace is served. The blanket refusal below was
+            # right when the format held nothing here; now that a `.mri`
+            # carries the ranking, refusing a file that already holds the
+            # answer is the format failing rather than the reader asking for
+            # too much -- which is the lesson `patch_trace` records.
+            recorded = getattr(self.replay, "ranking", None) or {}
+            if recorded.get("ranked"):
+                return {**recorded, "recorded": True}
             raise Refusal(
-                "This is a recording. Ranking heads means running the model, "
-                "and a `.mri` does not carry one."
+                "This is a recording, and it does not carry a head ranking. "
+                "Ranking heads means running the model once per head, and a "
+                "`.mri` holds activations rather than weights — there is "
+                "nothing here to re-run. Whoever exported it can rank the "
+                "heads and share it again."
             )
         if self.backend == "ollama":
             raise Refusal(
@@ -1366,20 +1557,1126 @@ class ModelRuntime:
             # output feeds back in.
             size = int(self.last_ids.shape[0])
             position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            ids = self.last_ids.unsqueeze(0).to(self.device)
+
+            extra: dict = {}
+            if baseline == "resample":
+                extra = self._resample_donors(ids, layers)
+
             try:
-                return ablate.rank_heads(
+                ranked = ablate.rank_heads(
                     self.model,
                     self._block,
-                    self.last_ids.unsqueeze(0).to(self.device),
+                    ids,
                     position=position,
                     layers=layers,
                     n_heads=n_heads,
                     baseline=baseline,
                     decode=lambda t: self.tokenizer.decode([t]),
+                    **extra,
                 )
+                # The corpus is part of a resample measurement -- `corpus.py`
+                # says so at length -- so its label rides in the receipt, and
+                # only for the baseline that actually drew from it.
+                ranked["receipt"] = self.receipt(
+                    "ablate_heads",
+                    layer=layer,
+                    baseline=baseline,
+                    position=position,
+                    corpus=extra.get("corpus"),
+                )
+                # Kept so a `.mri` can carry it, on the same terms as
+                # `_last_patch`: tagged with the epoch and dropped when the run
+                # it describes stops being the current one. Until this, a file
+                # recorded THAT a ranking had run and carried none of it, so
+                # `verify` could only report it as the one measurement in the
+                # file it was unable to check.
+                self._last_ranking = {**ranked, "layer": layer, "epoch": self.epoch}
+                return ranked
             except ablate.AblationError as err:
                 # Not a crash: a shape this code cannot read honestly.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+
+    def receipt(
+        self,
+        op: str,
+        *,
+        seed: int | None = None,
+        prompt: str | None = None,
+        **request,
+    ) -> dict:
+        """Stamp what produced a number, file it, and hand it back.
+
+        Returns the receipt as a plain dict so a caller can attach it to its
+        own result without importing the dataclass.
+
+        A FAILING RECEIPT NEVER FAILS A MEASUREMENT. The provenance is worth
+        a great deal and it is still worth strictly less than the number it
+        describes -- a tokenizer that will not serialise, or a cache directory
+        that has been evicted mid-run, must not turn a completed ablation
+        sweep into a 500. The individual fields already answer None with a
+        reason for the cases that can be anticipated; this catches the ones
+        that cannot, and records the failure in the receipt itself rather than
+        returning an empty dict that reads as "no provenance was collected".
+        """
+        try:
+            stamped = receipts.stamp(
+                self, op, request=request, seed=seed, prompt=prompt
+            ).to_dict()
+        except Exception as err:  # pragma: no cover - defensive
+            log.warning("receipt for %s could not be taken", op, exc_info=err)
+            stamped = {
+                "op": op,
+                "request": {},
+                "could_not_stamp": (
+                    f"the setup of this measurement could not be read back "
+                    f"({type(err).__name__}), so this number travels without one"
+                ),
+            }
+        self._receipts[op] = {**stamped, "epoch": self.epoch}
+        return stamped
+
+    def _resample_donors(self, ids, layers: list[int]) -> dict:
+        """Capture `RESAMPLE_DRAWS` donor activations, or refuse saying why.
+
+        Costs one forward pass per draw, on top of the sweep itself. Called
+        with `self._lock` already held by `ablate_heads`.
+        """
+        sentences, label = corpus.load()
+        size = int(ids.shape[-1])
+        donor_ids = corpus.donor_ids(
+            self.tokenizer,
+            sentences,
+            at_least=size,
+            want=ablate.RESAMPLE_DRAWS,
+            device=self.device,
+        )
+        donors = [
+            ablate.capture_projection_inputs(self.model, self._block, d, layers)
+            for d in donor_ids
+        ]
+        return {"donors": donors, "corpus": label}
+
+    def estimate_ablation(
+        self, layer: int | None = None, baseline: str = "zero"
+    ) -> dict:
+        """What would this sweep cost here? One probe pass, then arithmetic.
+
+        Exists because `baseline="resample"` is `RESAMPLE_DRAWS` times the work
+        of the other two — 98 passes against 14 for one gpt2 layer — and the
+        panel should be able to say so before the user waits for it rather
+        than after.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Estimating a sweep means running the "
+                "model, and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass to "
+                "intervene in. Load the model through HuggingFace."
+            )
+        with self._lock:
+            self._require_live_generation("Generate something first.")
+            cfg = self.model.config
+            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            if layer is not None and not 0 <= layer < n_layers:
+                raise BadRequest(f"layer must be in [0,{n_layers})")
+            layers = list(range(n_layers)) if layer is None else [layer]
+
+            size = int(self.last_ids.shape[0])
+            position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            out = ablate.estimate_cost(
+                self.model,
+                self._block,
+                self.last_ids.unsqueeze(0).to(self.device),
+                position=position,
+                layers=layers,
+                n_heads=n_heads,
+                baseline=baseline,
+                device_kind=self.accel.kind,
+            )
+            if baseline == "resample":
+                # The draws multiply the sweep, and the donor captures are one
+                # extra pass each. Both are real cost and neither is in the
+                # single-baseline projection.
+                out["estimate"]["passes"] = (
+                    len(layers) * n_heads * ablate.RESAMPLE_DRAWS
+                    + ablate.RESAMPLE_DRAWS
+                    + 2
+                )
+                probe_seconds = out["probe"]["seconds"]
+                out["estimate"]["seconds"] = round(
+                    probe_seconds * out["estimate"]["passes"], 2
+                )
+                out["estimate"]["notes"] = list(out["estimate"].get("notes", [])) + [
+                    f"{ablate.RESAMPLE_DRAWS} draws per head, plus one capture "
+                    "pass per draw"
+                ]
+            return out
+
+    def adopt_step(self, step: dict) -> dict:
+        """Point every mechanistic panel at a generation an agent already made.
+
+        This is the join nothing else in the category can build, and the reason
+        is structural rather than clever: LangSmith, Langfuse, Phoenix,
+        Braintrust, Weave, Opik and Laminar all stop at the API boundary and
+        none of them ever holds the weights. ModelMRI has the recorder and the
+        model in one process, so a recorded step that ran on this machine can
+        be re-established as "the last generation" and every existing panel —
+        attention, lens, ablation, patching, SAE — works on it unchanged.
+
+        `step` is a row from `TraceStore.get_trace`. What makes it adoptable is
+        `meta.input_ids`: the exact ids the recorder saw. They are checked
+        against this tokenizer rather than trusted, because adopting ids the
+        loaded model would not produce points every downstream panel at a
+        sequence the model never saw — and none of those panels would notice.
+
+        There is deliberately **no substitute-model path**. Replaying a hosted
+        model's prompt through whatever happens to be loaded, however loudly
+        labelled, is a machine for confident wrong conclusions.
+        """
+        meta = step.get("meta") or {}
+        recorded = meta.get("input_ids")
+        if not recorded:
+            raise Refusal(
+                "this step was not produced by a model on this machine, so "
+                "there are no weights here to look inside. Steps recorded "
+                "through instrument_transformers() or instrument_ollama() "
+                "carry the token ids that make this possible; a hosted API "
+                "call cannot."
+            )
+
+        wanted = str(meta.get("model") or "")
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Adopting a step means running a model, "
+                "and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass for the "
+                "panels to read. Load this model through HuggingFace to adopt "
+                "the step."
+            )
+
+        with self._lock:
+            if self.model is None:
+                raise Refusal(
+                    f"no model is loaded. This step ran on {wanted or 'a local model'}"
+                    " — load it first, then adopt the step."
+                )
+            if wanted and self.hf_id and wanted != self.hf_id:
+                raise Refusal(
+                    f"this step was produced by {wanted} and {self.hf_id} is "
+                    "loaded. Load the model that made it — reading one model's "
+                    "token ids through another model's weights produces numbers "
+                    "about nothing, and no panel here would show that it had."
+                )
+
+            prompt = str(meta.get("prompt") or step.get("input") or "")
+            retokenised = self.tokenizer(prompt, return_tensors="pt").input_ids[0]
+            recorded_ids = [int(t) for t in recorded]
+
+            # The prompt's ids, not the whole recorded sequence: the recording
+            # holds prompt + generation, and re-tokenising the prompt can only
+            # reproduce the prompt half.
+            # `or` treated a recorded 0 as absent, so an empty prompt fell
+            # back to len(retokenised) — also 0 — and the id-verification guard
+            # below degenerated to `[] != []` and never fired. The step then
+            # adopted with n_prompt_tokens 0, and every panel's
+            # `max(0, min(n_prompt - 1, size - 1))` collapsed to position 0
+            # while the response claimed the ids had been verified.
+            recorded_n = meta.get("n_prompt_tokens")
+            n_prompt = len(retokenised) if recorded_n is None else int(recorded_n)
+            if n_prompt <= 0:
+                raise Refusal(
+                    "this step recorded a prompt of zero tokens, so there is "
+                    "nothing to verify the recorded ids against and no position "
+                    "for the panels to attribute at. Re-record it with a "
+                    "non-empty prompt."
+                )
+            if [int(t) for t in retokenised.tolist()] != recorded_ids[:n_prompt]:
+                raise Refusal(
+                    f"re-tokenising this step's prompt gives {len(retokenised)} "
+                    f"ids and the recorder captured {n_prompt}, and they do not "
+                    "match. A tokenizer or transformers upgrade between the "
+                    "recording and now is the usual cause. Refusing rather than "
+                    "adopting near-identical ids, which would point every panel "
+                    "at a sequence the model never saw."
+                )
+
+            ids = torch.tensor(recorded_ids, dtype=torch.long)
+            self.last_ids = ids
+            self.last_prompt = prompt
+            self.last_n_prompt_tokens = n_prompt
+            self.last_user_span = None
+            self.last_ids_epoch = self.epoch
+            # Everything derived from the PREVIOUS generation has to go, or a
+            # stale attention capture would be rendered against these tokens.
+            # Same discipline the load path uses.
+            self._attn_variants = {}
+            self._attn_tokens = None
+            self._last_patch = {}
+            self._last_ranking = {}
+            self._last_lens = {}
+            # `_feats` too. Every other rebase path clears it; this one did
+            # not, and `_compute_features` guards its cache on
+            # `last_ids_epoch == epoch` — which adopt satisfies — so the
+            # PREVIOUS generation's [S, d_sae] activations were returned
+            # against the adopted tokens. Reproduced: 6 adopted tokens against
+            # a cached (2, 16), with features_summary publishing 6 tokens and
+            # 2 rows of activations belonging to a different sequence.
+            self._feats = None
+            self.last_telemetry = None
+
+        return {
+            "adopted": True,
+            "model": wanted or self.hf_id,
+            "step_id": step.get("id"),
+            "kind": step.get("kind"),
+            "n_tokens": len(recorded_ids),
+            "n_prompt_tokens": n_prompt,
+            "prompt": prompt,
+            "generation": self.tokenizer.decode(recorded_ids[n_prompt:]),
+            "means": (
+                "Every panel is now reading the generation this agent step "
+                "actually made. Nothing was re-run — these are the recorded "
+                "token ids, verified against this tokenizer."
+            ),
+        }
+
+    def control_ranking(
+        self, layer: int | None = None, baseline: str = "zero", seed: int = 0
+    ) -> dict:
+        """The same ranking on an untrained twin, and how far the two agree.
+
+        Runs `ablate.rank_heads` twice over the same token ids — once on the
+        loaded model, once on the same architecture with random weights — and
+        reports the rank correlation between them. Both go through the same
+        function, deliberately: a second implementation of the measurement
+        could differ from the one being checked, and then agreement would mean
+        nothing in either direction.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. A control means running a second model, "
+                "and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no forward pass to "
+                "intervene in. Load the model through HuggingFace."
+            )
+
+        # The real ranking first, and through the public method, so it obeys
+        # every gate (live generation, layer range, baseline validation) rather
+        # than duplicating them here.
+        real = self.ablate_heads(layer, baseline)
+
+        with self._lock:
+            cfg = self.model.config
+            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            layers = list(range(n_layers)) if layer is None else [layer]
+            ids = self.last_ids.unsqueeze(0).to(self.device)
+            size = int(self.last_ids.shape[0])
+            position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+
+            twin = nullmodel.build_twin(
+                cfg, seed=seed, dtype=self.model.dtype, device=self.device
+            )
+            try:
+                extra: dict = {}
+                if baseline == "resample":
+                    # Donors must come from the TWIN's own activations. A
+                    # trained model's activations spliced into an untrained one
+                    # would be a third experiment, not a control.
+                    sentences, label = corpus.load()
+                    donor_ids = corpus.donor_ids(
+                        self.tokenizer,
+                        sentences,
+                        at_least=size,
+                        want=ablate.RESAMPLE_DRAWS,
+                        device=self.device,
+                    )
+                    extra = {
+                        "donors": [
+                            ablate.capture_projection_inputs(
+                                twin, lambda i: self._block_of(twin, i), d, layers
+                            )
+                            for d in donor_ids
+                        ],
+                        "corpus": label,
+                    }
+
+                control = ablate.rank_heads(
+                    twin,
+                    lambda i: self._block_of(twin, i),
+                    ids,
+                    position=position,
+                    layers=layers,
+                    n_heads=n_heads,
+                    baseline=baseline,
+                    decode=lambda t: self.tokenizer.decode([t]),
+                    **extra,
+                )
+            except ablate.AblationError as err:
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+            finally:
+                nullmodel.teardown(twin)
+
+        agreement = ablate.compare_baselines(
+            {"model": real["ranked"], "untrained": control["ranked"]}, top=5
+        )
+        pair = agreement["pairs"][0] if agreement["pairs"] else {}
+        return {
+            "seed": seed,
+            "baseline": baseline,
+            "model": real,
+            "untrained": control,
+            "spearman": pair.get("spearman"),
+            "top_k": pair.get("top_k", 0),
+            "top_k_shared": pair.get("top_k_shared", 0),
+            "verdict": nullmodel.verdict(
+                pair.get("spearman"),
+                top_k_shared=pair.get("top_k_shared", 0),
+                top_k=pair.get("top_k", 0),
+            ),
+        }
+
+    def _block_of(self, model, index: int):
+        """The transformer block at `index` on an arbitrary model.
+
+        `self._block` is bound to the loaded model. The twin has the same
+        architecture, so the same lookup rules apply — but they have to be
+        applied to it rather than to `self.model`.
+        """
+        for path in (
+            "model.layers",
+            "transformer.h",
+            "gpt_neox.layers",
+            "model.decoder.layers",
+        ):
+            node = model
+            for part in path.split("."):
+                node = getattr(node, part, None)
+                if node is None:
+                    break
+            if node is not None:
+                return node[index]
+        raise ablate.AblationError(
+            "cannot find the transformer blocks on the untrained twin, so "
+            "there is no control to compare against."
+        )
+
+    def compare_baselines(self, layer: int | None = None) -> dict:
+        """Run every baseline on the same layer and report how much they differ.
+
+        The panel has always shown one baseline at a time with nothing saying
+        the others existed. Measured on gpt2 layer 0 the three disagree badly —
+        Spearman 0.34 to 0.47, and the top five share only two or three heads —
+        so which one is selected has been quietly deciding the answer.
+        """
+        rankings = {}
+        for name in ablate.BASELINES:
+            rankings[name] = self.ablate_heads(layer, name)["ranked"]
+        out = ablate.compare_baselines(rankings, top=5)
+        out["rankings"] = rankings
+        out["receipt"] = self.receipt(
+            "compare_baselines", layer=layer, baselines=list(ablate.BASELINES)
+        )
+        return out
+
+    def train_tuned_lens(
+        self,
+        texts: list[str],
+        *,
+        corpus_label: str = "",
+        steps: int = 250,
+        on_progress=None,
+    ) -> dict:
+        """Fit a per-layer translator on text you provide, and keep it.
+
+        Cached on disk under (model, dtype, corpus hash, token count), because
+        every one of those four changes the lens. A second call with the same
+        corpus loads rather than retrains.
+        """
+        from . import tuned_lens as tl
+
+        if self.replay is not None:
+            raise Refusal(
+                "This is a recording. Training a lens means running the "
+                "model, and a `.mri` does not carry one."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                "Ollama serves text only — there is no residual stream here "
+                "to fit a translator to."
+            )
+        if self.model is None:
+            raise Refusal("No model loaded — pick one first.")
+
+        # A padless tokenizer cannot batch, and gpt2's is the common case.
+        # Set on the tokenizer we already hold rather than reloading it.
+        if getattr(self.tokenizer, "pad_token", None) is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        dtype = str(next(self.model.parameters()).dtype).removeprefix("torch.")
+        sha = tl.corpus_hash(texts)
+        n_tokens = sum(len(self.tokenizer(t)["input_ids"]) for t in texts)
+        cached = tl.cache_path(self.hf_id or "", dtype, sha, n_tokens)
+
+        if cached.is_file():
+            info, state = tl.load(cached, model_id=self.hf_id or "", dtype=dtype)
+            self._tuned, self._tuned_info = state, info
+            return {**info, "cached": True, "path": cached.name}
+
+        info, state = tl.train(
+            self.model,
+            self.tokenizer,
+            texts,
+            corpus_label=corpus_label or f"{len(texts)} sequences",
+            steps=steps,
+            on_progress=on_progress,
+        )
+        info.model_id = self.hf_id or ""
+        tl.save(info, state, cached)
+        self._tuned, self._tuned_info = state, info.to_dict()
+        return {**info.to_dict(), "cached": False, "path": cached.name}
+
+    def tuned_lens_status(self) -> dict:
+        """Whether a translator is loaded, and what it was fitted to."""
+        return {
+            "trained": bool(self._tuned),
+            **({"info": self._tuned_info} if self._tuned else {}),
+        }
+
+    def feature_evidence(
+        self,
+        texts: list[str],
+        *,
+        feature_id: int | None = None,
+        corpus_label: str = "",
+        top_k: int = 10,
+    ) -> dict:
+        """What a feature fires on in YOUR corpus, and what it promotes.
+
+        Two readouts plus a pointer to the third: `feature_ablate` already
+        measures what removing it does, and a claim that survives all three is
+        worth something a claim resting on one is not.
+        """
+        from . import feature_corpus as fc
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Sweeping a corpus means running the "
+                    "model, and a `.mri` does not carry one."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.sae is None:
+                raise Refusal(
+                    "No SAE loaded, so there are no features to show evidence "
+                    "for. Load one against this model first."
+                )
+
+            layer = int(getattr(self.sae, "layer", 0) or 0)
+            block = self._block(layer)
+            stats, per_feature = fc.sweep(
+                self.model,
+                block,
+                self.tokenizer,
+                self.sae,
+                texts,
+                device=self.device,
+                layer=layer,
+                corpus_label=corpus_label,
+            )
+            saved = fc.save(
+                stats,
+                per_feature,
+                model=self.hf_id or "",
+                sae=getattr(self.sae, "repo", ""),
+            )
+            out = {
+                "corpus": stats.to_dict(),
+                "saved_rows": saved,
+                "top_by_firing_rate": [
+                    {"feature": f, "n_fired": n, "max_activation": round(a, 5)}
+                    for f, (n, a) in sorted(
+                        per_feature.items(), key=lambda kv: -kv[1][0]
+                    )[:20]
+                ],
+                "receipt": self.receipt(
+                    "feature_evidence",
+                    n_sequences=stats.n_sequences,
+                    n_tokens=stats.n_tokens,
+                    corpus_sha256=stats.corpus_sha256,
+                    sae_repo=getattr(self.sae, "repo", None),
+                    layer=layer,
+                ),
+            }
+            if feature_id is not None:
+                out["evidence"] = fc.evidence(
+                    self.model,
+                    block,
+                    self.tokenizer,
+                    self.sae,
+                    texts,
+                    feature_id,
+                    device=self.device,
+                    top_k=top_k,
+                )
+                out["logit_weights"] = fc.logit_weights(
+                    self.model, self.tokenizer, self.sae, feature_id
+                )
+            return out
+
+    def diff_models(
+        self,
+        model_a: str,
+        model_b: str,
+        prompts: list[str],
+        *,
+        include_heads: bool = False,
+        include_tokens: bool = False,
+    ) -> dict:
+        """What a finetune changed, over a prompt set rather than one prompt.
+
+        Loads each side ONCE in sequence and never holds both: 8 GB will not
+        fit two of the models worth comparing. The model currently loaded HERE
+        is untouched -- this runs its own pair, and unloading the session's
+        model to make room is the caller's decision rather than a side effect
+        of asking a question.
+        """
+        from . import model_diff
+
+        out = model_diff.compare(
+            model_diff.loader(
+                dtype=self.accel.dtype,
+                device=self.accel.torch_device,
+                device_kind=self.accel.kind,
+            ),
+            model_a,
+            model_b,
+            prompts,
+            include_heads=include_heads,
+            include_tokens=include_tokens,
+        ).to_dict()
+        # Stored WITHOUT an epoch. See `_last_model_diff`: this is a claim
+        # about two named models, and what is loaded here is irrelevant to it.
+        self._last_model_diff = out
+        out["receipt"] = self.receipt(
+            "model_diff",
+            model_a=model_a,
+            model_b=model_b,
+            n_prompts=out.get("n_prompts"),
+            include_heads=include_heads,
+            include_tokens=include_tokens,
+        )
+        return out
+
+    def ground_answer(
+        self,
+        document: str,
+        question: str,
+        *,
+        max_chunks: int = 0,
+    ) -> dict:
+        """Did the answer come from the document, or from the weights?
+
+        The one question every local RAG interface leaves unanswered. They all
+        show which chunks were RETRIEVED; none of them shows whether the answer
+        depended on them, and a retriever that pulled the right paragraph next
+        to a model that ignored it looks identical to a working system in
+        every one of those UIs.
+
+        NOTHING IS DOWNLOADED and nothing is indexed. The document is text you
+        hand it, chunking is by blank line and heading, and every chunk goes
+        into the prompt — retrieval is somebody else's job.
+
+        Runs its own prompt and does NOT commit it: grounding is about a
+        document-plus-question of its own, and committing would leave every
+        other panel describing a prompt the user never asked to analyse.
+        """
+        from . import ground as ground_mod
+
+        with self._lock:
+            if self.replay is not None:
+                # A recording cannot MEASURE grounding -- masking a passage
+                # out needs the model -- but it can carry what was measured,
+                # and "the answer came from the weights, not from the document
+                # I gave it" is exactly the finding somebody wants to show a
+                # colleague. Serve the recorded one; refuse only when the file
+                # does not have it.
+                recorded = getattr(self.replay, "ground", None) or {}
+                if recorded.get("chunks"):
+                    return {**self._recorded_ground(recorded), "recorded": True}
+                raise Refusal(
+                    "This is a recording, and it does not carry a grounding "
+                    "result. Masking a passage out of the model's attention "
+                    "means running the model, and a `.mri` holds activations "
+                    "rather than weights. Whoever exported it can ground an "
+                    "answer and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no attention mask to "
+                    "take a passage out of. Load the model through "
+                    "HuggingFace."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            chunks = ground_mod.split(document)
+            out = ground_mod.measure(
+                self.model,
+                self.tokenizer,
+                chunks,
+                question,
+                device=self.device,
+                max_chunks=max_chunks or ground_mod.MAX_CHUNKS,
+            ).to_dict()
+
+        # Kept for the export, stamped with the epoch it belongs to. Without
+        # the epoch a grounding measured on one model would be written into a
+        # `.mri` beside a different model's attention.
+        self._last_ground = {**out, "epoch": self.epoch}
+        out["receipt"] = self.receipt(
+            "ground",
+            n_chunks=out["n_chunks"],
+            n_prompt_tokens=out["n_prompt_tokens"],
+            # The question travels; the document does not. A receipt is meant
+            # to be shareable and a grounded document is usually the private
+            # half of the pair — its length and chunk count say what was
+            # measured without carrying the text itself.
+            document_chars=len(document),
+            question=question,
+        )
+        return out
+
+    def patchscope(
+        self,
+        source_prompt: str,
+        *,
+        source_layer: int,
+        source_position: int = -1,
+        target_prompt: str = "",
+        target_layer: int | None = None,
+        target_position: int = -1,
+        max_new_tokens: int = 12,
+        draws: int = 1,
+    ) -> dict:
+        """Ask the model to describe a hidden state, with two controls.
+
+        Its own surface, not a column beside the logit lens. The lens reads a
+        state through the unembedding and reports tokens; this hands the state
+        to the model inside a different prompt and reports a SENTENCE. Rendered
+        side by side they would read as two measurements of one thing, and
+        they are not.
+        """
+        from . import patch
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. A patchscope means running the model "
+                    "on a second prompt, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to splice."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            def decode(prompt: str) -> str:
+                # GREEDY, and commit=False. Three decodes are being compared,
+                # so sampling would put a second source of difference between
+                # them -- and committing would rebase `last_ids` onto the
+                # target prompt, leaving every other panel describing a run
+                # the user never asked for.
+                # `generate_stream` takes no lock of its own, so calling it
+                # while holding this one serialises rather than deadlocking.
+                return "".join(
+                    self.generate_stream(
+                        prompt, max_new_tokens, temperature=0.0, commit=False
+                    )
+                )
+
+            try:
+                out = patch.patchscope(
+                    self.model,
+                    self.tokenizer,
+                    [
+                        self._block(i)
+                        for i in range(self.model.config.num_hidden_layers)
+                    ],
+                    decode,
+                    source_prompt,
+                    device=self.device,
+                    source_layer=source_layer,
+                    source_position=source_position,
+                    target_prompt=target_prompt or patch.DEFAULT_TARGET,
+                    target_layer=target_layer,
+                    target_position=target_position,
+                    draws=draws,
+                )
+            except patch.PatchError as err:
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+            out["receipt"] = self.receipt(
+                "patchscope",
+                prompt=source_prompt,
+                source_layer=source_layer,
+                target_layer=out["target"]["layer"],
+                target_sha256=receipts.digest(out["target"]["prompt"]),
+            )
+            return out
+
+    def path_trace(
+        self, clean: str, corrupt: str, *, layer: int, position: int
+    ) -> dict:
+        """Which earlier component wrote what makes this receiver matter.
+
+        The follow-up to a bright cell in the patching grid: that grid says
+        WHERE the answer is carried, and patching a residual stream restores
+        everything that ever wrote into it at once. This splits that apart.
+        """
+        from . import patch
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Path patching means running the "
+                    "model with one component's contribution swapped, and a "
+                    "`.mri` holds activations rather than weights."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to patch into."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            n_layers = int(self.model.config.num_hidden_layers)
+            blocks = [self._block(i) for i in range(n_layers)]
+            try:
+                out = patch.path_trace(
+                    self.model,
+                    self.tokenizer,
+                    blocks,
+                    clean,
+                    corrupt,
+                    device=self.device,
+                    receiver_layer=layer,
+                    receiver_position=position,
+                )
+            except patch.PatchError as err:
+                # A pair or a receiver this measurement cannot be taken on,
+                # not a failure of the code. Every one names what to change.
+                raise BadRequest(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
+            out["receipt"] = self.receipt(
+                "path_trace",
+                clean_sha256=receipts.digest(clean),
+                corrupt_sha256=receipts.digest(corrupt),
+                receiver_layer=layer,
+                receiver_position=position,
+            )
+            return out
+
+    def probe_layers(
+        self,
+        examples: list[dict],
+        *,
+        n_permutations: int = 0,
+        save_as: str = "",
+    ) -> dict:
+        """Fit a linear probe at every layer, with its null and majority line.
+
+        `examples` is `[{"text": ..., "label": 0|1}, ...]`. Captured at the
+        same pre-hook point `steer_vectors` and `patch` use, so a direction
+        fitted here lives in the space those already measure and can be pushed
+        straight back through the steering harness.
+        """
+        from . import probe as probe_mod
+        from . import steer_vectors
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Fitting a probe means running the "
+                    "model on your examples, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to fit a probe to."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            texts, labels = [], []
+            for row in examples or []:
+                if not isinstance(row, dict):
+                    raise BadRequest("each example is {text, label}")
+                text = row.get("text")
+                label = row.get("label")
+                if not isinstance(text, str) or not text.strip():
+                    raise BadRequest("an example has no text")
+                if not isinstance(label, int) or isinstance(label, bool):
+                    raise BadRequest(
+                        f"the label for {text[:40]!r} is not an integer. "
+                        "A probe separates two classes; label them 0 and 1."
+                    )
+                texts.append(text)
+                labels.append(label)
+
+            n_layers = int(self.model.config.num_hidden_layers)
+            layers = list(range(n_layers))
+            ids_list = [
+                self.tokenizer(t, return_tensors="pt")["input_ids"].to(self.device)
+                for t in texts
+            ]
+            states = steer_vectors._last_token_states(
+                self.model, self._block, ids_list, layers
+            )
+
+            report = probe_mod.sweep(
+                states,
+                labels,
+                n_permutations=n_permutations or probe_mod.N_PERMUTATIONS,
+            )
+            out = report.to_dict()
+            out["receipt"] = self.receipt(
+                "probe_layers",
+                n_examples=len(texts),
+                n_permutations=out["n_permutations"],
+            )
+
+            if save_as:
+                best = report.best_layer
+                if best is None:
+                    # Refused, not saved with a caveat attached. A direction
+                    # fitted at a layer whose probe never beat noise is a
+                    # direction fitted to noise, and the steering store is
+                    # where it would be picked up later with none of this
+                    # context attached to it.
+                    raise Refusal(
+                        "no layer read this concept above its own permutation "
+                        "null, so there is no direction here worth saving. A "
+                        "vector fitted where the probe did not beat shuffled "
+                        "labels is fitted to noise, and the store is the one "
+                        "place it would later be used without any of this "
+                        "beside it."
+                    )
+                direction = probe_mod.direction_at(states, labels, best)
+                out["saved"] = steer_vectors.save(
+                    save_as,
+                    direction,
+                    {
+                        "model": self.hf_id or "",
+                        "layer": best,
+                        "hidden_size": int(direction.shape[0]),
+                        "method": "probe",
+                        "dtype": str(next(self.model.parameters()).dtype).removeprefix(
+                            "torch."
+                        ),
+                        "accuracy": out["layers"][best]["accuracy"],
+                        "null_high": out["layers"][best]["null_high"],
+                        "majority": out["majority"],
+                        "note": (
+                            "fitted by a layer-sweep probe. READABLE IS NOT "
+                            "USED: this direction was linearly decodable, "
+                            "which is not evidence the model reads it."
+                        ),
+                    },
+                )
+            return out
+
+    def head_types(
+        self, seq_len: int = 24, n_sequences: int = 6, seed: int = 0
+    ) -> dict:
+        """Label heads by behaviour, each gated on a null measured here.
+
+        Independent of any generation: it runs its own random sequences, so it
+        needs a model and nothing else. That is also why the result survives a
+        new prompt while every other measurement here does not.
+        """
+        from . import head_types as ht
+
+        with self._lock:
+            if self.replay is not None:
+                recorded = getattr(self.replay, "head_types", None) or {}
+                if recorded.get("labels"):
+                    return {**recorded, "recorded": True}
+                raise Refusal(
+                    "This is a recording, and it does not carry head type "
+                    "labels. Labelling heads means running the model on new "
+                    "random sequences, and a `.mri` holds activations rather "
+                    "than weights. Whoever exported it can label the heads "
+                    "and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — the attention these labels are "
+                    "read from never leaves its process."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            out = ht.label_heads(
+                self.model,
+                self.tokenizer,
+                seq_len=seq_len,
+                n_sequences=n_sequences,
+                seed=seed,
+            ).to_dict()
+            out["receipt"] = self.receipt(
+                "head_types", seq_len=seq_len, n_sequences=n_sequences, seed=seed
+            )
+            self._last_types = {**out, "epoch": self.epoch}
+            return out
+
+    def direct_attribution(self, position: int | None = None, top_k: int = 40) -> dict:
+        """How many logits each head and MLP put behind the predicted token.
+
+        A different question from `ablate_heads`, and they disagree: a head can
+        contribute nothing directly and still decide the answer by feeding a
+        later head. The response says so rather than leaving a near-zero bar to
+        be read as "this head does not matter".
+        """
+        from . import dla
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Direct attribution means running the "
+                    "model, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there are no components here to "
+                    "attribute a logit across."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.last_ids is None:
+                raise Refusal("Generate something first — attribution reads that run.")
+
+            # The last PROMPT token by default, for the same reason
+            # `ablate_heads` uses it: that is where the model answers the
+            # question, before any of its own output feeds back in.
+            size = int(self.last_ids.shape[0])
+            at = (
+                max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+                if position is None
+                else max(0, min(int(position), size - 1))
+            )
+            out = dla.attribute(
+                self.model, self.tokenizer, self.last_ids, position=at, top_k=top_k
+            ).to_dict()
+            out["receipt"] = self.receipt(
+                "direct_attribution", position=at, top_k=top_k
+            )
+            return out
+
+    def logit_lens(self, top_k: int = 5, kind: str = "plain") -> dict:
+        """What the model was about to say at every layer, not just the last.
+
+        A ModelRuntime method rather than a call `server.py` makes into
+        `lens.py` directly, and that is the point of moving it. Every other
+        measurement here opens with `if self.replay is not None`; the lens did
+        not, because it was computed outside the runtime, so the replay guard
+        had to be duplicated at the route -- and a duplicated guard is one that
+        gets forgotten on the next route that needs it. `server.py` records
+        exactly how that failed: with a recording open AND a model loaded, the
+        lens happily reported the LIVE model's layers inside a session every
+        other panel was drawing from the file.
+
+        Now it is one guard, in the same place as the others, and a recording
+        that carries a lens can serve it.
+        """
+        with self._lock:
+            if self.replay is not None:
+                # getattr, not attribute access: `replay` is a Session in
+                # every real path, but a 500 is the wrong answer for "this is
+                # a recording" under ANY replay object. The refusal below is
+                # the correct response either way, and reaching it must not
+                # depend on the shape of what was opened.
+                recorded = getattr(self.replay, "lens", None) or []
+                if recorded:
+                    return {
+                        "layers": recorded,
+                        **(getattr(self.replay, "lens_info", None) or {}),
+                        "recorded": True,
+                    }
+                raise Refusal(
+                    "This is a recording, and it does not carry a logit lens. "
+                    "The lens means running the model, and a `.mri` holds "
+                    "activations rather than weights. Whoever exported it can "
+                    "read the lens and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — the layers never leave its process."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.last_ids is None:
+                raise Refusal("Generate something first — the lens reads that run.")
+
+            from .lens import logit_lens as _logit_lens
+
+            if kind not in ("plain", "tuned", "both"):
+                raise BadRequest(
+                    f"unknown lens kind {kind!r} — use plain, tuned or both"
+                )
+            if kind in ("tuned", "both") and not self._tuned:
+                raise Refusal(
+                    "No tuned lens has been trained for this model. Train one "
+                    "on your own text first — nothing is fetched, because a "
+                    "downloaded lens would break the offline promise the rest "
+                    "of this package keeps."
+                )
+
+            out = _logit_lens(
+                self.model, self.tokenizer, self.last_ids.unsqueeze(0), top_k
+            )
+            if kind in ("tuned", "both"):
+                from . import tuned_lens as tl
+
+                tuned = tl.read(
+                    self.model,
+                    self.tokenizer,
+                    self.last_ids.unsqueeze(0),
+                    self._tuned,
+                    top_k,
+                )
+                # BESIDE, never instead. `layers` stays the plain reading on
+                # every kind, so a caller that ignores `tuned` gets the
+                # untranslated rows rather than translated ones it did not ask
+                # for -- and the panel renders two columns from one payload.
+                out["tuned"] = tuned["layers"]
+                out["tuned_info"] = self._tuned_info
+            out["kind"] = kind
+            out["receipt"] = self.receipt("logit_lens", top_k=top_k, kind=kind)
+            # Kept for export on the same terms as the ranking and the patch
+            # trace: tagged with the epoch, dropped when the run it describes
+            # stops being the current one.
+            self._last_lens = {**out, "epoch": self.epoch}
+            return out
 
     def attribute_tokens(self, position: int | None = None) -> dict:
         """Rank the prompt's own tokens by how far masking one moves the answer.
@@ -1505,7 +2802,9 @@ class ModelRuntime:
                 )
             except attribute.AttributionError as err:
                 # Not a crash: a measurement this code cannot take honestly.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
         # The ranking timed itself; this adds the answer-reading pass, so
         # passes and elapsed_s still describe the same piece of work and a rate
@@ -1548,6 +2847,7 @@ class ModelRuntime:
                 "list would be a list about the template."
             )
         out["span_note"] = note
+        out["receipt"] = self.receipt("attribute_tokens", position=position)
         return out
 
     def rank_features(
@@ -1742,7 +3042,9 @@ class ModelRuntime:
                 # where the capture came from, a position where nothing fires.
                 # `except Exception` here would swallow a CUDA out-of-memory
                 # into a 409, which is the bug errors.py exists to stop.
-                raise Refusal(str(err)) from err
+                raise Refusal(
+                    str(err)
+                ) from err  # leak-ok: authored, see test_no_machine_leaks
 
         # Outside the lock: arithmetic on a dict, and no model touched.
         ranked = out["ranked"]
@@ -1773,6 +3075,18 @@ class ModelRuntime:
             f"over the vocabulary, and it is why the line to grey out on is "
             f"the resolution and not noise_floor_kl."
         )
+        # The SAE is as much a part of this measurement as the model is: the
+        # same prompt through a different SAE ranks different features, so a
+        # receipt that named only the model would describe half the setup.
+        sae = self.sae
+        out["receipt"] = self.receipt(
+            "rank_features",
+            position=position,
+            scope=scope,
+            top_k=top_k,
+            sae_repo=getattr(sae, "repo", None) if sae else None,
+            sae_hook=getattr(sae, "hook", None) if sae else None,
+        )
         return out
 
     # ---------------- sessions (.mri) ----------------
@@ -1782,8 +3096,22 @@ class ModelRuntime:
     # through the view you are on instead of the full cube, and say so.
     _FULL_EXPORT_BUDGET = 24_000_000
 
-    def export_session(self, layer: int = 0, head: int = 0, note: str = "") -> bytes:
-        """Serialise the current analysis to a `.mri` someone else can open."""
+    def export_session(
+        self,
+        layer: int = 0,
+        head: int = 0,
+        note: str = "",
+        trace: dict | None = None,
+        step_ref: str = "",
+    ) -> bytes:
+        """Serialise the current analysis to a `.mri` someone else can open.
+
+        With `trace`, the agent run ships alongside the mechanistic snapshot —
+        the recipient clicks the failing tool call and lands in the attention
+        view of the generation that produced the bad argument, on a machine
+        with no GPU and no account. `session.build` redacts both halves before
+        anything is written; see `bundle.py`.
+        """
         if self.replay is not None:
             raise Refusal(
                 "You are viewing a shared session. Close it, then generate "
@@ -1794,6 +3122,39 @@ class ModelRuntime:
                 "Ollama serves text only — there are no internals to export. "
                 "Load the model through HuggingFace to capture a session."
             )
+        # A run with no analysis behind it is still worth sending: a portable
+        # timeline that opens with nothing installed is something no hosted
+        # platform offers either. So when the caller explicitly asked to
+        # bundle a trace, "nothing has been generated yet" stops being a
+        # refusal and becomes a smaller file.
+        #
+        # Only when they asked. Without `trace` this is the analysis export,
+        # and an empty one would be a file with nothing in it.
+        # No local `from . import session` here: `session` is already imported
+        # at module scope, and importing it inside this function would make
+        # the name local to the WHOLE function — so the `session.build(...)`
+        # at the bottom would raise UnboundLocalError on every export that
+        # does not take this branch. Which is most of them.
+        if trace is not None and not self._attn_variants.get("live"):
+            return session.build(
+                model_id="",
+                device=self.device,
+                dtype="",
+                n_params=None,
+                tokens=[],
+                prompt="",
+                generation="",
+                attention={},
+                n_layers=0,
+                n_heads=0,
+                n_prompt=0,
+                note=note,
+                scope="the agent run only — no generation was loaded when this "
+                "was exported, so there is no attention behind it",
+                trace=trace,
+                step_ref=step_ref,
+            )
+
         # Populates the attention cache if this is the first look, and raises
         # the same guidance the panel would if there is nothing to capture.
         self.attention(layer, head)
@@ -1833,6 +3194,7 @@ class ModelRuntime:
             # metadata, and an unreadable one is better dropped than leaked.
             shared_id = Path(shared_id).name if shared_id else ""
 
+        lens_rows, lens_info = self._lens_for_export()
         return session.build(
             model_id=shared_id,
             device=self.device,
@@ -1852,7 +3214,165 @@ class ModelRuntime:
             # in this tool that is causal rather than correlational was the
             # one you could not send anybody.
             patch=self._patch_for_export(),
+            ranking=self._ranking_for_export(),
+            head_types=self._types_for_export(),
+            ground=self._ground_for_export(),
+            model_diff=self._model_diff_for_export(),
+            # The agent run this analysis belongs to, when the caller named
+            # one. Additive: without it the file is exactly what it was.
+            trace=trace,
+            step_ref=step_ref,
+            lens=lens_rows,
+            lens_info=lens_info,
+            receipts=self._receipts_for_export(),
         )
+
+    def _receipts_for_export(self) -> list[dict]:
+        """Every measurement's setup, for the ones this export describes.
+
+        Filtered on the epoch for the same reason `_patch_for_export` is: a
+        receipt naming the model that WAS loaded, written into a file about
+        the one that is, would be a falsehood in the single field the format
+        exists to make trustworthy. A receipt from a superseded epoch is
+        dropped rather than relabelled -- it describes a real measurement, it
+        just does not describe THIS one.
+        """
+        return [
+            {k: v for k, v in receipt.items() if k != "epoch"}
+            for receipt in self._receipts.values()
+            if receipt.get("epoch") == self.epoch
+        ]
+
+    def _lens_for_export(self) -> tuple[list, dict]:
+        """(rows, scalars) for the logit lens, if it belongs to this run.
+
+        Split in two because `lens` is an existing key with a declared list
+        type -- the rows the panel draws -- and the scalars that come with it
+        (`final`, `settled_at`, `reliability`) do not fit in a list. They ride
+        in an additive `lens_info` rather than changing the shape of a key
+        that already exists, so the format version does not move.
+        """
+        last = self._last_lens
+        if not last or last.get("epoch") != self.epoch:
+            return [], {}
+        rows = last.get("layers") or []
+        info = {
+            k: last[k]
+            for k in ("final", "settled_at", "n_layers", "reliability")
+            if k in last
+        }
+        return rows, info
+
+    def _types_for_export(self) -> dict:
+        """Head labels, if they describe the model being exported.
+
+        Epoch-filtered like the ranking, but for a different reason: these
+        survive a new generation on purpose and die on a model swap. Labels
+        measured on one model written beside another model's attention would
+        name heads that do not exist.
+        """
+        last = self._last_types
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
+
+    @staticmethod
+    def _recorded_ground(recorded: dict) -> dict:
+        """A recorded grounding, with its sentence rebuilt from its numbers.
+
+        `means` is NOT carried in the file. Rebuilding it here means the prose
+        and the fields can never disagree: a file hand-edited to flip
+        `ungrounded` gets a summary that says so, instead of a stored sentence
+        describing the numbers it used to have.
+
+        The rebuild goes through the same dataclass the live path uses, so
+        there is one implementation of what these numbers mean rather than a
+        second one for replay that drifts.
+        """
+        from . import ground as ground_mod
+
+        rows = [
+            ground_mod.Score(
+                index=int(c.get("index", 0)),
+                preview=str(c.get("preview") or ""),
+                n_tokens=int(c.get("n_tokens") or 0),
+                dependence=float(c.get("dependence") or 0.0),
+                attention=c.get("attention"),
+                depended_on=bool(c.get("depended_on")),
+                looked_not_used=c.get("looked_not_used"),
+            )
+            for c in recorded.get("chunks") or []
+        ]
+        report = ground_mod.Grounding(
+            question=str(recorded.get("question") or ""),
+            answer=str(recorded.get("answer") or ""),
+            answer_p=float(recorded.get("answer_p") or 0.0),
+            position=int(recorded.get("position") or 0),
+            chunks=rows,
+            n_chunks=int(recorded.get("n_chunks") or len(rows)),
+            n_prompt_tokens=int(recorded.get("n_prompt_tokens") or 0),
+            noise_floor=float(recorded.get("noise_floor") or 0.0),
+            joint=float(recorded.get("joint") or 0.0),
+            attention_share=recorded.get("attention_share"),
+            attention_available=bool(recorded.get("attention_available")),
+            attention_note=str(recorded.get("attention_note") or ""),
+            floor_degenerate=bool(recorded.get("floor_degenerate")),
+            passes=int(recorded.get("passes") or 0),
+            seconds=float(recorded.get("seconds") or 0.0),
+            ungrounded=bool(recorded.get("ungrounded")),
+        )
+        return report.to_dict()
+
+    def _model_diff_for_export(self) -> dict:
+        """The last comparison, if there was one.
+
+        NO EPOCH CHECK, alone among the export helpers here. Every other
+        section describes the model in this file and dies when the model
+        changes; a diff names its own two models and survives, because
+        unloading gpt2 does not make "these two checkpoints differ at layer 4"
+        untrue.
+
+        `means` and `receipt` are dropped for the same reason the grounding
+        export drops them: the sentence is regenerated from the numbers and
+        the receipts list already holds the receipt once.
+        """
+        last = self._last_model_diff
+        if not last:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("receipt", "means")}
+
+    def _ground_for_export(self) -> dict:
+        """The last grounding, if it describes the model being exported.
+
+        Same epoch rule as the head labels, and the same reasoning: grounding
+        is measured on its own document and question rather than on the
+        current generation, so it survives a new one -- and dies on a model
+        swap, because "the answer came from the weights" is a claim about
+        WHICH weights.
+
+        `means` and `receipt` are dropped. The sentence is regenerated from
+        the numbers by `Grounding.means()` on the way back out, so carrying a
+        copy is a second thing to keep in step with the fields it describes,
+        and the receipts list already holds the receipt once.
+        """
+        last = self._last_ground
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt", "means")}
+
+    def _ranking_for_export(self) -> dict:
+        """The last head ranking, if it belongs to the state being exported.
+
+        Same epoch rule as `_patch_for_export`, and the same reason: a ranking
+        measured against an earlier prompt written beside these tokens would
+        be a claim about which heads carry an answer the file does not show.
+        """
+        last = self._last_ranking
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        # `receipt` is dropped: the receipts list carries it once already, and
+        # a second copy inside the section is a second thing to keep in step.
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
 
     def _patch_for_export(self) -> dict:
         """The last patch trace, if it belongs to the state being exported.
@@ -1896,6 +3416,14 @@ class ModelRuntime:
                 "clean": self.replay.patch.get("clean", ""),
                 "corrupt": self.replay.patch.get("corrupt", ""),
             },
+            # Same reason as `patch`: the grounding panel needs a document and
+            # a question, and a recording carries neither the document nor a
+            # model to re-run it on. Telling the panel it HAS a result lets it
+            # show the finding instead of a form whose only button refuses.
+            "ground": {
+                "available": self.replay.has_ground(),
+                "question": self.replay.ground.get("question", ""),
+            },
         }
 
     # ---------------- SAE features ----------------
@@ -1904,6 +3432,164 @@ class ModelRuntime:
         if self.sae is None:
             return SAEStatus(loaded=False)
         return self.sae.status()
+
+    # ------------------------------------------------------------------ GGUF
+
+    def plan_gguf(self, path: str, *, dtype: str | None = None) -> dict:
+        """What loading this GGUF would cost, without loading it.
+
+        Cheap on purpose: it reads the header, which is a few hundred
+        kilobytes of a multi-gigabyte file, and returns both memory figures.
+        The point is that "this will not fit" is answerable before the
+        download rather than twenty minutes into it.
+        """
+        from . import gguf_load
+
+        report = gguf_load.plan(
+            path,
+            dtype=dtype or self.accel.dtype,
+            device_kind=self.accel.kind,
+        ).to_dict()
+        # Whether this file IS the model currently held. Added here rather than
+        # in gguf_load, which knows nothing about sessions.
+        #
+        # Without it the panel tells you a model you are already running will
+        # not fit — and it is not wrong: its own weights are in the free-memory
+        # figure it just read, so loading a second copy really would fail. It
+        # is still the wrong sentence to show, because the question the reader
+        # is asking has already been answered by the thing in front of them.
+        current = (self.gguf or {}).get("plan", {}).get("path")
+        report["already_loaded"] = bool(
+            current and Path(current) == Path(report["path"])
+        )
+        return report
+
+    def load_gguf(
+        self, path: str, *, dtype: str | None = None, confirm: bool = False
+    ) -> ModelStatus:
+        """Load a GGUF as a full torch module — every panel, not just chat.
+
+        The Ollama backend already runs GGUF files, at their real bit width and
+        fast, and cannot show you a single attention head. This is the other
+        trade: transformers dequantises the weights, which costs about three
+        times the file on disk, and in exchange the model is an ordinary module
+        that the lens, the ablation sweep and the patching grid all work on.
+
+        Which of those you want is a real choice, so the cost is named before
+        the load rather than discovered during it.
+
+        Blocking — call from a worker thread.
+        """
+        from . import gguf_load
+
+        want = dtype or self.accel.dtype
+        with self._load_slot(f"gguf {Path(path).name}"):
+            # start_external, NOT start. `start` spawns a watcher that polls
+            # the HuggingFace cache for a directory named after its argument
+            # and calls HfApi().model_info() on it -- so a local filename went
+            # out as a live hub lookup for a repo called
+            # "loading Qwen3-0.6B-Q4_K_M.gguf", once per load, and the bar then
+            # sat at 0 bytes watching a directory that cannot exist. Nothing
+            # here downloads: the file is already on disk and the cost is CPU.
+            progress.TRACKER.start_external(
+                Path(path).name, stage="dequantise", detail="reading the header"
+            )
+            try:
+                loaded = gguf_load.load(
+                    path,
+                    dtype=want,
+                    device=self.device,
+                    device_kind=self.accel.kind,
+                    confirm=confirm,
+                    on_stage=progress.TRACKER.stage,
+                )
+            except BaseException as err:
+                # finish() before re-raising, or the progress meter stays
+                # "active" for the rest of the session and its watcher thread
+                # polls forever. Same bug the HF path already fixed.
+                progress.TRACKER.finish(error=_load_failed(err))
+                raise
+            progress.TRACKER.finish()
+
+            report = loaded.to_dict()
+            self.epoch += 1
+            self.backend = "hf"
+            self.gguf = report
+            self.model = loaded.model
+            self.tokenizer = loaded.tokenizer
+            # The file name, not a hub id. Naming it after the repo would let
+            # a .mri recorded from a Q4_K_M file claim to come from the
+            # full-precision model of the same name -- which is exactly the
+            # substitution this module exists to prevent.
+            self.hf_id = Path(loaded.plan.path).name
+            self.replay = None
+            self.last_ids = None
+            self.last_user_span = None
+            self._attn_variants.clear()
+            self._attn_tokens = None
+            self.sae = None
+            self._feats = None
+            self._steer = None
+            self._ollama_instruct = None
+            return self.status()
+
+    def compare_quantisation(
+        self, quantised: str, original: str, prompt: str, *, want_attention: bool = True
+    ) -> dict:
+        """What quantisation cost this model's behaviour, on one prompt.
+
+        UNLOADS whatever is currently held first. Two models never sit in
+        memory at once — and the currently-loaded one is a third, so it has to
+        go too. On the 8 GB card this was written on, keeping it would mean the
+        comparison only runs for models small enough to fit three times, which
+        excludes every model anyone would want to compare.
+
+        Blocking — call from a worker thread.
+        """
+        from . import behavdiff
+
+        with self._load_slot("quantisation comparison"):
+            # Before the slot does anything else: the caller's model is dead
+            # weight for this measurement and its memory is what makes the
+            # measurement possible.
+            if self.model is not None:
+                log.info("unloading %s to make room for the comparison", self.hf_id)
+                self.epoch += 1
+                self.model = None
+                self.tokenizer = None
+                self.hf_id = None
+                self.backend = None
+                self.gguf = None
+                self.replay = None
+                self.last_ids = None
+                self.last_user_span = None
+                self._attn_variants.clear()
+                self._attn_tokens = None
+                self.sae = None
+                self._feats = None
+                self._steer = None
+                gc.collect()
+                self._empty_accel_cache()
+
+            progress.TRACKER.start_external(
+                "quantisation comparison", stage="load", detail="first model"
+            )
+            try:
+                result = behavdiff.compare_behaviour(
+                    quantised,
+                    original,
+                    prompt,
+                    dtype=self.accel.dtype,
+                    device=self.device,
+                    device_kind=self.accel.kind,
+                    want_attention=want_attention,
+                    on_stage=progress.TRACKER.stage,
+                )
+            except BaseException as err:
+                progress.TRACKER.finish(error=_load_failed(err))
+                raise
+            progress.TRACKER.finish()
+            return result.to_dict()
 
     def load_sae(self, repo: str, hook: str) -> SAEStatus:
         """Load an SAE and validate it against the current model. Blocking."""

@@ -65,6 +65,18 @@ npm run dev                # Vite dev server, proxies the API
 uv run python scripts/build_frontend.py   # bake the UI back into modelmri/static
 ```
 
+If your checkout lives on Google Drive, OneDrive, Dropbox or iCloud, that
+script notices and builds in a local temp directory instead of in `frontend/`,
+copying the output back. It prints that it is doing so. Those filesystems
+evict and corrupt `node_modules` — forty thousand small files is the case they
+handle worst — and the resulting failure looks like a broken toolchain rather
+than a broken filesystem: `package.json` reads as zero bytes, or `tsc` reports
+"not recognized as an internal or external command" with the binary sitting
+right there. Pass `--in-place` to build where the sources are anyway.
+
+The work directory is reused between runs, so only the first build pays for
+`npm ci`. Measured on a Drive checkout: 27s cold, 6s warm.
+
 ## Quality gates
 
 Run what your change touches; CI runs all of it.
@@ -73,6 +85,17 @@ Run what your change touches; CI runs all of it.
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest tests packages/modelmri-record/tests -q
+```
+
+The suite runs in parallel by default — `pyproject.toml` sets `-n auto`
+capped at 8 workers, distributed per file. Measured on a 24-core machine:
+276s serial, 80s at 8 workers. The cap is about memory rather than cores;
+each worker is a fresh interpreter importing its own torch.
+
+When a test is actually failing, turn it off:
+
+```bash
+uv run pytest tests/test_thing.py -n 0 -x   # serial, ordered output, -x stops where you expect
 ```
 
 ```bash

@@ -58,10 +58,12 @@ class _Trace:
         endpoint: str,
         redactor: Redactor | None,
         meta: dict | None = None,
+        deliver_otlp: str | None = None,
     ) -> None:
         self.name = name
         self.endpoint = endpoint
         self.redactor = redactor
+        self.deliver_otlp = deliver_otlp
         self.meta = dict(meta or {})
         self.delivered = False
         self.id = uuid.uuid4().hex[:12]
@@ -100,6 +102,7 @@ def trace(
     *,
     redact: Redactor | None | bool = True,
     meta: dict | None = None,
+    deliver_otlp: str | None = None,
 ) -> Iterator[None]:
     """Record everything inside this block as one trace, then deliver it.
 
@@ -112,6 +115,19 @@ def trace(
                   environment, a ticket id. `{"demo": True}` marks a scripted
                   sample so the viewer can label it instead of letting it pass
                   for something you actually recorded.
+
+    deliver_otlp  an OTLP/HTTP endpoint to ALSO send this run to, e.g.
+                  "http://localhost:4318". Off by default and deliberately so:
+                  this package gets imported into other people's agents, and a
+                  recorder that starts talking to the network because it can
+                  is a recorder nobody should install.
+
+                  It needs `modelmri` importable — the OTLP mapping lives
+                  there in one table so emit and ingest cannot drift, and
+                  copying it here would be the second copy that drifts. This
+                  package keeps `dependencies = []`; if modelmri is absent the
+                  export is skipped and says so, and the normal delivery is
+                  untouched either way.
     """
     redactor: Redactor | None
     if redact is True:
@@ -121,7 +137,7 @@ def trace(
     else:
         redactor = redact
 
-    t = _Trace(name, endpoint, redactor, meta)
+    t = _Trace(name, endpoint, redactor, meta, deliver_otlp)
     # If the interpreter dies mid-run -- a crash, a SIGTERM, a notebook kernel
     # restart -- the finally below never runs and the whole trace is lost,
     # which is exactly the run you most wanted to look at.
@@ -135,7 +151,14 @@ def trace(
                 "kind": "error",
                 "name": type(err).__name__,
                 "started_ms": t.now_ms(),
-                "duration_ms": 0,
+                # None, not 0. This step is synthesised at the moment an
+                # exception escapes the block -- nothing timed it, so there is
+                # no duration to report. A 0 here is a positive claim that the
+                # failure took no measurable time, and it travelled: the OTLP
+                # exporter reads `duration_ms is None` to decide whether to
+                # stamp `modelmri.duration.recorded`, so every exported error
+                # span asserted a duration nobody measured.
+                "duration_ms": None,
                 "output": str(err)[:2000],
                 "error": True,
             }
@@ -215,13 +238,36 @@ def step(
     name: str = "",
     input: object = "",  # noqa: A002 - mirrors the wire field name
     output: object = "",
-    duration_ms: int = 0,
+    # None means NOT MEASURED, and it is the default because most callers use
+    # this as a context manager and let `_StepCtx.__exit__` time it. 0 was the
+    # old default and it is a different claim -- "this took no measurable
+    # time" -- which `traces.py` already made the column nullable to express
+    # and which the OTLP exporter reads to decide what it may assert.
+    duration_ms: int | None = None,
     tokens_in: int | None = None,
     tokens_out: int | None = None,
+    # Same rule as `duration_ms`, one field over. Providers report these only
+    # sometimes -- Anthropic returns cache counts only when a cache was in
+    # play, reasoning tokens only from models that reason -- so None means the
+    # provider said nothing and 0 would mean it said zero. The trace store's
+    # columns are nullable to carry that distinction all the way to the panel.
+    tokens_cache_read: int | None = None,
+    tokens_cache_write: int | None = None,
+    tokens_reasoning: int | None = None,
     error: bool = False,
     started_ms: int | None = None,  # override for backfilled/synthetic traces
+    meta: dict | None = None,
 ) -> _StepCtx | _NoStep:
-    """Record one step in the active trace (no-op outside a trace block)."""
+    """Record one step in the active trace (no-op outside a trace block).
+
+    `meta` carries machine facts about a step produced by a LOCAL model —
+    model id, the token ids, dtype, device — so ModelMRI can reopen that exact
+    generation in its attention, lens, ablation and patching panels.
+
+    **Never put prompt or completion text in `meta`.** `redact.py` runs over
+    `input` and `output` at delivery and nothing else, so text hidden in `meta`
+    would leave the machine unredacted. Ids and numbers only.
+    """
     t = _current.get()
     if t is None:
         return _NO_STEP
@@ -236,7 +282,11 @@ def step(
         "output": _encode(output),
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
+        "tokens_cache_read": tokens_cache_read,
+        "tokens_cache_write": tokens_cache_write,
+        "tokens_reasoning": tokens_reasoning,
         "error": error,
+        "meta": meta or {},
     }
     t.steps.append(record)
     return _StepCtx(record, t)
@@ -261,11 +311,39 @@ def _encode(value: object) -> str:
             return "<unserialisable>"
 
 
-def instrument_anthropic() -> bool:
+def instrument_anthropic(force: bool = False) -> bool:
     """Monkey-patch anthropic.Messages.create to auto-record llm_call steps.
 
-    Returns False (no crash) when the anthropic package is not installed.
+    CHECKS THE SDK FIRST. When an attribute the wrapper reads has moved, this
+    does not patch: it prints one line naming the package, the version and the
+    attribute, and returns False.
+
+    That refusal is the point. The wrapper reads token counts with
+    `getattr(usage, "input_tokens", None)`, and the trace store's columns are
+    nullable so `None` can mean "the provider reported nothing". If the
+    attribute moved, every span would carry that same None — and the ledger
+    would report "not reported by provider" about a provider that reported
+    perfectly well. The absence would be real and the reason would be wrong.
+
+    Returns False (no crash) when anthropic is not installed, and False when
+    the fingerprint does not match. `verify.check()` carries the detail; set
+    MODELMRI_FORCE_INSTRUMENT=1 to patch regardless.
     """
+    from . import verify
+
+    report = verify.check(force=force)
+    if not report.installed:
+        return False
+    if not report.ok:
+        # One line, on stderr, naming what moved. Not an exception: failing to
+        # instrument must not take down the program being traced, and
+        # `_complain` is already the package's answer to "best-effort is not
+        # the same as silent".
+        _complain(f"modelmri-record: {report.reason()}")
+        return False
+    if report.capture != "full":
+        _complain(f"modelmri-record: {report.reason()}")
+
     try:
         from anthropic.resources.messages import Messages
     except Exception:
@@ -273,6 +351,7 @@ def instrument_anthropic() -> bool:
     if getattr(Messages.create, "_modelmri_wrapped", False):
         return True
     original = Messages.create
+    captured = report.capture
 
     def wrapped(self, *args, **kwargs):
         t = _current.get()
@@ -300,12 +379,145 @@ def instrument_anthropic() -> bool:
                 duration_ms=(t.now_ms() - started),
                 tokens_in=getattr(usage, "input_tokens", None),
                 tokens_out=getattr(usage, "output_tokens", None),
+                # Anthropic returns these only when a cache was in play, so a
+                # missing attribute is the ordinary case and `None` is the
+                # honest reading of it. `getattr(..., None)` rather than
+                # `getattr(..., 0)` is the whole distinction: 0 would claim
+                # the API reported no cache use on a call that never had a
+                # cache field at all.
+                tokens_cache_read=getattr(usage, "cache_read_input_tokens", None),
+                tokens_cache_write=getattr(usage, "cache_creation_input_tokens", None),
+                # `captured` says whether the recorder could read everything
+                # it reads. A "partial" step's empty token field is the SDK's
+                # shape, not the provider's silence, and the panel needs to be
+                # able to tell those apart.
+                meta={
+                    k: v
+                    for k, v in (
+                        ("model", str(kwargs.get("model", "")) or None),
+                        ("captured", captured),
+                    )
+                    if v
+                }
+                or None,
             )
         return result
 
     wrapped._modelmri_wrapped = True  # type: ignore[attr-defined]
     Messages.create = wrapped  # type: ignore[assignment]
     return True
+
+
+def instrument_transformers() -> bool:
+    """Auto-record `generate()` calls, with the ids needed to reopen them.
+
+    This is what makes an agent step openable in the mechanistic panels. Every
+    hosted tracing platform stops at the API boundary; a local model's
+    generation can carry its actual token ids, so ModelMRI can re-establish it
+    as the current generation and read attention, the logit lens, head ablation
+    and patching off the exact sequence the agent produced.
+
+    Records ids, model id, dtype and device — and no text. Prompt and
+    completion go through `input`/`output`, which is what `redact.py` covers;
+    text smuggled through `meta` would leave the machine unredacted.
+
+    A consequence worth knowing: if redaction rewrites the prompt, ModelMRI
+    will refuse to adopt the step, because re-tokenising the redacted text no
+    longer reproduces the recorded ids. That is the correct outcome — the model
+    saw the unredacted text, and this tool should not reconstruct it.
+
+    Returns False (no crash) when transformers is not installed.
+    """
+    try:
+        from transformers.generation.utils import GenerationMixin
+    except Exception:
+        return False
+    if getattr(GenerationMixin.generate, "_modelmri_wrapped", False):
+        return True
+    original = GenerationMixin.generate
+
+    def wrapped(self, *args, **kwargs):
+        t = _current.get()
+        started = t.now_ms() if t else 0
+        result = original(self, *args, **kwargs)
+        if t is None:
+            return result
+        try:
+            inputs = kwargs.get("input_ids")
+            if inputs is None and args:
+                inputs = args[0]
+            n_prompt = int(inputs.shape[-1]) if inputs is not None else 0
+            # `result[0]` assumed a bare [B, S] tensor. With
+            # `return_dict_in_generate=True` the return is a
+            # GenerateDecoderOnlyOutput whose [0] is the whole `sequences`
+            # tensor, so `.tolist()` gave a nested list and int() raised —
+            # swallowed by the except below, leaving a step with no ids, no
+            # input and no output. Adopt then refused it saying the model was
+            # "not on this machine" about a local gpt2 in the same process.
+            # The old `hasattr(result, "__getitem__")` guard was inert: both
+            # types satisfy it.
+            sequences = getattr(result, "sequences", result)
+            row = sequences[0]
+            ids = [int(i) for i in row.tolist()]
+            config = getattr(self, "config", None)
+            model_id = str(
+                getattr(config, "_name_or_path", "")
+                or getattr(config, "name_or_path", "")
+            )
+            meta = {
+                "model": model_id,
+                "input_ids": ids,
+                "n_prompt_tokens": n_prompt,
+                "dtype": str(getattr(self, "dtype", "")),
+                "device": str(getattr(self, "device", "")),
+            }
+        except Exception:
+            # Instrumentation must never break the thing it instruments. A
+            # step with no meta is simply one that cannot be adopted, which is
+            # the same state a hosted call is in — but it is NOT the same as a
+            # call that produced nothing, so the payloads below say which.
+            meta = {}
+
+        tok = getattr(self, "_modelmri_tokenizer", None)
+        step(
+            "llm_call",
+            name=meta.get("model", "") or "transformers",
+            input=_decode_span(tok, meta, 0, meta.get("n_prompt_tokens", 0))
+            or "<generation recorded, but its token ids could not be read>",
+            output=_decode_span(tok, meta, meta.get("n_prompt_tokens", 0), None)
+            or "<generation recorded, but its token ids could not be read>",
+            duration_ms=(t.now_ms() - started),
+            tokens_in=meta.get("n_prompt_tokens") or None,
+            tokens_out=(
+                len(meta["input_ids"]) - meta["n_prompt_tokens"]
+                if meta.get("input_ids")
+                else None
+            ),
+            meta=meta,
+        )
+        return result
+
+    wrapped._modelmri_wrapped = True  # type: ignore[attr-defined]
+    GenerationMixin.generate = wrapped  # type: ignore[assignment]
+    return True
+
+
+def _decode_span(tokenizer, meta: dict, start: int, end: int | None) -> str:
+    """Readable text for a slice of the recorded ids, or a stated placeholder.
+
+    Without a tokenizer there is no honest text to show, so it says that rather
+    than printing raw ids as though they were the prompt.
+    """
+    ids = meta.get("input_ids") or []
+    if not ids:
+        return ""
+    span = ids[start:] if end is None else ids[start:end]
+    if tokenizer is None:
+        return f"<{len(span)} tokens; attach a tokenizer to see the text>"
+    try:
+        return tokenizer.decode(span)
+    except Exception:
+        return f"<{len(span)} tokens; this tokenizer could not decode them>"
 
 
 def _msgs_preview(kwargs: dict) -> str:
@@ -392,6 +604,7 @@ def _deliver(t: _Trace) -> None:
             t.endpoint, data=body, headers={"Content-Type": "application/json"}
         )
         urllib.request.urlopen(req, timeout=3)
+        _deliver_otlp(t, doc)
         return
     except Exception:  # noqa: S110 - the disk fallback below is the handling
         # Not narrowed to OSError: `endpoint` is caller-supplied, so a typo in
@@ -424,6 +637,65 @@ def _deliver(t: _Trace) -> None:
         # this trace is gone; saying so costs one line and is the difference
         # between a lost run and a mystery.
         _complain(f"modelmri-record: trace {t.name!r} could not be saved: {err}")
+    # OUTSIDE the try, deliberately. It used to be the last statement inside
+    # it, so a disk write that raised -- read-only mount, permission denied,
+    # no space, a path too long on Windows -- jumped straight to the handler
+    # and the collector was never tried. That is the one state where the trace
+    # reaches neither destination, and it was the state that skipped the
+    # second one. The comment claimed the opposite.
+    _deliver_otlp(t, doc)
+
+
+def _deliver_otlp(t: _Trace, doc: dict) -> None:
+    """Also hand this run to an OTLP collector, if the caller asked.
+
+    Runs AFTER the normal delivery and cannot affect it: an export is a
+    convenience, and a collector being down must not cost somebody the trace
+    itself. Everything here is caught for the same reason the rest of this
+    module catches everything — recording must never crash the host app.
+
+    The document handed over is the REDACTED one. Exporting the raw payloads
+    to a third-party collector while the local copy is scrubbed would be the
+    redactor working exactly backwards.
+    """
+    if not t.deliver_otlp:
+        return
+    try:
+        from modelmri import otel  # type: ignore[import-not-found]
+    except Exception:
+        # Named rather than silent: the caller asked for an export and did not
+        # get one, and "nothing happened" is the worst possible answer to that.
+        _complain(
+            f"modelmri-record: deliver_otlp was set but `modelmri` is not "
+            f"importable, so trace {t.name!r} was not exported. The OTLP "
+            f"mapping lives there in one table; this package stays "
+            f"dependency-free. `pip install modelmri` to enable it."
+        )
+        return
+    try:
+        # The same 3 s the local delivery uses, not otel.send's 30 s default.
+        # This runs in the `finally` of the caller's `with` block and again in
+        # the atexit flush, so a stale address behind a firewall that DROPs
+        # rather than REJECTs would hold the host app for 30 s per live trace
+        # on the way out. An export is a convenience; it does not get to be
+        # the slowest thing in somebody's shutdown.
+        otel.send(doc, t.deliver_otlp, service_name=t.name or "modelmri", timeout=3.0)
+    except (KeyboardInterrupt, SystemExit) as err:
+        # Named explicitly rather than caught as BaseException. These two must
+        # NOT be swallowed -- a ctrl-c during the export is the user asking to
+        # stop, not an export failure -- but they are still worth a line,
+        # because otherwise the traceback the user sees comes from a delivery
+        # that exists to be optional and reads as the recorder crashing.
+        _complain(
+            f"modelmri-record: OTLP export of {t.name!r} interrupted "
+            f"({type(err).__name__}); the trace itself was already recorded."
+        )
+        raise
+    except Exception as err:
+        _complain(
+            f"modelmri-record: trace {t.name!r} was recorded but the OTLP "
+            f"export to {t.deliver_otlp} failed: {type(err).__name__}: {err}"
+        )
 
 
 # Traces still open when the process ends. Flushed by the atexit hook below.

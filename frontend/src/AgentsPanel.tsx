@@ -1,9 +1,18 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
+import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
+import ShareRun from "./ShareRun";
+import InspectDrop from "./InspectDrop";
+import RubricPanel from "./RubricPanel";
 import {
+  Adopted,
+  adoptStep,
   clearTraces,
+  errorText,
   getTrace,
   getTraces,
+  SearchResult,
+  searchTraces,
   TraceDoc,
   TraceStep,
   TraceSummary,
@@ -18,13 +27,27 @@ const KIND_COLOR: Record<TraceStep["kind"], string> = {
   error: "var(--color-pop)",
 };
 
-/** Agent Mode: recorded runs -> lanes timeline -> step inspector. */
-export default function AgentsPanel() {
+/** Agent Mode: recorded runs -> lanes timeline -> step inspector.
+ *
+ *  `onAdopted` fires after a step has been opened in the mechanistic panels.
+ *  The panels above are mounted by Playground, which asks the server what it
+ *  can answer — so the parent remounts it and the attention, lens, ablation
+ *  and patching views come up on the adopted generation. */
+export default function AgentsPanel({ onAdopted }: { onAdopted?: () => void }) {
   const [list, setList] = useState<TraceSummary[] | null>(null);
   const [doc, setDoc] = useState<TraceDoc | null>(null);
   const [sel, setSel] = useState<TraceStep | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [clearing, setClearing] = useState(false);
+  // The adopt result, and its refusal. Both belong to the selected step, so
+  // both are cleared whenever the selection changes — a refusal left hanging
+  // beside a different step reads as being about that one.
+  const [adopted, setAdopted] = useState<Adopted | null>(null);
+  const [adoptErr, setAdoptErr] = useState("");
+  const [adopting, setAdopting] = useState(false);
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SearchResult | null>(null);
+  const [searchErr, setSearchErr] = useState("");
   // Above every conditional return. This panel returns early for its empty
   // and loading states, so a hook placed after that ran on some renders and
   // not others — React error #310, and the whole page blank. Hooks are not
@@ -182,6 +205,18 @@ with trace("my-agent"):
             <b>uv run python examples/record_demo.py</b>
             &nbsp;— this panel picks it up on its own.
           </div>
+
+          {/* HERE TOO, not only in the populated branch. This panel returns
+              early when the list is empty, so mounting the drop zone below
+              the list alone made it invisible to the one reader who needs it
+              most: somebody whose only data is an eval log they already have.
+              An empty flight recorder was a dead end for them. */}
+          <InspectDrop
+            onImported={(id) => {
+              void getTraces().then(setList);
+              void getTrace(id).then(setDoc);
+            }}
+          />
         </div>
       </div>
     );
@@ -190,6 +225,56 @@ with trace("my-agent"):
   // Bundled samples in the list, so the panel can name them and offer to
   // remove them rather than leaving a red "1 error" nobody recognises.
   const demos = list.filter((t) => t.demo).length;
+
+  async function search(text: string) {
+    setQ(text);
+    setSearchErr("");
+    if (!text.trim()) {
+      setHits(null);
+      return;
+    }
+    try {
+      setHits(await searchTraces(text));
+    } catch (e) {
+      // The parser's own sentence — it names the bad filter and the values it
+      // accepts, which is more use than "search failed".
+      setSearchErr(errorText(e));
+      setHits(null);
+    }
+  }
+
+  /** Open the run a hit belongs to, with that step selected. */
+  async function openHit(traceId: string, stepId: string) {
+    const d = await getTrace(traceId);
+    setDoc(d);
+    setSel(d.steps.find((s) => s.id === stepId) ?? null);
+    setAdopted(null);
+    setAdoptErr("");
+  }
+
+  async function adopt(step: TraceStep) {
+    if (!doc) return;
+    setAdopting(true);
+    setAdoptErr("");
+    try {
+      const result = await adoptStep(doc.id, step.id);
+      setAdopted(result);
+      // Tell the parent to remount the playground. Nothing is re-run — the
+      // server is already holding this step's token ids as its current
+      // generation, and Playground's restore path mounts the panels on
+      // whatever the server says it can answer.
+      onAdopted?.();
+    } catch (e) {
+      // The server's own sentence, unwrapped. Every refusal here already says
+      // what would make it work — wrong model, weights not on this machine, a
+      // tokenisation that no longer matches — and anything added in front of
+      // those is the client guessing.
+      setAdoptErr(errorText(e));
+      setAdopted(null);
+    } finally {
+      setAdopting(false);
+    }
+  }
 
   async function wipe(keepDemo: boolean) {
     setClearing(true);
@@ -205,7 +290,7 @@ with trace("my-agent"):
   }
 
   const maxMs = doc
-    ? Math.max(...doc.steps.map((s) => s.started_ms + s.duration_ms), 1)
+    ? Math.max(...doc.steps.map((s) => s.started_ms + (s.duration_ms ?? 0)), 1)
     : 1;
   const nLanes = Math.max(...lanes.map((l) => l.lane), 0) + 1;
 
@@ -231,6 +316,65 @@ with trace("my-agent"):
         <b>modelmri-record</b> and its steps land here. Independent of the model
         loaded above — an agent usually calls a hosted API, not this process.
       </p>
+
+      {/* Search is over STEPS, not runs — what somebody is looking for is the
+          tool call that failed, not the hour it happened in. */}
+      <div className="row trace-search" style={{ marginBottom: 10 }}>
+        <input
+          className="sm"
+          value={q}
+          placeholder="search every step — try  error:true  or  kind:tool_call  or  duration>2000"
+          onChange={(e) => void search(e.target.value)}
+          spellCheck={false}
+        />
+        {hits && (
+          <span className="meta">
+            {hits.results.length} step{hits.results.length === 1 ? "" : "s"} ·{" "}
+            {/* Which engine answered. A feature that quietly becomes a
+                different feature is worse than one that says it degraded. */}
+            <code>{hits.engine}</code>
+          </span>
+        )}
+      </div>
+      {searchErr && <div className="hint err">{searchErr}</div>}
+      {hits && (
+        <div className="search-hits">
+          {hits.results.length === 0 ? (
+            <div className="hint">nothing matched. {hits.note}</div>
+          ) : (
+            <>
+              <ol className="ranking-list">
+                {hits.results.map((h) => (
+                  <li key={h.step_id} className={h.error ? "err" : ""}>
+                    <button
+                      className="ghost sm"
+                      onClick={() => void openHit(h.trace_id, h.step_id)}
+                      title="Open this run with that step selected"
+                    >
+                      {h.kind} · {h.name || "unnamed"}
+                    </button>
+                    <span className="mid">
+                      {h.trace_name}
+                      {h.trace_started_at && (
+                        <span className="meta"> · {h.trace_started_at.slice(0, 10)}</span>
+                      )}
+                    </span>
+                    <span className="meta">
+                      {h.duration_ms == null
+                        ? "duration not recorded"
+                        : `${h.duration_ms}ms`}
+                      {h.error && " · FAILED"}
+                      {h.truncated_by > 0 &&
+                        ` · ${h.truncated_by.toLocaleString()} chars not stored`}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+              <div className="hint">{hits.note}</div>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
@@ -269,6 +413,28 @@ with trace("my-agent"):
           It is not your agent failing.
         </p>
       )}
+
+      {/* Sited above the list, because what it produces IS a row in that
+          list — an Inspect sample becomes an ordinary trace and everything
+          below reads it without knowing where it came from. */}
+      <InspectDrop
+        onImported={(id) => {
+          setSel(null);
+          // The list, so the imported sample appears as a row; then the
+          // trace itself, so the timeline is already showing it. `load` is
+          // scoped inside the polling effect, so this calls the same two
+          // clients directly rather than reaching into it.
+          void getTraces().then(setList);
+          void getTrace(id).then(setDoc);
+        }}
+      />
+
+      <RubricPanel
+        onPick={(id) => {
+          setSel(null);
+          void getTrace(id).then(setDoc);
+        }}
+      />
 
       <div className="trace-list">
         {groups.map(({ name, runs }) => {
@@ -341,12 +507,17 @@ with trace("my-agent"):
                 className={`tl-block ${step.error ? "err" : ""} ${sel?.id === step.id ? "sel" : ""}`}
                 style={{
                   left: `${(step.started_ms / maxMs) * 100}%`,
-                  width: `${Math.max((step.duration_ms / maxMs) * 100, 0.8)}%`,
+                  width: `${Math.max(((step.duration_ms ?? 0) / maxMs) * 100, 0.8)}%`,
                   top: lane * 36 + 4,
                   background: KIND_COLOR[step.kind],
                 }}
                 title={`${step.kind} · ${step.name}`}
-                onClick={() => setSel(step)}
+                onClick={() => {
+                  setSel(step);
+                  // Belongs to the step that produced it, not to the panel.
+                  setAdopted(null);
+                  setAdoptErr("");
+                }}
               />
             ))}
           </div>
@@ -357,6 +528,22 @@ with trace("my-agent"):
               </span>
             ))}
           </div>
+          {/* The whole run. Tokens are the honest unit for an audience running
+              local models, and they are free — so they are always here, while
+              the cost line appears only if the reader brought their own
+              prices. */}
+          <div className="tok-run">
+            <TokenTable rollup={doc.tokens} title="this run" />
+            <CostBanner cost={doc.cost} />
+          </div>
+          {/* The share half. Sited under the run summary rather than beside
+              the timeline: what leaves the machine is a decision about the
+              whole run, not about whichever step happens to be selected. */}
+          <ShareRun
+            traceId={doc.id}
+            selected={sel}
+            ready={Boolean(sel?.adoptable)}
+          />
 
           {sel && (
             <div className={`inspector ${sel.error ? "err" : ""}`}>
@@ -365,23 +552,110 @@ with trace("my-agent"):
                   {sel.kind}
                 </span>
                 <span className="meta">
-                  {sel.name} · step {sel.seq} · {sel.duration_ms}ms
-                  {sel.tokens_in != null && ` · ${sel.tokens_in}→${sel.tokens_out} tok`}
+                  {sel.name} · step {sel.seq} ·{" "}
+                  {/* Null is not zero. A step recorded without a duration
+                      used to render as "0ms", which reads as an instant
+                      call rather than as a fact nobody wrote down. */}
+                  {sel.duration_ms == null
+                    ? "duration not recorded"
+                    : `${sel.duration_ms}ms`}
+                  {/* Was `tokens_in != null && \`${in}→${out} tok\``, which
+                      rendered "100→null tok" when a provider reported one and
+                      not the other. Each field is now drawn only if it is
+                      actually there. */}
+                  <StepTokens step={sel} />
                   {sel.error && " · FAILED"}
                 </span>
               </div>
+              {/* The clip marker is a marker, not characters the agent
+                  produced. It used to render inside the payload as "… [+18412]"
+                  where it read as part of the tool's own output — a truncated
+                  result that looks complete is how you debug the wrong thing
+                  for an hour. */}
               {sel.input && (
                 <pre className="io">
                   <span className="io-l">IN</span>
                   {sel.input}
+                  {(sel.truncated_in ?? 0) > 0 && (
+                    <span className="clipped">
+                      {"\n"}— {sel.truncated_in!.toLocaleString()} characters not
+                      stored (payloads are capped at 20,000 so one runaway tool
+                      output cannot fill your disk)
+                    </span>
+                  )}
                 </pre>
               )}
               {sel.output && (
                 <pre className="io">
                   <span className="io-l">OUT</span>
                   {sel.output}
+                  {(sel.truncated_out ?? 0) > 0 && (
+                    <span className="clipped">
+                      {"\n"}— {sel.truncated_out!.toLocaleString()} characters
+                      not stored (payloads are capped at 20,000 so one runaway
+                      tool output cannot fill your disk)
+                    </span>
+                  )}
                 </pre>
               )}
+              {/* This step and everything beneath it. A subagent's own row
+                  carries no tokens — they belong to its llm_call children —
+                  so the subtree total is the only figure that answers "what
+                  did this branch cost". */}
+              {doc?.tokens_by_step?.[sel.id] && (
+                <TokenTable
+                  rollup={doc.tokens_by_step[sel.id]}
+                  title="this step and everything under it"
+                />
+              )}
+              {/* The join. Every other panel on this page reads whatever the
+                  server is holding as its current generation, so a step that
+                  ran on this machine can simply BECOME that — no re-running,
+                  no substitute model, the recorded token ids themselves. */}
+              {sel.adoptable ? (
+                <div className="row adopt-row">
+                  <button
+                    className="sm"
+                    onClick={() => void adopt(sel)}
+                    disabled={adopting}
+                    title={
+                      "Point the attention, logit-lens, ablation and patching " +
+                      "panels at the generation this step made"
+                    }
+                  >
+                    {adopting ? "opening…" : "open in the panels"}
+                  </button>
+                  {typeof sel.meta?.model === "string" && (
+                    <span className="meta">
+                      recorded from <code>{sel.meta.model}</code>
+                    </span>
+                  )}
+                </div>
+              ) : (
+                sel.kind === "llm_call" && (
+                  // A sentence, not a disabled button. A control that can only
+                  // ever refuse teaches the reader that the feature is broken
+                  // rather than that the weights are somewhere else.
+                  <div className="hint">
+                    This call did not run on this machine, so there are no
+                    weights here to look inside. Steps recorded through{" "}
+                    <code>instrument_transformers()</code> carry the token ids
+                    that make the panels above work on them; a hosted API
+                    returns text and nothing underneath it.
+                  </div>
+                )
+              )}
+              {adopted && (
+                <div className="hint ok">
+                  <strong>
+                    The panels above are now reading this step's generation.
+                  </strong>{" "}
+                  {adopted.n_prompt_tokens} prompt tokens +{" "}
+                  {adopted.n_tokens - adopted.n_prompt_tokens} generated, from{" "}
+                  <code>{adopted.model}</code>. {adopted.means}
+                </div>
+              )}
+              {adoptErr && <div className="hint err">{adoptErr}</div>}
             </div>
           )}
           {!sel && <div className="hint">click any block to inspect the step</div>}

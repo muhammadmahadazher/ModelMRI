@@ -101,3 +101,65 @@ def test_no_module_class_is_named_in_the_loader():
     )
     assert "AutoModel.from_config" in code
     assert "SmolVLMVisionTransformer" not in code
+
+
+def test_a_base_install_is_told_which_extra_encodes_a_frame(monkeypatch):
+    """Pillow is in the vla-lite extra; `encode_png` is on three code paths.
+
+    A base install used to get `ModuleNotFoundError: No module named 'PIL'`,
+    which names a module the user never asked for and no way to fix it. This
+    also caught a real CI hole: torch is a BASE dependency, so the VLA tests
+    run everywhere, and they reached this line on a runner where nothing had
+    pulled Pillow in.
+    """
+    import sys
+
+    import numpy as np
+
+    from modelmri.errors import Refusal
+    from modelmri.vla_data import encode_png
+
+    for name in [n for n in sys.modules if n == "PIL" or n.startswith("PIL.")]:
+        monkeypatch.delitem(sys.modules, name)
+    # A None entry is what makes `import PIL` raise, so the import inside
+    # encode_png fails the same way it does where Pillow was never installed.
+    monkeypatch.setitem(sys.modules, "PIL", None)
+
+    with pytest.raises(Refusal) as caught:
+        encode_png(np.zeros((4, 4, 3), dtype="uint8"))
+    assert "modelmri[vla-lite]" in str(caught.value)
+
+
+def test_raw_frame_bounds_the_timestep_like_every_other_accessor():
+    """LeRobot v3.0 concatenates many episodes into ONE mp4, so an episode is
+    a span inside a file. A `t` past the end resolves to `from_ts + t/fps`,
+    lands inside the NEXT episode and decodes a real frame from it — no
+    error, a picture on screen.
+
+    `frame()` checks this and `Hdf5Reader.raw_frame` checks this; the one
+    method that did not is the one the analysis and occlusion paths call, so
+    the causal map, the attention comparison and the shared .mri would all be
+    of another episode's frame labelled with this one.
+    """
+    import inspect
+
+    from modelmri import vla_data
+
+    source = inspect.getsource(vla_data.LeRobotV3Reader.raw_frame)
+    assert "match.length" in source
+    assert "t must be in" in source
+
+
+def test_every_frame_accessor_bounds_its_timestep():
+    """Structural, because three of the four had this and one did not."""
+    import inspect
+
+    from modelmri import hdf5_data, vla_data
+
+    for owner, name in (
+        (vla_data.LeRobotV3Reader, "frame"),
+        (vla_data.LeRobotV3Reader, "raw_frame"),
+        (hdf5_data.Hdf5Reader, "raw_frame"),
+    ):
+        source = inspect.getsource(getattr(owner, name))
+        assert "t must be in" in source, f"{owner.__name__}.{name} bounds nothing"

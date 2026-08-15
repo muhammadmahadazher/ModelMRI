@@ -53,6 +53,7 @@ Measured on the reference pair, float32, across three architectures:
 |---|---|---|---|---|
 | `gpt2` | 12 | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
 | `Qwen/Qwen2.5-0.5B-Instruct` | 24 | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
+| `Qwen/Qwen3-1.7B` | 28 | +0.967 · L3 · `el` | +0.651 · L20 · `of` | **+0.444 · L22 · `of`** |
 | `google/gemma-3-270m-it` | 18 | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
 
 The pattern is the same in all three and it is the standard causal-tracing
@@ -108,6 +109,7 @@ each of the 24 controlled sites. Measured on an RTX 4060, float32:
 | `gpt2` (12 layers, 11 tokens) | 614 | 5.5 s |
 | `google/gemma-3-270m-it` (18 layers, 10 tokens) | 758 | 29.5 s |
 | `Qwen/Qwen2.5-0.5B-Instruct` (24 layers, 11 tokens) | 1010 | 31.5 s |
+| `Qwen/Qwen3-1.7B` (28 layers, 11 tokens) | 1142 | 203.9 s |
 
 Seconds measured on one machine do not transfer; `passes` and `seconds` both
 come back in the response so you can derive a rate on yours.

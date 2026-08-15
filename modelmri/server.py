@@ -13,12 +13,44 @@ from importlib.resources import files
 from pathlib import Path
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, custom, paths
+from . import __version__, behavdiff, custom, gguf_read, otel, paths
 from .custom import AdapterError, CustomHandle
+
+# Every browser-facing handler below answers `str(err)` for these types, and
+# CodeQL flags each one as py/stack-trace-exposure. Those alerts are dismissed
+# as false positives, which is a claim, so here is the claim and where it is
+# checked.
+#
+# NOT suppressed with inline `# codeql[...]` comments: that syntax is a CodeQL
+# CLI convention and GitHub code scanning does not honour it for Python. I
+# tried it, and the only effect was to put all 69 handlers into the diff and
+# turn seven alerts into sixty-nine. Dismissal through the code-scanning API
+# is the mechanism that exists, and unlike a query filter it leaves the rule
+# armed for handlers written later.
+#
+# CodeQL is right in general: `str(err)` on an arbitrary exception publishes a
+# library's internal text, and this repo has already shipped six of those (see
+# the 0.10 changelog, "SIX PLACES PUBLISHED A LIBRARY'S OWN TEXT"). What makes
+# it safe HERE is that these types are only ever constructed with authored
+# sentences — never with a caught exception's text, except at four sites in
+# custom.py which are marked `leak-ok` because the text there is the reader's
+# own adapter code.
+#
+# That invariant is enforced, not asserted:
+# `tests/test_no_machine_leaks.py::test_every_published_exception_that_embeds_
+# another_is_marked` walks every raise site in the package, and a companion
+# test walks the four internal error types that runtime.py re-raises verbatim.
+# Both are mutation-checked. Break the invariant and the suppression stops
+# being honest and the tests say so.
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
 from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
@@ -119,6 +151,25 @@ class LoadRequest(BaseModel):
     source: str = "hf"  # "hf" | "ollama"
     # The user saw the size warning and chose to proceed anyway.
     confirm: bool = False
+
+
+class GgufLoad(BaseModel):
+    path: str
+    # None means "whatever this accelerator prefers". Named explicitly rather
+    # than defaulted to float32 here, because the dtype is half of the memory
+    # figure and a silent default would make the preflight describe a load
+    # nobody asked for.
+    dtype: str | None = None
+    # Overrides a tight fit, and nothing else.
+    confirm: bool = False
+
+
+class QuantCompare(BaseModel):
+    quantised: str
+    original: str
+    prompt: str = "The capital of France is"
+    # Off makes the run cheaper when only the token-level answer is wanted.
+    attention: bool = True
 
 
 class SAELoadRequest(BaseModel):
@@ -818,62 +869,418 @@ def create_app(
         }
 
     @app.get("/api/lens")
-    async def lens(top_k: int = 5):
+    async def lens(top_k: int = 5, kind: str = "plain"):
         """Logit lens — what the model would have said at each layer.
 
         The fallback for every model with no SAE, which is most of them.
+
+        `kind=plain|tuned|both`. `layers` is ALWAYS the plain reading, on
+        every kind; a tuned one arrives beside it in `tuned` rather than in
+        its place. A translator fitted to minimise disagreement with the final
+        distribution will reduce disagreement with the final distribution, so
+        a caller that got translated rows where it expected plain ones would
+        have no way to tell the model from the fit.
         """
-        # Replay first, and this is the only replay-sensitive route in the tree
-        # whose guard does not live in runtime.py. Every other one —
-        # attention_meta, attention_slice, compare, rank_heads,
-        # attribute_tokens, export_session — opens with `if self.replay is not
-        # None` because it is a ModelRuntime method. The lens is computed here
-        # instead, from `modelmri.lens`, so it never passed a runtime guard and
-        # nobody noticed: `runtime.model is None` catches the common case of
-        # opening a `.mri` with nothing loaded, which looks like it is working.
-        #
-        # It stops looking like it is working the moment someone opens a
-        # recording while their own model is still loaded. Then `model` is not
-        # None, `last_ids` is not None, and the lens happily reports the LIVE
-        # model's layers inside a session every other panel is drawing from the
-        # recording — with the replay pill on screen saying "recorded, not
-        # live".
-        if runtime.replay is not None:
-            return JSONResponse(
-                {
-                    "error": "This is a recording. The logit lens means running "
-                    "the model, and a `.mri` does not carry one."
-                },
-                status_code=409,
-            )
-        if runtime.backend == "ollama":
-            return JSONResponse(
-                {
-                    "error": "Ollama serves text only — the layers never leave its process"
-                },
-                status_code=409,
-            )
-        if runtime.model is None:
-            return JSONResponse({"error": "no model loaded"}, status_code=409)
-        if runtime.last_ids is None:
-            return JSONResponse(
-                {"error": "generate something first — the lens reads that run"},
-                status_code=409,
-            )
-
-        from .lens import logit_lens
-
-        def run() -> dict:
-            return logit_lens(runtime.model, runtime.tokenizer, runtime.last_ids, top_k)
-
+        # The replay guard, the Ollama arm and the "generate something first"
+        # arm all live in `ModelRuntime.logit_lens` now, beside every other
+        # measurement's. They were duplicated here because the lens was
+        # computed outside the runtime, and the comment this replaces recorded
+        # how that failed: with a recording open AND a model loaded, the lens
+        # reported the LIVE model's layers inside a session every other panel
+        # was drawing from the file. One guard, one place.
         try:
-            return await asyncio.to_thread(run)
+            return await asyncio.to_thread(runtime.logit_lens, top_k, kind)
         except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/lens")
+
+    @app.post("/api/features/evidence")
+    async def feature_evidence(request: Request):
+        """What a feature fires on in YOUR corpus, and what it promotes.
+
+        NOTHING IS DOWNLOADED — the corpus is a local file or a list of
+        strings you supply. The corpus name, its token count and the fraction
+        of features that never fired travel with every number, because a top
+        activation is a top activation IN THIS TEXT.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        from . import feature_corpus as fc
+
+        texts = body.get("texts")
+        label = str(body.get("label") or "")
+        try:
+            if body.get("file"):
+                texts, label = fc.load_corpus(str(body["file"]))
+            if not isinstance(texts, list) or not texts:
+                return JSONResponse(
+                    {
+                        "error": "a feature sweep needs text. Pass `texts` (a "
+                        "list of strings) or `file` (a .txt or .jsonl). "
+                        "Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            feature = body.get("feature")
+            return await asyncio.to_thread(
+                runtime.feature_evidence,
+                [str(t) for t in texts],
+                feature_id=int(feature) if feature is not None else None,
+                corpus_label=label,
+                top_k=int(body.get("top_k") or 10),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/features/evidence")
+
+    @app.post("/api/diff/models")
+    async def diff_models(request: Request):
+        """What a finetune changed, over a PROMPT SET rather than one prompt.
+
+        Loads each side ONCE, in sequence — 8 GB will not hold both, and the
+        models worth comparing are exactly the ones near that limit. Every
+        number comes back as a median over the prompt set with its middle
+        half, because a diff measured on one prompt is a sample.
+
+        Refuses a pair whose per-layer table would line up the wrong things —
+        different layer counts, hidden sizes or vocabularies — and names both
+        sides when it does.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        prompts = body.get("prompts")
+        if body.get("file"):
+            from . import feature_corpus as fc
+
+            try:
+                prompts, _ = fc.load_corpus(str(body["file"]))
+            except BadRequest as err:
+                return JSONResponse({"error": str(err)}, status_code=422)
+        if not isinstance(prompts, list):
+            return JSONResponse(
+                {
+                    "error": "this needs a prompt SET. Pass `prompts` (a list "
+                    "of strings) or `file` (a local .txt or .jsonl) — the "
+                    "whole output is a spread across them, and one prompt "
+                    "cannot produce one."
+                },
+                status_code=422,
+            )
+
+        try:
+            # Through the runtime rather than calling `model_diff.compare`
+            # directly: that is what keeps the result available to
+            # `export_session`, and it is where the accelerator settings and
+            # the receipt already live.
+            return await asyncio.to_thread(
+                runtime.diff_models,
+                str(body.get("a") or ""),
+                str(body.get("b") or ""),
+                [str(p) for p in prompts],
+                # OFF by default. The head half costs n_layers x n_heads
+                # forward passes per prompt PER SIDE -- 1,176 on gpt2 with
+                # four prompts, 5,412 on a 1.7B with six -- which is two
+                # orders of magnitude more than everything else in this
+                # comparison, so it is opted into rather than out of.
+                include_heads=bool(body.get("include_heads")),
+                # Far cheaper than the head half — 248 passes for a 24-token
+                # prompt over four — but still opted into, because a
+                # 500-token prompt is not.
+                include_tokens=bool(body.get("include_tokens")),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/diff/models")
+
+    @app.post("/api/custom/ablate")
+    async def custom_ablate(request: Request):
+        """What matters in the network YOU trained.
+
+        The custom panel maps one forward pass and says nothing causal. This
+        replaces each module output with its mean over your own samples, or
+        occludes each input region, and reports how far the answer moved —
+        every strong site against a null of the same shape.
+
+        Refuses rather than defaults: an adapter that does not declare TASK
+        gets no metric picked for it, and one with no sample_inputs() gets no
+        mean invented for it.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            return await asyncio.to_thread(
+                app.state.custom.ablate,
+                str(body.get("kind") or "layers"),
+                grid=int(body.get("grid") or 0),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/custom/ablate")
+
+    @app.post("/api/ground")
+    async def ground_answer(request: Request):
+        """Did the answer come from the document, or from the weights?
+
+        The question every local RAG interface leaves unanswered. NOTHING IS
+        DOWNLOADED and nothing is indexed: the document is text the caller
+        hands over or a local file, and every passage goes into the prompt.
+
+        Two numbers per passage, side by side, because the interesting case is
+        the one where they disagree — attention on a passage with no causal
+        dependence on it is what an answer coming from the weights looks like
+        from outside.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        document = body.get("document")
+        if body.get("file"):
+            from . import feature_corpus as fc
+
+            try:
+                texts, _ = fc.load_corpus(str(body["file"]))
+            except BadRequest as err:
+                return JSONResponse({"error": str(err)}, status_code=422)
+            # Blank line between lines, because that is exactly what
+            # `ground.split` treats as a passage boundary — a corpus file's
+            # one-per-line convention would otherwise arrive as a single
+            # undifferentiated passage.
+            document = "\n\n".join(texts)
+        if not isinstance(document, str) or not document.strip():
+            return JSONResponse(
+                {
+                    "error": "grounding needs a document. Pass `document` (the "
+                    "text) or `file` (a local .txt or .jsonl). Nothing is "
+                    "downloaded and nothing is indexed."
+                },
+                status_code=422,
+            )
+
+        try:
+            return await asyncio.to_thread(
+                runtime.ground_answer,
+                document,
+                str(body.get("question") or ""),
+                max_chunks=int(body.get("max_chunks") or 0),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/ground")
+
+    @app.post("/api/patchscope")
+    async def patchscope(request: Request):
+        """Ask the model to describe a hidden state, with two controls.
+
+        Its own surface, not a column beside the logit lens — the lens reports
+        tokens read through the unembedding, this reports a SENTENCE the model
+        produced, and side by side they would read as two measurements of one
+        thing.
+
+        The target prompt is returned with every response because it is part
+        of the result: two decodes taken under different targets are not
+        comparable, and the method's known failure is a target that describes
+        anything fluently.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.patchscope,
+                str(body.get("prompt") or ""),
+                source_layer=int(body.get("layer", 0)),
+                source_position=int(body.get("position", -1)),
+                target_prompt=str(body.get("target") or ""),
+                target_layer=(
+                    int(body["target_layer"])
+                    if body.get("target_layer") is not None
+                    else None
+                ),
+                max_new_tokens=int(body.get("max_new_tokens") or 12),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patchscope")
+
+    @app.post("/api/patch/path")
+    async def path_trace(request: Request):
+        """Which component wrote what makes a patching site matter.
+
+        The node grid says WHERE; this says WHAT PUT IT THERE. Same recovery
+        fraction, same eight same-norm control draws, same shifted-position
+        control — so an edge number and a node number can be read together.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.path_trace,
+                str(body.get("clean") or ""),
+                str(body.get("corrupt") or ""),
+                layer=int(body.get("layer", -1)),
+                position=int(body.get("position", -1)),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch/path")
+
+    @app.post("/api/probe")
+    async def probe_layers(request: Request):
+        """Fit a linear probe at every layer, with its null and majority line.
+
+        A layer inside the permutation null is reported as inside it. That is
+        the feature: "we have probes" is not worth shipping, "we show you when
+        your curve is inside the null" is.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        try:
+            return await asyncio.to_thread(
+                runtime.probe_layers,
+                body.get("examples") or [],
+                n_permutations=int(body.get("n_permutations") or 0),
+                save_as=str(body.get("save_as") or ""),
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/probe")
+
+    @app.get("/api/attention/types")
+    async def head_types(seq_len: int = 24, n_sequences: int = 6, seed: int = 0):
+        """Behavioural labels for every head, each gated on a measured null.
+
+        A label here must NEVER be read as explaining the ablation ranking:
+        the ranking measures what breaks when a head is removed, this measures
+        a positional habit on random repeated tokens, and a head can be
+        labelled and irrelevant or unlabelled and load-bearing.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.head_types, seq_len, n_sequences, seed
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/types")
+
+    @app.get("/api/attention/direct")
+    async def direct_attribution(position: int | None = None, top_k: int = 40):
+        """Direct logit attribution, beside the ablation ranking.
+
+        Sited here rather than in its own panel because the two answer related
+        questions and disagree, and a reader needs to see that: the ranking
+        says what breaks when a head is removed, this says what a head put
+        into the logit directly, and a head can be near zero here and still
+        carry the answer through a later head.
+        """
+        try:
+            return await asyncio.to_thread(runtime.direct_attribution, position, top_k)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/direct")
+
+    @app.get("/api/lens/tuned")
+    def tuned_lens_status() -> dict:
+        """Whether a translator has been fitted for the loaded model."""
+        return runtime.tuned_lens_status()
+
+    @app.post("/api/lens/tune")
+    async def train_tuned_lens(request: Request):
+        """Fit a per-layer translator on text you supply.
+
+        NOTHING IS FETCHED. Pretrained lenses exist on the Hub and pulling one
+        would break the offline promise the rest of this package keeps, so the
+        corpus comes from the caller: a list of strings, a local file, or the
+        prompts already in this machine's trace store.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
+
+        texts = body.get("texts")
+        source = body.get("file")
+        label = str(body.get("label") or "")
+        steps = int(body.get("steps") or 250)
+
+        try:
+            if source:
+                from . import sweep as sweep_mod
+
+                # The same reader `modelmri sweep` uses, so a corpus file that
+                # works for one works for the other rather than being two
+                # nearly-identical formats.
+                texts = sweep_mod.load_prompts(source)
+                label = label or Path(str(source)).name
+            if not isinstance(texts, list) or not texts:
+                return JSONResponse(
+                    {
+                        "error": "a tuned lens needs text to fit to. Pass "
+                        "`texts` (a list of strings) or `file` (a .txt or "
+                        ".jsonl). Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            out = await asyncio.to_thread(
+                runtime.train_tuned_lens,
+                [str(t) for t in texts],
+                corpus_label=label,
+                steps=steps,
+            )
+            return out
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/lens/tune")
 
     # ---------------------------------------------------------- custom models
     #
@@ -1064,6 +1471,279 @@ def create_app(
             "current": getattr(app.state, "vla_dataset", dataset_repo),
         }
 
+    @app.get("/api/vla/sweep/cost")
+    def vla_sweep_cost(
+        metric: str = "attention_entropy",
+        episode_stride: int = 1,
+        frame_stride: int = 25,
+    ):
+        """Frames and passes before the sweep starts.
+
+        No seconds unless this machine has been timed: a duration guessed from
+        somebody else's hardware is the kind of number people plan around.
+        """
+        from . import vla_sweep
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        status = app.state.vla.status()
+        try:
+            return vla_sweep.estimate(
+                reader,
+                metric,
+                episode_stride=episode_stride,
+                frame_stride=frame_stride,
+                grid=status.grid or None,
+            )
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.post("/api/vla/sweep")
+    async def vla_sweep_run(request: Request):
+        """One measurement over a strided sample of every episode.
+
+        Ranked by ONE stated measured quantity, with the stride in every
+        summary — a strided ranking can miss the worst frame entirely, and
+        that is the first thing a reader needs rather than a footnote.
+
+        No failure-mode names: a cluster labelled "dropped the object" that
+        ModelMRI never verified is exactly the fabrication this refuses.
+        """
+        from . import vla_sweep
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/vla/sweep")
+
+        def run():
+            out = vla_sweep.run(
+                app.state.vla,
+                reader,
+                str(body.get("metric") or "attention_entropy"),
+                episode_stride=int(body.get("episode_stride") or 1),
+                frame_stride=int(body.get("frame_stride") or 25),
+                occlusion_stride=int(body.get("occlusion_stride") or 0),
+            )
+            # Persisted so a sweep survives the process — the table is the
+            # point of running one at all.
+            vla_sweep.save(out)
+            payload = out.to_dict()
+            payload["strip"] = vla_sweep.heat_strip(out)
+            return payload
+
+        try:
+            return await asyncio.to_thread(run)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/sweep")
+
+    @app.post("/api/vla/share")
+    async def vla_share(request: Request):
+        """Write a robot finding to a `.mri` somebody else can open.
+
+        There is no portable, no-account artifact for robot-policy internals
+        anywhere: Foxglove archived its open-source Studio, Rerun's `.rrd`
+        carries what the robot recorded rather than what the network computed,
+        and HF Spaces need an upload and an account.
+
+        The frame travels at the resolution the POLICY saw, and the section
+        says so when it had to shrink it — a causal map is drawn over the
+        frame, and one silently shrunk puts every block in the wrong place.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/vla/share")
+
+        def run() -> bytes:
+            from . import session as session_mod
+            from . import vla as vla_mod
+
+            payload = vla_mod.share_payload(
+                app.state.vla,
+                reader,
+                episode=int(body.get("episode", 0)),
+                timestep=int(body.get("t", 0)),
+                layer=int(body.get("layer", -1)),
+                head=int(body.get("head", -1)),
+                occlusion=body.get("occlusion") or None,
+            )
+            status = app.state.vla.status()
+            return session_mod.build(
+                model_id=status.repo,
+                device=status.device,
+                dtype=None,
+                n_params=None,
+                # A robot finding has no token strip and no generation. The
+                # section carries the picture; the rest of the format's
+                # language-model shape stays empty rather than being filled
+                # with placeholders that would render as a run nobody made.
+                tokens=[],
+                prompt="",
+                generation="",
+                attention={},
+                n_layers=status.n_layers,
+                n_heads=status.n_heads,
+                note=str(body.get("note") or ""),
+                scope="one camera frame of one episode, with its causal map",
+                vla=payload,
+            )
+
+        try:
+            blob = await asyncio.to_thread(run)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/share")
+        return Response(
+            content=blob,
+            media_type="application/gzip",
+            headers={"Content-Disposition": 'attachment; filename="robot-finding.mri"'},
+        )
+
+    @app.post("/api/vla/occlude")
+    async def vla_occlude_frame(request: Request):
+        """What the policy's vision DEPENDED on, beside what it looked at.
+
+        Occludes each block of the camera frame, re-runs the vision tower and
+        reports how far the representation moved — every strong block against
+        a null of same-area occlusions at random locations, and the rank
+        correlation with the attention map for this same frame.
+
+        PERCEPTION ONLY: this is a shift in an embedding, not an effect on the
+        action, and the response says so in those words.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/vla/occlude")
+
+        episode = int(body.get("episode", 0))
+        timestep = int(body.get("t", 0))
+
+        def run():
+            from . import vla_occlude
+
+            frame = reader.raw_frame(episode, timestep)
+            # Other frames of the SAME episode set the scale. Frames from
+            # elsewhere would measure a spread this episode never shows.
+            info = next((e for e in reader.episodes() if e.index == episode), None)
+            span = info.length if info else 1
+            step = max(1, span // vla_occlude.SCALE_FRAMES)
+            scale = [reader.raw_frame(episode, t) for t in range(0, span, step)][
+                : vla_occlude.SCALE_FRAMES
+            ]
+            out = app.state.vla.occlude(
+                frame,
+                scale,
+                baseline=str(body.get("baseline") or "episode_mean"),
+                stride=int(body.get("stride") or 0),
+                layer=int(body.get("layer", -1)),
+                head=int(body.get("head", -1)),
+                # So a cached attention map from a DIFFERENT frame is not
+                # silently ranked against this frame's causal map.
+                key=(episode, timestep),
+                camera=reader.camera,
+            )
+            # No post-hoc patching of the three identity fields here any more:
+            # this route was the only caller that filled them in, so every
+            # other one reported episode 0 timestep 0. They are set inside the
+            # sweep now, from the same `key` the staleness check uses.
+            return out
+
+        try:
+            return await asyncio.to_thread(run)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/occlude")
+
+    @app.get("/api/vla/occlude/cost")
+    def vla_occlude_cost(stride: int = 0):
+        """What the sweep will cost, before it starts.
+
+        A 32x32 grid at stride 1 is over a thousand tower passes. Nobody
+        should discover that by waiting.
+        """
+        try:
+            return app.state.vla.occlusion_cost(stride)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/vla/audit")
+    async def vla_audit_dataset():
+        """Prove the loaded robot dataset is intact — or say where it is not.
+
+        NOTHING IS DOWNLOADED, no policy is loaded, no GPU is touched and
+        lerobot is not imported: this reads the files already on disk.
+
+        Every check reports what it measured and what it compared against.
+        There is deliberately no grade — a letter would be a summary of
+        somebody else's opinion about what matters in the reader's data.
+        """
+        from . import vla_audit as audit_mod
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/vla/audit")
+
+        try:
+            report = await asyncio.to_thread(audit_mod.audit, reader)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/audit")
+        return report.to_dict()
+
     @app.post("/api/vla/dataset")
     async def vla_set_dataset(req: VLADatasetRequest):
         """Switch datasets. Opens the new one before discarding the old."""
@@ -1181,6 +1861,63 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/vla/attention")
 
+    @app.post("/api/otel/v1/traces")
+    async def otel_ingest(request: Request):
+        """Accept an OTLP/HTTP JSON export, so an already-instrumented team
+        does not need this project to write a provider integration.
+
+        Point any OpenTelemetry exporter at it:
+
+            OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5900/api/otel
+            OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+
+        JSON only. OTLP's common wire format is protobuf, and reading it would
+        cost either a generated stub set or the OpenTelemetry SDK as a
+        dependency -- which `modelmri-record` exists without on purpose. A
+        protobuf body is refused with a sentence naming the limit rather than
+        mis-parsed into a trace that looks real.
+        """
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip()
+        if content_type == "application/x-protobuf":
+            return JSONResponse(
+                {
+                    "error": (
+                        "this endpoint reads OTLP/HTTP with a JSON body and "
+                        "does not speak protobuf. Set "
+                        "OTEL_EXPORTER_OTLP_PROTOCOL=http/json on the "
+                        "exporter, or put a collector in front that converts. "
+                        "Protobuf would mean a generated stub set or the "
+                        "OpenTelemetry SDK as a dependency, and this package "
+                        "is stdlib-only where it counts."
+                    )
+                },
+                status_code=415,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"error": "this request body is not JSON"}, status_code=422
+            )
+        try:
+            doc = await asyncio.to_thread(otel.ingest, payload)
+            trace_id = await asyncio.to_thread(traces.import_trace, doc)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/otel/v1/traces")
+        # partialSuccess with rejectedSpans 0 is what an OTLP client expects
+        # from a healthy collector, so an exporter pointed here sees a normal
+        # answer rather than a shape it has to special-case.
+        return {
+            "partialSuccess": {},
+            "id": trace_id,
+            "spans": len(doc.get("steps") or []),
+            "semconv": (doc.get("meta") or {}).get("semconv"),
+        }
+
     @app.post("/api/traces/import")
     async def traces_import(doc: dict):
         try:
@@ -1211,12 +1948,550 @@ def create_app(
         docs point at it."""
         return {"deleted": traces.clear(keep_demo=keep_demo)}
 
+    # BEFORE /api/traces/{trace_id}. FastAPI matches in definition order,
+    # so with this below it the literal path `search` was captured as a
+    # trace id and every query answered "trace not found".
+    @app.get("/api/telemetry")
+    async def read_telemetry():
+        """What the last generation cost, with the introspection cost split out.
+
+        Every local runner shows tokens/sec. None of them shows what being
+        looked at costs — and ModelMRI is slower than Ollama for a specific
+        reason: it forces eager attention and `output_attentions=True`, which
+        materialises `n_layers x n_heads x S x S`. At 4,096 tokens on a
+        12-layer, 12-head model that is 4.8 GB, larger than the weights.
+
+        204 before anything has been generated, because a bar full of zeros is
+        a claim about a run that never happened.
+        """
+        t = getattr(runtime, "last_telemetry", None)
+        if t is None:
+            return JSONResponse(
+                {"available": False, "reason": "nothing has been generated yet"},
+                status_code=200,
+            )
+        return {"available": True, **t.to_dict()}
+
+    @app.get("/api/gguf")
+    async def read_gguf(path: str):
+        """What is inside a GGUF, without loading it or touching the GPU.
+
+        The scanner has always found these and then refused them. It still
+        cannot RUN one — a quantised GGUF is not something transformers loads —
+        but that is a different claim from having nothing to say about it.
+        Reads the header only: a few hundred milliseconds and well under a
+        megabyte for a multi-gigabyte model.
+
+        Bits-per-weight is computed per tensor from the file's own table, so
+        the answer is arithmetic rather than the preset name every other runner
+        shows. Measured on Ollama's own blobs: a qwen3-0.6B labelled Q4_K
+        reads 5.499 bpw effective, because a third of its bytes are in Q6_K
+        and F16.
+        """
+        try:
+            # The same boundary the adapter loader uses, not a second one: a
+            # path arriving from a browser is only read if it sits under a
+            # root this server was already told about. `resolve_under_roots`
+            # raises AdapterError with the sentence to show.
+            target = await asyncio.to_thread(custom.resolve_under_roots, path)
+            return await asyncio.to_thread(lambda: gguf_read.read(target).to_dict())
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf")
+
+    @app.get("/api/gguf/plan")
+    async def plan_gguf(path: str, dtype: str | None = None):
+        """What loading this GGUF would cost, before loading it.
+
+        The header only — a few hundred kilobytes of a multi-gigabyte file.
+        Two figures, because they fail at different moments: the resident size
+        (parameters x dtype bytes, which has to sit on the device) and the
+        float32 transit (parameters x 4, which has to fit in host RAM while
+        the dequantiser runs). Neither is the file size, and the file size is
+        what people budget against.
+        """
+        try:
+            target = await asyncio.to_thread(custom.resolve_under_roots, path)
+            return await asyncio.to_thread(
+                lambda: runtime.plan_gguf(str(target), dtype=dtype)
+            )
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf/plan")
+
+    @app.post("/api/gguf/load")
+    async def load_gguf(body: GgufLoad):
+        """Load a GGUF as a full torch module, so every panel works on it.
+
+        Expensive and refusable. The Ollama backend runs the same file faster
+        and at its real bit width but can show you nothing; this dequantises
+        it into an ordinary module the lens and the ablation sweep can reach.
+        `confirm` overrides a tight fit and only a tight fit — "will not fit"
+        is that the RAM needed exceeds the RAM that exists.
+        """
+        try:
+            target = await asyncio.to_thread(custom.resolve_under_roots, body.path)
+            st = await asyncio.to_thread(
+                lambda: runtime.load_gguf(
+                    str(target), dtype=body.dtype, confirm=body.confirm
+                )
+            )
+            return st.to_dict()
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/gguf/load")
+
+    @app.post("/api/quantdiff/behaviour")
+    async def quantdiff_behaviour(body: QuantCompare):
+        """What quantisation cost the model's behaviour, on one prompt.
+
+        Expensive: it loads two models, one after the other, and UNLOADS
+        whatever is currently held to make room. Per-position KL between the
+        two next-token distributions, every position where the argmax flipped
+        with both candidates, and per-layer attention divergence.
+
+        One prompt is one sample. The prompt is in the response for that
+        reason, and the per-position series is returned whole rather than
+        averaged — an average hides the one position where the answer changed,
+        which is the position the feature exists to find.
+        """
+        try:
+            q = await asyncio.to_thread(custom.resolve_under_roots, body.quantised)
+            # The original may be a local checkpoint directory or a hub id, and
+            # which one is decided by SHAPE -- never by asking the filesystem.
+            #
+            # This used to be `if Path(original).exists()`, which cannot be
+            # asked about caller-supplied text without answering it: an
+            # existing path took the roots gate and got "outside the
+            # directories", a missing one fell through to the hub and got
+            # something else, so anyone able to call this route could test for
+            # the existence of any file on the machine. CodeQL called it
+            # uncontrolled data in a path expression and was right.
+            #
+            # Everything that is not hub-id-shaped now goes through the gate
+            # unconditionally, so both answers are the same sentence.
+            original = body.original
+            if not behavdiff.is_hub_id(original):
+                original = str(
+                    await asyncio.to_thread(custom.resolve_dir_under_roots, original)
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.compare_quantisation(
+                    str(q), original, body.prompt, want_attention=body.attention
+                )
+            )
+        except AdapterError as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/quantdiff/behaviour")
+
+    @app.get("/api/traces/search")
+    async def search_traces(q: str = "", limit: int = 100):
+        """Full-text search over every recorded step on this machine.
+
+        Free text plus allow-listed filters — `kind:tool_call`, `error:true`,
+        `duration>2000`, `name:pytest`. Results are steps rather than runs,
+        because what somebody is looking for is the tool call that failed, not
+        the hour it happened in.
+
+        The response names the engine that answered. FTS5 is compiled into
+        essentially every CPython SQLite, which is what makes this a `pip
+        install` rather than a ClickHouse container — but "essentially every"
+        is not "every", and a build without it degrades to a substring scan
+        and says so instead of quietly becoming a different feature.
+        """
+        try:
+            return await asyncio.to_thread(traces.search, q, min(int(limit), 500))
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/search")
+
     @app.get("/api/traces/{trace_id}")
     def trace_get(trace_id: str):
+        from . import ledger as ledger_mod
+
         doc = traces.get_trace(trace_id)
         if doc is None:
             return JSONResponse({"error": "trace not found"}, status_code=404)
+        steps = doc.get("steps") or []
+        doc["tokens"] = ledger_mod.roll_up(steps).to_dict()
+        doc["tokens_by_step"] = {
+            sid: roll.to_dict()
+            for sid, roll in ledger_mod.subtree_rollups(steps).items()
+        }
+        # A price file that cannot be read is reported as a field, not raised:
+        # the token counts above are complete and useful without it, and
+        # failing the whole trace view over a typo in MODELMRI_PRICES would
+        # take away the half that works.
+        try:
+            doc["cost"] = ledger_mod.bill(steps, ledger_mod.load_prices()).to_dict()
+        except BadRequest as err:
+            doc["cost"] = {"error": str(err), "means": str(err)}
         return doc
+
+    # An Inspect `.eval` log is a zip, so this takes bytes rather than a path:
+    # the panel drops a file onto it and the server never learns where on the
+    # reader's disk that file lives.
+    _EVAL_LIMIT = 200_000_000
+
+    @app.post("/api/traces/import/inspect")
+    async def import_inspect(request: Request, sample_id: str = ""):
+        from . import inspect_io
+
+        data = await request.body()
+        if len(data) > _EVAL_LIMIT:
+            return JSONResponse(
+                {
+                    "error": f"that log is larger than "
+                    f"{_EVAL_LIMIT // 1_000_000} MB. Read it with Inspect's "
+                    f"own viewer, or split the eval."
+                },
+                status_code=413,
+            )
+
+        def run() -> dict:
+            import tempfile
+
+            # Written to a temp file because `zipfile` wants a seekable
+            # source and holding a 200 MB archive in memory to read one
+            # sample out of it is the opposite of what the lazy reader is
+            # for. Deleted whatever happens.
+            #
+            # `ignore_cleanup_errors` because this runs on Windows, where a
+            # still-open handle makes the cleanup itself raise — which would
+            # fail a request whose work had already succeeded, throwing away
+            # a correct answer over a housekeeping error. The directory is
+            # temp; the OS reclaims it either way.
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                path = Path(tmp) / "upload.eval"
+                path.write_bytes(data)
+                head = inspect_io.header(path)
+                out = inspect_io.read_sample(path, sample_id=sample_id)
+                stored = traces.import_trace(out.trace)
+                return out.to_dict() | {
+                    "trace_id": stored,
+                    "header": head.to_dict(),
+                    "samples": [s.to_dict() for s in inspect_io.samples(path)],
+                }
+
+        try:
+            return await asyncio.to_thread(run)
+        except BadRequest as err:
+            # `InspectError` is one of these: an unrecognised schema version,
+            # a file that is not a zip, a sample the log does not carry.
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/import/inspect")
+
+    @app.get("/api/traces/{trace_id}/bundle/preview")
+    def bundle_preview(trace_id: str):
+        """What a shared bundle would contain — BEFORE it is written.
+
+        A share button that ships a file without showing what is in it asks
+        the user to trust a process they cannot see, and this is the one path
+        in the project where data leaves the machine.
+        """
+        from . import bundle as bundle_mod
+
+        doc = traces.get_trace(trace_id)
+        if doc is None:
+            return JSONResponse({"error": "trace not found"}, status_code=404)
+        try:
+            # The prompt as the runtime holds it. Absent when nothing has been
+            # generated yet, which is fine — the preview is about the trace
+            # half either way, and `prepare` scans "" harmlessly.
+            return bundle_mod.preview(
+                doc, prompt=getattr(runtime, "last_prompt", "") or ""
+            ).to_dict()
+        except BadRequest as err:
+            # `BundleError` is one of these, so a run too long to ship answers
+            # 422 through the same path as every other authored refusal.
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+    @app.get("/api/traces/{trace_id}/patterns")
+    def trace_patterns(trace_id: str, window_ms: int = 0):
+        """Structural findings for one run. No model, no network, no key."""
+        from . import patterns as patterns_mod
+
+        doc = traces.get_trace(trace_id)
+        if doc is None:
+            return JSONResponse({"error": "trace not found"}, status_code=404)
+        return patterns_mod.analyse(
+            doc.get("steps") or [],
+            window_ms=window_ms or patterns_mod.DEFAULT_RETRY_WINDOW_MS,
+        ).to_dict()
+
+    # ---------------------------------------------------------- OpenAI /v1
+    #
+    # So ModelMRI can be dropped into any client that speaks `/v1` — and so
+    # that client can ask for the internals of the completion it just got,
+    # which no other `/v1` can return.
+
+    @app.get("/v1/models")
+    def v1_models():
+        from . import openai_api
+
+        return openai_api.models_payload(runtime)
+
+    async def _v1_complete(body: dict, *, chat: bool):
+        from . import openai_api
+
+        openai_api.check_parameters(body)
+        prompt = openai_api.build_prompt(runtime, body)
+        model_name = str(body.get("model") or getattr(runtime, "hf_id", "") or "local")
+        max_tokens = int(
+            body.get("max_completion_tokens")
+            or body.get("max_tokens")
+            or openai_api.DEFAULT_MAX_TOKENS
+        )
+        temperature = float(body.get("temperature", 0.7))
+        want_logprobs = bool(body.get("logprobs"))
+        top_k = int(body.get("top_logprobs") or 0)
+        ask = body.get("modelmri") if isinstance(body.get("modelmri"), dict) else None
+
+        def generate() -> str:
+            return "".join(
+                runtime.generate_stream(prompt, max_tokens, temperature, commit=True)
+            )
+
+        if not body.get("stream"):
+            text = await asyncio.to_thread(generate)
+            logprobs = (
+                await asyncio.to_thread(openai_api.token_logprobs, runtime, top_k)
+                if want_logprobs
+                else None
+            )
+            extension = (
+                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                if ask
+                else None
+            )
+            telemetry = getattr(runtime, "last_telemetry", None)
+            return JSONResponse(
+                openai_api.completion_payload(
+                    text,
+                    model_name,
+                    chat=chat,
+                    prompt_tokens=int(getattr(telemetry, "prompt_tokens", 0) or 0),
+                    completion_tokens=int(
+                        getattr(telemetry, "generated_tokens", 0) or 0
+                    ),
+                    logprobs=logprobs,
+                    extension=extension,
+                )
+            )
+
+        # Streaming. The generator is a blocking iterator, so it is consumed
+        # off the event loop the same way `/api/generate` does it.
+        async def frames():
+            first = True
+            queue: asyncio.Queue = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+            done = object()
+
+            def pump():
+                # `generate_stream` is a BLOCKING iterator; consuming it on
+                # the event loop would stall every other request for the
+                # length of the generation. The sentinel goes through
+                # `finally` so a failure inside the generator still ends the
+                # stream instead of hanging the client forever.
+                try:
+                    for piece in runtime.generate_stream(
+                        prompt, max_tokens, temperature, commit=True
+                    ):
+                        loop.call_soon_threadsafe(queue.put_nowait, piece)
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, done)
+
+            task = asyncio.create_task(asyncio.to_thread(pump))
+            while True:
+                piece = await queue.get()
+                if piece is done:
+                    break
+                yield openai_api.chunk_payload(
+                    piece, model_name, chat=chat, first=first
+                )
+                first = False
+            # Re-raises whatever the generator raised, so a mid-stream failure
+            # surfaces rather than ending as a clean [DONE].
+            await task
+            extension = (
+                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                if ask
+                else None
+            )
+            yield openai_api.final_chunk(model_name, chat=chat, extension=extension)
+
+        return StreamingResponse(frames(), media_type="text/event-stream")
+
+    @app.post("/v1/chat/completions")
+    async def v1_chat(body: dict):
+        try:
+            return await _v1_complete(body, chat=True)
+        except Refusal as err:
+            return JSONResponse({"error": {"message": str(err)}}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": {"message": str(err)}}, status_code=400)
+        except Exception as err:
+            return _internal(err, "/v1/chat/completions")
+
+    @app.post("/v1/completions")
+    async def v1_completions(body: dict):
+        try:
+            return await _v1_complete(body, chat=False)
+        except Refusal as err:
+            return JSONResponse({"error": {"message": str(err)}}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": {"message": str(err)}}, status_code=400)
+        except Exception as err:
+            return _internal(err, "/v1/completions")
+
+    @app.post("/api/judge")
+    async def judge_score(body: dict):
+        """Score a rubric by reading the loaded model's probability mass.
+
+        One forward pass per paraphrase, no generation. Refuses when the model
+        did not put enough mass on the verdict tokens to have answered at all,
+        which is a 409 like every other deliberate no.
+        """
+        from . import judge as judge_mod
+
+        def run() -> dict:
+            model = getattr(runtime, "model", None)
+            tokenizer = getattr(runtime, "tokenizer", None)
+            if model is None or tokenizer is None:
+                raise Refusal(
+                    "No model is loaded to judge with. This reads the "
+                    "probability mass of the model on THIS machine — there is "
+                    "no hosted judge behind it."
+                )
+            out = judge_mod.score(
+                model,
+                tokenizer,
+                str(body.get("text") or ""),
+                str(body.get("rubric") or ""),
+                n_paraphrases=int(body.get("n_paraphrases") or 0),
+                device=str(getattr(runtime, "device", "cpu")),
+            )
+            return out.to_dict()
+
+        try:
+            return await asyncio.to_thread(run)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/judge")
+
+    @app.post("/api/judge/plan")
+    def judge_plan(body: dict):
+        """The prompts that would be run, before any of them is."""
+        from . import judge as judge_mod
+
+        try:
+            prompts = judge_mod.plan(
+                str(body.get("text") or ""),
+                str(body.get("rubric") or ""),
+                int(body.get("n_paraphrases") or 0),
+            )
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        return {"prompts": prompts, "n_passes": len(prompts)}
+
+    @app.post("/api/rubric/score")
+    async def rubric_score(body: dict, limit: int = 500):
+        """Score every recorded run against exact predicates. No model."""
+        from . import rubric as rubric_mod
+
+        def run() -> dict:
+            rules = rubric_mod.parse(body.get("rules", body))
+            available = len(traces.list_traces())
+            report = rubric_mod.score(traces.all_traces_with_steps(limit), rules)
+            out = report.to_dict()
+            # The cap, stated. A rubric answered over 500 of 4,000 runs is a
+            # different claim from one answered over all of them, and
+            # `slowest_percent` is a claim ABOUT the set it was measured on.
+            out["n_traces_available"] = available
+            out["truncated"] = max(0, available - report.n_traces)
+            return out
+
+        try:
+            return await asyncio.to_thread(run)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/rubric/score")
+
+    @app.get("/api/rubric")
+    def rubric_list():
+        return traces.rubrics()
+
+    @app.post("/api/rubric")
+    def rubric_save(body: dict):
+        from . import rubric as rubric_mod
+
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return JSONResponse(
+                {"error": "a saved rubric needs a name."}, status_code=422
+            )
+        try:
+            rules = rubric_mod.parse(body.get("rules", []))
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        traces.save_rubric(name, rules)
+        return {"name": name, "n_rules": len(rules)}
+
+    @app.delete("/api/rubric/{name}")
+    def rubric_delete(name: str):
+        return {"deleted": traces.delete_rubric(name)}
+
+    @app.get("/api/patterns/across")
+    def patterns_across(name: str = "", limit: int = 50):
+        """The same structural finding, counted over many recorded runs.
+
+        `name` narrows to one agent by trace name — a pattern that appears in
+        12 of 19 runs of the SAME agent is a different claim from one seen
+        across 19 unrelated runs.
+        """
+        from . import patterns as patterns_mod
+
+        summaries = traces.list_traces()
+        if name:
+            summaries = [s for s in summaries if str(s.get("name") or "") == name]
+        # Capped, and the cap is reported — a truncated sweep whose "12 of 19"
+        # silently means "12 of the 19 newest" is a different number.
+        chosen = summaries[: max(1, min(int(limit or 50), 500))]
+        docs = [d for d in (traces.get_trace(str(s.get("id"))) for s in chosen) if d]
+        found = [r.to_dict() for r in patterns_mod.across_runs(docs)]
+        return {
+            "findings": found,
+            "n_runs": len(docs),
+            "n_runs_available": len(summaries),
+            "truncated": max(0, len(summaries) - len(docs)),
+            "name": name,
+        }
 
     @app.get("/api/attention")
     async def attention(layer: int = 0, head: int = 0, variant: str = "live"):
@@ -1273,6 +2548,106 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate")
+
+    @app.get("/api/attention/ablate/estimate")
+    async def estimate_ablation(
+        layer: int | None = None, baseline: str = "zero", scope: str = "layer"
+    ):
+        """What this sweep would cost on THIS machine, before it is started.
+
+        The pass count is exact and portable; the seconds and the peak memory
+        are projected from one probe pass here and are labelled as one sample.
+        Matters most for `baseline=resample`, which is `RESAMPLE_DRAWS` times
+        the work — 98 passes against 14 for one gpt2 layer.
+        """
+        target = None if scope == "all" else (layer if layer is not None else 0)
+        try:
+            return await asyncio.to_thread(runtime.estimate_ablation, target, baseline)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/ablate/estimate")
+
+    @app.post("/api/traces/{trace_id}/steps/{step_id}/adopt")
+    async def adopt_step(trace_id: str, step_id: str):
+        """Open a recorded agent step in the mechanistic panels.
+
+        The join no hosted tracing platform can build: they stop at the API
+        boundary and never hold the weights. A step recorded from a local model
+        carries its token ids, so it can be re-established as the current
+        generation and every panel — attention, lens, ablation, patching, SAE —
+        reads it with no changes.
+
+        409 when the step came from a hosted API (no weights here), when the
+        wrong model is loaded, or when re-tokenising the prompt disagrees with
+        what the recorder captured. That last one is the important refusal:
+        near-identical ids would point every panel at a sequence the model
+        never saw, and nothing downstream would notice.
+        """
+        try:
+            doc = await asyncio.to_thread(traces.get_trace, trace_id)
+            if doc is None:
+                return JSONResponse({"error": "no such trace"}, status_code=404)
+            step = next((s for s in doc["steps"] if s["id"] == step_id), None)
+            if step is None:
+                return JSONResponse({"error": "no such step"}, status_code=404)
+            return await asyncio.to_thread(runtime.adopt_step, step)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/traces/adopt")
+
+    @app.get("/api/attention/control")
+    async def control_ranking(
+        layer: int | None = None, baseline: str = "zero", seed: int = 0
+    ):
+        """The same ranking on an untrained twin of this architecture.
+
+        Answers the question underneath every ranking in this tool: would this
+        measurement have produced a confident, ordered list anyway? Builds the
+        model from `config.json` alone — no weights fetched, works offline —
+        seeds it, runs the identical `rank_heads` over the same tokens, and
+        reports the rank correlation with the real one.
+
+        Costs a second model in memory for the duration, and two sweeps.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.control_ranking,
+                layer if layer is not None else 0,
+                baseline,
+                seed,
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/control")
+
+    @app.get("/api/attention/baselines")
+    async def compare_baselines(layer: int | None = None):
+        """Every baseline on one layer, and how much they disagree.
+
+        Expensive on purpose — it runs all three, so it is a deliberate action
+        rather than something the panel does on load. Ask
+        `/api/attention/ablate/estimate?baseline=resample` first; resample
+        dominates the total.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.compare_baselines, layer if layer is not None else 0
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/baselines")
 
     @app.post("/api/patch")
     async def patch_trace(req: PatchRequest):
@@ -1366,10 +2741,67 @@ def create_app(
     def session_state() -> dict:
         return runtime.session_info()
 
+    @app.get("/api/graph")
+    def graph() -> dict:
+        """An attribution graph carried by the open `.mri`, if it has one.
+
+        The same shape the viewer's own shim answers, so a graph looks
+        identical whether it is opened in the app or in the zero-install
+        viewer. `available: False` is a state, not an error: most sessions
+        have no graph.
+
+        Provenance is checked here too, not only at parse. A graph rendered
+        under ModelMRI's chrome without saying who computed it is the
+        confusion this whole feature exists to prevent, and the guard belongs
+        on every path that can reach a screen.
+        """
+        replay = runtime.replay
+        g = getattr(replay, "graph", None) if replay is not None else None
+        if not g or not g.get("n_nodes"):
+            return {"available": False}
+        claim = (g.get("provenance") or {}).get("measured_by")
+        # A non-empty string, not merely truthy: `true` passes a truthiness
+        # test and renders as nothing.
+        if not (isinstance(claim, str) and claim.strip()):
+            return {
+                "available": False,
+                "error": (
+                    "this session carries an attribution graph with no "
+                    "provenance, so it is not rendered."
+                ),
+            }
+        return {
+            "available": True,
+            "n_nodes": g["n_nodes"],
+            "edges": g.get("edges") or [],
+            "provenance": g["provenance"],
+            "prompt": g.get("prompt") or "",
+            "summary": g.get("summary") or {},
+            "notes": g.get("notes") or [],
+        }
+
     @app.get("/api/session/export")
-    async def session_export(layer: int = 0, head: int = 0, note: str = ""):
+    async def session_export(
+        layer: int = 0,
+        head: int = 0,
+        note: str = "",
+        trace_id: str = "",
+        step_ref: str = "",
+    ):
+        # The agent run, when the caller asked for one. Fetched here rather
+        # than inside the runtime so the export path keeps knowing nothing
+        # about the trace store.
+        run = None
+        if trace_id:
+            run = traces.get_trace(trace_id)
+            if run is None:
+                return JSONResponse(
+                    {"error": f"no trace {trace_id!r} to bundle"}, status_code=404
+                )
         try:
-            blob = await asyncio.to_thread(runtime.export_session, layer, head, note)
+            blob = await asyncio.to_thread(
+                runtime.export_session, layer, head, note, run, step_ref
+            )
         except Refusal as err:
             return JSONResponse({"error": str(err)}, status_code=409)
         except BadRequest as err:

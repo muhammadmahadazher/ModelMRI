@@ -231,7 +231,23 @@ def allowed_roots() -> list[Path]:
 
 
 def resolve_under_roots(path: str | Path) -> Path:
-    """Resolve `path`, or raise if it escapes the allowed roots."""
+    """Resolve `path` to an existing FILE, or raise if it escapes the roots."""
+    return _under_roots(path, want="file")
+
+
+def resolve_dir_under_roots(path: str | Path) -> Path:
+    """The same boundary, for a directory.
+
+    A full-precision checkpoint is a directory of safetensors, so the
+    quantisation comparison needs to name one. Splitting the check by kind
+    rather than relaxing `resolve_under_roots` to accept both: a caller that
+    wants a file and is handed a directory has a bug, and the two messages say
+    different things about what to do next.
+    """
+    return _under_roots(path, want="dir")
+
+
+def _under_roots(path: str | Path, *, want: str) -> Path:
     try:
         p = Path(path).expanduser().resolve(strict=False)
     except OSError as err:
@@ -258,8 +274,10 @@ def resolve_under_roots(path: str | Path) -> Path:
 
     if not p.exists():
         raise AdapterError(f"{p} does not exist")
-    if not p.is_file():
+    if want == "file" and not p.is_file():
         raise AdapterError(f"{p} is not a file")
+    if want == "dir" and not p.is_dir():
+        raise AdapterError(f"{p} is not a directory")
     return p
 
 
@@ -311,7 +329,13 @@ def _import_adapter(path: Path):
 
 
 def load_from_adapter(path: Path):
-    """Return (model, example_input, labels) from an adapter file."""
+    """Return (model, example_input, labels, module) from an adapter file.
+
+    The MODULE comes back too, because the causal sweep needs the adapter's
+    declared `TASK` and its `sample_inputs()`, and re-importing the file to
+    read them would run the reader's top-level code a second time — and could
+    hand back a different model from the one being measured.
+    """
     import torch
 
     module = _import_adapter(path)
@@ -361,7 +385,7 @@ def load_from_adapter(path: Path):
             # failing over a cosmetic attribute.
             labels = None
 
-    return model, example, labels
+    return model, example, labels, module
 
 
 # WHOSE EXCEPTION IT IS, WHICH IS THE ONLY QUESTION THAT MATTERS HERE.
@@ -798,6 +822,12 @@ class CustomHandle:
         self.status_ = CustomStatus()
         self.rows: list[LayerStat] = []
         self.meta: dict = {}
+        # The adapter module itself, kept only for `.py` loads. The causal
+        # sweep needs two things `load()` does not return -- the declared TASK
+        # and `sample_inputs()` -- and re-importing the file to read them
+        # would run the reader's top-level code a second time and could
+        # produce a DIFFERENT model from the one being measured.
+        self.module = None
 
     def status(self) -> CustomStatus:
         return self.status_
@@ -806,6 +836,7 @@ class CustomHandle:
         with self._lock:
             self.model = None
             self.example = None
+            self.module = None
             self.rows = []
             self.meta = {}
             self.status_ = CustomStatus()
@@ -817,11 +848,11 @@ class CustomHandle:
         suffix = p.suffix.lower()
 
         if suffix == ".py":
-            model, example, labels = load_from_adapter(p)
+            model, example, labels, module = load_from_adapter(p)
             source = "adapter"
         elif suffix in (".pt", ".pth", ".ptc", ".torchscript"):
             model = load_torchscript(p)
-            example, labels = None, None
+            example, labels, module = None, None, None
             source = "torchscript"
         else:
             raise AdapterError(
@@ -840,6 +871,7 @@ class CustomHandle:
         with self._lock:
             self.model = model
             self.example = example
+            self.module = module
             self.rows = []
             self.meta = {}
             self.status_ = CustomStatus(
@@ -912,6 +944,44 @@ class CustomHandle:
             "labels": status.labels,
             **meta,
         }
+
+    def ablate(self, kind: str = "layers", *, grid: int = 0) -> dict:
+        """Sweep this model causally. Blocking — use a thread.
+
+        `custom.run` is descriptive: it says what each layer emitted. This
+        says what the answer would be without it, which is a different
+        question and the only one that supports the word "matters".
+        """
+        from . import custom_ablate as ablate_mod
+
+        with self._lock:
+            model = self.model
+            module = self.module
+            source = self.status_.source
+        if model is None:
+            raise AdapterError("no custom model is loaded")
+        if module is None:
+            raise AdapterError(
+                f"a causal sweep needs the adapter that built this model, and "
+                f"this one was loaded from {source or 'a file'} rather than a "
+                f".py adapter. TorchScript carries weights and no way to say "
+                f"what the model is for or what its real inputs look like — "
+                f"both of which this measurement needs to be honest. Point "
+                f"ModelMRI at an adapter instead."
+            )
+
+        task = ablate_mod.read_task(module)
+        samples = ablate_mod.read_samples(module)
+        if kind == "inputs":
+            return ablate_mod.sweep_inputs(
+                model,
+                samples,
+                task=task,
+                grid=grid or ablate_mod.DEFAULT_PATCH_GRID,
+            ).to_dict()
+        if kind == "layers":
+            return ablate_mod.sweep_layers(model, samples, task=task).to_dict()
+        raise AdapterError(f"unknown sweep {kind!r} — expected 'layers' or 'inputs'.")
 
 
 def _wants_integer_input(model) -> bool:
@@ -1055,11 +1125,20 @@ def checkpoint_kind(path: Path) -> str:
     directory is a read of the file's index -- no unpickling, no import, and
     nothing from the file is run.
 
-    Returns "torchscript" | "checkpoint" | "legacy" | "unreadable". Never
-    raises: this labels a row in a candidate list, and a file that cannot be
-    inspected is still a file worth showing with an honest label on it.
+    Returns "gguf" | "torchscript" | "checkpoint" | "legacy" | "unreadable".
+    Never raises: this labels a row in a candidate list, and a file that cannot
+    be inspected is still a file worth showing with an honest label on it.
     """
     import zipfile
+
+    # GGUF is not a zip and never will be, so it is decided by its magic bytes
+    # before the archive logic below gets a chance to call it unreadable.
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) == b"GGUF":
+                return "gguf"
+    except OSError:
+        return "unreadable"
 
     try:
         # Explicitly, because `is_zipfile` answers False for a path that does
@@ -1111,7 +1190,12 @@ def find_torchscript(limit: int = 40) -> list[dict]:
     for base in allowed_roots():
         if not base.is_dir():
             continue
-        for pattern in ("*.pt", "*.pth", "*.torchscript"):
+        # `.gguf` is here because the scanner used to find the format most
+        # people running models locally actually have and then not list it at
+        # all — so the panel that exists to say "here is what is on your disk"
+        # was silently omitting most of it. It still cannot be RUN, and
+        # `checkpoint_kind` labels it so, but it can now be READ.
+        for pattern in ("*.pt", "*.pth", "*.torchscript", "*.gguf"):
             for path in sorted(base.rglob(pattern)):
                 if len(out) >= limit:
                     return out

@@ -79,7 +79,8 @@ deliberate — it quotes what the sweep will cost, and it cannot quote a number
 it has not measured *on your machine*.
 
 The portable part is the pass count: `n_heads + 2` for one layer,
-`n_layers × n_heads + 2` for the model. gpt2 is 146 passes, Qwen3-0.6B is 450.
+`n_layers × n_heads + 2` for the model. gpt2 is 146 passes; Qwen3-0.6B and
+Qwen3-1.7B are both 450, being the same 28 x 16 shape at different widths.
 
 What a pass costs is not portable, and this surprised me. On one RTX 4060, the
 same model measured between **12 and 71 ms/pass** depending on the session —
@@ -118,11 +119,16 @@ actually make.
       is named on screen.
 
 And the claim it refuses to make: these are **not** each head's share of the
-prediction. On gpt2 layer 0 the twelve per-head scores sum to 1.995 while
-zeroing the whole layer gives 0.208 — eight times too much. On
-gemma-3-270m-it layer 0 it inverts: four per-head scores sum to 0.0007
-against 6.57 for the layer, so every head looks irrelevant alone while the
-layer is load-bearing. Each score says one thing only: removing *this* head,
+prediction, and the error runs in **both** directions depending on the model.
+On gpt2 layer 0 the twelve per-head scores sum to 1.995 while zeroing the whole
+layer gives 0.208 — roughly ten times too much. On Qwen3-1.7B layer 0 it
+inverts: sixteen per-head scores sum to 2.325 against 14.394 for the layer, six
+times too little. On gemma-3-270m-it it inverts harder still, 0.0007 against
+6.57, so every head looks irrelevant alone while the layer is load-bearing.
+
+There is no correction factor to apply here, which is the point. Whether the
+parts over- or under-shoot the whole is a property of the model in front of
+you. Each score says one thing only: removing *this* head,
 on its own, moves the answer this much.
 
 Scores at or below the measured noise floor are greyed rather than ranked.
