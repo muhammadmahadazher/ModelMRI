@@ -2417,6 +2417,80 @@ class ModelRuntime:
             )
             return out
 
+    def patch_graph(
+        self,
+        clean: str,
+        corrupt: str,
+        *,
+        depth: int = 0,
+        max_receivers: int = 0,
+    ) -> dict:
+        """A patching graph: what wrote the thing that wrote the answer.
+
+        The node grid says WHERE the answer is carried and `path_trace` says
+        what wrote into one receiver. This asks that second question again of
+        the senders that survived their controls, which is the question a
+        circuit view is actually opened for.
+
+        A PATCHING graph, never an attribution graph: circuit-tracer's are
+        built from transcoders and this is a different object from a different
+        measurement. `circuit.py` reads one of theirs; this computes one of
+        ours, and the payload says so in both places.
+        """
+        from . import patch
+        from . import patch_graph as graph_mod
+
+        depth = int(depth or graph_mod.DEFAULT_DEPTH)
+        max_receivers = int(max_receivers or graph_mod.DEFAULT_MAX_RECEIVERS)
+
+        # The node grid FIRST, and its own flagged sites are the seeds. A
+        # threshold invented here would be a second opinion about which cells
+        # matter, disagreeing with the grid the reader is looking at.
+        grid = self.patch_trace(clean, corrupt)
+        sites = list(grid.get("sites") or [])
+
+        n_layers = int(self.model.config.num_hidden_layers)
+        blocks = [self._block(i) for i in range(n_layers)]
+
+        def trace_fn(layer: int, position: int) -> dict:
+            with self._lock:
+                return patch.path_trace(
+                    self.model,
+                    self.tokenizer,
+                    blocks,
+                    clean,
+                    corrupt,
+                    device=self.device,
+                    receiver_layer=layer,
+                    receiver_position=position,
+                )
+
+        try:
+            built = graph_mod.build(
+                trace_fn,
+                sites,
+                depth=depth,
+                max_receivers=max_receivers,
+                clean=clean,
+                corrupt=corrupt,
+                answer=str((grid.get("clean") or {}).get("answer") or ""),
+            )
+        except patch.PatchError as err:
+            raise BadRequest(str(err)) from err  # leak-ok: authored
+
+        out = built.to_dict()
+        # The grid's own passes count too -- it was run to get the seeds, and
+        # a cost that omits the step it depended on is not the cost.
+        out["passes"] = int(out.get("passes") or 0) + int(grid.get("passes") or 0)
+        out["receipt"] = self.receipt(
+            "patch_graph",
+            clean_sha256=receipts.digest(clean),
+            corrupt_sha256=receipts.digest(corrupt),
+            depth=depth,
+            max_receivers=max_receivers,
+        )
+        return out
+
     def probe_layers(
         self,
         examples: list[dict],

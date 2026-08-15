@@ -228,6 +228,17 @@ class CustomRunRequest(BaseModel):
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
 
 
+class PatchGraphRequest(BaseModel):
+    """A pair, and how far back to walk from what the grid flagged."""
+
+    clean: str
+    corrupt: str
+    # 0 means "the module's default". Named rather than defaulted here so the
+    # two do not drift apart the way a duplicated constant always does.
+    depth: int = 0
+    max_receivers: int = 0
+
+
 class PatchRequest(BaseModel):
     # Two prompts, not one, and the pair is the unit of meaning: neither is
     # usable without the other, so they arrive together rather than as a
@@ -2779,6 +2790,51 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch")
+
+    @app.post("/api/patch/graph")
+    async def patch_graph(req: PatchGraphRequest):
+        """A PATCHING graph: what wrote the thing that wrote the answer.
+
+        `/api/patch` says WHERE the answer is carried and `path_trace` says
+        what wrote into one receiver. This asks that second question again of
+        the senders that survived their controls -- which is the question a
+        circuit view is actually opened for, and the one neither of the others
+        answers.
+
+        NOT AN ATTRIBUTION GRAPH, and the payload says so in `means`.
+        circuit-tracer's are built from transcoders, which exist for a handful
+        of models and whose gemma-2-2b set does not fit 8 GB. This is a
+        different object from a different measurement, built out of nothing but
+        the model already loaded. `/api/graph` READS one of theirs; this
+        computes one of ours.
+
+        Every edge carries the same eight same-norm draws the node grid uses,
+        and an edge that does not beat them is returned marked rather than
+        dropped -- "we tested this and it did not survive" and "we never saw
+        this" are different findings. The seeding rule and the prune threshold
+        travel in the payload for the same reason: edge count is quadratic in
+        sites, so anything drawable is a subset, and a graph whose edges were
+        chosen by an undisclosed rule is a picture rather than a measurement.
+
+        Expensive. One `path_trace` per receiver per level, each of which is
+        one pass per earlier component plus its controls. 409 when there is no
+        live model; 422 when the pair cannot be compared or the walk has
+        nothing to start from.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.patch_graph,
+                req.clean,
+                req.corrupt,
+                depth=req.depth,
+                max_receivers=req.max_receivers,
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch/graph")
 
     @app.get("/api/attention/attribute")
     async def attribute_tokens(position: int | None = None):

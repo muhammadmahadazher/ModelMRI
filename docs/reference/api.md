@@ -164,6 +164,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/lens/tune` | Train Tuned Lens |
 | `POST` | `/api/otel/v1/traces` | Otel Ingest |
 | `POST` | `/api/patch` | Patch Trace |
+| `POST` | `/api/patch/graph` | Patch Graph |
 | `POST` | `/api/patch/path` | Path Trace |
 | `POST` | `/api/patchscope` | Patchscope |
 | `POST` | `/api/probe` | Probe Layers |
