@@ -126,10 +126,12 @@ def test_the_scope_names_what_it_did_not_split(traced):
 
 
 def test_the_resolution_of_the_recovery_fraction_is_reported(traced):
-    """MEASURED: on gpt2 in bfloat16 the logits reach 128, where one
-    representable step is 1.0, so every sender scored a multiple of 0.125 on
-    the reference pair and a dozen tied exactly. Without this number there is
-    nothing on screen to say which part of the ordering is real."""
+    """MEASURED on gpt2 in bfloat16, WHICH IS NOT EVERY MACHINE: there the
+    logits reach 128, one representable step is 1.0, every sender scored a
+    multiple of 0.125 and 23 tied exactly. Loaded in float32 the same pair
+    ties nothing. Both are correct readings of different precisions — which
+    is the point of reporting the number rather than a threshold. What is
+    asserted here is only that it is reported at all."""
     resolution = traced["recovery_resolution"]
     assert resolution > 0
     assert "RESOLUTION" in traced["means"]
@@ -142,15 +144,46 @@ def test_the_node_grid_reports_the_same_resolution(gpt2):
     assert node["recovery_resolution"] > 0
 
 
-def test_many_senders_really_are_tied_at_this_precision(traced):
-    """The reason the field exists, asserted rather than described."""
+def test_the_tie_count_matches_the_precision_the_model_is_actually_in(traced, gpt2):
+    """The reason the field exists — asserted against the dtype in play.
+
+    This used to assert `len(tied) > 1` unconditionally, and that is a
+    reading from ONE machine: gpt2 in bfloat16 on a CUDA card, where a logit
+    near 128 has a representable step of 1.0 and every sender lands on a grid
+    of 0.125, tying 23 of them. CI has no GPU, the same model loads in
+    float32, the grid is roughly 2e-5 — nothing ties, and the assertion
+    failed on ubuntu, both Windows cells and both macOS cells while passing
+    on the card it was written on.
+
+    A number measured once is a sample, not a property. `recovery_resolution`
+    reads the model's own dtype, so it is right in either regime; the test is
+    what was wrong. It now asserts the claim each regime actually supports.
+    """
+    import torch
+
     resolution = traced["recovery_resolution"]
     top = traced["senders"][0]["recovery"]
     tied = [row for row in traced["senders"] if abs(row["recovery"] - top) < resolution]
-    assert len(tied) > 1, (
-        "on this pair the quantisation ties several senders with the top one, "
-        "which is exactly what the resolution field warns about"
-    )
+    assert resolution > 0
+
+    bits = torch.finfo(next(gpt2.model.parameters()).dtype).bits
+    if bits <= 16:
+        assert len(tied) > 1, (
+            f"at {bits}-bit precision the recovery grid is coarse enough that "
+            f"several senders tie with the top one, which is what the "
+            f"resolution field warns about — found {len(tied)} at "
+            f"resolution {resolution}"
+        )
+    else:
+        # 32 bits or more: the grid is far finer than the scores, so the
+        # ordering near the top is real and the field's job is to say so
+        # rather than to flag ties. A resolution as large as the top score
+        # would mean the step was misread — the failure this guards.
+        assert resolution < abs(top) or top == 0, (
+            f"a resolution of {resolution} against a top recovery of {top} "
+            f"says the whole ranking is noise, at {bits}-bit precision where "
+            f"it should not be"
+        )
 
 
 # ------------------------------------------------------------- it refuses
