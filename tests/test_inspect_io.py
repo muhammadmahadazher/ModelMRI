@@ -416,3 +416,57 @@ def test_an_uncapped_listing_says_nothing_about_a_cap(tmp_path):
     said = str(caught.value)
     assert "carries 3 sample(s)" in said
     assert "Only the first" not in said
+
+
+def test_a_mixed_timeline_stays_in_order():
+    """`base = started` anchored the first timestamped event to ITSELF, so it
+    got offset 0 — the same x as the first synthetic block.
+
+    MEASURED on three untimestamped events followed by two timestamped and
+    one more untimestamped: [0, 10, 20, 0, 2000, 50]. The fourth step renders
+    on top of the first and BEFORE the two between them, and the last lands
+    back at 50 after a block at 2000. The comment above that line promises
+    exactly what this did not do — "rather than all-zero, which would stack
+    every block on top of each other at x=0".
+    """
+    events = [
+        {"event": "model"},
+        {"event": "tool"},
+        {"event": "tool"},
+        {"event": "model", "timestamp": "2024-01-01T00:00:10Z"},
+        {"event": "tool", "timestamp": "2024-01-01T00:00:12Z"},
+        {"event": "tool"},
+    ]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+
+    assert offsets == sorted(offsets), f"the timeline runs backwards: {offsets}"
+    assert len(set(offsets)) == len(offsets), f"two blocks share an x: {offsets}"
+    # The real 2s gap between the two timestamped events survives.
+    assert offsets[4] - offsets[3] == 2000
+
+
+def test_an_all_timestamped_sample_is_measured_from_its_first_event():
+    """The ordinary case must be unchanged: offsets are real milliseconds
+    from the start of the sample."""
+    events = [
+        {"event": "model", "timestamp": "2024-01-01T00:00:00Z"},
+        {"event": "tool", "timestamp": "2024-01-01T00:00:03Z"},
+    ]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+    assert offsets == [0, 3000]
+
+
+def test_an_all_untimestamped_sample_still_ladders():
+    """The other end, which the comment already described and which worked."""
+    events = [{"event": "model"}, {"event": "tool"}, {"event": "tool"}]
+    offsets = [
+        s["started_ms"]
+        for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
+    ]
+    assert offsets == [0, 10, 20]

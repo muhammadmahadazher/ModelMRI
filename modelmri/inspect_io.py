@@ -258,6 +258,9 @@ def _steps_from_events(events, mapping: Mapping) -> list:
     """Inspect events, in order, as steps."""
     steps = []
     base = None
+    # Where the synthetic ladder has reached, so a real timestamp arriving
+    # later CONTINUES it instead of restarting the axis at zero.
+    next_synthetic = 0
     for event in events:
         if not isinstance(event, dict):
             continue
@@ -274,16 +277,28 @@ def _steps_from_events(events, mapping: Mapping) -> list:
         # block on top of each other at x=0.
         started = _epoch_ms(event.get("timestamp"))
         if started is not None and base is None:
-            base = started
+            # ANCHORED TO THE LADDER, not to itself. `base = started` made the
+            # first timestamped event's offset 0 -- so in a sample whose first
+            # three events carry no timestamp and whose fourth does, the
+            # fourth rendered on top of the first and BEFORE the two between
+            # them. The comment above promises the opposite ("rather than
+            # all-zero, which would stack every block on top of each other at
+            # x=0"), and the two schemes were simply not on one origin.
+            base = started - next_synthetic
         offset = (
             (started - base) if (started is not None and base is not None) else None
         )
+        if offset is None:
+            offset = next_synthetic
+        # Untimestamped events after a real one continue from where the last
+        # block ended, for the same reason.
+        next_synthetic = offset + 10
 
         step: dict = {
             "id": f"{name}-{len(steps)}",
             "kind": kind,
             "name": _event_name(event, name),
-            "started_ms": offset if offset is not None else len(steps) * 10,
+            "started_ms": offset,
             "error": bool(event.get("error")),
         }
         if name == "model":
