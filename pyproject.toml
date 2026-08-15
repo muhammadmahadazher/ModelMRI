@@ -144,6 +144,13 @@ dev = [
     # will not hand-write a grammar compiler to avoid a dependency. Optional
     # to install is not the same as optional to test.
     "lm-format-enforcer>=0.10",
+    # And the two readers from vla-lite, found the same way: a sweep of every
+    # `importorskip` target in the suite against what `uv sync --dev` actually
+    # installs. `test_hdf5_data.py` and `test_vla_routing.py` were skipping
+    # whole-file, so the ALOHA/robomimic reader and the camera routing had no
+    # running tests anywhere. Three suites were dark in total.
+    "h5py>=3.8",
+    "pyarrow>=15",
     # tomllib landed in 3.11. The version-drift test parses pyproject.toml, and
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".
