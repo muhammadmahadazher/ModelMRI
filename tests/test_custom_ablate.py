@@ -543,10 +543,23 @@ def test_no_region_is_a_silent_no_op():
 
 
 def test_the_regions_tile_the_input_exactly_once():
-    """No cell occluded twice, none never occluded — otherwise the sweep is
-    not a sweep of the input."""
-    covered = torch.zeros(3, 32, 32)
-    for _, where in ca._regions([3, 32, 32], 8):
+    """No cell occluded twice, none never occluded.
+
+    Worth knowing: this invariant alone does NOT catch the channel-axis bug,
+    and that is probably why the bug survived. The mis-indexed regions tiled
+    the tensor exactly once as well — the eight whose first span was 0:4
+    covered every channel and every column between them, and the other 56
+    selected nothing at all. A clean tiling built out of eight stripes and 56
+    no-ops. So the index length is asserted too, which is the thing that was
+    actually wrong.
+    """
+    per_sample = [3, 32, 32]
+    covered = torch.zeros(*per_sample)
+    for name, where in ca._regions(per_sample, 8):
+        assert len(where) == len(per_sample), (
+            f"{name} indexes {len(where)} of {len(per_sample)} sample axes, so "
+            f"the spans land on the wrong ones once the batch axis is added"
+        )
         covered[where] += 1
     assert bool((covered == 1).all())
 
