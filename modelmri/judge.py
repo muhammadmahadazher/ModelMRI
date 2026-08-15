@@ -141,7 +141,7 @@ def _single_token_forms(tokenizer, forms) -> tuple:
     for form in forms:
         try:
             encoded = tokenizer.encode(form, add_special_tokens=False)
-        except Exception:  # noqa: BLE001 - a failure means "not this form"
+        except Exception:
             continue
         if len(encoded) == 1:
             # First form wins, so the reported surface form is the one this
@@ -175,8 +175,12 @@ def verdict_tokens(tokenizer) -> Tokens:
         # object is ALWAYS truthy, so that fallback never fires and the unpack
         # raises ValueError on an empty list — which is exactly the case this
         # branch exists to handle.
-        keep_yes = [(f, i) for f, i in zip(yes_forms, yes_ids) if i not in overlap]
-        keep_no = [(f, i) for f, i in zip(no_forms, no_ids) if i not in overlap]
+        keep_yes = [
+            (f, i) for f, i in zip(yes_forms, yes_ids, strict=True) if i not in overlap
+        ]
+        keep_no = [
+            (f, i) for f, i in zip(no_forms, no_ids, strict=True) if i not in overlap
+        ]
         yes_forms = tuple(f for f, _ in keep_yes)
         yes_ids = tuple(i for _, i in keep_yes)
         no_forms = tuple(f for f, _ in keep_no)
@@ -395,7 +399,9 @@ def score(
     out = Score(
         rubric=str(rubric).strip(),
         tokens=tokens,
-        judge_model=str(getattr(getattr(model, "config", None), "_name_or_path", "") or ""),
+        judge_model=str(
+            getattr(getattr(model, "config", None), "_name_or_path", "") or ""
+        ),
         device=device,
         seed=seed,
     )

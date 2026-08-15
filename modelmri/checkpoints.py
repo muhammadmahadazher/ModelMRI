@@ -31,7 +31,6 @@ is the whole reason the sequencing works.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -317,9 +316,7 @@ def plan(
     if not episodes:
         raise CheckpointError("this dataset has no episodes to compare over")
     pairs = [
-        (ep.index, t)
-        for ep in episodes
-        for t in range(0, int(ep.length), frame_stride)
+        (ep.index, t) for ep in episodes for t in range(0, int(ep.length), frame_stride)
     ]
     if len(pairs) > max_frames:
         raise CheckpointError(
@@ -341,8 +338,7 @@ def compare(
     max_frames: int = MAX_FRAMES,
     on_stage=None,
     behaviour_absent_because: str = (
-        "the action expert needs the optional lerobot extra, which is not "
-        "installed."
+        "the action expert needs the optional lerobot extra, which is not installed."
     ),
 ) -> Comparison:
     """Load each side once, run identical frames, release, compare.
@@ -375,12 +371,16 @@ def compare(
                 # BEFORE the second side's frames are run, so a mismatched
                 # pair costs one load rather than two full sweeps.
                 check_compatible(
-                    configs[checkpoint_a], configs[checkpoint_b],
-                    checkpoint_a, checkpoint_b,
+                    configs[checkpoint_a],
+                    configs[checkpoint_b],
+                    checkpoint_a,
+                    checkpoint_b,
                 )
                 check_cameras(
-                    cameras[checkpoint_a], cameras[checkpoint_b],
-                    checkpoint_a, checkpoint_b,
+                    cameras[checkpoint_a],
+                    cameras[checkpoint_b],
+                    checkpoint_a,
+                    checkpoint_b,
                 )
             rows = []
             for index, (episode, timestep) in enumerate(frames):

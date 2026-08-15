@@ -33,8 +33,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .errors import BadRequest
 from . import patterns as patterns_mod
+from .errors import BadRequest
 
 # Exit codes. Distinct, because a script has to tell them apart:
 #
@@ -130,7 +130,8 @@ def load(target: str) -> dict:
             )
         return doc
 
-    from . import paths, traces as traces_mod
+    from . import paths
+    from . import traces as traces_mod
 
     # The store the server actually opens. `TraceStore(None)` does not mean
     # "the default" — it raises inside pathlib.
@@ -260,13 +261,14 @@ def run(
                     name="max-repeat",
                     ok=count <= max_repeat,
                     detail=(
-                        f"no step ran more than {max_repeat} times with the "
-                        f"same input"
+                        f"no step ran more than {max_repeat} times with the same input"
                         if count <= max_repeat
                         else f"{worst.label} ran {count} times with the same "
                         f"input, limit {max_repeat}"
                     ),
-                    step_ids=list(worst.step_ids) if worst and count > max_repeat else [],
+                    step_ids=list(worst.step_ids)
+                    if worst and count > max_repeat
+                    else [],
                 )
             )
 

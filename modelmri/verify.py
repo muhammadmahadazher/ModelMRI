@@ -583,8 +583,7 @@ def _check_model_diff(parsed, runtime, blocked: str) -> Check | None:
         return Check(
             "model diff",
             NOT_VERIFIABLE,
-            "this file records that a model comparison ran but does not carry "
-            "it.",
+            "this file records that a model comparison ran but does not carry it.",
         )
 
     model_a = stored.get("model_a") or "?"
@@ -1040,7 +1039,6 @@ def verify(path: str | Path, runtime) -> Report:
     model_diff_check = _check_model_diff(parsed, runtime, blocked)
     if model_diff_check is not None:
         report.checks.append(model_diff_check)
-
 
     return report
 

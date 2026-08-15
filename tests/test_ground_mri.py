@@ -16,7 +16,6 @@ from __future__ import annotations
 import pytest
 
 from modelmri import mri_diff, session, verify
-from modelmri.errors import BadRequest
 
 QUESTION = "Question: In which year was it recovered?\nAnswer:"
 PREVIEW_A = "The Antikythera mechanism was recovered from a shipwreck in 1901."
@@ -158,9 +157,7 @@ def test_the_regression_this_exists_for_is_named_when_it_happens():
         ungrounded=True,
         chunks=[
             _chunk(dependence=0.001, depended_on=False),
-            _chunk(
-                index=1, dependence=0.0005, preview=PREVIEW_B, depended_on=False
-            ),
+            _chunk(index=1, dependence=0.0005, preview=PREVIEW_B, depended_on=False),
         ],
     )
     delta = mri_diff._diff_ground(before, after)
@@ -185,8 +182,12 @@ def test_a_different_passage_carrying_the_answer_is_its_own_finding():
 
 
 def test_a_score_moving_past_the_floor_is_reported_with_the_floor():
-    after = _parsed(chunks=[_chunk(dependence=1.10), _chunk(index=1,
-                    dependence=0.0717, preview=PREVIEW_B)])
+    after = _parsed(
+        chunks=[
+            _chunk(dependence=1.10),
+            _chunk(index=1, dependence=0.0717, preview=PREVIEW_B),
+        ]
+    )
     delta = mri_diff._diff_ground(_parsed(), after)
     assert delta.status == mri_diff.CHANGED
     assert "against a floor of" in delta.detail
@@ -194,8 +195,12 @@ def test_a_score_moving_past_the_floor_is_reported_with_the_floor():
 
 
 def test_a_score_moving_under_the_floor_is_not_a_change():
-    after = _parsed(chunks=[_chunk(dependence=3.255), _chunk(index=1,
-                    dependence=0.0717, preview=PREVIEW_B)])
+    after = _parsed(
+        chunks=[
+            _chunk(dependence=3.255),
+            _chunk(index=1, dependence=0.0717, preview=PREVIEW_B),
+        ]
+    )
     delta = mri_diff._diff_ground(_parsed(), after)
     assert delta.status == mri_diff.SAME
 
@@ -408,7 +413,7 @@ def test_a_grounding_measured_here_survives_export_and_reopening(gpt2_runtime):
     assert parsed.ground["question"] == question
 
     # Every dependence survives to the precision the file stores.
-    for before, after in zip(live["chunks"], parsed.ground["chunks"]):
+    for before, after in zip(live["chunks"], parsed.ground["chunks"], strict=True):
         assert after["dependence"] == pytest.approx(before["dependence"], abs=1e-9)
         assert after["depended_on"] == before["depended_on"]
 

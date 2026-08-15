@@ -225,8 +225,7 @@ class Hdf5Reader:
     def use_camera(self, name: str | None) -> None:
         if name and name not in self._cameras:
             raise BadRequest(
-                f"{name!r} is not a camera in this file — it has "
-                f"{self._cameras}."
+                f"{name!r} is not a camera in this file — it has {self._cameras}."
             )
         if name:
             self._camera = name
@@ -242,8 +241,12 @@ class Hdf5Reader:
         `vla_audit.check_action_lag` refuses outright rather than assuming 30,
         because a lag in frames means nothing without a real frequency.
         """
-        for source in (self._h5.attrs, self._h5[self.layout.episodes[0]].attrs
-                       if self.layout.episodes[0] else self._h5.attrs):
+        for source in (
+            self._h5.attrs,
+            self._h5[self.layout.episodes[0]].attrs
+            if self.layout.episodes[0]
+            else self._h5.attrs,
+        ):
             for key in ("fps", "frame_rate", "control_hz"):
                 if key in source:
                     try:
@@ -323,9 +326,7 @@ class Hdf5Reader:
 
         info = self._episode_at(episode)
         if not 0 <= t < info.length:
-            raise BadRequest(
-                f"t must be in [0,{info.length}) for episode {episode}"
-            )
+            raise BadRequest(f"t must be in [0,{info.length}) for episode {episode}")
         with self._lock:
             images = self._images_for(self.layout.episodes[episode])
             rgb = np.asarray(images[t])
@@ -357,7 +358,10 @@ class Hdf5Reader:
         with self._lock:
             try:
                 self._h5.close()
-            except Exception:  # noqa: BLE001 - closing twice is not an error
+            except Exception:  # noqa: S110 - closing an already-closed file
+                # Deliberately silent: `close()` is idempotent by contract here
+                # and `test_closing_twice_is_not_an_error` pins that. There is
+                # nothing to report and nowhere useful to report it.
                 pass
 
     # ---------- internals ----------

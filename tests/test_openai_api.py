@@ -15,7 +15,6 @@ import pytest
 from modelmri import openai_api
 from modelmri.errors import BadRequest
 
-
 # ----------------------------------------- unsupported parameters, by name
 
 

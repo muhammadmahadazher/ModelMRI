@@ -278,14 +278,17 @@ def test_inspect_mri_on_a_missing_file_says_so_without_the_path(tmp_path):
 
 
 def test_attach_forwards_the_servers_own_refusal():
-    """"generate something first" is actionable; "HTTP 409" is not."""
+    """ "generate something first" is actionable; "HTTP 409" is not."""
     import urllib.error
 
     server = mcp_server.Server(attach="http://127.0.0.1:1")
 
     def boom(url, timeout=None):
         raise urllib.error.HTTPError(
-            url, 409, "Conflict", {},
+            url,
+            409,
+            "Conflict",
+            {},
             io.BytesIO(json.dumps({"error": "Generate something first."}).encode()),
         )
 

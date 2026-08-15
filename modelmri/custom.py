@@ -945,7 +945,6 @@ class CustomHandle:
             **meta,
         }
 
-
     def ablate(self, kind: str = "layers", *, grid: int = 0) -> dict:
         """Sweep this model causally. Blocking — use a thread.
 
@@ -982,9 +981,7 @@ class CustomHandle:
             ).to_dict()
         if kind == "layers":
             return ablate_mod.sweep_layers(model, samples, task=task).to_dict()
-        raise AdapterError(
-            f"unknown sweep {kind!r} — expected 'layers' or 'inputs'."
-        )
+        raise AdapterError(f"unknown sweep {kind!r} — expected 'layers' or 'inputs'.")
 
 
 def _wants_integer_input(model) -> bool:

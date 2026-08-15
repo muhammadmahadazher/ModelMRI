@@ -143,9 +143,7 @@ def test_an_id_containing_an_underscore_survives(tmp_path):
 
 
 def test_epochs_are_read(tmp_path):
-    path = _log(
-        tmp_path, samples=[_sample("a", epoch=1), dict(_sample("a"), epoch=3)]
-    )
+    path = _log(tmp_path, samples=[_sample("a", epoch=1), dict(_sample("a"), epoch=3)])
     # Both write to the same name in this fixture, so just check the parse.
     refs = inspect_io.samples(path)
     assert refs[0].epoch == 1
@@ -254,7 +252,7 @@ def test_every_mapped_kind_is_one_a_step_can_actually_have():
 
 
 def test_the_failing_sample_is_the_one_returned(tmp_path):
-    """"Same timeline, failing sample highlighted" is what makes this worth
+    """ "Same timeline, failing sample highlighted" is what makes this worth
     opening rather than scrolling."""
     good = _sample("a")
     bad = _sample("b", scores={"match": {"value": "I"}})
@@ -299,10 +297,14 @@ def test_an_unknown_sample_id_is_refused_with_the_count(tmp_path):
 
 
 def test_a_sample_with_only_messages_still_draws(tmp_path):
-    doc = _sample("m", events=[], messages=[
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ])
+    doc = _sample(
+        "m",
+        events=[],
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ],
+    )
     out = inspect_io.read_sample(_log(tmp_path, samples=[doc]))
     kinds = [s["kind"] for s in out.trace["steps"]]
     assert kinds == ["user_turn", "llm_call"]

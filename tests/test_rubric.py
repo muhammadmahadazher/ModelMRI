@@ -9,6 +9,8 @@ identically to having looked.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from modelmri import rubric
@@ -19,12 +21,14 @@ def _run(tid, *, steps=None, name="agent"):
     return ({"id": tid, "name": name}, steps or [])
 
 
-def _step(sid, kind="tool_call", *, input="q", output="ok", ms=0, dur=10, error=False):
+def _step(
+    sid, kind="tool_call", *, payload="q", output="ok", ms=0, dur=10, error=False
+):
     return {
         "id": sid,
         "kind": kind,
         "name": kind,
-        "input": input,
+        "input": payload,
         "output": output,
         "started_ms": ms,
         "duration_ms": dur,
@@ -74,16 +78,12 @@ def test_an_enormous_pattern_is_refused():
 
 def test_a_step_kind_no_step_can_have_is_refused():
     with pytest.raises(BadRequest, match="a step may be one of"):
-        rubric.parse_rule(
-            {"name": "x", "kind": "kind_count", "step_kind": "telepathy"}
-        )
+        rubric.parse_rule({"name": "x", "kind": "kind_count", "step_kind": "telepathy"})
 
 
 def test_a_nonsense_percentile_is_refused():
     with pytest.raises(BadRequest, match="between 0 and 100"):
-        rubric.parse_rule(
-            {"name": "x", "kind": "slowest_percent", "value": 140}
-        )
+        rubric.parse_rule({"name": "x", "kind": "slowest_percent", "value": 140})
 
 
 def test_a_whole_rubric_parses_from_json():
@@ -116,8 +116,15 @@ def test_has_error_matches_only_runs_with_an_error():
 
 def test_kind_count_counts_only_that_kind():
     rules = rubric.parse(
-        [{"name": "chatty", "kind": "kind_count", "step_kind": "llm_call",
-          "op": "gt", "value": 2}]
+        [
+            {
+                "name": "chatty",
+                "kind": "kind_count",
+                "step_kind": "llm_call",
+                "op": "gt",
+                "value": 2,
+            }
+        ]
     )
     steps = [_step(f"s{i}", kind="llm_call") for i in range(3)] + [_step("t")]
     out = rubric.score([_run("a", steps=steps)], rules)
@@ -131,8 +138,8 @@ def test_tool_input_matches_ignores_llm_steps():
     )
     out = rubric.score(
         [
-            _run("a", steps=[_step("s1", kind="llm_call", input="rm -rf /")]),
-            _run("b", steps=[_step("s1", kind="tool_call", input="rm -rf /")]),
+            _run("a", steps=[_step("s1", kind="llm_call", payload="rm -rf /")]),
+            _run("b", steps=[_step("s1", kind="tool_call", payload="rm -rf /")]),
         ],
         rules,
     )
@@ -145,7 +152,7 @@ def test_any_input_matches_looks_at_every_kind():
         [{"name": "rm", "kind": "any_input_matches", "pattern": r"rm\s+-rf"}]
     )
     out = rubric.score(
-        [_run("a", steps=[_step("s1", kind="llm_call", input="rm -rf /")])], rules
+        [_run("a", steps=[_step("s1", kind="llm_call", payload="rm -rf /")])], rules
     )
     assert out.rows[0].matched == ["rm"]
 
@@ -156,8 +163,8 @@ def test_output_matches_reads_the_output_not_the_input():
     )
     out = rubric.score(
         [
-            _run("a", steps=[_step("s1", input="I cannot", output="fine")]),
-            _run("b", steps=[_step("s1", input="fine", output="I cannot help")]),
+            _run("a", steps=[_step("s1", payload="I cannot", output="fine")]),
+            _run("b", steps=[_step("s1", payload="fine", output="I cannot help")]),
         ],
         rules,
     )
@@ -167,8 +174,12 @@ def test_output_matches_reads_the_output_not_the_input():
 
 def test_every_operator_works():
     for op, value, expect in (
-        ("gt", 2, True), ("gte", 3, True), ("lt", 4, True),
-        ("lte", 3, True), ("eq", 3, True), ("gt", 3, False),
+        ("gt", 2, True),
+        ("gte", 3, True),
+        ("lt", 4, True),
+        ("lte", 3, True),
+        ("eq", 3, True),
+        ("gt", 3, False),
     ):
         rules = rubric.parse(
             [{"name": "n", "kind": "step_count", "op": op, "value": value}]
@@ -216,9 +227,7 @@ def test_duration_over_uses_the_span():
 def test_a_distribution_rule_refuses_below_the_minimum_and_prints_n():
     """THE rule of this module. Quietly answering 'no matches' reads
     identically to having looked."""
-    rules = rubric.parse(
-        [{"name": "slowest", "kind": "slowest_percent", "value": 10}]
-    )
+    rules = rubric.parse([{"name": "slowest", "kind": "slowest_percent", "value": 10}])
     out = rubric.score([_run(f"t{i}", steps=[_step("s")]) for i in range(4)], rules)
     assert "slowest" in out.skipped
     assert "4 run(s)" in out.skipped["slowest"]
@@ -228,26 +237,20 @@ def test_a_distribution_rule_refuses_below_the_minimum_and_prints_n():
 
 def test_a_skipped_rule_produces_no_hits_at_all():
     """Not "matched: false" — that is an answer, and there is not one."""
-    rules = rubric.parse(
-        [{"name": "slowest", "kind": "slowest_percent", "value": 10}]
-    )
+    rules = rubric.parse([{"name": "slowest", "kind": "slowest_percent", "value": 10}])
     out = rubric.score([_run(f"t{i}", steps=[_step("s")]) for i in range(3)], rules)
     assert all(row.hits == [] for row in out.rows)
     assert out.counts() == {}
 
 
 def test_the_report_says_a_rule_was_not_evaluated():
-    rules = rubric.parse(
-        [{"name": "slowest", "kind": "slowest_percent", "value": 10}]
-    )
+    rules = rubric.parse([{"name": "slowest", "kind": "slowest_percent", "value": 10}])
     out = rubric.score([_run("t1", steps=[_step("s")])], rules)
     assert "NOT EVALUATED" in out.means()
 
 
 def test_with_enough_runs_the_distribution_rule_answers():
-    rules = rubric.parse(
-        [{"name": "slowest", "kind": "slowest_percent", "value": 20}]
-    )
+    rules = rubric.parse([{"name": "slowest", "kind": "slowest_percent", "value": 20}])
     runs = [
         _run(f"t{i}", steps=[_step("s", ms=0, dur=i * 100)])
         for i in range(rubric.MIN_TRACES_FOR_OUTLIERS + 2)
@@ -263,12 +266,10 @@ def test_with_enough_runs_the_distribution_rule_answers():
 # ------------------------------------------------ nothing here is a verdict
 
 
-import re as _re
-
-VERDICT_WORDS = _re.compile(
+VERDICT_WORDS = re.compile(
     r"\b(bad|poor|wrong|failed|failure|excessive|wasteful|should|ought|"
     r"severity|critical|suspicious)\b",
-    _re.I,
+    re.I,
 )
 
 

@@ -163,9 +163,7 @@ def _load(archive: zipfile.ZipFile, name: str) -> dict:
     try:
         doc = json.loads(raw)
     except ValueError as err:
-        raise InspectError(
-            f"{name} inside this log is not readable JSON."
-        ) from err
+        raise InspectError(f"{name} inside this log is not readable JSON.") from err
     if not isinstance(doc, dict):
         raise InspectError(f"{name} inside this log is not an object.")
     return doc
@@ -277,7 +275,9 @@ def _steps_from_events(events, mapping: Mapping) -> list:
         started = _epoch_ms(event.get("timestamp"))
         if started is not None and base is None:
             base = started
-        offset = (started - base) if (started is not None and base is not None) else None
+        offset = (
+            (started - base) if (started is not None and base is not None) else None
+        )
 
         step: dict = {
             "id": f"{name}-{len(steps)}",
@@ -445,9 +445,7 @@ def read_sample(path, sample_id: str = "", epoch: int = 0) -> Imported:
     """
     refs = samples(path)
     if not refs:
-        raise InspectError(
-            "this log carries no samples, so there is no run to draw."
-        )
+        raise InspectError("this log carries no samples, so there is no run to draw.")
 
     wanted = None
     if sample_id:

@@ -98,7 +98,9 @@ def test_the_structural_positions_mask_nearly_everything(gpt2, data):
     )
     steps = recorder.trace.steps
     assert steps, "nothing was recorded"
-    assert steps[0].allowed_count <= 12, "the opening position should permit almost nothing"
+    assert steps[0].allowed_count <= 12, (
+        "the opening position should permit almost nothing"
+    )
     assert steps[0].masked_fraction > 0.999
     # Somewhere structural the set narrows further than the opening does.
     assert min(s.allowed_count for s in steps) <= 7

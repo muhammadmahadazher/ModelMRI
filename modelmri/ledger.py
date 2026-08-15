@@ -103,7 +103,7 @@ class Count:
         self.reported += 1
         self.total = value if self.total is None else self.total + value
 
-    def merge(self, other: "Count") -> None:
+    def merge(self, other: Count) -> None:
         """Fold another set's count into this one.
 
         Two Nones stay None. One None and one number is that number — a
@@ -137,7 +137,7 @@ class Rollup:
     n_steps: int = 0
     n_llm_steps: int = 0
 
-    def merge(self, other: "Rollup") -> None:
+    def merge(self, other: Rollup) -> None:
         for name, count in other.counts.items():
             self.counts.setdefault(name, Count(field=name)).merge(count)
         self.n_steps += other.n_steps

@@ -51,14 +51,14 @@ MAX_RULES = 64
 
 # What a rule may test. Each is exact; none is a judgement.
 KINDS = (
-    "has_error",           # any step recorded an error
-    "kind_count",          # how many steps of one kind
-    "step_count",          # how many steps in total
+    "has_error",  # any step recorded an error
+    "kind_count",  # how many steps of one kind
+    "step_count",  # how many steps in total
     "tool_input_matches",  # regex over the input of tool steps
-    "any_input_matches",   # regex over the input of every step
-    "output_matches",      # regex over the output of every step
-    "duration_over",       # total wall clock above a stated number
-    "slowest_percent",     # distribution — needs MIN_TRACES_FOR_OUTLIERS
+    "any_input_matches",  # regex over the input of every step
+    "output_matches",  # regex over the output of every step
+    "duration_over",  # total wall clock above a stated number
+    "slowest_percent",  # distribution — needs MIN_TRACES_FOR_OUTLIERS
 )
 
 OPERATORS = ("gt", "gte", "lt", "lte", "eq")
@@ -105,9 +105,7 @@ class Rule:
         if self.kind == "step_count":
             return f"{self.name}: the run has {self.op} {self.value:g} steps."
         if self.kind == "tool_input_matches":
-            return (
-                f"{self.name}: some tool call's input matches /{self.pattern}/."
-            )
+            return f"{self.name}: some tool call's input matches /{self.pattern}/."
         if self.kind == "any_input_matches":
             return f"{self.name}: some step's input matches /{self.pattern}/."
         if self.kind == "output_matches":
@@ -138,13 +136,14 @@ def parse_rule(raw: dict) -> Rule:
     kind = str(raw.get("kind") or "")
     if kind not in KINDS:
         raise RubricError(
-            f"{name!r} has kind {kind!r}, and this evaluates "
-            f"{', '.join(KINDS)}."
+            f"{name!r} has kind {kind!r}, and this evaluates {', '.join(KINDS)}."
         )
 
     op = str(raw.get("op") or "gt")
     if op not in OPERATORS:
-        raise RubricError(f"{name!r} uses operator {op!r}; use one of {', '.join(OPERATORS)}.")
+        raise RubricError(
+            f"{name!r} uses operator {op!r}; use one of {', '.join(OPERATORS)}."
+        )
 
     value = raw.get("value", 0)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -382,7 +381,7 @@ def score(traces_and_steps, rules) -> Report:
         )
         slow_cut[rule.name] = ordered[index]
 
-    for (summary, steps), total in zip(runs, durations):
+    for (summary, steps), total in zip(runs, durations, strict=True):
         row = Scored(
             trace_id=str(summary.get("id") or ""),
             name=str(summary.get("name") or ""),

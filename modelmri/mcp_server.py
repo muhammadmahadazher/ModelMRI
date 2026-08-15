@@ -406,7 +406,7 @@ def serve(attach: str = "", stdin=None, stdout=None) -> int:
             continue
         try:
             response = server.handle(message)
-        except Exception as err:  # noqa: BLE001 - a tool must not kill the session
+        except Exception as err:
             response = _error(
                 message.get("id"),
                 -32603,

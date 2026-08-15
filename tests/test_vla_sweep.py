@@ -87,9 +87,7 @@ def test_the_expensive_metric_costs_what_it_costs():
     """The occlusion metric is dozens of tower passes per frame, and the
     estimate is the reason nobody discovers that by waiting."""
     cheap = sw.estimate(FakeReader(), "attention_entropy", frame_stride=25)
-    dear = sw.estimate(
-        FakeReader(), "occlusion_peak", frame_stride=25, grid=[32, 32]
-    )
+    dear = sw.estimate(FakeReader(), "occlusion_peak", frame_stride=25, grid=[32, 32])
     assert cheap["passes_per_frame"] == 1
     assert dear["passes_per_frame"] > 100
     assert dear["passes"] > cheap["passes"] * 100
@@ -148,7 +146,9 @@ def test_the_ranking_finds_the_frames_that_were_planted():
     the rest a flat one (entropy log 4). The ranking must put the flat ones on
     top, because this ranks by entropy and says so."""
     planted = {(1, 25): 1.0, (3, 50): 1.0, (5, 75): 1.0}
-    out = sw.run(FakeHandle(planted), FakeReader(), "attention_entropy", frame_stride=25)
+    out = sw.run(
+        FakeHandle(planted), FakeReader(), "attention_entropy", frame_stride=25
+    )
     assert out.n_frames == 24
     # Flat maps score log(4); the planted one-hot maps score 0.
     assert out.rows[0].value == pytest.approx(math.log(4))
@@ -181,7 +181,10 @@ def test_a_sweep_can_be_cancelled_and_still_reports_what_it_covered():
         return seen["n"] > 5
 
     out = sw.run(
-        FakeHandle(), FakeReader(), "attention_entropy", frame_stride=25,
+        FakeHandle(),
+        FakeReader(),
+        "attention_entropy",
+        frame_stride=25,
         should_stop=stop,
     )
     assert out.n_frames == 5
@@ -192,8 +195,11 @@ def test_a_sweep_can_be_cancelled_and_still_reports_what_it_covered():
 def test_progress_is_reported_per_frame():
     calls = []
     sw.run(
-        FakeHandle(), FakeReader(episodes=2), "attention_entropy",
-        frame_stride=50, on_progress=lambda *a: calls.append(a),
+        FakeHandle(),
+        FakeReader(episodes=2),
+        "attention_entropy",
+        frame_stride=50,
+        on_progress=lambda *a: calls.append(a),
     )
     assert len(calls) == 4
     assert calls[0][1] == 4  # total is passed so a bar can be drawn
@@ -261,8 +267,9 @@ def test_the_strip_carries_its_own_stride_and_range():
 
 def test_a_sweep_is_findable_after_the_process_ends(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
-    out = sw.run(FakeHandle(), FakeReader(episodes=2), "attention_entropy",
-                 frame_stride=50)
+    out = sw.run(
+        FakeHandle(), FakeReader(episodes=2), "attention_entropy", frame_stride=50
+    )
     assert sw.save(out) == out.n_frames
     rows = sw.stored("lerobot/pusht", "lerobot/smolvla_base", "attention_entropy")
     assert len(rows) == out.n_frames
@@ -274,8 +281,9 @@ def test_every_stored_row_carries_its_own_stride(tmp_path, monkeypatch):
     did not carry its own stride would be indistinguishable from one taken at
     a finer step."""
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
-    coarse = sw.run(FakeHandle(), FakeReader(episodes=2), "attention_entropy",
-                    frame_stride=50)
+    coarse = sw.run(
+        FakeHandle(), FakeReader(episodes=2), "attention_entropy", frame_stride=50
+    )
     sw.save(coarse)
     rows = sw.stored("lerobot/pusht", "lerobot/smolvla_base", "attention_entropy")
     assert all(r["stride"] == 50 for r in rows)
@@ -283,8 +291,9 @@ def test_every_stored_row_carries_its_own_stride(tmp_path, monkeypatch):
 
 def test_re_running_replaces_rather_than_duplicates(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
-    out = sw.run(FakeHandle(), FakeReader(episodes=2), "attention_entropy",
-                 frame_stride=50)
+    out = sw.run(
+        FakeHandle(), FakeReader(episodes=2), "attention_entropy", frame_stride=50
+    )
     sw.save(out)
     sw.save(out)
     rows = sw.stored("lerobot/pusht", "lerobot/smolvla_base", "attention_entropy")
@@ -292,8 +301,9 @@ def test_re_running_replaces_rather_than_duplicates(tmp_path, monkeypatch):
 
 
 def test_the_report_survives_json():
-    out = sw.run(FakeHandle(), FakeReader(episodes=2), "attention_entropy",
-                 frame_stride=50)
+    out = sw.run(
+        FakeHandle(), FakeReader(episodes=2), "attention_entropy", frame_stride=50
+    )
     doc = json.loads(json.dumps(out.to_dict(), allow_nan=False))
     assert doc["metric"] == "attention_entropy"
     assert "means" in doc

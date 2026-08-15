@@ -135,14 +135,10 @@ class _Reader:
 def test_a_shared_finding_does_not_carry_another_frames_attention(handle):
     """One frame's picture beside another frame's attention, in a file whose
     whole purpose is that somebody else can trust what is in it."""
-    payload = vla.share_payload(
-        handle, _Reader(), episode=0, timestep=0, layer=-1
-    )
+    payload = vla.share_payload(handle, _Reader(), episode=0, timestep=0, layer=-1)
     assert "attention" not in payload or not payload["attention"]
 
 
 def test_a_shared_finding_carries_the_attention_of_its_own_frame(handle):
-    payload = vla.share_payload(
-        handle, _Reader(), episode=3, timestep=40, layer=-1
-    )
+    payload = vla.share_payload(handle, _Reader(), episode=3, timestep=40, layer=-1)
     assert payload["attention"], "the matching frame's maps must still ship"

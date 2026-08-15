@@ -1627,9 +1627,7 @@ def create_app(
         return Response(
             content=blob,
             media_type="application/gzip",
-            headers={
-                "Content-Disposition": 'attachment; filename="robot-finding.mri"'
-            },
+            headers={"Content-Disposition": 'attachment; filename="robot-finding.mri"'},
         )
 
     @app.post("/api/vla/occlude")
@@ -1667,15 +1665,12 @@ def create_app(
             frame = reader.raw_frame(episode, timestep)
             # Other frames of the SAME episode set the scale. Frames from
             # elsewhere would measure a spread this episode never shows.
-            info = next(
-                (e for e in reader.episodes() if e.index == episode), None
-            )
+            info = next((e for e in reader.episodes() if e.index == episode), None)
             span = info.length if info else 1
             step = max(1, span // vla_occlude.SCALE_FRAMES)
-            scale = [
-                reader.raw_frame(episode, t)
-                for t in range(0, span, step)
-            ][: vla_occlude.SCALE_FRAMES]
+            scale = [reader.raw_frame(episode, t) for t in range(0, span, step)][
+                : vla_occlude.SCALE_FRAMES
+            ]
             out = app.state.vla.occlude(
                 frame,
                 scale,
@@ -2147,9 +2142,7 @@ def create_app(
         # failing the whole trace view over a typo in MODELMRI_PRICES would
         # take away the half that works.
         try:
-            doc["cost"] = ledger_mod.bill(
-                steps, ledger_mod.load_prices()
-            ).to_dict()
+            doc["cost"] = ledger_mod.bill(steps, ledger_mod.load_prices()).to_dict()
         except BadRequest as err:
             doc["cost"] = {"error": str(err), "means": str(err)}
         return doc

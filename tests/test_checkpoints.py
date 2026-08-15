@@ -100,7 +100,10 @@ def test_the_drift_is_found_where_it_was_planted(pair):
     `hidden_states[i + 1]` is the output of block `i`."""
     a, b, _ = pair
     out = ck.compare(
-        _loader({"base": a, "tuned": b}), "base", "tuned", FakeReader(),
+        _loader({"base": a, "tuned": b}),
+        "base",
+        "tuned",
+        FakeReader(),
         frame_stride=25,
     )
     assert out.first_divergent.layer == 4
@@ -114,7 +117,10 @@ def test_the_first_divergence_is_not_the_lowest_alignment(pair):
     answer somebody is asking for."""
     a, b, _ = pair
     out = ck.compare(
-        _loader({"base": a, "tuned": b}), "base", "tuned", FakeReader(),
+        _loader({"base": a, "tuned": b}),
+        "base",
+        "tuned",
+        FakeReader(),
         frame_stride=25,
     )
     assert out.most_divergent.layer > out.first_divergent.layer
@@ -124,7 +130,10 @@ def test_the_first_divergence_is_not_the_lowest_alignment(pair):
 def test_identical_checkpoints_never_come_apart(pair):
     a, _, twin = pair
     out = ck.compare(
-        _loader({"base": a, "copy": twin}), "base", "copy", FakeReader(),
+        _loader({"base": a, "copy": twin}),
+        "base",
+        "copy",
+        FakeReader(),
         frame_stride=25,
     )
     assert all(r.cka == pytest.approx(1.0, abs=1e-6) for r in out.layers)
@@ -161,7 +170,7 @@ def test_both_sides_see_identical_frames(pair):
     ],
 )
 def test_a_mismatched_field_is_refused_by_name(field, value):
-    """"The checkpoints are incompatible" sends the reader to diff two configs
+    """ "The checkpoints are incompatible" sends the reader to diff two configs
     by hand. Naming the field and both values does not."""
     with pytest.raises(BadRequest, match=f"`{field}`"):
         ck.check_compatible(CONFIG, {**CONFIG, field: value}, "base", "tuned")
@@ -210,7 +219,10 @@ def test_the_gate_fires_before_the_second_side_runs_its_frames(pair):
                 {"base": a, "tuned": b},
                 configs={"base": CONFIG, "tuned": {**CONFIG, "hidden_size": 32}},
             ),
-            "base", "tuned", reader, frame_stride=25,
+            "base",
+            "tuned",
+            reader,
+            frame_stride=25,
         )
     # The first side ran its frames; the second must not have.
     assert frames_run["n"] == 8
@@ -313,7 +325,10 @@ def test_it_never_implies_a_winner(pair):
     task."""
     a, b, _ = pair
     out = ck.compare(
-        _loader({"base": a, "tuned": b}), "base", "tuned", FakeReader(),
+        _loader({"base": a, "tuned": b}),
+        "base",
+        "tuned",
+        FakeReader(),
         frame_stride=25,
     )
     means = out.means()
@@ -327,7 +342,10 @@ def test_the_absent_behaviour_half_is_named(pair):
     which half ran rather than leaving a reader to assume both did."""
     a, b, _ = pair
     out = ck.compare(
-        _loader({"base": a, "tuned": b}), "base", "tuned", FakeReader(),
+        _loader({"base": a, "tuned": b}),
+        "base",
+        "tuned",
+        FakeReader(),
         frame_stride=25,
     )
     assert out.ran_perception is True
@@ -359,7 +377,10 @@ def test_each_side_is_released_even_when_a_capture_raises(pair):
 
     def loader(spec):
         return (
-            models[spec].eval(), "cpu", CONFIG, ["observation.images.top"],
+            models[spec].eval(),
+            "cpu",
+            CONFIG,
+            ["observation.images.top"],
             lambda: released.append(spec),
         )
 
@@ -371,7 +392,10 @@ def test_each_side_is_released_even_when_a_capture_raises(pair):
 def test_the_report_survives_json(pair):
     a, b, _ = pair
     out = ck.compare(
-        _loader({"base": a, "tuned": b}), "base", "tuned", FakeReader(),
+        _loader({"base": a, "tuned": b}),
+        "base",
+        "tuned",
+        FakeReader(),
         frame_stride=25,
     )
     doc = json.loads(json.dumps(out.to_dict(), allow_nan=False))

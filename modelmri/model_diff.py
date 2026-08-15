@@ -302,6 +302,7 @@ class ModelDiff:
             gained = [t for t in self.tokens if t.newly_used]
             lost = [t for t in self.tokens if t.newly_ignored]
             if gained or lost:
+
                 def _names(rows):
                     return ", ".join(f"{r.token!r}" for r in rows[:4])
 
@@ -312,9 +313,7 @@ class ModelDiff:
                         f"depends on ({_names(gained)})"
                     )
                 if lost:
-                    bits.append(
-                        f"{len(lost)} it STOPPED depending on ({_names(lost)})"
-                    )
+                    bits.append(f"{len(lost)} it STOPPED depending on ({_names(lost)})")
                 parts.append(
                     " and ".join(bits)
                     + ". Crossing a noise floor is not the same as mattering a "
@@ -406,9 +405,7 @@ def check_pair(shape_a: dict, shape_b: dict, label_a: str, label_b: str) -> None
     """
     for shape, label in ((shape_a, label_a), (shape_b, label_b)):
         missing = [
-            name
-            for name in ("n_layers", "hidden", "vocab")
-            if not shape.get(name)
+            name for name in ("n_layers", "hidden", "vocab") if not shape.get(name)
         ]
         if missing:
             raise DiffError(
@@ -459,7 +456,7 @@ def check_tokens(ids_a: list[int], ids_b: list[int], prompt: str) -> None:
     if ids_a == ids_b:
         return
     where = next(
-        (i for i, (x, y) in enumerate(zip(ids_a, ids_b)) if x != y),
+        (i for i, (x, y) in enumerate(zip(ids_a, ids_b, strict=True)) if x != y),
         min(len(ids_a), len(ids_b)),
     )
     raise DiffError(
@@ -513,10 +510,8 @@ def cosine_per_layer(hidden_a: list, hidden_b: list) -> list[float]:
     import torch
 
     out = []
-    for a, b in zip(hidden_a, hidden_b):
-        similarity = torch.nn.functional.cosine_similarity(
-            a.float(), b.float(), dim=-1
-        )
+    for a, b in zip(hidden_a, hidden_b, strict=True):
+        similarity = torch.nn.functional.cosine_similarity(a.float(), b.float(), dim=-1)
         out.append(round(float(similarity.mean()), 6))
     return out
 
@@ -598,7 +593,9 @@ def summarise(
         prompts=results,
         layers=layers,
         kl=_spread("mean KL per position", [r.mean_kl for r in results]),
-        flips=_spread("positions whose top token changed", [float(r.flips) for r in results]),
+        flips=_spread(
+            "positions whose top token changed", [float(r.flips) for r in results]
+        ),
         consensus_layer=consensus,
         consensus_share=round(share, 4),
         seconds=round(seconds, 2),
@@ -632,7 +629,6 @@ def head_pass_estimate(n_layers: int, n_heads: int, n_prompts: int) -> int:
 
 def _rank_one(model, tokenizer, prompt: str) -> dict:
     """One side's head ranking on one prompt, as {(layer, head): kl}."""
-    import torch
 
     from . import ablate
 
@@ -744,7 +740,7 @@ def _attribute_one(model, tokenizer, prompt: str) -> dict:
     that survives the two models having different noise floors -- which they
     do, because a finetune changes the arithmetic as well as the weights.
     """
-    from . import ablate, attribute
+    from . import attribute
 
     device = next(model.parameters()).device
     ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
@@ -798,7 +794,7 @@ def summarise_tokens(
     survives that.
     """
     out: list[TokenShift] = []
-    for prompt_index, (a, b) in enumerate(zip(per_prompt_a, per_prompt_b)):
+    for prompt_index, (a, b) in enumerate(zip(per_prompt_a, per_prompt_b, strict=True)):
         for index in sorted(set(a["scores"]) & set(b["scores"])):
             kl_a, kl_b = a["scores"][index], b["scores"][index]
             used_a = kl_a > a["floor"]
@@ -913,9 +909,7 @@ def compare(
                     {
                         "ids": [int(i) for i in encoded.input_ids[0]],
                         "probs": ablate.distribution(out.logits[0]).to("cpu"),
-                        "top": [
-                            int(i) for i in out.logits[0].argmax(dim=-1).to("cpu")
-                        ],
+                        "top": [int(i) for i in out.logits[0].argmax(dim=-1).to("cpu")],
                         # Every layer's residual stream, on the CPU, so the
                         # model can go before the second side is loaded.
                         "hidden": [h[0].to("cpu") for h in out.hidden_states],
@@ -946,7 +940,7 @@ def compare(
 
     rows_a, rows_b = captures[model_a], captures[model_b]
     results: list[PromptResult] = []
-    for prompt, a, b in zip(wanted, rows_a, rows_b):
+    for prompt, a, b in zip(wanted, rows_a, rows_b, strict=True):
         check_tokens(a["ids"], b["ids"], prompt)
         kls = [
             ablate.kl_nats(a["probs"][i], b["probs"][i])
@@ -960,7 +954,7 @@ def compare(
                 n_tokens=len(a["ids"]),
                 mean_kl=round(sum(kls) / len(kls), 6) if kls else 0.0,
                 max_kl=round(max(kls), 6) if kls else 0.0,
-                flips=sum(1 for x, y in zip(a["top"], b["top"]) if x != y),
+                flips=sum(1 for x, y in zip(a["top"], b["top"], strict=True) if x != y),
                 first_divergent_layer=turn,
                 drop=round(drop, 9),
                 cosine=cosines,
@@ -975,20 +969,18 @@ def compare(
         seconds=time.perf_counter() - started,
     )
     if include_heads:
-        diff.heads = summarise_heads(
-            head_rankings[model_a], head_rankings[model_b]
-        )
+        diff.heads = summarise_heads(head_rankings[model_a], head_rankings[model_b])
         shape = shapes[model_a]
         diff.head_passes = head_pass_estimate(
             # Not `.get(..., 0)`: `_shape_from_config` is the one builder for
             # both callers and always sets this key, and a 0 slipped in here
             # is what `head_pass_estimate` now refuses outright.
-            shape["n_layers"], shape["n_heads"], len(wanted)
+            shape["n_layers"],
+            shape["n_heads"],
+            len(wanted),
         )
     if include_tokens:
-        diff.tokens = summarise_tokens(
-            token_scores[model_a], token_scores[model_b]
-        )
+        diff.tokens = summarise_tokens(token_scores[model_a], token_scores[model_b])
     return diff
 
 

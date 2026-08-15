@@ -19,14 +19,17 @@ import sys
 import types
 
 import pytest
-
 from modelmri_record import verify
 
 
 def _fake_anthropic(
     *,
-    usage_fields=("input_tokens", "output_tokens", "cache_read_input_tokens",
-                  "cache_creation_input_tokens"),
+    usage_fields=(
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ),
     message_fields=("usage", "content", "id", "role"),
     version="0.40.0",
     introspectable=True,
@@ -51,7 +54,7 @@ def _fake_anthropic(
 
     src = f"def create({', '.join(create_params)}):\n    return None\n"
     ns: dict = {}
-    exec(src, ns)  # noqa: S102 - building a signature is the point of the fixture
+    exec(src, ns)
     messages_mod.Messages = type("Messages", (), {"create": ns["create"]})
 
     return {
@@ -67,6 +70,7 @@ def install(monkeypatch):
     def _install(mods):
         for name, mod in mods.items():
             monkeypatch.setitem(sys.modules, name, mod)
+
     return _install
 
 
@@ -90,8 +94,12 @@ def test_an_sdk_that_gained_fields_still_patches(install, monkeypatch):
     install(
         _fake_anthropic(
             usage_fields=(
-                "input_tokens", "output_tokens", "cache_read_input_tokens",
-                "cache_creation_input_tokens", "server_tool_use", "some_new_thing",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+                "server_tool_use",
+                "some_new_thing",
             ),
             message_fields=("usage", "content", "id", "role", "container"),
         )
@@ -100,7 +108,9 @@ def test_an_sdk_that_gained_fields_still_patches(install, monkeypatch):
     assert report.ok and report.capture == "full"
 
 
-def test_extra_keyword_only_params_do_not_trip_the_signature_check(install, monkeypatch):
+def test_extra_keyword_only_params_do_not_trip_the_signature_check(
+    install, monkeypatch
+):
     monkeypatch.delenv(verify.FORCE_ENV, raising=False)
     install(_fake_anthropic(create_params=("self", "model", "messages", "**kwargs")))
     assert verify.check().ok
@@ -284,7 +294,9 @@ def test_instrument_patches_a_healthy_sdk(install, monkeypatch):
     )
 
 
-def test_not_installed_is_a_different_exit_code_than_a_broken_shape(monkeypatch, capsys):
+def test_not_installed_is_a_different_exit_code_than_a_broken_shape(
+    monkeypatch, capsys
+):
     """Folding "you do not use Anthropic" into "your SDK broke" would make a
     CI check fail forever for anybody who simply does not use it."""
     from modelmri_record.__main__ import ABSENT, MOVED, main

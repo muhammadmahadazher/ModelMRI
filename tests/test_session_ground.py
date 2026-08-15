@@ -176,7 +176,7 @@ def test_a_verdict_without_the_floor_it_cleared_is_refused():
 
 
 def test_a_verdict_of_false_needs_no_floor():
-    """"This passage did not matter" is not a claim that needs a reference to
+    """ "This passage did not matter" is not a claim that needs a reference to
     be readable; refusing it would make an honest negative unwriteable."""
     out = session._ground(
         {"ground": {"chunks": [_chunk(depended_on=False, looked_not_used=None)]}}
@@ -217,8 +217,12 @@ def test_an_absurd_passage_count_is_refused_before_a_browser_sees_it():
     session._ground(doc)  # three is fine
     with pytest.raises(BadRequest, match="above the"):
         session._ground(
-            {"ground": {"chunks": [{"index": 0, "dependence": 0.0}]
-                        * (session.MAX_GROUND_CHUNKS + 1)}}
+            {
+                "ground": {
+                    "chunks": [{"index": 0, "dependence": 0.0}]
+                    * (session.MAX_GROUND_CHUNKS + 1)
+                }
+            }
         )
 
 

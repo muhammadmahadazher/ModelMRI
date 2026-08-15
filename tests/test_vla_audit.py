@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from modelmri import vla_audit
 from modelmri.vla_audit import BROKEN, OK, UNCHECKED
 
@@ -62,8 +60,10 @@ class FakeReader:
 
 
 def _healthy(n_eps=4, per=10):
-    eps = [FakeEpisode(i, per, i * per, from_ts=i * 1.0, to_ts=(i + 1) * 1.0)
-           for i in range(n_eps)]
+    eps = [
+        FakeEpisode(i, per, i * per, from_ts=i * 1.0, to_ts=(i + 1) * 1.0)
+        for i in range(n_eps)
+    ]
     n = n_eps * per
     table = {
         "episode_index": [i // per for i in range(n)],

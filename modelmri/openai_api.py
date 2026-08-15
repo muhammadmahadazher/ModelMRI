@@ -235,7 +235,7 @@ def token_logprobs(runtime, top_k: int = 0) -> list:
                     "logprob": float(torch.log(p.clamp_min(1e-12))),
                     "bytes": list(tokenizer.decode([int(i)]).encode("utf-8")),
                 }
-                for p, i in zip(top.values, top.indices)
+                for p, i in zip(top.values, top.indices, strict=True)
             ]
         out.append(entry)
     return out

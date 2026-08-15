@@ -119,7 +119,7 @@ def test_a_parent_cycle_is_broken_rather_than_recursed_into():
 def test_a_deep_trace_does_not_blow_the_stack():
     steps = [_step("s0", tokens_in=1)]
     for i in range(1, 4000):
-        steps.append(_step(f"s{i}", parent=f"s{i-1}", tokens_in=1))
+        steps.append(_step(f"s{i}", parent=f"s{i - 1}", tokens_in=1))
     rolls = ledger.subtree_rollups(steps)
     assert rolls["s0"].counts["tokens_in"].total == 4000
 
@@ -131,7 +131,9 @@ def test_a_deep_trace_does_not_blow_the_stack():
 def prices(tmp_path):
     path = tmp_path / "prices.json"
     path.write_text(
-        json.dumps({"claude-sonnet-4-5-20250929": {"tokens_in": 3.0, "tokens_out": 15.0}}),
+        json.dumps(
+            {"claude-sonnet-4-5-20250929": {"tokens_in": 3.0, "tokens_out": 15.0}}
+        ),
         encoding="utf-8",
     )
     return ledger.load_prices(path)

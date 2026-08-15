@@ -16,7 +16,6 @@ import sys
 
 from . import verify
 
-
 # Three outcomes, three codes, because a script has to tell them apart:
 #
 #   0 — instrumentable.
@@ -48,7 +47,9 @@ def doctor(as_json: bool = False) -> int:
         for name in report.missing:
             print(f"  MOVED     : {name}  (required — this is why it will not patch)")
         for name in report.missing_optional:
-            print(f"  absent    : {name}  (optional — that column reads 'not reported')")
+            print(
+                f"  absent    : {name}  (optional — that column reads 'not reported')"
+            )
         for note in report.notes:
             print(f"  note      : {note}")
     print()

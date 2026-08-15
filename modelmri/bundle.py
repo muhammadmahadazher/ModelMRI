@@ -244,9 +244,7 @@ def prepare(
                 )
             clean_trace["step_ref"] = step_ref
 
-    preview.redactions = [
-        Redaction(label=k, count=v) for k, v in sorted(tally.items())
-    ]
+    preview.redactions = [Redaction(label=k, count=v) for k, v in sorted(tally.items())]
     return clean_trace, clean_prompt, clean_generation, preview
 
 

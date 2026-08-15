@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -162,7 +163,6 @@ def run_sweep(
     return 0 if any(r.measured for r in rows) else 1
 
 
-
 def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     """Prove a robot dataset is intact, or say exactly where it is not.
 
@@ -174,6 +174,7 @@ def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     import json as _json
 
     from . import vla_audit
+
     # Imported here rather than at module scope, like every other command in
     # this file: `cli.py` is what `modelmri --help` runs, and pulling errors
     # (and through it the rest of the package) at import time would put a

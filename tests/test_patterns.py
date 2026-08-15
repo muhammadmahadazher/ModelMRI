@@ -14,12 +14,14 @@ import re
 from modelmri import patterns
 
 
-def _step(sid, kind="tool_call", name="search", input="q", *, seq=0, ms=0, error=False):
+def _step(
+    sid, kind="tool_call", name="search", payload="q", *, seq=0, ms=0, error=False
+):
     return {
         "id": sid,
         "kind": kind,
         "name": name,
-        "input": input,
+        "input": payload,
         "seq": seq,
         "started_ms": ms,
         "error": error,
@@ -39,9 +41,9 @@ def test_the_same_call_fourteen_times_is_counted_exactly():
 
 def test_a_different_input_is_a_different_step():
     steps = [
-        _step("a", input="page=1", seq=0),
-        _step("b", input="page=2", seq=1),
-        _step("c", input="page=1", seq=2),
+        _step("a", payload="page=1", seq=0),
+        _step("b", payload="page=2", seq=1),
+        _step("c", payload="page=1", seq=2),
     ]
     found = patterns.analyse(steps)
     assert len(found.repeats) == 1
@@ -57,7 +59,10 @@ def test_the_same_input_under_a_different_name_does_not_group():
 def test_a_huge_input_does_not_hash_the_whole_thing():
     """Hashing megabytes to compare two steps is waste."""
     big = "x" * 5_000_000
-    steps = [_step("a", input=big, seq=0), _step("b", input=big + "different", seq=1)]
+    steps = [
+        _step("a", payload=big, seq=0),
+        _step("b", payload=big + "different", seq=1),
+    ]
     found = patterns.analyse(steps)
     # They share the first INPUT_HASH_CHARS, so they group — a deliberate,
     # documented consequence of not hashing the whole payload.
@@ -68,9 +73,7 @@ def test_a_huge_input_does_not_hash_the_whole_thing():
 
 
 def test_consecutive_failures_of_one_name_are_one_finding():
-    steps = [
-        _step(f"e{i}", seq=i, ms=i * 500, error=True) for i in range(6)
-    ]
+    steps = [_step(f"e{i}", seq=i, ms=i * 500, error=True) for i in range(6)]
     found = patterns.analyse(steps)
     assert len(found.retry_storms) == 1
     storm = found.retry_storms[0]
@@ -111,8 +114,14 @@ def test_two_different_names_failing_are_two_runs_not_one():
 def test_a_step_with_no_timestamp_ends_the_run_rather_than_being_assumed_near():
     steps = [
         _step("a", seq=0, ms=0, error=True),
-        {"id": "b", "kind": "tool_call", "name": "search", "input": "q", "seq": 1,
-         "error": True},
+        {
+            "id": "b",
+            "kind": "tool_call",
+            "name": "search",
+            "input": "q",
+            "seq": 1,
+            "error": True,
+        },
         _step("c", seq=2, ms=200, error=True),
     ]
     # The middle step cannot be placed in the window, so nothing claims a
@@ -188,7 +197,9 @@ def test_no_finding_is_worded_as_a_verdict():
     seq = []
     for i in range(4):
         seq.append(_step(f"a{i}", name="think", seq=len(seq)))
-        seq.append(_step(f"b{i}", name="act", seq=len(seq), error=True, ms=len(seq) * 10))
+        seq.append(
+            _step(f"b{i}", name="act", seq=len(seq), error=True, ms=len(seq) * 10)
+        )
     found = patterns.analyse(seq)
     texts = [f.means() for f in found.all] + [found.means()]
     for text in texts:

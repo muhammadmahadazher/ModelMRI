@@ -3358,9 +3358,7 @@ class ModelRuntime:
         last = self._last_ground
         if not last or last.get("epoch") != self.epoch:
             return {}
-        return {
-            k: v for k, v in last.items() if k not in ("epoch", "receipt", "means")
-        }
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt", "means")}
 
     def _ranking_for_export(self) -> dict:
         """The last head ranking, if it belongs to the state being exported.

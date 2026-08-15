@@ -18,7 +18,7 @@ h5py = pytest.importorskip("h5py")
 np = pytest.importorskip("numpy")
 
 from modelmri.errors import BadRequest  # noqa: E402
-from modelmri.hdf5_data import ALOHA, ROBOMIMIC, Hdf5Reader, detect  # noqa: E402
+from modelmri.hdf5_data import ALOHA, ROBOMIMIC, Hdf5Reader  # noqa: E402
 
 
 def _aloha(path, *, frames=30, cameras=("top", "wrist"), fps=50, action="action"):

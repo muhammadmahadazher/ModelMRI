@@ -22,7 +22,6 @@ transformers = pytest.importorskip("transformers")
 from modelmri import judge  # noqa: E402
 from modelmri.errors import BadRequest, Refusal  # noqa: E402
 
-
 # The judge is tested against a model that can ACTUALLY ANSWER a yes/no
 # rubric. gpt2 cannot — measured, it puts 2.4%-5.9% on the verdict tokens and
 # its p(yes) sits near 0.6 whatever it is shown — so testing this feature on
@@ -32,6 +31,34 @@ from modelmri.errors import BadRequest, Refusal  # noqa: E402
 # gpt2 keeps exactly one job here: the control for "this model cannot answer",
 # which is a real test rather than a default nobody revisited.
 JUDGE_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+
+
+def _judge_model_is_cached() -> bool:
+    """Only run against a model already on this machine.
+
+    Same rule `test_saes` follows. gpt2 is small enough that the suite has
+    always fetched it, but a 0.5B instruct model is a ~1 GB download and the
+    cross-platform CI jobs cache `uv.lock`, not the HuggingFace hub — so
+    requiring it turns every runner into a gigabyte of traffic and one more
+    thing that can time out. Cached locally: the capable-model assertions run.
+    Not cached: they skip, and the gpt2 control below still runs everywhere.
+    """
+    import os
+    from pathlib import Path
+
+    home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+    roots = [Path(home)] if home else []
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    name = "models--" + JUDGE_MODEL.replace("/", "--")
+    return any(
+        p.exists() for root in roots for p in (root / name, root / "hub" / name)
+    )
+
+
+needs_judge_model = pytest.mark.skipif(
+    not _judge_model_is_cached(),
+    reason=f"{JUDGE_MODEL} is not in the local HF cache",
+)
 
 
 @pytest.fixture(scope="module")
@@ -56,6 +83,7 @@ def gpt2():
 # ---------------------------------------------------- the verdict tokens
 
 
+@needs_judge_model
 def test_a_real_tokenizer_yields_a_single_token_pair(judge_model):
     _, tok = judge_model
     found = judge.verdict_tokens(tok)
@@ -64,6 +92,7 @@ def test_a_real_tokenizer_yields_a_single_token_pair(judge_model):
         assert len(tok.encode(form, add_special_tokens=False)) == 1
 
 
+@needs_judge_model
 def test_every_casing_the_tokenizer_can_express_is_collected(judge_model):
     """Measured: a prompt ending "yes or no:" is answered with " yes" and one
     ending "Answer:" with " Yes". Reading one chosen form saw 2% mass on a
@@ -153,7 +182,9 @@ def test_a_collapsing_tokenizer_cannot_push_mass_above_one(gpt2):
         def decode(self, ids):
             return tok.decode(ids)
 
-    out = judge.score(model, Uncased(), "The cat sat.", "Is there an animal?", min_mass=0.0)
+    out = judge.score(
+        model, Uncased(), "The cat sat.", "Is there an animal?", min_mass=0.0
+    )
     for p in out.passes:
         assert 0.0 <= p.mass <= 1.0, f"mass {p.mass} is not a probability"
 
@@ -238,12 +269,18 @@ def test_gpt2_says_the_same_thing_whatever_it_is_shown(gpt2):
 
     model, tok = gpt2
     a = judge.score(
-        model, tok, "The cat sat on the mat. The cat was black.",
-        "Does the text above mention a cat?", min_mass=0.0,
+        model,
+        tok,
+        "The cat sat on the mat. The cat was black.",
+        "Does the text above mention a cat?",
+        min_mass=0.0,
     )
     b = judge.score(
-        model, tok, "The stock market closed lower on Tuesday.",
-        "Does the text above mention a cat?", min_mass=0.0,
+        model,
+        tok,
+        "The stock market closed lower on Tuesday.",
+        "Does the text above mention a cat?",
+        min_mass=0.0,
     )
     gap = abs(statistics.median(a.scores) - statistics.median(b.scores))
     assert gap < 0.1, (
@@ -252,6 +289,7 @@ def test_gpt2_says_the_same_thing_whatever_it_is_shown(gpt2):
     )
 
 
+@needs_judge_model
 def test_the_same_prompt_gives_the_same_number_twice(judge_model):
     """Reading mass rather than sampling is the whole claim."""
     model, tok = judge_model
@@ -260,6 +298,7 @@ def test_the_same_prompt_gives_the_same_number_twice(judge_model):
     assert a.scores == b.scores
 
 
+@needs_judge_model
 def test_p_yes_and_p_no_sum_to_one_within_the_verdict(judge_model):
     model, tok = judge_model
     out = judge.score(model, tok, "The cat sat.", "Is there an animal?")
@@ -267,8 +306,9 @@ def test_p_yes_and_p_no_sum_to_one_within_the_verdict(judge_model):
         assert p.p_yes + p.p_no == pytest.approx(1.0, abs=1e-5)
 
 
+@needs_judge_model
 def test_the_raw_mass_is_carried_beside_the_ratio(judge_model):
-    """"It answered, and said yes" has to stay distinguishable from "it barely
+    """ "It answered, and said yes" has to stay distinguishable from "it barely
     answered"."""
     model, tok = judge_model
     out = judge.score(model, tok, "The cat sat.", "Is there an animal?")
@@ -282,7 +322,11 @@ def test_the_refusal_names_the_mass_and_the_floor(gpt2):
     model, tok = gpt2
     with pytest.raises(Refusal) as caught:
         judge.score(
-            model, tok, "The cat sat.", "Is there an animal?", min_mass=0.999,
+            model,
+            tok,
+            "The cat sat.",
+            "Is there an animal?",
+            min_mass=0.999,
         )
     message = str(caught.value)
     assert "did not answer the rubric" in message
@@ -298,6 +342,7 @@ def test_the_floor_is_stated_in_the_refusal(gpt2):
 # ----------------------------------- a weak judge is named, never aggregated
 
 
+@needs_judge_model
 def test_the_judge_model_is_named_on_every_score(judge_model):
     """A well-calibrated report of a weak judge's opinion is still a weak
     judge's opinion, and the name is what lets a reader weigh it."""
@@ -308,6 +353,7 @@ def test_the_judge_model_is_named_on_every_score(judge_model):
     assert "weak judge" in out.means()
 
 
+@needs_judge_model
 def test_the_dtype_and_device_travel_with_the_score(judge_model):
     model, tok = judge_model
     out = judge.score(model, tok, "The cat sat.", "Is there an animal?")
@@ -315,6 +361,7 @@ def test_the_dtype_and_device_travel_with_the_score(judge_model):
     assert out.device == "cpu"
 
 
+@needs_judge_model
 def test_the_spread_is_reported_not_only_the_median(judge_model):
     model, tok = judge_model
     doc = judge.score(model, tok, "The cat sat.", "Is there an animal?").to_dict()
@@ -322,6 +369,7 @@ def test_the_spread_is_reported_not_only_the_median(judge_model):
     assert doc["low"] <= doc["median"] <= doc["high"]
 
 
+@needs_judge_model
 def test_disagreeing_paraphrases_are_called_out(judge_model):
     """A single median from paraphrases that disagree is the 'sample presented
     as a property' error one level up."""
@@ -344,6 +392,7 @@ def test_the_module_exposes_no_aggregate_across_rubrics():
     assert banned == []
 
 
+@needs_judge_model
 def test_it_runs_one_forward_pass_per_paraphrase_and_never_generates(judge_model):
     """A generation would cost k tokens per paraphrase and would be a sample.
     One pass is the feature."""
@@ -356,12 +405,17 @@ def test_it_runs_one_forward_pass_per_paraphrase_and_never_generates(judge_model
         return real_forward(*a, **k)
 
     model.forward = counted
-    model.generate = lambda *a, **k: calls.__setitem__("generate", calls["generate"] + 1)
+    model.generate = lambda *a, **k: calls.__setitem__(
+        "generate", calls["generate"] + 1
+    )
     try:
         # min_mass=0.0: this counts passes, and gpt2 legitimately refuses at
         # the real floor — see the headline test above.
         judge.score(
-            model, tok, "The cat sat.", "Is there an animal?",
+            model,
+            tok,
+            "The cat sat.",
+            "Is there an animal?",
             n_paraphrases=3,
         )
     finally:
@@ -370,6 +424,7 @@ def test_it_runs_one_forward_pass_per_paraphrase_and_never_generates(judge_model
     assert calls["generate"] == 0
 
 
+@needs_judge_model
 def test_a_capable_model_separates_a_true_rubric_from_a_false_one(judge_model):
     """The test gpt2 could never support. MEASURED on Qwen2.5-0.5B-Instruct:
     p(yes) 0.990 for a text that mentions a cat against a much lower number
@@ -378,17 +433,22 @@ def test_a_capable_model_separates_a_true_rubric_from_a_false_one(judge_model):
 
     model, tok = judge_model
     yes = judge.score(
-        model, tok, "The cat sat on the mat. The cat was black.",
+        model,
+        tok,
+        "The cat sat on the mat. The cat was black.",
         "Does the text above mention a cat?",
     )
     no = judge.score(
-        model, tok, "The stock market closed lower on Tuesday.",
+        model,
+        tok,
+        "The stock market closed lower on Tuesday.",
         "Does the text above mention a cat?",
     )
     gap = statistics.median(yes.scores) - statistics.median(no.scores)
     assert gap > 0.2, f"separated by only {gap:.3f}: {yes.scores} vs {no.scores}"
 
 
+@needs_judge_model
 def test_one_unanswered_phrasing_does_not_destroy_the_whole_score(judge_model):
     """MEASURED: paraphrase 1 gave mass 0.72 and p(yes) 0.998 while paraphrase
     2 gave 0.02 — because the model answered THAT phrasing with capitalised
@@ -405,6 +465,7 @@ def test_one_unanswered_phrasing_does_not_destroy_the_whole_score(judge_model):
     assert len(out.scores) == sum(1 for p in out.passes if p.answered)
 
 
+@needs_judge_model
 def test_an_unanswered_phrasing_is_named_in_the_summary(judge_model):
     """A median over 3 of 4 that reads as a median over 4 is the same omission
     this project keeps refusing."""
@@ -416,9 +477,8 @@ def test_an_unanswered_phrasing_is_named_in_the_summary(judge_model):
     assert "NOT in that median" in out.means()
 
 
+@needs_judge_model
 def test_the_refusal_is_for_a_model_that_answered_no_phrasing(judge_model):
     model, tok = judge_model
     with pytest.raises(Refusal, match="in any of"):
-        judge.score(
-            model, tok, "The cat sat.", "Is there an animal?", min_mass=1.0
-        )
+        judge.score(model, tok, "The cat sat.", "Is there an animal?", min_mass=1.0)

@@ -32,7 +32,9 @@ class OneRegionTower(nn.Module):
         v = region.mean(dim=(1, 2, 3))
         n_patch = (self.size // self.patch) ** 2
         hidden = torch.stack([v * (i + 1) * 0.01 for i in range(n_patch)], dim=1)
-        return type("O", (), {"last_hidden_state": hidden.unsqueeze(-1).expand(-1, -1, 16)})()
+        return type(
+            "O", (), {"last_hidden_state": hidden.unsqueeze(-1).expand(-1, -1, 16)}
+        )()
 
 
 class BlindTower(nn.Module):
@@ -40,9 +42,7 @@ class BlindTower(nn.Module):
 
     def forward(self, pixel_values, output_attentions=False):
         n = int(pixel_values.shape[0])
-        return type(
-            "O", (), {"last_hidden_state": torch.ones(n, 64, 16)}
-        )()
+        return type("O", (), {"last_hidden_state": torch.ones(n, 64, 16)})()
 
 
 @pytest.fixture
@@ -58,8 +58,15 @@ def test_the_sweep_finds_the_region_the_tower_actually_reads(frames):
     """Ground truth: this tower reads a 4x4 block of the 8x8 grid and nothing
     else. MEASURED: all 16 of the top 16 blocks land inside it."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, baseline="midpoint", stride=1, max_controlled=8,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        baseline="midpoint",
+        stride=1,
+        max_controlled=8,
     )
     top = out.blocks[:16]
     inside = [b for b in top if 4 <= b.row <= 7 and 4 <= b.col <= 7]
@@ -68,8 +75,15 @@ def test_the_sweep_finds_the_region_the_tower_actually_reads(frames):
 
 def test_blocks_outside_the_read_region_score_zero(frames):
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, baseline="midpoint", stride=1, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        baseline="midpoint",
+        stride=1,
+        max_controlled=1,
     )
     outside = [b for b in out.blocks if b.row < 4 or b.col < 4]
     assert outside
@@ -85,8 +99,15 @@ def test_both_fill_baselines_are_named_and_reported(frames):
     two baselines ship and the reader keeps what survives both."""
     for baseline in occ.BASELINES:
         out = occ.sweep(
-            OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-            scale_frames=frames, baseline=baseline, stride=2, max_controlled=2,
+            OneRegionTower().eval(),
+            "cpu",
+            frames[0],
+            grid=[8, 8],
+            patch=8,
+            scale_frames=frames,
+            baseline=baseline,
+            stride=2,
+            max_controlled=2,
         )
         assert out.baseline == baseline
         assert baseline in out.means()
@@ -96,15 +117,27 @@ def test_both_fill_baselines_are_named_and_reported(frames):
 def test_an_unknown_fill_is_refused_rather_than_defaulted(frames):
     with pytest.raises(BadRequest, match="unknown fill baseline"):
         occ.sweep(
-            OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-            scale_frames=frames, baseline="black", stride=4,
+            OneRegionTower().eval(),
+            "cpu",
+            frames[0],
+            grid=[8, 8],
+            patch=8,
+            scale_frames=frames,
+            baseline="black",
+            stride=4,
         )
 
 
 def test_the_summary_always_says_occlusion_is_off_distribution(frames):
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=4, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=4,
+        max_controlled=1,
     )
     assert "OUT OF DISTRIBUTION" in out.means()
     assert "keep what survives both" in out.means()
@@ -118,8 +151,15 @@ def test_the_control_occludes_an_area_and_not_a_random_tensor(frames):
     the same size somewhere else. A same-norm random tensor would compare an
     occlusion against something that is not one."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, baseline="midpoint", stride=1, max_controlled=6,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        baseline="midpoint",
+        stride=1,
+        max_controlled=6,
     )
     tested = [b for b in out.blocks if b.control_max is not None]
     assert tested, "nothing was controlled"
@@ -131,8 +171,14 @@ def test_an_untested_block_has_no_verdict_rather_than_a_failing_one(frames):
     """False would read as 'a random occlusion did as much', which nothing
     measured for a block nobody controlled."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=1, max_controlled=2,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=1,
+        max_controlled=2,
     )
     untested = [b for b in out.blocks if b.control_max is None]
     assert untested
@@ -143,8 +189,12 @@ def test_an_untested_block_has_no_verdict_rather_than_a_failing_one(frames):
 
 def test_the_control_seed_is_fixed_so_a_run_repeats(frames):
     kwargs = dict(
-        grid=[8, 8], patch=8, scale_frames=frames, baseline="midpoint",
-        stride=1, max_controlled=4,
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        baseline="midpoint",
+        stride=1,
+        max_controlled=4,
     )
     a = occ.sweep(OneRegionTower().eval(), "cpu", frames[0], **kwargs)
     b = occ.sweep(OneRegionTower().eval(), "cpu", frames[0], **kwargs)
@@ -159,8 +209,15 @@ def test_the_rank_agreement_between_the_maps_is_reported(frames):
     not visible from either map alone."""
     attention = [[float((r * 8 + c) % 5) for c in range(8)] for r in range(8)]
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=1, attention_map=attention, max_controlled=2,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=1,
+        attention_map=attention,
+        max_controlled=2,
     )
     assert out.attention_agreement is not None
     assert -1.0 <= out.attention_agreement <= 1.0
@@ -173,9 +230,17 @@ def test_the_agreement_names_the_layer_it_was_measured_against(frames):
     layer 0 and -0.103 against layer 11."""
     attention = [[float((r * 8 + c) % 5) for c in range(8)] for r in range(8)]
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=1, attention_map=attention,
-        compared_layer=11, compared_head=-1, max_controlled=2,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=1,
+        attention_map=attention,
+        compared_layer=11,
+        compared_head=-1,
+        max_controlled=2,
     )
     assert out.compared_layer == 11
     assert "against layer 11" in out.means()
@@ -185,9 +250,17 @@ def test_the_agreement_names_the_layer_it_was_measured_against(frames):
 def test_a_named_head_is_said_to_be_one_head(frames):
     attention = [[float((r * 8 + c) % 5) for c in range(8)] for r in range(8)]
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=1, attention_map=attention,
-        compared_layer=3, compared_head=7, max_controlled=2,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=1,
+        attention_map=attention,
+        compared_layer=3,
+        compared_head=7,
+        max_controlled=2,
     )
     assert "against layer 3 head 7" in out.means()
 
@@ -232,8 +305,15 @@ def test_a_layer_with_nothing_compared_carries_no_layer(frames):
     """Otherwise a caller passing a layer but supplying no map would read as
     'layer 11 agreed on nothing', which is not what happened."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=4, compared_layer=11, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=4,
+        compared_layer=11,
+        max_controlled=1,
     )
     assert out.attention_agreement is None
     assert out.compared_layer is None
@@ -243,8 +323,14 @@ def test_a_layer_with_nothing_compared_carries_no_layer(frames):
 def test_no_attention_map_reports_none_rather_than_zero_agreement(frames):
     """Zero agreement is a measurement. No map is the absence of one."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=4, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=4,
+        max_controlled=1,
     )
     assert out.attention_agreement is None
     assert "No attention map was supplied" in out.means()
@@ -287,8 +373,13 @@ def test_a_tower_with_no_spread_is_refused_and_points_at_the_audit(frames):
     picture — which `modelmri audit` checks for by name."""
     with pytest.raises(BadRequest, match="modelmri.*audit"):
         occ.sweep(
-            BlindTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-            scale_frames=frames, stride=4,
+            BlindTower().eval(),
+            "cpu",
+            frames[0],
+            grid=[8, 8],
+            patch=8,
+            scale_frames=frames,
+            stride=4,
         )
 
 
@@ -318,8 +409,13 @@ def test_a_tower_returning_no_hidden_states_is_refused(frames):
 
     with pytest.raises(BadRequest, match="no hidden states"):
         occ.sweep(
-            Empty().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-            scale_frames=frames, stride=4,
+            Empty().eval(),
+            "cpu",
+            frames[0],
+            grid=[8, 8],
+            patch=8,
+            scale_frames=frames,
+            stride=4,
         )
 
 
@@ -350,8 +446,14 @@ def test_it_never_says_the_occlusion_caused_the_action(frames):
     says so in those words rather than leaving it to a caption somebody might
     drop."""
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=4, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=4,
+        max_controlled=1,
     )
     means = out.means()
     assert "PERCEPTION ONLY" in means
@@ -363,8 +465,14 @@ def test_it_never_says_the_occlusion_caused_the_action(frames):
 
 def test_the_report_survives_json(frames):
     out = occ.sweep(
-        OneRegionTower().eval(), "cpu", frames[0], grid=[8, 8], patch=8,
-        scale_frames=frames, stride=4, max_controlled=1,
+        OneRegionTower().eval(),
+        "cpu",
+        frames[0],
+        grid=[8, 8],
+        patch=8,
+        scale_frames=frames,
+        stride=4,
+        max_controlled=1,
     )
     doc = json.loads(json.dumps(out.to_dict(), allow_nan=False))
     assert doc["baseline"] in occ.BASELINES

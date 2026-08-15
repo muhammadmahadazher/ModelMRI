@@ -149,9 +149,6 @@ MAX_VLA_GRID = 256
 MAX_VLA_FRAME_BYTES = 4_000_000
 
 
-
-
-
 def _graph(doc: dict) -> dict:
     """The attribution-graph section of an untrusted file, or nothing.
 
@@ -626,16 +623,14 @@ def _vla(doc: dict) -> dict:
         value = provenance.get(name)
         if not isinstance(value, str) or not value.strip():
             raise SessionError(
-                f"this session's robot section does not say which {name} "
-                f"produced it."
+                f"this session's robot section does not say which {name} produced it."
             )
         keep_prov[name] = value[:MAX_RANKING_TEXT]
     for name in ("episode", "timestep"):
         value = provenance.get(name)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise SessionError(
-                f"this session's robot section does not say which {name} "
-                f"produced it."
+                f"this session's robot section does not say which {name} produced it."
             )
         keep_prov[name] = value
 
@@ -705,7 +700,9 @@ def _vla(doc: dict) -> dict:
         if (
             not isinstance(size, list)
             or len(size) != 2
-            or not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in size)
+            or not all(
+                isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in size
+            )
         ):
             raise SessionError(
                 "this session's robot frame does not state its own resolution. "
@@ -879,8 +876,7 @@ def _model_diff(doc: dict) -> dict:
         )
     if not (isinstance(model_b, str) and model_b.strip()):
         raise SessionError(
-            "this session's model-diff does not say which model it compared "
-            "TO."
+            "this session's model-diff does not say which model it compared TO."
         )
 
     def _spread(value, what: str) -> dict | None:
@@ -950,8 +946,15 @@ def _model_diff(doc: dict) -> dict:
         "model_b": model_b[:MAX_DIFF_TEXT],
         "prompts": _rows(
             "prompts",
-            ("prompt", "n_tokens", "mean_kl", "max_kl", "flips",
-             "first_divergent_layer", "drop"),
+            (
+                "prompt",
+                "n_tokens",
+                "mean_kl",
+                "max_kl",
+                "flips",
+                "first_divergent_layer",
+                "drop",
+            ),
         ),
         "layers": _rows("layers", ("layer", "median", "low", "high", "n", "n_first")),
         "heads": _rows(
@@ -960,8 +963,16 @@ def _model_diff(doc: dict) -> dict:
         ),
         "tokens": _rows(
             "tokens",
-            ("prompt_index", "index", "token", "kl_a", "kl_b", "shift",
-             "newly_used", "newly_ignored"),
+            (
+                "prompt_index",
+                "index",
+                "token",
+                "kl_a",
+                "kl_b",
+                "shift",
+                "newly_used",
+                "newly_ignored",
+            ),
         ),
     }
     for key, what in (("kl", "KL"), ("flips", "flips")):
@@ -1069,9 +1080,7 @@ def _ground(doc: dict) -> dict:
         looked = row.get("looked_not_used")
         keep: dict = {
             "index": index,
-            "preview": (
-                preview[:MAX_GROUND_TEXT] if isinstance(preview, str) else ""
-            ),
+            "preview": (preview[:MAX_GROUND_TEXT] if isinstance(preview, str) else ""),
             "dependence": float(dependence),
             "depended_on": depended,
             # None survives. See the docstring: a fused-attention model never
@@ -1199,11 +1208,15 @@ def _trace(doc: dict) -> dict:
     }
     total = raw.get("n_steps_total")
     out["n_steps_total"] = (
-        int(total) if isinstance(total, int) and not isinstance(total, bool) else len(kept)
+        int(total)
+        if isinstance(total, int) and not isinstance(total, bool)
+        else len(kept)
     )
     dropped = raw.get("truncated")
     out["truncated"] = (
-        int(dropped) if isinstance(dropped, int) and not isinstance(dropped, bool) else 0
+        int(dropped)
+        if isinstance(dropped, int) and not isinstance(dropped, bool)
+        else 0
     )
 
     ref = raw.get("step_ref")
@@ -1530,7 +1543,9 @@ class Session:
         ref = self.trace.get("step_ref")
         if not ref:
             return None
-        return next((s for s in self.trace.get("steps", []) if s.get("id") == ref), None)
+        return next(
+            (s for s in self.trace.get("steps", []) if s.get("id") == ref), None
+        )
 
     def has_graph(self) -> bool:
         return bool(self.graph.get("edges") or self.graph.get("n_nodes"))

@@ -119,14 +119,13 @@ def test_overlapping_patterns_are_not_double_counted():
     doc = _trace(payload=f"Authorization: Bearer {API_KEY}")
     _, _, _, preview = bundle.prepare(doc)
     # However the patterns split it, the count is what was actually replaced.
-    text = doc["steps"][0]["input"]
     clean, _, _, _ = bundle.prepare(doc)
     assert API_KEY not in clean["steps"][0]["input"]
     assert preview.n_redactions == sum(r.count for r in preview.redactions)
 
 
 def test_a_clean_run_says_no_guarantee_was_made():
-    """"Nothing found" is not "nothing there" — the patterns cover known
+    """ "Nothing found" is not "nothing there" — the patterns cover known
     shapes and somebody's internal token may not look like any of them."""
     _, _, _, preview = bundle.prepare(_trace())
     assert preview.n_redactions == 0

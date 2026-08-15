@@ -20,8 +20,9 @@ pytest_plugins = ["pytester"]
 @pytest.fixture(autouse=True)
 def _plugin_on_path(pytester, monkeypatch):
     """Make the recorder and modelmri importable inside the inner session."""
-    import modelmri
     import modelmri_record
+
+    import modelmri
 
     roots = [
         str(__import__("pathlib").Path(modelmri.__file__).parent.parent),

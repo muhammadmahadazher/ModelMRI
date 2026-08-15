@@ -38,7 +38,7 @@ import math
 import time
 from dataclasses import asdict, dataclass, field
 
-from .errors import BadRequest, Refusal
+from .errors import BadRequest
 
 # Verbatim from patch.py, and for the same reason: a control is a measurement
 # somebody else can repeat rather than a number that moves each refresh.
@@ -320,7 +320,7 @@ def spearman(a: list[float], b: list[float]) -> float | None:
     vb = sum((v - mb) ** 2 for v in rb)
     if va <= 0 or vb <= 0:
         return None
-    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    cov = sum((x - ma) * (y - mb) for x, y in zip(ra, rb, strict=True))
     return cov / math.sqrt(va * vb)
 
 
@@ -415,9 +415,7 @@ def sweep(
         attention = None
         if attention_map:
             attention = _attention_under(attention_map, row, col, stride)
-        rows.append(
-            Block(row=row, col=col, shift=round(shift, 6), attention=attention)
-        )
+        rows.append(Block(row=row, col=col, shift=round(shift, 6), attention=attention))
 
     # Rank agreement BEFORE the controls reorder anything: the comparison is
     # between the two maps as measured, and it is the headline of this whole
@@ -434,8 +432,9 @@ def sweep(
     # that did not place is not one anybody is about to call hot.
     ranked = sorted(rows, key=lambda b: -b.shift)
     generator = torch.Generator().manual_seed(CONTROL_SEED)
-    n_rows, n_cols = len(range(0, int(grid[0]), stride)), len(
-        range(0, int(grid[1]), stride)
+    n_rows, n_cols = (
+        len(range(0, int(grid[0]), stride)),
+        len(range(0, int(grid[1]), stride)),
     )
     for block in ranked[:max_controlled]:
         if n_rows * n_cols < 2:
@@ -454,9 +453,7 @@ def sweep(
             moved = _pooled(model, occluded(r, c), device)
             passes += 1
             used += 1
-            worst = max(
-                worst, float(torch.linalg.vector_norm(moved - here)) / spread
-            )
+            worst = max(worst, float(torch.linalg.vector_norm(moved - here)) / spread)
         if used:
             block.control_max = round(worst, 6)
             block.control_draws = used
@@ -492,8 +489,14 @@ def _attention_under(attention_map, row: int, col: int, stride: int) -> float:
     return round(total / n, 8) if n else 0.0
 
 
-def estimate(grid: list[int], stride: int, *, controlled: int = 12, draws: int = CONTROL_DRAWS,
-             scale_frames: int = SCALE_FRAMES) -> dict:
+def estimate(
+    grid: list[int],
+    stride: int,
+    *,
+    controlled: int = 12,
+    draws: int = CONTROL_DRAWS,
+    scale_frames: int = SCALE_FRAMES,
+) -> dict:
     """What the sweep will cost, before it runs.
 
     A 32x32 sweep at stride 1 is 1,024 tower passes plus the controls. Nobody

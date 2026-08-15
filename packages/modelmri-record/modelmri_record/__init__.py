@@ -386,9 +386,7 @@ def instrument_anthropic(force: bool = False) -> bool:
                 # the API reported no cache use on a call that never had a
                 # cache field at all.
                 tokens_cache_read=getattr(usage, "cache_read_input_tokens", None),
-                tokens_cache_write=getattr(
-                    usage, "cache_creation_input_tokens", None
-                ),
+                tokens_cache_write=getattr(usage, "cache_creation_input_tokens", None),
                 # `captured` says whether the recorder could read everything
                 # it reads. A "partial" step's empty token field is the SDK's
                 # shape, not the provider's silence, and the panel needs to be

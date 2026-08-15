@@ -331,7 +331,6 @@ class VLAHandle:
         `rgb` is an HxWx3 uint8 ndarray. Returns shape metadata; the maps are
         served by `attention()`.
         """
-        import numpy as np
         import torch
 
         if self.model is None:
@@ -426,7 +425,11 @@ class VLAHandle:
         # measurement, and it is only a comparison when they share a frame.
         attention_map = None
         index = None
-        stale = key is not None and self._attn_key is not None and tuple(key) != tuple(self._attn_key)
+        stale = (
+            key is not None
+            and self._attn_key is not None
+            and tuple(key) != tuple(self._attn_key)
+        )
         if self._attn and not stale:
             layers = len(self._attn)
             index = layers - 1 if layer < 0 else layer
@@ -601,12 +604,20 @@ def share_payload(
             for k, v in occlusion.items()
             if k
             in (
-                "baseline", "grid", "stride", "blocks", "n_blocks",
-                "n_controlled", "passes", "scale", "attention_agreement",
+                "baseline",
+                "grid",
+                "stride",
+                "blocks",
+                "n_blocks",
+                "n_controlled",
+                "passes",
+                "scale",
+                "attention_agreement",
                 # The agreement is layer-dependent, so a shared .mri carrying
                 # the Spearman without the layer it came from is not a
                 # reproducible claim.
-                "compared_layer", "compared_head",
+                "compared_layer",
+                "compared_head",
                 "means",
             )
         }

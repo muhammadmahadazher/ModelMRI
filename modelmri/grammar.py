@@ -341,7 +341,7 @@ class MaskRecorder:
                             "p": round(float(p), 6),
                             "allowed": int(i) in allowed_set,
                         }
-                        for p, i in zip(top.values, top.indices)
+                        for p, i in zip(top.values, top.indices, strict=True)
                     ],
                 )
             )

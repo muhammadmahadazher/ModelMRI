@@ -187,8 +187,13 @@ def test_a_plurality_is_not_reported_as_the_place_it_changed():
         "b",
         [
             md.PromptResult(
-                prompt="p", n_tokens=4, mean_kl=0.1, max_kl=0.1, flips=0,
-                first_divergent_layer=layer, cosine=[1.0] * 6,
+                prompt="p",
+                n_tokens=4,
+                mean_kl=0.1,
+                max_kl=0.1,
+                flips=0,
+                first_divergent_layer=layer,
+                cosine=[1.0] * 6,
             )
             for layer in (1, 1, 2, 3, 4, 5)
         ],
@@ -209,8 +214,13 @@ def test_the_consensus_share_is_out_of_all_prompts_not_the_ones_that_diverged():
         "b",
         [
             md.PromptResult(
-                prompt="p", n_tokens=4, mean_kl=0.0, max_kl=0.0, flips=0,
-                first_divergent_layer=layer, cosine=[1.0] * 4,
+                prompt="p",
+                n_tokens=4,
+                mean_kl=0.0,
+                max_kl=0.0,
+                flips=0,
+                first_divergent_layer=layer,
+                cosine=[1.0] * 4,
             )
             for layer in (2, 2, None, None, None, None, None, None)
         ],
@@ -298,7 +308,7 @@ def test_two_unread_shapes_do_not_pass_the_gate_as_a_match():
 
 
 def test_the_refusal_names_the_side_and_the_field():
-    """"Incompatible" sends the reader to check both models."""
+    """ "Incompatible" sends the reader to check both models."""
     good = {"n_layers": 24, "hidden": 2048, "vocab": 32000}
     with pytest.raises(md.DiffError) as caught:
         md.check_pair(good, {**good, "hidden": 0}, "base", "finetune")
@@ -339,9 +349,7 @@ def test_the_token_check_runs_per_prompt_and_not_once_for_the_pair(pair):
     base, twin, _ = pair
     shifted = FakeTokenizer(shift=1)
     with pytest.raises(BadRequest, match="tokenisers split this prompt"):
-        md.compare(
-            _loader({"a": base, "b": twin}, {"b": shifted}), "a", "b", PROMPTS
-        )
+        md.compare(_loader({"a": base, "b": twin}, {"b": shifted}), "a", "b", PROMPTS)
 
 
 def test_identical_token_ids_pass():
@@ -404,8 +412,9 @@ def test_the_model_is_released_even_when_a_capture_raises(pair):
     released: list[str] = []
 
     class Exploding(nn.Module):
-        config = type("C", (), {"num_hidden_layers": 6, "hidden_size": 32,
-                                "vocab_size": 64})()
+        config = type(
+            "C", (), {"num_hidden_layers": 6, "hidden_size": 32, "vocab_size": 64}
+        )()
 
         def parameters(self, recurse=True):
             return iter([torch.zeros(1)])
@@ -464,9 +473,7 @@ def test_an_unreadable_config_is_not_a_refusal(monkeypatch):
     def boom(cls, spec, *a, **k):
         raise OSError("no network")
 
-    monkeypatch.setattr(
-        transformers.AutoConfig, "from_pretrained", classmethod(boom)
-    )
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", classmethod(boom))
     assert md.shape_without_loading("some/model") is None
 
 

@@ -156,7 +156,9 @@ def check_tiling(reader) -> Check:
     cursor = 0
     for start, end, index in spans:
         if start > cursor:
-            gaps.append({"after_row": cursor, "before_episode": index, "rows": start - cursor})
+            gaps.append(
+                {"after_row": cursor, "before_episode": index, "rows": start - cursor}
+            )
         elif start < cursor:
             overlaps.append(
                 {"episode": index, "starts_at": start, "previous_ends_at": cursor}
@@ -214,7 +216,7 @@ def check_routing(reader) -> Check:
     for ep in episodes:
         try:
             path = reader._video_file(ep)
-        except Exception as err:  # noqa: BLE001 - reported, not raised
+        except Exception as err:
             missing.append({"episode": ep.index, "why": type(err).__name__})
             continue
         if not path.exists():
@@ -232,7 +234,11 @@ def check_routing(reader) -> Check:
         limit = durations[key]
         if limit and ep.to_ts > limit + 1e-3:
             out_of_range.append(
-                {"episode": ep.index, "to_ts": ep.to_ts, "file_seconds": round(limit, 3)}
+                {
+                    "episode": ep.index,
+                    "to_ts": ep.to_ts,
+                    "file_seconds": round(limit, 3),
+                }
             )
 
     measured = {
@@ -293,7 +299,7 @@ def _duration(path) -> float:
         with av.open(str(path)) as container:
             if container.duration:
                 return float(container.duration) / 1_000_000.0
-    except Exception:  # noqa: BLE001 - a duration we cannot read is not a crash
+    except Exception:
         return 0.0
     return 0.0
 
@@ -323,7 +329,7 @@ def check_distinct_frames(reader, sample: int = DECODE_SAMPLE) -> Check:
     for ep in picked:
         try:
             rgb = reader.raw_frame(ep.index, 0)
-        except Exception as err:  # noqa: BLE001 - reported, not raised
+        except Exception as err:
             failed.append({"episode": ep.index, "why": type(err).__name__})
             continue
         digest = hashlib.sha256(bytes(memoryview(rgb).tobytes())).hexdigest()[:16]
@@ -392,7 +398,7 @@ def check_normalisation(reader) -> Check:
         )
     try:
         stats = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as err:  # noqa: BLE001
+    except Exception as err:
         return Check(
             "normalisation stats",
             BROKEN,
@@ -420,7 +426,7 @@ def check_normalisation(reader) -> Check:
             continue
         checked.append(key)
         worst = max(
-            (abs(float(w) - a) for w, a in zip(want, actual)),
+            (abs(float(w) - a) for w, a in zip(want, actual, strict=True)),
             default=0.0,
         )
         spread = max((abs(a) for a in actual), default=1.0) or 1.0
@@ -429,10 +435,18 @@ def check_normalisation(reader) -> Check:
         # for one and meaningless for another.
         if worst > 0.01 * spread:
             drifted.append(
-                {"field": key, "worst_abs_diff": round(worst, 6), "scale": round(spread, 6)}
+                {
+                    "field": key,
+                    "worst_abs_diff": round(worst, 6),
+                    "scale": round(spread, 6),
+                }
             )
 
-    measured = {"fields_checked": checked, "drifted": drifted[:8], "n_drifted": len(drifted)}
+    measured = {
+        "fields_checked": checked,
+        "drifted": drifted[:8],
+        "n_drifted": len(drifted),
+    }
     if not checked and not drifted:
         return Check(
             "normalisation stats",
@@ -658,7 +672,7 @@ def _correlate(xs: list[float], ys: list[float], lag: int) -> float | None:
     vb = sum((v - mb) ** 2 for v in b)
     if va <= 0 or vb <= 0:
         return None
-    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    cov = sum((x - ma) * (y - mb) for x, y in zip(a, b, strict=True))
     return cov / math.sqrt(va * vb)
 
 
@@ -782,13 +796,15 @@ def _spread(rows: list[list[float]]) -> float:
     if not rows:
         return 0.0
     width = len(rows[0])
-    centre = [sum(r[i] for r in rows if len(r) == width) / len(rows) for i in range(width)]
+    centre = [
+        sum(r[i] for r in rows if len(r) == width) / len(rows) for i in range(width)
+    ]
     total = sum(_dist(r, centre) ** 2 for r in rows if len(r) == width)
     return math.sqrt(total / len(rows))
 
 
 def _dist(a: list[float], b: list[float]) -> float:
-    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b, strict=True)))
 
 
 # ------------------------------------------------------------------ the run
@@ -826,7 +842,7 @@ def audit(reader) -> Report:
             report.checks.append(check(reader))
         except Refusal as err:
             report.checks.append(Check(name, UNCHECKED, str(err)))
-        except Exception as err:  # noqa: BLE001 - one failure must not stop the rest
+        except Exception as err:
             report.checks.append(
                 Check(
                     name,

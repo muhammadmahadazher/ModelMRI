@@ -20,13 +20,27 @@ def _thrash(n=9):
     steps = []
     for i in range(n):
         steps.append(
-            {"id": f"t{i}", "kind": "llm_call", "name": "think", "input": "next?",
-             "started_ms": i * 900, "duration_ms": 300, "seq": len(steps)}
+            {
+                "id": f"t{i}",
+                "kind": "llm_call",
+                "name": "think",
+                "input": "next?",
+                "started_ms": i * 900,
+                "duration_ms": 300,
+                "seq": len(steps),
+            }
         )
         steps.append(
-            {"id": f"a{i}", "kind": "tool_call", "name": "search", "input": "q",
-             "started_ms": i * 900 + 400, "duration_ms": 120, "error": True,
-             "seq": len(steps)}
+            {
+                "id": f"a{i}",
+                "kind": "tool_call",
+                "name": "search",
+                "input": "q",
+                "started_ms": i * 900 + 400,
+                "duration_ms": 120,
+                "error": True,
+                "seq": len(steps),
+            }
         )
     return {"id": "thrash", "name": "react agent", "steps": steps}
 
@@ -36,8 +50,15 @@ def _clean():
         "id": "ok",
         "name": "clean",
         "steps": [
-            {"id": "a", "kind": "llm_call", "name": "plan", "input": "x",
-             "started_ms": 0, "duration_ms": 10, "seq": 0}
+            {
+                "id": "a",
+                "kind": "llm_call",
+                "name": "plan",
+                "input": "x",
+                "started_ms": 0,
+                "duration_ms": 10,
+                "seq": 0,
+            }
         ],
     }
 
@@ -62,7 +83,10 @@ def test_a_thrashing_run_fails(tmp_path):
     )
     assert code == check.FAILED
     assert {a.name for a in result.assertions if not a.ok} == {
-        "no-errors", "max-steps", "no-loops", "max-repeat"
+        "no-errors",
+        "max-steps",
+        "no-loops",
+        "max-repeat",
     }
 
 
@@ -122,14 +146,35 @@ def test_no_errors_names_the_failing_steps():
 
 def test_no_retry_storms_holds_when_failures_are_not_consecutive():
     doc = {
-        "id": "x", "name": "x",
+        "id": "x",
+        "name": "x",
         "steps": [
-            {"id": "a", "kind": "tool_call", "name": "s", "input": "q", "error": True,
-             "started_ms": 0, "seq": 0},
-            {"id": "b", "kind": "tool_call", "name": "s", "input": "q",
-             "started_ms": 10, "seq": 1},
-            {"id": "c", "kind": "tool_call", "name": "s", "input": "q", "error": True,
-             "started_ms": 20, "seq": 2},
+            {
+                "id": "a",
+                "kind": "tool_call",
+                "name": "s",
+                "input": "q",
+                "error": True,
+                "started_ms": 0,
+                "seq": 0,
+            },
+            {
+                "id": "b",
+                "kind": "tool_call",
+                "name": "s",
+                "input": "q",
+                "started_ms": 10,
+                "seq": 1,
+            },
+            {
+                "id": "c",
+                "kind": "tool_call",
+                "name": "s",
+                "input": "q",
+                "error": True,
+                "started_ms": 20,
+                "seq": 2,
+            },
         ],
     }
     result = check.run(doc, no_retry_storms=True)
@@ -141,10 +186,17 @@ def test_no_loops_fails_rather_than_passes_when_the_scan_did_not_run():
     from modelmri import patterns
 
     doc = {
-        "id": "big", "name": "huge",
+        "id": "big",
+        "name": "huge",
         "steps": [
-            {"id": f"s{i}", "kind": "tool_call", "name": "a" if i % 2 else "b",
-             "input": "x", "started_ms": i, "seq": i}
+            {
+                "id": f"s{i}",
+                "kind": "tool_call",
+                "name": "a" if i % 2 else "b",
+                "input": "x",
+                "started_ms": i,
+                "seq": i,
+            }
             for i in range(patterns.MAX_STEPS_FOR_CYCLES + 1)
         ],
     }
@@ -172,12 +224,26 @@ def test_the_timing_gate_warns_about_wall_clock_on_every_run():
 
 def test_untimed_steps_are_excluded_and_declared():
     doc = {
-        "id": "x", "name": "x",
+        "id": "x",
+        "name": "x",
         "steps": [
-            {"id": "a", "kind": "llm_call", "name": "p", "input": "x",
-             "started_ms": 0, "duration_ms": 5, "seq": 0},
-            {"id": "b", "kind": "llm_call", "name": "p", "input": "y",
-             "started_ms": 5, "seq": 1},
+            {
+                "id": "a",
+                "kind": "llm_call",
+                "name": "p",
+                "input": "x",
+                "started_ms": 0,
+                "duration_ms": 5,
+                "seq": 0,
+            },
+            {
+                "id": "b",
+                "kind": "llm_call",
+                "name": "p",
+                "input": "y",
+                "started_ms": 5,
+                "seq": 1,
+            },
         ],
     }
     result = check.run(doc, max_ms=100)
@@ -223,3 +289,49 @@ def test_it_imports_nothing_heavy():
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120
     )
     assert out.stdout.strip() == "", f"modelmri.check pulled in {out.stdout.strip()}"
+
+
+def test_the_json_flag_actually_runs(tmp_path, capsys):
+    """`modelmri check --json` called `json.dumps` in a module that never
+    imported json — a NameError on every invocation. Every test here drove
+    `check.py` directly, so nothing exercised the CLI path and ruff's F821 was
+    the only thing that saw it."""
+    import argparse
+
+    from modelmri.cli import check_trace
+
+    path = tmp_path / "t.json"
+    path.write_text(json.dumps(_clean()), encoding="utf-8")
+    args = argparse.Namespace(
+        target=str(path),
+        no_errors=True,
+        max_steps=None,
+        no_retry_storms=False,
+        no_loops=False,
+        max_repeat=None,
+        max_ms=None,
+        json=True,
+    )
+    assert check_trace(args) == check.PASS
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is True
+
+
+def test_the_json_flag_reports_an_unreadable_trace_as_json(tmp_path, capsys):
+    import argparse
+
+    from modelmri.cli import check_trace
+
+    args = argparse.Namespace(
+        target=str(tmp_path / "nope.json"),
+        no_errors=True,
+        max_steps=None,
+        no_retry_storms=False,
+        no_loops=False,
+        max_repeat=None,
+        max_ms=None,
+        json=True,
+    )
+    assert check_trace(args) == check.NOTHING_CHECKED
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]

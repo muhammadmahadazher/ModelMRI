@@ -494,9 +494,9 @@ def _jitter_like(module, mean, generator):
         # clamp_min on the DIVISOR, not on the result: a zero-norm draw is
         # astronomically unlikely and exactly what would put a silent nan in
         # the one place nobody would look for it.
-        unit = noise / torch.linalg.vector_norm(
-            noise, dim=1, keepdim=True
-        ).clamp_min(1e-12)
+        unit = noise / torch.linalg.vector_norm(noise, dim=1, keepdim=True).clamp_min(
+            1e-12
+        )
         swapped = (flat + unit * distance).reshape(t.shape)
         if isinstance(output, tuple):
             return (swapped,) + tuple(output[1:])
@@ -624,8 +624,7 @@ def sweep_layers(
         truncated=truncated,
         control_ceiling=None if ceiling is None else round(ceiling, 6),
         expected_false_positives=round(
-            sum(1 for s in rows if s.beats_control is not None)
-            / (max(1, draws) + 1),
+            sum(1 for s in rows if s.beats_control is not None) / (max(1, draws) + 1),
             3,
         ),
     )
@@ -656,7 +655,9 @@ def _regions(shape: list[int], grid: int) -> list[tuple[str, tuple]]:
         size = int(size)
         n = min(grid, size)
         edges = [round(k * size / n) for k in range(n + 1)]
-        steps.append([(edges[k], edges[k + 1]) for k in range(n) if edges[k + 1] > edges[k]])
+        steps.append(
+            [(edges[k], edges[k + 1]) for k in range(n) if edges[k + 1] > edges[k]]
+        )
 
     out: list[tuple[str, tuple]] = []
 
@@ -791,8 +792,7 @@ def sweep_inputs(
         truncated=truncated,
         control_ceiling=None if ceiling is None else round(ceiling, 6),
         expected_false_positives=round(
-            sum(1 for s in rows if s.beats_control is not None)
-            / (max(1, draws) + 1),
+            sum(1 for s in rows if s.beats_control is not None) / (max(1, draws) + 1),
             3,
         ),
     )

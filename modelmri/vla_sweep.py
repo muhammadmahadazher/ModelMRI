@@ -30,7 +30,6 @@ Every row and every summary carries the stride.
 
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
 import time
@@ -254,7 +253,9 @@ def estimate(
     kind of number people plan around and should not.
     """
     if metric not in METRICS:
-        raise SweepError(f"unknown metric {metric!r} — expected one of {sorted(METRICS)}")
+        raise SweepError(
+            f"unknown metric {metric!r} — expected one of {sorted(METRICS)}"
+        )
     pairs, total = plan(
         reader, episode_stride=episode_stride, frame_stride=frame_stride
     )
@@ -334,8 +335,7 @@ def run(
         first = reader.episodes()[0]
         step = max(1, int(first.length) // vla_occlude.SCALE_FRAMES)
         scale_frames = [
-            reader.raw_frame(first.index, t)
-            for t in range(0, int(first.length), step)
+            reader.raw_frame(first.index, t) for t in range(0, int(first.length), step)
         ][: vla_occlude.SCALE_FRAMES]
 
     rows: list[Row] = []
@@ -354,7 +354,7 @@ def run(
                 scale_frames=scale_frames,
                 stride=occlusion_stride,
             )
-        except Exception as err:  # noqa: BLE001 - recorded, never scored
+        except Exception as err:
             # ABSENT from the ranking, not scored zero. A frame that failed to
             # decode is not a frame with a low score, and a zero would sit at
             # the bottom of the table looking like a measurement.

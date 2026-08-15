@@ -306,8 +306,10 @@ def find_cycles(steps) -> tuple:
             block = seq[i : i + length]
             reps = 1
             j = i + length
-            while j + length <= n and seq[j : j + length] == block and not any(
-                covered[j : j + length]
+            while (
+                j + length <= n
+                and seq[j : j + length] == block
+                and not any(covered[j : j + length])
             ):
                 reps += 1
                 j += length
