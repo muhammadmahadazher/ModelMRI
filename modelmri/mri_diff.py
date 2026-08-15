@@ -403,6 +403,176 @@ def _diff_ranking(a, b) -> Delta:
     )
 
 
+def _diff_ground(a, b) -> Delta:
+    """Did the same passage still carry the answer, and by the same margin?
+
+    The regression this exists for: a finetune that stops reading the document
+    and starts answering from its weights. That is invisible in every other
+    section here — the generation can be word-for-word identical while the
+    thing producing it has moved from the passage to the prior.
+
+    Two questions, kept apart because they fail differently. WHICH passage
+    tops the list is what a reader acts on; HOW FAR it moved the answer is the
+    number they quote. A finetune can hold the ordering while every score
+    halves, and it can hold the scores while the top passage changes.
+    """
+    rows_a = (a.ground or {}).get("chunks") or []
+    rows_b = (b.ground or {}).get("chunks") or []
+    if not rows_a or not rows_b:
+        which = "the first" if not rows_a else "the second"
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            f"{which} file carries no grounding. A missing section is not a "
+            f"zero, so this comparison is unavailable rather than clean.",
+        )
+
+    question_a = (a.ground or {}).get("question") or ""
+    question_b = (b.ground or {}).get("question") or ""
+    if question_a != question_b:
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            "these two groundings answer different questions, so a passage "
+            "that mattered for one need not have been asked about in the "
+            "other. Comparing them would measure the question.",
+        )
+
+    by_a = {int(r["index"]): r for r in rows_a}
+    by_b = {int(r["index"]): r for r in rows_b}
+    shared = sorted(by_a.keys() & by_b.keys())
+    if not shared:
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            "the two groundings share no passage index, so the documents were "
+            "split differently and no passage can be compared.",
+        )
+
+    # Indices are only meaningful if they name the SAME passage. The preview
+    # is the only text a `.mri` carries, and comparing it is what stops a
+    # reordered document from being reported as a change in the model.
+    moved = [
+        i
+        for i in shared
+        if (by_a[i].get("preview") or "") != (by_b[i].get("preview") or "")
+    ]
+    if moved:
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            f"passage #{moved[0]} is different text in the two files, so the "
+            f"indices do not name the same passages. The document changed "
+            f"between these runs, and a per-index comparison would report "
+            f"that as a change in the model.",
+        )
+
+    # The coarser of the two recorded floors, for the same reason the ranking
+    # takes the larger one: a difference below the blunter measurement is not
+    # one either file could tell from arithmetic.
+    floor = max(
+        float((a.ground or {}).get("noise_floor") or 0.0),
+        float((b.ground or {}).get("noise_floor") or 0.0),
+    )
+
+    worst_index, worst_gap = shared[0], 0.0
+    for i in shared:
+        gap = abs(
+            float(by_a[i].get("dependence") or 0.0)
+            - float(by_b[i].get("dependence") or 0.0)
+        )
+        if gap > worst_gap:
+            worst_index, worst_gap = i, gap
+
+    top_a = max(shared, key=lambda i: float(by_a[i].get("dependence") or 0.0))
+    top_b = max(shared, key=lambda i: float(by_b[i].get("dependence") or 0.0))
+
+    # Grounded-ness itself, which is the headline. A file where nothing
+    # cleared and one where something did are different findings even if every
+    # score moved less than the floor.
+    ungrounded_a = bool((a.ground or {}).get("ungrounded"))
+    ungrounded_b = bool((b.ground or {}).get("ungrounded"))
+
+    measured = {
+        "passages_compared": len(shared),
+        "max_abs_dependence_diff": worst_gap,
+        "worst_passage": worst_index,
+        "tolerance": floor,
+        "top_passage_a": top_a,
+        "top_passage_b": top_b,
+        "ungrounded_a": ungrounded_a,
+        "ungrounded_b": ungrounded_b,
+    }
+
+    if ungrounded_a != ungrounded_b:
+        became = "stopped" if ungrounded_b else "started"
+        return Delta(
+            "grounding",
+            CHANGED,
+            f"the answer {became} depending on the document. One of these "
+            f"files has no passage clearing its floor and the other does — "
+            f"which is the regression this section exists to catch, and it is "
+            f"invisible in a generation that may be word for word the same.",
+            magnitude=worst_gap,
+            floor=floor,
+            unit="nats",
+            measured=measured,
+        )
+    if top_a != top_b:
+        return Delta(
+            "grounding",
+            CHANGED,
+            f"a different passage now carries the answer: #{top_a} became "
+            f"#{top_b}. The scores moved by at most {worst_gap:.4f}, so this "
+            f"is a change in WHICH passage the answer rests on rather than in "
+            f"how much any of them matters.",
+            magnitude=worst_gap,
+            floor=floor,
+            unit="nats",
+            measured=measured,
+        )
+    if worst_gap > floor:
+        return Delta(
+            "grounding",
+            CHANGED,
+            f"passage #{worst_index} moved by {worst_gap:.4f} nats against a "
+            f"floor of {floor:.6f}. #{top_a} still carries the answer, so the "
+            f"document is being read the same way and read to a different "
+            f"degree.",
+            magnitude=worst_gap,
+            floor=floor,
+            unit="nats",
+            measured=measured,
+        )
+    if floor <= 0.0:
+        # Both files recorded a zero floor, so `worst_gap <= floor` only holds
+        # when the numbers are bit-identical. Saying SAME is right; implying a
+        # tolerance was applied is not.
+        return Delta(
+            "grounding",
+            SAME,
+            f"all {len(shared)} passages score identically and #{top_a} still "
+            f"carries the answer. Both files recorded a floor of exactly "
+            f"zero, so this is bit-for-bit equality rather than agreement "
+            f"within a tolerance.",
+            magnitude=0.0,
+            floor=floor,
+            unit="nats",
+            measured=measured,
+        )
+    return Delta(
+        "grounding",
+        SAME,
+        f"all {len(shared)} passages score within {worst_gap:.4f} of each "
+        f"other, under the {floor:.6f} floor these files recorded, and "
+        f"#{top_a} carries the answer in both.",
+        magnitude=worst_gap,
+        floor=floor,
+        unit="nats",
+        measured=measured,
+    )
+
+
 def _diff_patch(a, b) -> Delta:
     grids_a = (a.patch or {}).get("grids") or {}
     grids_b = (b.patch or {}).get("grids") or {}
@@ -571,6 +741,7 @@ def diff(path_a: str | Path, path_b: str | Path) -> DiffReport:
     report.deltas.append(_diff_attention(a, b))
     report.deltas.append(_diff_patch(a, b))
     report.deltas.append(_diff_lens(a, b))
+    report.deltas.append(_diff_ground(a, b))
     return report
 
 

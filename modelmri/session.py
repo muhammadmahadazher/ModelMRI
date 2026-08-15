@@ -117,6 +117,40 @@ MAX_GRAPH_NODES = 200_000
 # 40 MB one is a payload, and it renders into somebody else's browser.
 MAX_GRAPH_TEXT = 4_000
 
+# One row per passage. `ground.MAX_CHUNKS` is 24 and a caller may raise it, but
+# a file claiming thousands of passages is not a document anybody read.
+MAX_GROUND_CHUNKS = 2_000
+
+# A passage PREVIEW, not a passage. `ground.py` already truncates to about 120
+# characters; this is the outer bound on what a stranger's file may put on the
+# page, in the same class as MAX_GRAPH_TEXT.
+MAX_GROUND_TEXT = 4_000
+
+# A diff carries one row per prompt, one per layer, one per head and one per
+# prompt token. The head list is the big one -- n_layers x n_heads, 448 on a
+# 1.7B -- and the token list is n_prompts x n_tokens.
+MAX_DIFF_ROWS = 20_000
+
+# A prompt travels in full, unlike a grounding document. The two are not the
+# same kind of text: a grounded document is source material somebody attached,
+# and a prompt set is what they ASKED -- the same thing this format already
+# carries whole in `prompt`. Bounded anyway, because it reaches a browser.
+MAX_DIFF_TEXT = 1_000
+
+# A robot section carries ONE frame and a handful of grids. The grid bound is
+# the tower's patch grid -- 32x32 on SmolVLA -- and anything claiming
+# thousands is not a patch grid anybody measured.
+MAX_VLA_GRID = 256
+
+# The frame travels as a PNG data URL. THE CAP IS THE FIRST OF THIS SECTION'S
+# TWO BLOCKING RULES: a frame silently shrunk under a causal map is a wrong
+# picture, so the writer states the resolution it wrote and whether it
+# downsampled, and the reader refuses a payload past this.
+MAX_VLA_FRAME_BYTES = 4_000_000
+
+
+
+
 
 def _graph(doc: dict) -> dict:
     """The attribution-graph section of an untrusted file, or nothing.
@@ -551,6 +585,642 @@ def _ranking(doc: dict) -> dict:
     return out
 
 
+def _vla(doc: dict) -> dict:
+    """The robot-findings section of an untrusted file, or nothing.
+
+    Held to `_patch`'s standard, because a `.mri` is designed to arrive from a
+    stranger and this section reaches a browser as an <img> src and two
+    nested loops. Every grid is checked for rectangularity and finite values;
+    a ragged one renders as a heat map with a torn edge and a NaN renders as
+    a smooth blank one, and neither says anything is wrong.
+
+    TWO RULES SPECIFIC TO THIS SECTION.
+
+    THE FRAME MUST SAY ITS OWN SIZE, and whether it was downsampled to get
+    here. A causal map is drawn over the frame; a frame silently shrunk to fit
+    a byte budget puts every block in the wrong place, and the picture is
+    wrong in a way that looks exactly like a finding. A section carrying an
+    occlusion map and a frame with no stated resolution is refused.
+
+    THE PROVENANCE IS NOT OPTIONAL. Which policy revision, which dataset,
+    which episode, which timestep, which camera. Every other section here
+    describes the model the file names; this one describes a policy AND a
+    dataset AND one frame of it, and a heat map without those four is a
+    picture of nothing in particular.
+    """
+    raw = doc.get("vla")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's robot section is not a set of fields")
+
+    provenance = raw.get("provenance")
+    if not isinstance(provenance, dict):
+        raise SessionError(
+            "this session's robot section carries no provenance. A heat map "
+            "without the policy, dataset, episode, timestep and camera that "
+            "produced it is a picture of nothing in particular."
+        )
+    keep_prov: dict = {}
+    for name in ("policy", "dataset", "camera", "revision"):
+        value = provenance.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise SessionError(
+                f"this session's robot section does not say which {name} "
+                f"produced it."
+            )
+        keep_prov[name] = value[:MAX_RANKING_TEXT]
+    for name in ("episode", "timestep"):
+        value = provenance.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise SessionError(
+                f"this session's robot section does not say which {name} "
+                f"produced it."
+            )
+        keep_prov[name] = value
+
+    def _grid(value, what: str) -> list[list[float]]:
+        if not isinstance(value, list) or not value:
+            raise SessionError(f"this session's {what} is not a grid")
+        if len(value) > MAX_VLA_GRID:
+            raise SessionError(
+                f"this session's {what} claims {len(value):,} rows, above the "
+                f"{MAX_VLA_GRID:,} a patch grid can be."
+            )
+        width = None
+        out: list[list[float]] = []
+        for row in value:
+            if not isinstance(row, list):
+                raise SessionError(f"this session's {what} has a row that is not one")
+            if width is None:
+                width = len(row)
+                if width == 0 or width > MAX_VLA_GRID:
+                    raise SessionError(
+                        f"this session's {what} has a row of {width} cells"
+                    )
+            elif len(row) != width:
+                # A ragged grid renders as a heat map with a torn edge and
+                # nothing on screen says the numbers are wrong.
+                raise SessionError(
+                    f"this session's {what} is ragged — one row has {len(row)} "
+                    f"cells and another has {width}."
+                )
+            clean = []
+            for cell in row:
+                if (
+                    not isinstance(cell, (int, float))
+                    or isinstance(cell, bool)
+                    or not math.isfinite(cell)
+                ):
+                    # A NaN quantises every cell to zero: a smooth, plausible,
+                    # entirely blank map. `_quantise` records the same lesson.
+                    raise SessionError(
+                        f"this session's {what} has a cell that is not a finite "
+                        f"number, which renders as a blank map rather than as "
+                        f"an error."
+                    )
+                clean.append(float(cell))
+            out.append(clean)
+        return out
+
+    out: dict = {"provenance": keep_prov}
+
+    frame = raw.get("frame")
+    if frame is not None:
+        if not isinstance(frame, str):
+            raise SessionError("this session's robot frame is not a data URL")
+        if not frame.startswith("data:image/"):
+            raise SessionError(
+                "this session's robot frame is not an image data URL. A `.mri` "
+                "never carries a path or a link — the frame travels inside it "
+                "or not at all."
+            )
+        if len(frame) > MAX_VLA_FRAME_BYTES:
+            raise SessionError(
+                f"this session's robot frame is {len(frame):,} bytes, above "
+                f"the {MAX_VLA_FRAME_BYTES:,} this reads."
+            )
+        out["frame"] = frame
+        size = raw.get("frame_size")
+        if (
+            not isinstance(size, list)
+            or len(size) != 2
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in size)
+        ):
+            raise SessionError(
+                "this session's robot frame does not state its own resolution. "
+                "A causal map is drawn over the frame, so a frame that has "
+                "been shrunk without saying so puts every block in the wrong "
+                "place — and the picture is wrong in a way that looks exactly "
+                "like a finding."
+            )
+        out["frame_size"] = [int(size[0]), int(size[1])]
+        # Stated, never inferred. `False` is the positive claim "this is the
+        # resolution the policy saw"; a missing key would let a downsampled
+        # frame pass as an original.
+        out["frame_downsampled"] = bool(raw.get("frame_downsampled", False))
+        if out["frame_downsampled"]:
+            note = raw.get("frame_note")
+            out["frame_note"] = (
+                note[:MAX_RANKING_TEXT]
+                if isinstance(note, str) and note.strip()
+                else "downsampled to fit the file; the original resolution is "
+                "not recorded"
+            )
+
+    attention = raw.get("attention")
+    if attention is not None:
+        if not isinstance(attention, list):
+            raise SessionError("this session's robot attention is not a list of layers")
+        if len(attention) > MAX_DIM:
+            raise SessionError(
+                f"this session's robot attention claims {len(attention):,} "
+                f"layers, above the {MAX_DIM:,} this reads."
+            )
+        out["attention"] = [
+            _grid(layer, f"robot attention layer {i}")
+            for i, layer in enumerate(attention)
+        ]
+
+    occlusion = raw.get("occlusion")
+    if isinstance(occlusion, dict):
+        blocks = occlusion.get("blocks")
+        if not isinstance(blocks, list):
+            raise SessionError("this session's occlusion map carries no blocks")
+        if len(blocks) > MAX_RANKING_ROWS:
+            raise SessionError(
+                f"this session's occlusion map claims {len(blocks):,} blocks, "
+                f"above the {MAX_RANKING_ROWS:,} this reads."
+            )
+        clean_blocks = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise SessionError("an occlusion block is not fields")
+            keep: dict = {}
+            for name in ("row", "col", "control_draws"):
+                value = block.get(name)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    keep[name] = value
+            # `shift` is NOT nullable and the other two are. Every block was
+            # measured, so a missing shift is a broken row rather than an
+            # honest unknown -- and folding it in with the nullable fields
+            # meant `block.get("shift")` returned None, took the None branch,
+            # and stored `shift: None`, so the guard below never fired. The
+            # block then rendered as a blank cell in a map of real ones.
+            shift = block.get("shift")
+            if (
+                not isinstance(shift, (int, float))
+                or isinstance(shift, bool)
+                or not math.isfinite(shift)
+            ):
+                raise SessionError(
+                    "an occlusion block carries no shift, so it would render "
+                    "as a blank cell in a map of measured ones."
+                )
+            keep["shift"] = float(shift)
+            for name in ("control_max", "attention"):
+                value = block.get(name)
+                if (
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                ):
+                    keep[name] = float(value)
+                elif value is None:
+                    # None survives. An uncontrolled block has no control_max,
+                    # and 0.0 would read as "a random occlusion did nothing".
+                    keep[name] = None
+            clears = block.get("clears_control")
+            keep["clears_control"] = None if clears is None else bool(clears)
+            clean_blocks.append(keep)
+        kept: dict = {"blocks": clean_blocks}
+        for name in ("baseline", "means"):
+            value = occlusion.get(name)
+            if isinstance(value, str):
+                kept[name] = value[:MAX_GRAPH_TEXT]
+        if not kept.get("baseline"):
+            raise SessionError(
+                "this session's occlusion map does not say which fill baseline "
+                "produced it. Occlusion is out of distribution and the two "
+                "baselines do not agree, so a map without its fill is not "
+                "reproducible."
+            )
+        for name in ("stride", "n_blocks", "n_controlled", "passes"):
+            value = occlusion.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                kept[name] = value
+        # Which attention map the agreement was measured against. Nullable
+        # separately from the block above: an absent layer must stay None
+        # rather than fall through to a missing key, because a reader that
+        # finds no layer has to be able to tell "not compared" from "layer 0".
+        for name in ("compared_layer", "compared_head"):
+            value = occlusion.get(name)
+            if isinstance(value, int) and not isinstance(value, bool):
+                kept[name] = value
+            else:
+                kept[name] = None
+        for name in ("scale", "attention_agreement"):
+            value = occlusion.get(name)
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
+                kept[name] = float(value)
+            elif value is None:
+                kept[name] = None
+        grid = occlusion.get("grid")
+        if isinstance(grid, list) and len(grid) == 2:
+            kept["grid"] = [int(g) for g in grid if isinstance(g, int)]
+        # A map drawn over a frame needs the frame's resolution stated. See
+        # the docstring: this is the first of the two blocking rules.
+        if "frame" in out and "frame_size" not in out:
+            raise SessionError(
+                "this session carries an occlusion map over a frame whose "
+                "resolution is not stated."
+            )
+        out["occlusion"] = kept
+
+    return out
+
+
+def _model_diff(doc: dict) -> dict:
+    """The finetune-diff section of an untrusted file, or nothing.
+
+    Same standard as every other additive section. Two rules are specific to
+    this one:
+
+    IT NAMES ITS OWN TWO MODELS, and they need not be the model the rest of
+    the file describes. A `.mri` is one analysis of one model; a diff is a
+    comparison of two others, and it can legitimately ride in a file about a
+    third. `model_a` and `model_b` are therefore REQUIRED -- a diff section
+    that does not say what it compared would be read as being about the file's
+    own model, which is the one confusion this section can cause.
+
+    A SPREAD WITHOUT ITS `n` IS REFUSED. The entire content of this section is
+    that its numbers are distributions over a prompt set rather than single
+    measurements, and a median arriving without the count it was taken over is
+    exactly the single number the module exists to avoid printing.
+    """
+    raw = doc.get("model_diff")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's model-diff section is not a set of fields")
+
+    model_a = raw.get("model_a")
+    model_b = raw.get("model_b")
+    if not (isinstance(model_a, str) and model_a.strip()):
+        raise SessionError(
+            "this session's model-diff does not say which model it compared "
+            "FROM. A diff can ride in a file about a different model, so a "
+            "section that does not name its own two sides would be read as "
+            "being about this file's model."
+        )
+    if not (isinstance(model_b, str) and model_b.strip()):
+        raise SessionError(
+            "this session's model-diff does not say which model it compared "
+            "TO."
+        )
+
+    def _spread(value, what: str) -> dict | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise SessionError(f"this session's {what} spread is not fields")
+        n = value.get("n")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise SessionError(
+                f"the {what} spread carries no prompt count. A median without "
+                f"the n it was taken over is the single number this section "
+                f"exists to avoid printing."
+            )
+        out = {"n": n, "name": str(value.get("name") or what)[:MAX_DIFF_TEXT]}
+        for key in ("median", "low", "high"):
+            number = value.get(key)
+            if (
+                not isinstance(number, (int, float))
+                or isinstance(number, bool)
+                or not math.isfinite(number)
+            ):
+                raise SessionError(f"the {what} spread has no {key}")
+            out[key] = float(number)
+        n_nonzero = value.get("n_nonzero")
+        if isinstance(n_nonzero, int) and not isinstance(n_nonzero, bool):
+            out["n_nonzero"] = max(0, min(n_nonzero, n))
+        return out
+
+    def _rows(key: str, required: tuple[str, ...]) -> list[dict]:
+        rows = raw.get(key)
+        if rows is None:
+            return []
+        if not isinstance(rows, list):
+            raise SessionError(f"this session's model-diff {key} is not a list")
+        if len(rows) > MAX_DIFF_ROWS:
+            raise SessionError(
+                f"this session's model-diff claims {len(rows):,} {key}, above "
+                f"the {MAX_DIFF_ROWS:,} this reads."
+            )
+        clean: list[dict] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise SessionError(f"a model-diff {key} row is not fields")
+            keep: dict = {}
+            for name in required:
+                value = row.get(name)
+                if isinstance(value, bool):
+                    keep[name] = value
+                elif isinstance(value, (int, float)) and math.isfinite(value):
+                    keep[name] = value
+                elif isinstance(value, str):
+                    keep[name] = value[:MAX_DIFF_TEXT]
+                elif value is None:
+                    # None survives. `first_divergent_layer` is None when the
+                    # cosine never falls, which is a result and not a gap.
+                    keep[name] = None
+                else:
+                    raise SessionError(
+                        f"a model-diff {key} row has a {name} this cannot read"
+                    )
+            clean.append(keep)
+        return clean
+
+    out: dict = {
+        "model_a": model_a[:MAX_DIFF_TEXT],
+        "model_b": model_b[:MAX_DIFF_TEXT],
+        "prompts": _rows(
+            "prompts",
+            ("prompt", "n_tokens", "mean_kl", "max_kl", "flips",
+             "first_divergent_layer", "drop"),
+        ),
+        "layers": _rows("layers", ("layer", "median", "low", "high", "n", "n_first")),
+        "heads": _rows(
+            "heads",
+            ("layer", "head", "median_a", "median_b", "shift", "n", "top_a", "top_b"),
+        ),
+        "tokens": _rows(
+            "tokens",
+            ("prompt_index", "index", "token", "kl_a", "kl_b", "shift",
+             "newly_used", "newly_ignored"),
+        ),
+    }
+    for key, what in (("kl", "KL"), ("flips", "flips")):
+        spread = _spread(raw.get(key), what)
+        if spread is not None:
+            out[key] = spread
+    for name in ("means",):
+        value = raw.get(name)
+        if isinstance(value, str):
+            out[name] = value[:MAX_GRAPH_TEXT]
+    for name in ("n_prompts", "n_layers", "consensus_layer", "head_passes"):
+        value = raw.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[name] = value
+        elif value is None:
+            # consensus_layer is None when nothing diverged. A result.
+            out[name] = None
+    for name in ("consensus_share", "seconds"):
+        value = raw.get(name)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ):
+            out[name] = float(value)
+    return out
+
+
+def _ground(doc: dict) -> dict:
+    """The grounding section of an untrusted file, or nothing.
+
+    Same standard as `_patch` and `_head_types`: a `.mri` is meant to be
+    forwarded, so this runs on bytes a stranger sent, and every passage
+    preview reaches somebody's browser as text.
+
+    Two rules specific to this section, and both are about the claim rather
+    than the bytes:
+
+    A passage carrying `depended_on` WITHOUT the floor it cleared is refused.
+    The whole content of "this passage mattered" is that removing it moved the
+    answer further than a pass that changed nothing, and a row that asserts
+    the verdict while dropping the reference is the bare claim the feature
+    exists to replace -- the same rule `_head_types` applies to a label
+    without its margin.
+
+    `attention` and `looked_not_used` survive as None. They are three-valued
+    on the way out: a model whose attention implementation never built the
+    score matrix reports None, and a zero noise floor makes the flag
+    undecidable. Coercing either to 0.0 or False here would turn "not
+    measured" into "measured, and fine" inside a file whose whole purpose is
+    to travel away from the machine that could tell the difference.
+    """
+    raw = doc.get("ground")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's grounding section is not a set of fields")
+
+    rows = raw.get("chunks")
+    if not isinstance(rows, list):
+        raise SessionError("this session's grounding carries no passages")
+    if len(rows) > MAX_GROUND_CHUNKS:
+        raise SessionError(
+            f"this session claims {len(rows):,} passages, above the "
+            f"{MAX_GROUND_CHUNKS:,} this reads."
+        )
+
+    floor = raw.get("noise_floor")
+    has_floor = (
+        isinstance(floor, (int, float))
+        and not isinstance(floor, bool)
+        and math.isfinite(floor)
+    )
+
+    clean: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SessionError("this session has a grounding row that is not fields")
+        index = row.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise SessionError("a grounding row does not name a passage")
+
+        dependence = row.get("dependence")
+        if (
+            not isinstance(dependence, (int, float))
+            or isinstance(dependence, bool)
+            or not math.isfinite(dependence)
+        ):
+            raise SessionError(
+                f"passage {index} carries no dependence score, so there is "
+                f"nothing measured to render."
+            )
+
+        depended = bool(row.get("depended_on"))
+        if depended and not has_floor:
+            raise SessionError(
+                f"passage {index} is marked as one the answer depended on, "
+                f"with no noise floor in the file. A verdict that does not "
+                f"say what it cleared is the bare claim this section exists "
+                f"to replace."
+            )
+
+        preview = row.get("preview")
+        attention = row.get("attention")
+        looked = row.get("looked_not_used")
+        keep: dict = {
+            "index": index,
+            "preview": (
+                preview[:MAX_GROUND_TEXT] if isinstance(preview, str) else ""
+            ),
+            "dependence": float(dependence),
+            "depended_on": depended,
+            # None survives. See the docstring: a fused-attention model never
+            # produced a share, and 0.0 would read as "nothing looked here".
+            "attention": (
+                float(attention)
+                if isinstance(attention, (int, float))
+                and not isinstance(attention, bool)
+                and math.isfinite(attention)
+                else None
+            ),
+            # Three-valued on the way out and three-valued on the way in.
+            "looked_not_used": None if looked is None else bool(looked),
+        }
+        n_tokens = row.get("n_tokens")
+        if isinstance(n_tokens, int) and not isinstance(n_tokens, bool):
+            keep["n_tokens"] = max(0, min(n_tokens, MAX_DIM))
+        clean.append(keep)
+
+    out: dict = {"chunks": clean}
+    for name in ("question", "answer", "attention_note", "means"):
+        value = raw.get(name)
+        if isinstance(value, str):
+            out[name] = value[:MAX_GROUND_TEXT]
+    for name in (
+        "answer_p",
+        "noise_floor",
+        "joint",
+        "attention_share",
+        "seconds",
+    ):
+        value = raw.get(name)
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        ):
+            out[name] = float(value)
+    for name in ("n_chunks", "n_prompt_tokens", "position", "passes"):
+        value = raw.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[name] = value
+    for name in ("attention_available", "floor_degenerate", "ungrounded"):
+        # Defaulted DELIBERATELY: a file that omits `attention_available`
+        # predates the field, and the safe reading of an absent flag is the
+        # one that claims least. `attention_available` defaults False so an
+        # old file's blank attention column is not presented as measured.
+        out[name] = bool(raw.get(name, False))
+    return out
+
+
+# The trace section's own bounds. `bundle.py` enforces these at WRITE time
+# and this enforces them again at READ time, because a `.mri` is meant to be
+# forwarded and the reader runs on bytes a stranger sent.
+MAX_TRACE_STEPS = 500
+MAX_TRACE_TEXT = 4_200  # the writer's clip plus its marker
+MAX_TRACE_NAME = 200
+
+
+def _trace(doc: dict) -> dict:
+    """The agent-run section of an untrusted file, or nothing.
+
+    Held to the same standard as `patch` and `vla`. The steps reach the
+    viewer's timeline as loop bounds and their `started_ms`/`duration_ms` reach
+    a pixel offset, so a string where a number belongs or a 400,000-step claim
+    has to stop here rather than in whoever's browser opened the file.
+
+    Absent is fine and common — most sessions carry no agent run. MALFORMED is
+    not: it is refused rather than dropped, because a damaged file presented as
+    an intact one without that section is the failure this module exists to
+    avoid.
+    """
+    raw = doc.get("trace")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's agent-run section is not a set of fields")
+
+    steps = raw.get("steps")
+    if not isinstance(steps, list):
+        raise SessionError("this session's agent run has no steps list")
+    if len(steps) > MAX_TRACE_STEPS:
+        raise SessionError(
+            f"this session's agent run carries {len(steps)} steps and the "
+            f"format holds {MAX_TRACE_STEPS}. A file this size is not one "
+            f"somebody's browser can open."
+        )
+
+    kept = []
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            raise SessionError(f"step {i} of this session's agent run is not an object")
+        kind = str(step.get("kind") or "")
+        if not kind:
+            raise SessionError(f"step {i} of this session's agent run has no kind")
+        clean = {
+            "id": str(step.get("id") or f"s{i}")[:120],
+            "kind": kind[:40],
+            "name": str(step.get("name") or "")[:MAX_TRACE_NAME],
+            "input": str(step.get("input") or "")[:MAX_TRACE_TEXT],
+            "output": str(step.get("output") or "")[:MAX_TRACE_TEXT],
+            "error": bool(step.get("error")),
+        }
+        parent = step.get("parent_id")
+        clean["parent_id"] = str(parent)[:120] if parent else None
+        # Nullable, and kept nullable. `duration_ms` is None for a step
+        # recorded bare, and 0 is a different claim — the same distinction
+        # `traces.py` made the column nullable to express.
+        for name in ("started_ms", "duration_ms", "tokens_in", "tokens_out"):
+            value = step.get(name)
+            clean[name] = (
+                int(value)
+                if isinstance(value, int) and not isinstance(value, bool)
+                else None
+            )
+        if clean["started_ms"] is None:
+            clean["started_ms"] = 0
+        kept.append(clean)
+
+    out: dict = {
+        "id": str(raw.get("id") or "")[:120],
+        "name": str(raw.get("name") or "")[:MAX_TRACE_NAME],
+        "started_at": str(raw.get("started_at") or "")[:60],
+        "steps": kept,
+    }
+    total = raw.get("n_steps_total")
+    out["n_steps_total"] = (
+        int(total) if isinstance(total, int) and not isinstance(total, bool) else len(kept)
+    )
+    dropped = raw.get("truncated")
+    out["truncated"] = (
+        int(dropped) if isinstance(dropped, int) and not isinstance(dropped, bool) else 0
+    )
+
+    ref = raw.get("step_ref")
+    if ref:
+        ref = str(ref)[:120]
+        # The whole point of the section is "click the failing step and land
+        # in its attention view". A ref naming a step that is not here would
+        # open a bundle whose highlighted step does not exist.
+        if not any(s["id"] == ref for s in kept):
+            raise SessionError(
+                "this session names a failing step that is not among the steps "
+                "it carries, so there is nothing for the viewer to open."
+            )
+        out["step_ref"] = ref
+    return out
+
+
 def _patch(doc: dict) -> dict:
     """The patching section of an untrusted file, or nothing.
 
@@ -778,6 +1448,45 @@ class Session:
     # cleared. Optional and additive. A label without its evidence is refused
     # rather than carried, because the evidence is the whole point.
     head_types: dict = field(default_factory=dict)
+    # Whether the answer came from the attached document or from the weights:
+    # a dependence score and an attention share per passage. Optional and
+    # additive like `patch`.
+    #
+    # Worth carrying for the same reason `patch` is. The claim "the model
+    # answered from its weights, not from the document you gave it" is one
+    # somebody wants to SHOW a colleague, and until now it was one of the few
+    # findings in this tool that could not leave the machine that took it.
+    # A recording cannot re-run it -- masking a passage needs the model -- but
+    # it can carry what was measured.
+    ground: dict = field(default_factory=dict)
+    # A finetune-vs-base comparison over a prompt set. Optional and additive.
+    #
+    # UNLIKE every other section here, this one is not necessarily about the
+    # model the file describes: it names its own two sides, and a comparison
+    # of two checkpoints can legitimately ride in a `.mri` taken on a third
+    # model. `_model_diff` requires both names for exactly that reason.
+    model_diff: dict = field(default_factory=dict)
+    # Robot-policy findings: the camera frame, per-layer attention, and the
+    # causal occlusion map with its control band — plus exactly which policy,
+    # dataset, episode, timestep and camera produced them. Optional and
+    # additive.
+    #
+    # There is no portable, no-account artifact for robot-policy internals
+    # anywhere: Foxglove archived its open-source Studio, Rerun's `.rrd`
+    # carries what the robot recorded rather than what the network computed,
+    # and HF Spaces need an upload and an account.
+    vla: dict = field(default_factory=dict)
+
+    # The agent run this analysis belongs to: the timeline, and which step
+    # failed. Optional and additive like `patch`.
+    #
+    # This is the half no hosted platform can ship. Every competitor's share
+    # artefact is a link into their own trace UI, which dies when the account
+    # lapses — Helicone went into maintenance mode in March 2026 and Langfuse
+    # changed owners in January. A recipient opens this with nothing installed,
+    # clicks the failing tool call, and lands in the attention view of the
+    # generation that produced the bad argument, on a machine with no GPU.
+    trace: dict = field(default_factory=dict)
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
@@ -798,6 +1507,30 @@ class Session:
 
     def has_ranking(self) -> bool:
         return bool(self.ranking.get("ranked"))
+
+    def has_ground(self) -> bool:
+        return bool(self.ground.get("chunks"))
+
+    def has_model_diff(self) -> bool:
+        return bool(self.model_diff.get("prompts"))
+
+    def has_vla(self) -> bool:
+        return bool(self.vla.get("provenance"))
+
+    def has_trace(self) -> bool:
+        return bool(self.trace.get("steps"))
+
+    def failing_step(self) -> dict | None:
+        """The step this bundle was built around, when it names one.
+
+        None means "no step was singled out", not "the step is missing":
+        `_trace` refuses a `step_ref` naming a step the file does not carry,
+        so a ref that survives parsing always resolves.
+        """
+        ref = self.trace.get("step_ref")
+        if not ref:
+            return None
+        return next((s for s in self.trace.get("steps", []) if s.get("id") == ref), None)
 
     def has_graph(self) -> bool:
         return bool(self.graph.get("edges") or self.graph.get("n_nodes"))
@@ -844,10 +1577,32 @@ def build(
     graph: dict | None = None,
     ranking: dict | None = None,
     head_types: dict | None = None,
+    ground: dict | None = None,
+    model_diff: dict | None = None,
+    vla: dict | None = None,
+    trace: dict | None = None,
+    step_ref: str = "",
     receipts: list | None = None,
 ) -> bytes:
-    """Serialise one analysis into a gzipped `.mri`."""
+    """Serialise one analysis into a gzipped `.mri`.
+
+    When `trace` is given, the run and the analysis ship together and BOTH
+    halves go through `bundle.prepare` first — the recorder's redaction runs
+    at delivery, which is behind us by the time steps come out of the store,
+    and a document that arrived by import or OTLP ingest never went through it
+    at all. See `bundle.py`.
+    """
     from . import __version__
+    from . import bundle as bundle_mod
+
+    # BEFORE anything is written. Redacting after the document is assembled
+    # would mean the only difference between a safe file and an unsafe one is
+    # whether a later step remembered to run — and the prompt and generation
+    # go through it whether or not there is a trace, because a credential
+    # pasted into a prompt is a credential either way.
+    clean_trace, prompt, generation, _leaving = bundle_mod.prepare(
+        trace, prompt=prompt, generation=generation, step_ref=step_ref
+    )
 
     blocks: dict[str, dict] = {}
     for (layer, head), matrix in attention.items():
@@ -921,6 +1676,25 @@ def build(
         doc["lens_info"] = lens_info
     if ranking and ranking.get("ranked"):
         doc["ranking"] = _ranking({"ranking": ranking})
+    # Through the READER's validator, like every additive section above it: a
+    # writer laxer than the reader is how you build files nobody can open, and
+    # it means a grounding row that asserts `depended_on` without a floor is
+    # refused at WRITE time rather than reaching somebody else's viewer.
+    if ground and ground.get("chunks"):
+        doc["ground"] = _ground({"ground": ground})
+    # Through the reader's validator like every additive section above it.
+    if model_diff and model_diff.get("prompts"):
+        doc["model_diff"] = _model_diff({"model_diff": model_diff})
+    # Through the reader's validator like every additive section above it, so
+    # a robot section missing its provenance is refused at WRITE time rather
+    # than reaching somebody else's viewer.
+    if vla and vla.get("provenance"):
+        doc["vla"] = _vla({"vla": vla})
+    # Through the reader's validator like every additive section above it, so
+    # a bundle whose step_ref names a step it does not carry is refused at
+    # WRITE time rather than opening as a dead link in somebody's viewer.
+    if clean_trace and clean_trace.get("steps"):
+        doc["trace"] = _trace({"trace": clean_trace})
     if receipts:
         doc["receipts"] = _receipts_mod.parse(receipts)
     # allow_nan=False. The default emits a bare `NaN`/`Infinity` token, which
@@ -1079,9 +1853,13 @@ def parse(data: bytes) -> Session:
         n_layers=counts["n_layers"],
         n_heads=counts["n_heads"],
         patch=_patch(doc),
+        trace=_trace(doc),
         graph=_graph(doc),
         ranking=_ranking(doc),
         head_types=_head_types(doc),
+        ground=_ground(doc),
+        model_diff=_model_diff(doc),
+        vla=_vla(doc),
         # Validated in `receipts.parse` rather than here: the rules belong
         # beside the writer that produces them, and this module already has
         # more section validators than is comfortable.

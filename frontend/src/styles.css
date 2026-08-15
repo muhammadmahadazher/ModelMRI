@@ -70,6 +70,27 @@
   --cobalt-700: oklch(0.503 0.219 264);
   --cobalt-800: oklch(0.437 0.190 264);
 
+  /* ── moss · H 112 · provenance: where an answer came from ─────────── */
+  /* Grounding asks a question no other panel asks -- not what the model did,
+     but whether the answer is in the document at all -- so it does not borrow
+     a hue that already means something else. Measured against the grounds
+     this theme paints: -700 is 5.23:1 on light paper, -400 is 7.22:1 on the
+     dark ground, both clear AA at the 10.5px the section labels use. */
+  --moss-200: oklch(0.837 0.110 112);
+  --moss-400: oklch(0.703 0.150 112);
+  --moss-700: oklch(0.503 0.130 112);
+
+  /* ── magenta · H 322 · a state described in WORDS ─────────────────── */
+  /* The only readout on this page whose output is a sentence rather than a
+     number, so it gets the one hue nothing else uses. Measured against the
+     grounds this theme actually paints: -700 is 6.07:1 on light paper, -400
+     is 6.55:1 on the dark ground -- both clear AA at the 10.5px the section
+     labels are set in, which is the size that decides it. */
+  --magenta-200: oklch(0.837 0.098 322);
+  --magenta-400: oklch(0.703 0.164 322);
+  --magenta-500: oklch(0.637 0.213 322);
+  --magenta-700: oklch(0.503 0.215 322);
+
   /* ── violet · H 296 · SAE features, steering ──────────────────────── */
   --violet-200: oklch(0.837 0.098 296);
   --violet-400: oklch(0.703 0.164 296);
@@ -147,6 +168,8 @@
   --sem-vla:   var(--green-700);
   --sem-base:  var(--teal-700);
   --sem-error: var(--crimson-700); /* -600 measured 4.49 on ground: under AA */
+  --sem-scope: var(--magenta-700);
+  --sem-ground: var(--moss-700);
 
   /* shadow ink: the ground in shade, tinted to the brand. Never black. */
   --sh: 21 35 65;
@@ -189,6 +212,8 @@
   --sem-vla:   var(--green-400);
   --sem-base:  var(--teal-400);
   --sem-error: var(--crimson-400);
+  --sem-scope: var(--magenta-400);
+  --sem-ground: var(--moss-400);
 
   --sh: 0 0 0;
 
@@ -258,6 +283,14 @@
   --color-vla: var(--sem-vla);
   --color-custom: var(--sem-base);
   --color-pop: var(--sem-error);
+  /* Probes REUSE the baseline hue rather than taking a seventh. H 208
+     already means "the reference you measure against" in this system,
+     and a probe panel is entirely about its two references -- the
+     shuffled null and the majority class. The accuracy is the part that
+     needed no colour. */
+  --color-probe: var(--sem-base);
+  --color-scope: var(--sem-scope);
+  --color-ground: var(--sem-ground);
   --hair: var(--line);
   --hair-soft: var(--line-soft);
   --shadow: var(--e1);
@@ -949,6 +982,9 @@ html[data-theme="dark"] .panel {
 .h-agent { color: var(--color-agent); } .d-agent { background: var(--color-agent); }
 .h-vla { color: var(--color-vla); } .d-vla { background: var(--color-vla); }
 .h-run { color: var(--color-mute); } .d-run { background: var(--color-mute); }
+.h-probe { color: var(--color-probe); } .d-probe { background: var(--color-probe); }
+.h-scope { color: var(--color-scope); } .d-scope { background: var(--color-scope); }
+.h-ground { color: var(--color-ground); } .d-ground { background: var(--color-ground); }
 
 /* ---------- VLA ---------- */
 .pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
@@ -2842,6 +2878,9 @@ footer {
 .panel:has(.d-graph)  { --panel-accent: var(--color-feat); }
 .panel:has(.d-replay) { --panel-accent: var(--sem-agent); }
 .panel:has(.d-run)    { --panel-accent: var(--color-mute); }
+.panel:has(.d-probe)  { --panel-accent: var(--color-probe); }
+.panel:has(.d-scope)  { --panel-accent: var(--color-scope); }
+.panel:has(.d-ground) { --panel-accent: var(--color-ground); }
 
 /* THE BAND. A 4px edge of the panel's own colour across its top, inside the
    radius. One declaration, and the stack of identical white cards becomes a
@@ -3781,3 +3820,956 @@ main > [id^="sec-"] {
 .headtype.tprevioustoken { color: var(--sem-base); }
 .headtype.tduplicatetoken { color: var(--sem-vla); }
 .headtype.tsink { color: var(--color-mute); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PROBES · PATCHSCOPES · PATH PATCHING · FEATURE EVIDENCE
+   Four readouts added together, and three of them share one problem: the
+   headline number is the least trustworthy thing on screen. So in each case
+   the layout puts the reference at the same weight as the result — the null
+   band is scenery the bar sits in, the two controls are columns the same size
+   as the decode, and a tied sender is drawn tied rather than ranked.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── probes ──────────────────────────────────────────────────────────────── */
+
+.probe-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.probe-inputs label { display: grid; gap: 3px; min-width: 0; }
+.probe-inputs textarea,
+.probe-name {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.55; resize: vertical;
+}
+.probe-name { max-width: 230px; }
+
+@media (max-width: 720px) {
+  .probe-inputs { grid-template-columns: 1fr; }
+}
+
+/* The verdict, not the peak. `.none` is not an error state — nothing clearing
+   anywhere is a real answer, so it is stated in ink rather than in red. */
+.probe-verdict {
+  margin: 12px 0 6px; padding: 9px 12px; border-radius: 9px;
+  font: 500 13px var(--font-sans);
+  border: 1px solid color-mix(in oklab, var(--color-probe) 35%, transparent);
+  background: color-mix(in oklab, var(--color-probe) 8%, transparent);
+}
+.probe-verdict.none {
+  border-color: var(--line);
+  background: color-mix(in oklab, var(--ink-4) 8%, transparent);
+}
+.probe-fp { margin: 0 0 10px; }
+
+/* One grid template, shared by the axis and every row, so the axis labels sit
+   over the track they describe. Two separate flex rows drift by the width of
+   the layer label, which would put "majority 50%" over a bar at 62%. */
+.probe-scale,
+.probe-rows > li {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr) 2.8rem 13rem;
+  gap: 8px; align-items: center;
+}
+.probe-scale { margin-bottom: 4px; }
+.probe-axis { position: relative; display: block; height: 1.2em; }
+.probe-axis-lo { position: absolute; left: 0; }
+.probe-axis-hi { position: absolute; right: 0; }
+.probe-majority-key {
+  position: absolute; transform: translateX(-50%); white-space: nowrap;
+  color: var(--ink-2);
+}
+
+.probe-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.probe-rows > li { padding: 1px 0; }
+.probe-l { opacity: 0.75; }
+/* An EMPTY rail, not a filled one. `--sf-sunk` is darker than the panel
+   plate in the dark theme, so a rail painted with it read as a second bar
+   growing from the right -- every row appeared to have two measurements in it.
+   A hairline tint works in both themes because it is mixed against whatever
+   is behind it. */
+.probe-track {
+  position: relative; display: block; height: 16px; border-radius: 4px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+/* Drawn first and behind. A permutation null is not an annotation beside the
+   bar — it is the region the bar has to leave. */
+.probe-band {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--ink-3) 42%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+  border-left: 1px dashed color-mix(in oklab, var(--ink-3) 60%, transparent);
+  border-right: 1px dashed color-mix(in oklab, var(--ink-3) 60%, transparent);
+}
+.probe-majority {
+  position: absolute; top: -3px; bottom: -3px; width: 2px;
+  background: var(--ink-3); border-radius: 1px;
+}
+/* Inset by 2px top and bottom so the hatched null reads as the region the
+   bar sits IN rather than as a second fill beside it, and the bar's right
+   edge stays legible where the two overlap. */
+.probe-bar {
+  position: absolute; left: 0; top: 2px; height: 10px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-probe);
+  box-shadow: 1px 0 0 0 var(--color-card);
+  transition: width var(--dur-medium) var(--ease-out);
+}
+.probe-acc { text-align: right; opacity: 0.9; }
+.probe-verd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* A layer inside its own null is drawn as one: the bar loses its colour,
+   because a coloured bar at 83% reads as a finding whatever the caption
+   underneath it says. */
+.probe-null .probe-bar { background: var(--ink-4); }
+.probe-null .probe-acc, .probe-null .probe-l { opacity: 0.55; }
+.probe-clears .probe-bar {
+  background: var(--color-probe);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-probe) 55%, transparent);
+}
+.probe-clears .probe-verd { color: var(--color-probe); font-weight: 600; }
+/* Untestable is NOT inside-the-null. The shuffled fit reached the top of the
+   scale, so no accuracy could have cleared it — an outline says "this was not
+   measured", which a grey fill would have called a negative result. */
+.probe-untestable .probe-bar {
+  background: transparent;
+  border: 1px dashed color-mix(in oklab, var(--sem-agent) 70%, transparent);
+}
+.probe-untestable .probe-verd { color: var(--sem-agent); }
+.probe-means { margin-top: 10px; }
+
+/* ── patchscopes ─────────────────────────────────────────────────────────── */
+
+.scope-inputs { display: grid; gap: 8px; margin-bottom: 8px; }
+.scope-inputs label, .scope-target { display: grid; gap: 3px; }
+.scope-inputs input,
+.scope-target textarea {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.55;
+}
+.scope-target { margin-top: 4px; }
+.scope-target textarea { resize: vertical; }
+.scope-controls { flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.scope-num {
+  width: 4.6rem; padding: 5px 7px; border-radius: 6px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.scope-verdict {
+  margin: 12px 0 8px; padding: 9px 12px; border-radius: 9px;
+  font: 500 13px var(--font-sans);
+}
+.scope-verdict.informative {
+  border: 1px solid color-mix(in oklab, var(--color-scope) 35%, transparent);
+  background: color-mix(in oklab, var(--color-scope) 8%, transparent);
+}
+.scope-verdict.flat {
+  border: 1px solid color-mix(in oklab, var(--sem-error) 35%, transparent);
+  background: color-mix(in oklab, var(--sem-error) 7%, transparent);
+}
+
+/* Three columns, one size. The decode is not the headline and the controls
+   are not footnotes — that layout IS the claim this panel makes about what a
+   patchscope is worth on its own. */
+.scope-decodes {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+@media (max-width: 860px) { .scope-decodes { grid-template-columns: 1fr; } }
+.scope-decode {
+  display: grid; gap: 4px; align-content: start;
+  padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--color-card);
+}
+.scope-decode.patched {
+  border-color: color-mix(in oklab, var(--color-scope) 45%, transparent);
+}
+.scope-decode p {
+  margin: 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+.scope-ov { opacity: 0.85; }
+.scope-warn {
+  display: block; margin-top: 8px; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 35%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+}
+.scope-means { margin-top: 10px; }
+
+/* ── path patching, inside the patching panel ───────────────────────────── */
+
+.patch-grid td[role="button"] { cursor: pointer; }
+/* The pinned cell keeps its recovery colour and takes a ring in ink.
+   Recolouring it would overwrite the number it is showing. */
+.patch-grid td.pinned {
+  outline: 2px solid var(--color-ink); outline-offset: -2px;
+  position: relative; z-index: 2;
+}
+.patch-path {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-cobalt) 30%, transparent);
+  background: color-mix(in oklab, var(--color-cobalt) 5%, transparent);
+}
+.path-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 3px; }
+.path-list > li {
+  display: grid;
+  grid-template-columns: 7.5rem minmax(0, 1fr) 3.4rem 15rem;
+  gap: 8px; align-items: center;
+}
+@media (max-width: 720px) {
+  .path-list > li { grid-template-columns: 6rem minmax(0, 1fr) 3.4rem; }
+  .path-verd { grid-column: 1 / -1; }
+}
+.path-name { font-size: 11px; opacity: 0.9; }
+.path-track {
+  position: relative; display: block; height: 12px; border-radius: 3px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+.path-bar {
+  position: absolute; left: 0; top: 1px; bottom: 1px;
+  border-radius: 0 3px 3px 0;
+  transition: width var(--dur-medium) var(--ease-out);
+}
+.path-val { text-align: right; font-size: 11px; }
+.path-verd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A tie is drawn as a tie. Recovery is quantised by the model's number
+   format, and on gpt2 in bf16 one step is worth 0.25 of the gap — 23 senders
+   came back within one step of the top, which as a 1st/2nd/3rd would have been
+   a ranking the numbers cannot support. The bracket says "same place". */
+.path-list > li.tied .path-name {
+  border-left: 2px solid color-mix(in oklab, var(--color-cobalt) 55%, transparent);
+  padding-left: 5px;
+}
+.path-list > li.tied .path-val { opacity: 0.6; }
+
+/* ── feature evidence, inside the features panel ────────────────────────── */
+
+.feat-evidence {
+  margin-top: 14px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-feat) 30%, transparent);
+  background: color-mix(in oklab, var(--color-feat) 5%, transparent);
+}
+.fe-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+@media (max-width: 720px) { .fe-inputs { grid-template-columns: 1fr; } }
+.fe-inputs label { display: grid; gap: 3px; align-content: start; min-width: 0; }
+.fe-inputs textarea, .fe-inputs input {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.55; resize: vertical;
+}
+.fe-corpus { margin: 10px 0 6px; }
+.fe-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 6px; }
+.fe-warn {
+  padding: 2px 8px; border-radius: 999px;
+  font: 600 10.5px var(--font-mono); letter-spacing: 0.04em;
+  color: var(--color-pop);
+  background: color-mix(in oklab, var(--sem-error) 12%, transparent);
+}
+.fe-spans { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.fe-spans > li {
+  display: grid; grid-template-columns: 3.2rem minmax(0, 1fr); gap: 8px;
+  align-items: baseline;
+}
+.fe-act { text-align: right; opacity: 0.8; font-size: 11px; }
+.fe-text {
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
+  word-break: break-word;
+}
+.fe-tok {
+  background: color-mix(in oklab, var(--color-feat) 22%, transparent);
+  color: inherit; border-radius: 3px; padding: 0 2px;
+}
+/* Every firing, not just the ones printed above. The spans are the right tail
+   of this, and without the shape a reader takes ten cherry-picked sentences
+   for the whole distribution. */
+.fe-hist {
+  display: flex; align-items: flex-end; gap: 2px; height: 46px;
+  margin: 10px 0 2px;
+}
+.fe-hist > span {
+  flex: 1; min-height: 1px; border-radius: 2px 2px 0 0;
+  background: color-mix(in oklab, var(--color-feat) 55%, transparent);
+}
+/* A sibling of the chart, not a child of it: absolutely positioned inside
+   the flex row it laid across the bars it describes and ran off the right
+   edge at 1000px. */
+.fe-hist-cap { margin: 2px 0 8px; }
+.fe-nolabel { margin: 8px 0; font-style: italic; }
+.fe-logits {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin-top: 10px;
+}
+.fe-logits .fe-col ol {
+  list-style: none; margin: 3px 0 0; padding: 0; display: grid; gap: 2px;
+}
+.fe-logits .fe-col li {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 11.5px;
+}
+.fe-logits .fe-col code {
+  font-family: var(--font-mono);
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border-radius: 3px; padding: 0 4px;
+}
+.fe-exact { grid-column: 1 / -1; margin: 2px 0 0; }
+
+/* ── grounding ───────────────────────────────────────────────────────────
+   The layout IS the argument. Two quantities per passage, each with its own
+   scale and its own labelled unit, because "attention on it" and "the answer
+   depended on it" are different claims and the whole feature is the case
+   where they disagree. A shared axis would invite reading a long attention
+   bar as a large dependence, which is the exact mistake every RAG panel
+   already lets its reader make. */
+
+.ground-inputs {
+  display: grid; grid-template-columns: 1.35fr 1fr; gap: 10px;
+}
+@media (max-width: 860px) { .ground-inputs { grid-template-columns: 1fr; } }
+.ground-inputs > label,
+.ground-side > label { display: grid; gap: 3px; min-width: 0; }
+.ground-side { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.ground-inputs textarea,
+.ground-inputs input {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.55; resize: vertical;
+}
+
+.ground-answer { margin: 12px 0 6px; }
+
+.ground-verdict {
+  margin: 6px 0 8px; padding: 9px 12px; border-radius: 9px;
+  font: 500 13px var(--font-sans);
+}
+.ground-verdict.ok {
+  border: 1px solid color-mix(in oklab, var(--color-ground) 38%, transparent);
+  background: color-mix(in oklab, var(--color-ground) 8%, transparent);
+}
+/* Nothing clearing is a RESULT, so it is stated in ink rather than in red —
+   the same call the probe panel makes. A red banner would read as a failure
+   of the tool instead of a finding about the answer. */
+.ground-verdict.none {
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 9%, transparent);
+}
+/* A zero floor is not a result and not an error: it is a test that could not
+   be run. Amber, the same colour the probe uses for an untestable layer. */
+.ground-verdict.weak {
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 38%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+}
+
+/* The headline finding, in a block of its own. As a badge in a list it would
+   be the one thing on the page a reader had to go looking for. */
+.ground-flag {
+  margin: 0 0 10px; padding: 9px 12px; border-radius: 9px;
+  font: 400 12.5px/1.6 var(--font-sans);
+  border: 1px solid color-mix(in oklab, var(--sem-error) 34%, transparent);
+  background: color-mix(in oklab, var(--sem-error) 6%, transparent);
+}
+
+.ground-heads,
+.ground-rows > li {
+  display: grid;
+  grid-template-columns: 2.4rem 11rem 11rem minmax(0, 1fr);
+  gap: 10px; align-items: center;
+}
+@media (max-width: 720px) {
+  .ground-heads { display: none; }
+  .ground-rows > li { grid-template-columns: 2.4rem 1fr 1fr; }
+  .ground-body { grid-column: 1 / -1; }
+}
+.ground-heads { margin-bottom: 3px; }
+
+.ground-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ground-rows > li {
+  padding: 4px 6px; border-radius: 7px;
+  border: 1px solid transparent;
+}
+.ground-id { opacity: 0.7; }
+
+/* The bar and its number share one cell: the number sits after the bar, so a
+   bar too short to read still has its value beside it rather than clipped
+   inside it. */
+.ground-track {
+  position: relative; display: flex; align-items: center; gap: 6px;
+  min-width: 0;
+}
+.ground-bar {
+  height: 11px; border-radius: 0 3px 3px 0; min-width: 1px; flex: none;
+  max-width: 62%;
+  transition: width var(--dur-medium) var(--ease-out);
+}
+.ground-bar.dep { background: var(--color-ground); }
+/* Outlined, not filled. Attention is a DESCRIPTION of where the model looked
+   and dependence is a causal measurement; drawing them in the same weight
+   would say they carry the same kind of evidence. */
+.ground-bar.attn {
+  background: color-mix(in oklab, var(--color-ground) 18%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ink-3) 55%, transparent);
+}
+.ground-num { font-size: 11px; opacity: 0.85; white-space: nowrap; }
+.ground-unknown { font-style: italic; opacity: 0.75; }
+
+.ground-body { display: grid; gap: 1px; min-width: 0; }
+.ground-preview {
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  opacity: 0.9;
+}
+.ground-verd { white-space: nowrap; }
+
+.ground-rows > li.g-used .ground-verd { color: var(--color-ground); }
+.ground-rows > li.g-neither .ground-bar.dep { background: var(--ink-4); }
+.ground-rows > li.g-neither .ground-id,
+.ground-rows > li.g-neither .ground-preview { opacity: 0.6; }
+/* The disagreement, marked on the row as well as in the block above — a
+   reader scanning the list should not have to hold the flag in their head. */
+.ground-rows > li.g-looked {
+  border-color: color-mix(in oklab, var(--sem-error) 34%, transparent);
+  background: color-mix(in oklab, var(--sem-error) 5%, transparent);
+}
+.ground-rows > li.g-looked .ground-verd {
+  color: var(--color-pop); font-weight: 600;
+}
+.ground-rows > li.g-looked .ground-bar.dep {
+  background: color-mix(in oklab, var(--ink-4) 70%, transparent);
+}
+.ground-rows > li.g-looked .ground-bar.attn {
+  background: color-mix(in oklab, var(--sem-error) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--sem-error) 55%, transparent);
+}
+
+.ground-warn {
+  margin: 10px 0 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 34%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
+}
+/* An undecidable reading is not a finding and not an error: it is a test
+   that could not run. Amber, the same colour the probe uses for an untestable
+   layer and the patchscope for a cross-layer splice — so "we could not
+   measure this" looks the same everywhere on the page. */
+.ground-flag.undecided {
+  border-color: color-mix(in oklab, var(--sem-agent) 36%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
+}
+/* A recording says what it can and cannot do BEFORE the button, because the
+   button's label is the same either way and the difference — that nothing
+   here can be re-measured — is the thing a reader has to know first. */
+.ground-recorded {
+  margin: 10px 0; padding: 8px 11px; border-radius: 9px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 7%, transparent);
+}
+.ground-joint { margin: 10px 0 0; }
+
+/* ── causal ablation, inside the custom-model panel ──────────────────────
+   The control is a MARKER on the same bar rather than a second bar: it is
+   the line this measurement had to cross, and drawing it as a bar of its own
+   invites reading it as a second measurement of the same thing. */
+
+.custom-ablate {
+  margin-top: 14px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-custom) 30%, transparent);
+  background: color-mix(in oklab, var(--color-custom) 5%, transparent);
+}
+.custom-ablate code {
+  font-family: var(--font-mono);
+  background: color-mix(in oklab, var(--ink-4) 12%, transparent);
+  border-radius: 3px; padding: 0 4px;
+}
+.ab-head { margin: 8px 0 6px; }
+
+.ab-verdict {
+  margin: 0 0 10px; padding: 9px 12px; border-radius: 9px;
+  font: 400 12.5px/1.6 var(--font-sans);
+}
+.ab-verdict.ok {
+  border: 1px solid color-mix(in oklab, var(--color-custom) 38%, transparent);
+  background: color-mix(in oklab, var(--color-custom) 8%, transparent);
+}
+/* Nothing clearing is a RESULT — an untrained or fragile model genuinely has
+   no site distinguishable from a same-size random edit — so it is stated in
+   ink rather than in red. */
+.ab-verdict.none {
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 9%, transparent);
+}
+
+.ab-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.ab-rows > li {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) 4.4rem 12rem;
+  gap: 8px; align-items: center;
+}
+@media (max-width: 720px) {
+  .ab-rows > li { grid-template-columns: 7rem minmax(0, 1fr) 4.4rem; }
+  .ab-verd { grid-column: 1 / -1; }
+}
+.ab-name {
+  font-size: 11px; opacity: 0.9;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ab-track {
+  position: relative; display: block; height: 13px; border-radius: 3px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+.ab-bar {
+  position: absolute; left: 0; top: 1px; bottom: 1px;
+  border-radius: 0 3px 3px 0; min-width: 1px;
+  background: var(--color-custom);
+  transition: width var(--dur-medium) var(--ease-out);
+}
+/* Full height and 2px wide, above the bar: a threshold, not a quantity. */
+.ab-ctl {
+  position: absolute; top: -2px; bottom: -2px; width: 2px;
+  background: var(--color-ink); border-radius: 1px;
+  transform: translateX(-1px);
+}
+.ab-val { text-align: right; font-size: 11px; }
+.ab-verd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ab-rows > li.ab-clears .ab-bar {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-custom) 55%, transparent);
+}
+.ab-rows > li.ab-clears .ab-verd {
+  color: var(--color-custom); font-weight: 600;
+}
+/* A site that lost to its control keeps its length and loses its colour: the
+   bar is still the effect size, which is a real number worth seeing. */
+.ab-rows > li.ab-null .ab-bar { background: var(--ink-4); }
+.ab-rows > li.ab-null .ab-name { opacity: 0.65; }
+/* Untested is neither. Outlined rather than filled, the same way the probe
+   panel draws a layer whose null could not be measured. */
+.ab-rows > li.ab-untested .ab-bar {
+  background: transparent;
+  border: 1px dashed color-mix(in oklab, var(--ink-3) 60%, transparent);
+}
+.ab-rows > li.ab-untested .ab-verd { font-style: italic; opacity: 0.75; }
+.ab-means { margin-top: 10px; }
+
+/* ── finetune diff ───────────────────────────────────────────────────────
+   TEAL, reused rather than a ninth hue, and that was measured rather than
+   settled by taste. The unused arc of the wheel is between green (H 152) and
+   teal (H 208): a candidate at H 180 sits at oklab dE 0.050 from teal and
+   0.053 from green, which on a 6px dot is not a difference anybody can see.
+   A hue nobody can distinguish is worse than an honest reuse — and teal
+   already means "the baseline you measure against", which is exactly what a
+   finetune diff is for. */
+.h-mdiff { color: var(--color-probe); }
+.d-mdiff { background: var(--color-probe); }
+.panel:has(.d-mdiff) { --panel-accent: var(--color-probe); }
+
+.mdiff-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 720px) { .mdiff-inputs { grid-template-columns: 1fr; } }
+.mdiff-inputs label, .mdiff-prompts { display: grid; gap: 3px; min-width: 0; }
+.mdiff-prompts { margin-top: 10px; }
+.mdiff-inputs input,
+.mdiff-prompts textarea {
+  width: 100%; padding: 7px 9px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.55; resize: vertical;
+}
+.mdiff-opts { flex-wrap: wrap; gap: 16px; margin: 10px 0 0; }
+.mdiff-opts label { display: flex; align-items: baseline; gap: 5px; }
+.mdiff-cost { opacity: 0.7; margin-left: 4px; }
+
+.mdiff-head { margin: 12px 0 6px; }
+
+.mdiff-verdict {
+  margin: 6px 0 10px; padding: 9px 12px; border-radius: 9px;
+  font: 400 12.5px/1.6 var(--font-sans);
+}
+.mdiff-verdict.ok {
+  border: 1px solid color-mix(in oklab, var(--color-probe) 38%, transparent);
+  background: color-mix(in oklab, var(--color-probe) 8%, transparent);
+}
+/* A wide spread and a plurality are not errors — they are the measurement
+   saying the set does not agree with itself, which is the finding. Amber,
+   the same colour every "this could not be pinned down" state on the page
+   already uses. */
+.mdiff-verdict.wide {
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 38%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+}
+
+/* Shares the row template below so the axis ends sit over the track. A flex
+   row with a `.spacer` put them at x=185 and x=354 against a track running
+   239 to 810 — `.spacer` is `flex: 0 1 auto` and does not grow. */
+.mdiff-scale,
+.mdiff-layers > li {
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr) 4.6rem 11rem;
+  gap: 8px; align-items: center;
+}
+.mdiff-scale { margin-bottom: 3px; }
+.mdiff-axis { position: relative; display: block; height: 1.2em; }
+.mdiff-axis-lo { position: absolute; left: 0; }
+.mdiff-axis-hi { position: absolute; right: 0; }
+.mdiff-layers { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.mdiff-layers > li { padding: 1px 4px; border-radius: 5px; }
+@media (max-width: 720px) {
+  .mdiff-scale, .mdiff-layers > li {
+    grid-template-columns: 2.6rem minmax(0, 1fr) 4.6rem;
+  }
+  .mdiff-first { grid-column: 1 / -1; }
+}
+.mdiff-l { opacity: 0.75; }
+.mdiff-track {
+  position: relative; display: block; height: 14px; border-radius: 4px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+/* A BAND, not a bar. The band is the middle half across prompts, and drawing
+   a single line would be a median pretending to be a curve. */
+.mdiff-band {
+  position: absolute; top: 2px; bottom: 2px; border-radius: 3px;
+  background: color-mix(in oklab, var(--color-probe) 28%, transparent);
+  transition: width var(--dur-medium) var(--ease-out),
+              left var(--dur-medium) var(--ease-out);
+}
+.mdiff-median {
+  position: absolute; top: -1px; bottom: -1px; width: 2px;
+  background: var(--color-probe); border-radius: 1px;
+  transform: translateX(-1px);
+}
+.mdiff-val { text-align: right; font-size: 11px; }
+.mdiff-first { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The layer the summary names, marked on the chart so a reader does not have
+   to hold it in their head while scanning. */
+.mdiff-layers > li.mdiff-turn {
+  background: color-mix(in oklab, var(--color-probe) 9%, transparent);
+}
+.mdiff-layers > li.mdiff-turn .mdiff-l { font-weight: 700; opacity: 1; }
+
+.mdiff-sub { margin: 14px 0 5px; }
+.mdiff-heads, .mdiff-tokens {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 3px;
+}
+.mdiff-heads > li {
+  display: grid;
+  grid-template-columns: 4.6rem 4.6rem 1rem 4.6rem 5rem minmax(0, 1fr);
+  gap: 8px; align-items: baseline; font-size: 11.5px;
+}
+.mdiff-tokens > li {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr) 9rem 10rem;
+  gap: 8px; align-items: baseline; font-size: 11.5px;
+}
+@media (max-width: 860px) {
+  .mdiff-heads > li { grid-template-columns: 4.6rem 4.6rem 1rem 4.6rem 5rem; }
+  .mdiff-tokens > li { grid-template-columns: 6rem minmax(0, 1fr); }
+}
+.mdiff-shift.up { color: var(--color-probe); }
+.mdiff-shift.down { color: var(--color-pop); }
+.mdiff-tokens code {
+  font-family: var(--font-mono);
+  background: color-mix(in oklab, var(--ink-4) 12%, transparent);
+  border-radius: 3px; padding: 0 4px;
+}
+.mdiff-tokens > li.gained .mdiff-cross { color: var(--color-probe); font-weight: 600; }
+.mdiff-tokens > li.lost .mdiff-cross { color: var(--color-pop); font-weight: 600; }
+.mdiff-means { margin-top: 12px; }
+
+/* ── the causal half of the robot panel ──────────────────────────────────
+   Sited under the attention map rather than beside it: the two are read
+   together, and a side-by-side layout would invite comparing bar lengths
+   across an attention probability and an embedding shift, which share no
+   unit. The number that carries that comparison is the Spearman, and it gets
+   a banner rather than a cell. */
+
+.vla-causal {
+  margin-top: 14px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-vla) 30%, transparent);
+  background: color-mix(in oklab, var(--color-vla) 5%, transparent);
+}
+.vla-opts { flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.vla-cost { opacity: 0.8; }
+.vla-num {
+  width: 4.4rem; padding: 4px 7px; border-radius: 6px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.vla-verdict {
+  margin: 10px 0; padding: 9px 12px; border-radius: 9px;
+  font: 400 12.5px/1.6 var(--font-sans);
+}
+/* The two maps AGREEING is the unusual case, so it is the one that gets the
+   panel's own colour; disagreeing is the expected finding and gets the
+   attention of a warning without being an error. */
+.vla-verdict.agree {
+  border: 1px solid color-mix(in oklab, var(--color-vla) 38%, transparent);
+  background: color-mix(in oklab, var(--color-vla) 8%, transparent);
+}
+.vla-verdict.differ {
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 38%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+}
+/* An INVERTED ranking is the strongest reading of the three — a relationship,
+   not the absence of one — so it gets weight the amber "differ" does not: the
+   panel's own hue at full strength with a left rule, the way the section
+   markers elsewhere flag a result worth stopping on. */
+.vla-verdict.inverted {
+  border: 1px solid color-mix(in oklab, var(--color-vla) 55%, transparent);
+  border-left: 3px solid var(--color-vla);
+  background: color-mix(in oklab, var(--color-vla) 12%, transparent);
+}
+.vla-verdict.none {
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 9%, transparent);
+}
+
+.vla-blocks, .vla-rank {
+  list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 3px;
+}
+.vla-blocks > li {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr) 4.4rem 13rem;
+  gap: 8px; align-items: center; font-size: 11.5px;
+}
+.vla-rank > li {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr) 4.4rem;
+  gap: 8px; align-items: center; font-size: 11.5px;
+}
+@media (max-width: 720px) {
+  .vla-blocks > li { grid-template-columns: 5rem minmax(0, 1fr) 4.4rem; }
+  .vla-blocks > li > :last-child { grid-column: 1 / -1; }
+}
+.vla-track {
+  position: relative; display: block; height: 12px; border-radius: 3px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+.vla-bar {
+  position: absolute; left: 0; top: 1px; bottom: 1px; min-width: 1px;
+  border-radius: 0 3px 3px 0; background: var(--color-vla);
+  transition: width var(--dur-medium) var(--ease-out);
+}
+/* A threshold, not a quantity — full height, above the bar, 2px wide. */
+.vla-ctl {
+  position: absolute; top: -2px; bottom: -2px; width: 2px;
+  background: var(--color-ink); border-radius: 1px;
+  transform: translateX(-1px);
+}
+.vla-blocks > li.clears .vla-bar {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-vla) 55%, transparent);
+}
+.vla-blocks > li.clears > :last-child { color: var(--color-vla); font-weight: 600; }
+/* A block that lost keeps its LENGTH and loses its colour: the bar is still
+   the effect size, which is a real number worth seeing. */
+.vla-blocks > li.null .vla-bar { background: var(--ink-4); }
+/* Untested is neither — outlined, the same way the probe panel draws a layer
+   whose null could not be measured. */
+.vla-blocks > li.untested .vla-bar {
+  background: transparent;
+  border: 1px dashed color-mix(in oklab, var(--ink-3) 60%, transparent);
+}
+.vla-blocks > li.untested > :last-child { font-style: italic; opacity: 0.75; }
+.vla-means { margin-top: 10px; }
+
+/* ── the token ledger ────────────────────────────────────────────────────
+   "not reported by provider" must not read as a small number. It is set in
+   the sans face at reduced weight with no mono digits, so the eye separates
+   it from a count before reading it — the same way the probe panel draws a
+   layer whose null could not be measured. */
+.tok-run {
+  margin: 10px 0 4px; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid var(--hair);
+  background: color-mix(in oklab, var(--ink-4) 4%, transparent);
+}
+.tok-title { margin-bottom: 6px; }
+.tok-grid { margin: 0; display: grid; gap: 2px 14px; }
+.tok-row {
+  display: grid; grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 10px; align-items: baseline;
+}
+.tok-row dt { margin: 0; }
+.tok-row dd { margin: 0; font-size: 12px; }
+.tok-none {
+  font: 400 11.5px/1.5 var(--font-sans);
+  font-style: italic; color: var(--ink-3); opacity: 0.8;
+}
+.tok-partial { font-size: 11px; color: var(--ink-3); }
+.tok-table + .tok-cost { margin-top: 9px; }
+.tok-cost {
+  padding: 8px 11px; border-radius: 8px;
+  font: 400 12px/1.55 var(--font-sans);
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 6%, transparent);
+}
+/* A partial total is a FLOOR, and the amber says so before the sentence
+   does. A complete one gets no colour at all — it needs no qualification. */
+.tok-cost.partial {
+  border-color: color-mix(in oklab, var(--sem-agent) 38%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+}
+.tok-cost.err {
+  border-color: color-mix(in oklab, var(--sem-err, var(--sem-agent)) 42%, transparent);
+  background: color-mix(in oklab, var(--sem-err, var(--sem-agent)) 9%, transparent);
+}
+.inspector .tok-table { margin-top: 10px; }
+@media (max-width: 720px) {
+  .tok-row { grid-template-columns: 1fr; gap: 0; }
+}
+
+/* ── share a run ─────────────────────────────────────────────────────────
+   The preview is the point of this block, so it gets the weight: what is
+   about to leave the machine is on screen above the button that sends it.
+   A non-zero redaction count is the one number here that changes colour,
+   because "we replaced 3 things" is a fact the reader has to actually
+   notice before deciding to send the file. */
+.share-run {
+  margin-top: 12px; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 26%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 4%, transparent);
+}
+.share-prev {
+  margin-top: 9px; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--hair);
+  background: var(--color-card);
+}
+.share-title { margin-bottom: 7px; }
+.share-grid {
+  margin: 0 0 7px; display: flex; flex-wrap: wrap; gap: 6px 22px;
+}
+.share-grid > div { display: grid; gap: 1px; }
+.share-grid dt { margin: 0; }
+.share-grid dd { margin: 0; font-size: 14px; }
+.share-hit { color: var(--sem-agent); font-weight: 600; }
+.share-means { margin: 0; }
+.share-kinds {
+  list-style: none; margin: 7px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+}
+.share-opt { display: inline-flex; align-items: center; gap: 6px; }
+.share-opt input { accent-color: var(--sem-agent); }
+
+/* ── Inspect .eval drop zone ─────────────────────────────────────────────
+   A dashed target, the same language the .mri drop zone uses, so the two
+   read as the same gesture. The DROPPED list is the part that matters:
+   Inspect's schema is not frozen, and a timeline that quietly showed 40 of
+   90 events would be the failure this whole reader is built to avoid. */
+.ins-drop {
+  margin: 10px 0; padding: 11px 13px; border-radius: 10px;
+  border: 1px dashed color-mix(in oklab, var(--color-agent) 34%, transparent);
+  background: color-mix(in oklab, var(--color-agent) 3%, transparent);
+  display: grid; gap: 5px;
+  /* --dur-small (170ms), not the --dur-fast I first wrote: that token does
+     not exist, and a declaration reading an undefined var is dropped
+     ENTIRELY rather than falling back — the drag state would simply have
+     snapped with no transition and nothing would have said so. */
+  transition: background var(--dur-small) var(--ease-out),
+              border-color var(--dur-small) var(--ease-out);
+}
+.ins-drop.over {
+  border-color: var(--color-agent);
+  background: color-mix(in oklab, var(--color-agent) 10%, transparent);
+}
+.ins-target {
+  justify-self: start; padding: 6px 11px; border-radius: 7px;
+  border: 1px solid color-mix(in oklab, var(--color-agent) 40%, transparent);
+  background: var(--color-card); color: var(--color-ink);
+  font: 500 12px/1.4 var(--font-sans); cursor: pointer;
+}
+.ins-target:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--color-agent) 8%, transparent);
+}
+.ins-result {
+  margin-top: 8px; padding: 9px 11px; border-radius: 8px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  display: grid; gap: 7px;
+}
+/* Why THIS sample is on screen. Without it the reader is looking at one row
+   of a 4,000-row eval with no idea how it was chosen. */
+.ins-why {
+  padding: 7px 10px; border-radius: 7px;
+  font: 400 12px/1.55 var(--font-sans);
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 6%, transparent);
+}
+.ins-why.failed {
+  border-color: color-mix(in oklab, var(--color-pop) 38%, transparent);
+  background: color-mix(in oklab, var(--color-pop) 8%, transparent);
+}
+.ins-dropped {
+  padding: 7px 10px; border-radius: 7px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 34%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
+}
+.ins-kinds {
+  list-style: none; margin: 5px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+}
+.ins-means { margin: 0; }
+.ins-pick { gap: 8px; align-items: baseline; }
+
+/* ── rubric ──────────────────────────────────────────────────────────────
+   A rule NAME is the reader's own words, so it is set in the input face at
+   full contrast, not as a system label. The counts are chips because they
+   are also the filter: clicking "had an error · 3" narrows the list to
+   those three, which is the whole point of scoring a store at all. */
+.rub-panel {
+  margin: 10px 0; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-feat) 26%, transparent);
+  background: color-mix(in oklab, var(--color-feat) 3%, transparent);
+}
+.rub-rules { list-style: none; margin: 9px 0; padding: 0; display: grid; gap: 5px; }
+.rub-rules > li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rub-name, .rub-pattern, .rub-value {
+  padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-size: 12px;
+}
+.rub-name { width: 12rem; font-weight: 500; }
+.rub-pattern { width: 11rem; font-family: var(--font-mono); font-size: 11.5px; }
+.rub-value { width: 5rem; font-family: var(--font-mono); font-size: 11.5px; }
+.rub-out { margin-top: 10px; display: grid; gap: 8px; }
+.rub-cap { margin: 0; }
+/* NOT ANSWERED sits apart from the counts, and reads as a refusal rather
+   than a zero — a distribution rule below its minimum n has no answer, and
+   drawing it as "0" would look exactly like having looked. */
+.rub-skipped {
+  padding: 8px 11px; border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 36%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+  display: grid; gap: 4px;
+}
+.rub-counts { flex-wrap: wrap; gap: 6px; }
+.rub-chip {
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--color-card); color: var(--color-ink);
+  font: 500 11.5px/1.3 var(--font-sans); cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-out),
+              border-color var(--dur-micro) var(--ease-out);
+}
+.rub-chip:hover { border-color: color-mix(in oklab, var(--color-feat) 45%, transparent); }
+.rub-chip.on {
+  border-color: var(--color-feat);
+  background: color-mix(in oklab, var(--color-feat) 13%, transparent);
+}
+.rub-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.rub-row {
+  width: 100%; text-align: left; padding: 6px 10px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); cursor: pointer;
+  display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+  gap: 10px; align-items: baseline;
+}
+.rub-row:hover { border-color: color-mix(in oklab, var(--color-feat) 45%, transparent); }
+@media (max-width: 720px) {
+  .rub-row { grid-template-columns: 1fr; gap: 2px; }
+}

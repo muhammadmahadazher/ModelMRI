@@ -396,6 +396,15 @@ class ModelStatus:
     # every measurement below describes the quantised weights. None otherwise,
     # never {} -- an empty dict reads as "from a GGUF, nothing to say".
     gguf: dict | None = None
+    # How many transformer blocks this model has. A property of the LOADED
+    # MODEL, not of a run -- which is why it lives here and not on
+    # /api/attention/meta, where it needs a generation to have happened first.
+    # The probe and patchscope panels both need to offer a layer before there
+    # is anything to generate from, and without this their layer pickers were
+    # empty until the user generated something they did not need.
+    #
+    # None for backends with no blocks to count (ollama serves text only).
+    n_layers: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -437,6 +446,17 @@ class ModelRuntime:
         # invalidate them. A model change does, and the epoch moves on load
         # and unload and not on generation, which is exactly that rule.
         self._last_types: dict = {}
+        # The last grounding run. Epoch-scoped like the head labels and for
+        # the same reason: it is measured on ITS OWN document and question,
+        # not on the current generation, so a new generation does not
+        # invalidate it -- but a model swap does, and the epoch moves on load
+        # and unload and deliberately not on generation.
+        self._last_ground: dict = {}
+        # The last finetune-vs-base comparison. NOT epoch-scoped, and that is
+        # the one piece of state here that is not: a diff names its own two
+        # models and is a claim about neither the model loaded here nor the
+        # prompt in front of it. Loading a third model does not invalidate it.
+        self._last_model_diff: dict = {}
         # A trained translator, when one has been fitted or loaded for THIS
         # model. Cleared on every load: a lens fitted to one model reads
         # another one's residual stream as confident nonsense.
@@ -519,6 +539,28 @@ class ModelRuntime:
             n_params=sum(p.numel() for p in self.model.parameters()),
             instruct=bool(getattr(self.tokenizer, "chat_template", None)),
             gguf=self.gguf,
+            # TWO getattrs, not one. `self.model.config` is not a given: a
+            # TorchScript module, an adapter-loaded network and the stub the
+            # load tests use all have parameters and no config, and reaching
+            # through it raised AttributeError from inside `status()` -- which
+            # is the one method every route calls, so a missing block count
+            # took the whole session endpoint down rather than reporting an
+            # unknown. Caught by the load test, not by review.
+            #
+            # `or None` on the outside: a missing count is "unknown", and 0
+            # would be the positive claim "this model has no blocks", which
+            # the UI renders as an empty dropdown.
+            n_layers=(
+                int(
+                    getattr(
+                        getattr(self.model, "config", None),
+                        "num_hidden_layers",
+                        0,
+                    )
+                    or 0
+                )
+                or None
+            ),
         )
 
     def unload(self) -> dict:
@@ -688,6 +730,7 @@ class ModelRuntime:
                 self._tuned = {}
                 self._tuned_info = {}
                 self._last_types = {}
+                self._last_ground = {}
             return self.status()
 
         with self._load_slot(hf_id):
@@ -2095,6 +2138,129 @@ class ModelRuntime:
                 )
             return out
 
+    def diff_models(
+        self,
+        model_a: str,
+        model_b: str,
+        prompts: list[str],
+        *,
+        include_heads: bool = False,
+        include_tokens: bool = False,
+    ) -> dict:
+        """What a finetune changed, over a prompt set rather than one prompt.
+
+        Loads each side ONCE in sequence and never holds both: 8 GB will not
+        fit two of the models worth comparing. The model currently loaded HERE
+        is untouched -- this runs its own pair, and unloading the session's
+        model to make room is the caller's decision rather than a side effect
+        of asking a question.
+        """
+        from . import model_diff
+
+        out = model_diff.compare(
+            model_diff.loader(
+                dtype=self.accel.dtype,
+                device=self.accel.torch_device,
+                device_kind=self.accel.kind,
+            ),
+            model_a,
+            model_b,
+            prompts,
+            include_heads=include_heads,
+            include_tokens=include_tokens,
+        ).to_dict()
+        # Stored WITHOUT an epoch. See `_last_model_diff`: this is a claim
+        # about two named models, and what is loaded here is irrelevant to it.
+        self._last_model_diff = out
+        out["receipt"] = self.receipt(
+            "model_diff",
+            model_a=model_a,
+            model_b=model_b,
+            n_prompts=out.get("n_prompts"),
+            include_heads=include_heads,
+            include_tokens=include_tokens,
+        )
+        return out
+
+    def ground_answer(
+        self,
+        document: str,
+        question: str,
+        *,
+        max_chunks: int = 0,
+    ) -> dict:
+        """Did the answer come from the document, or from the weights?
+
+        The one question every local RAG interface leaves unanswered. They all
+        show which chunks were RETRIEVED; none of them shows whether the answer
+        depended on them, and a retriever that pulled the right paragraph next
+        to a model that ignored it looks identical to a working system in
+        every one of those UIs.
+
+        NOTHING IS DOWNLOADED and nothing is indexed. The document is text you
+        hand it, chunking is by blank line and heading, and every chunk goes
+        into the prompt — retrieval is somebody else's job.
+
+        Runs its own prompt and does NOT commit it: grounding is about a
+        document-plus-question of its own, and committing would leave every
+        other panel describing a prompt the user never asked to analyse.
+        """
+        from . import ground as ground_mod
+
+        with self._lock:
+            if self.replay is not None:
+                # A recording cannot MEASURE grounding -- masking a passage
+                # out needs the model -- but it can carry what was measured,
+                # and "the answer came from the weights, not from the document
+                # I gave it" is exactly the finding somebody wants to show a
+                # colleague. Serve the recorded one; refuse only when the file
+                # does not have it.
+                recorded = getattr(self.replay, "ground", None) or {}
+                if recorded.get("chunks"):
+                    return {**self._recorded_ground(recorded), "recorded": True}
+                raise Refusal(
+                    "This is a recording, and it does not carry a grounding "
+                    "result. Masking a passage out of the model's attention "
+                    "means running the model, and a `.mri` holds activations "
+                    "rather than weights. Whoever exported it can ground an "
+                    "answer and share it again."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no attention mask to "
+                    "take a passage out of. Load the model through "
+                    "HuggingFace."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            chunks = ground_mod.split(document)
+            out = ground_mod.measure(
+                self.model,
+                self.tokenizer,
+                chunks,
+                question,
+                device=self.device,
+                max_chunks=max_chunks or ground_mod.MAX_CHUNKS,
+            ).to_dict()
+
+        # Kept for the export, stamped with the epoch it belongs to. Without
+        # the epoch a grounding measured on one model would be written into a
+        # `.mri` beside a different model's attention.
+        self._last_ground = {**out, "epoch": self.epoch}
+        out["receipt"] = self.receipt(
+            "ground",
+            n_chunks=out["n_chunks"],
+            n_prompt_tokens=out["n_prompt_tokens"],
+            # The question travels; the document does not. A receipt is meant
+            # to be shareable and a grounded document is usually the private
+            # half of the pair — its length and chunk count say what was
+            # measured without carrying the text itself.
+            document_chars=len(document),
+            question=question,
+        )
+        return out
+
     def patchscope(
         self,
         source_prompt: str,
@@ -2930,8 +3096,22 @@ class ModelRuntime:
     # through the view you are on instead of the full cube, and say so.
     _FULL_EXPORT_BUDGET = 24_000_000
 
-    def export_session(self, layer: int = 0, head: int = 0, note: str = "") -> bytes:
-        """Serialise the current analysis to a `.mri` someone else can open."""
+    def export_session(
+        self,
+        layer: int = 0,
+        head: int = 0,
+        note: str = "",
+        trace: dict | None = None,
+        step_ref: str = "",
+    ) -> bytes:
+        """Serialise the current analysis to a `.mri` someone else can open.
+
+        With `trace`, the agent run ships alongside the mechanistic snapshot —
+        the recipient clicks the failing tool call and lands in the attention
+        view of the generation that produced the bad argument, on a machine
+        with no GPU and no account. `session.build` redacts both halves before
+        anything is written; see `bundle.py`.
+        """
         if self.replay is not None:
             raise Refusal(
                 "You are viewing a shared session. Close it, then generate "
@@ -2942,6 +3122,39 @@ class ModelRuntime:
                 "Ollama serves text only — there are no internals to export. "
                 "Load the model through HuggingFace to capture a session."
             )
+        # A run with no analysis behind it is still worth sending: a portable
+        # timeline that opens with nothing installed is something no hosted
+        # platform offers either. So when the caller explicitly asked to
+        # bundle a trace, "nothing has been generated yet" stops being a
+        # refusal and becomes a smaller file.
+        #
+        # Only when they asked. Without `trace` this is the analysis export,
+        # and an empty one would be a file with nothing in it.
+        # No local `from . import session` here: `session` is already imported
+        # at module scope, and importing it inside this function would make
+        # the name local to the WHOLE function — so the `session.build(...)`
+        # at the bottom would raise UnboundLocalError on every export that
+        # does not take this branch. Which is most of them.
+        if trace is not None and not self._attn_variants.get("live"):
+            return session.build(
+                model_id="",
+                device=self.device,
+                dtype="",
+                n_params=None,
+                tokens=[],
+                prompt="",
+                generation="",
+                attention={},
+                n_layers=0,
+                n_heads=0,
+                n_prompt=0,
+                note=note,
+                scope="the agent run only — no generation was loaded when this "
+                "was exported, so there is no attention behind it",
+                trace=trace,
+                step_ref=step_ref,
+            )
+
         # Populates the attention cache if this is the first look, and raises
         # the same guidance the panel would if there is nothing to capture.
         self.attention(layer, head)
@@ -3003,6 +3216,12 @@ class ModelRuntime:
             patch=self._patch_for_export(),
             ranking=self._ranking_for_export(),
             head_types=self._types_for_export(),
+            ground=self._ground_for_export(),
+            model_diff=self._model_diff_for_export(),
+            # The agent run this analysis belongs to, when the caller named
+            # one. Additive: without it the file is exactly what it was.
+            trace=trace,
+            step_ref=step_ref,
             lens=lens_rows,
             lens_info=lens_info,
             receipts=self._receipts_for_export(),
@@ -3056,6 +3275,92 @@ class ModelRuntime:
         if not last or last.get("epoch") != self.epoch:
             return {}
         return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
+
+    @staticmethod
+    def _recorded_ground(recorded: dict) -> dict:
+        """A recorded grounding, with its sentence rebuilt from its numbers.
+
+        `means` is NOT carried in the file. Rebuilding it here means the prose
+        and the fields can never disagree: a file hand-edited to flip
+        `ungrounded` gets a summary that says so, instead of a stored sentence
+        describing the numbers it used to have.
+
+        The rebuild goes through the same dataclass the live path uses, so
+        there is one implementation of what these numbers mean rather than a
+        second one for replay that drifts.
+        """
+        from . import ground as ground_mod
+
+        rows = [
+            ground_mod.Score(
+                index=int(c.get("index", 0)),
+                preview=str(c.get("preview") or ""),
+                n_tokens=int(c.get("n_tokens") or 0),
+                dependence=float(c.get("dependence") or 0.0),
+                attention=c.get("attention"),
+                depended_on=bool(c.get("depended_on")),
+                looked_not_used=c.get("looked_not_used"),
+            )
+            for c in recorded.get("chunks") or []
+        ]
+        report = ground_mod.Grounding(
+            question=str(recorded.get("question") or ""),
+            answer=str(recorded.get("answer") or ""),
+            answer_p=float(recorded.get("answer_p") or 0.0),
+            position=int(recorded.get("position") or 0),
+            chunks=rows,
+            n_chunks=int(recorded.get("n_chunks") or len(rows)),
+            n_prompt_tokens=int(recorded.get("n_prompt_tokens") or 0),
+            noise_floor=float(recorded.get("noise_floor") or 0.0),
+            joint=float(recorded.get("joint") or 0.0),
+            attention_share=recorded.get("attention_share"),
+            attention_available=bool(recorded.get("attention_available")),
+            attention_note=str(recorded.get("attention_note") or ""),
+            floor_degenerate=bool(recorded.get("floor_degenerate")),
+            passes=int(recorded.get("passes") or 0),
+            seconds=float(recorded.get("seconds") or 0.0),
+            ungrounded=bool(recorded.get("ungrounded")),
+        )
+        return report.to_dict()
+
+    def _model_diff_for_export(self) -> dict:
+        """The last comparison, if there was one.
+
+        NO EPOCH CHECK, alone among the export helpers here. Every other
+        section describes the model in this file and dies when the model
+        changes; a diff names its own two models and survives, because
+        unloading gpt2 does not make "these two checkpoints differ at layer 4"
+        untrue.
+
+        `means` and `receipt` are dropped for the same reason the grounding
+        export drops them: the sentence is regenerated from the numbers and
+        the receipts list already holds the receipt once.
+        """
+        last = self._last_model_diff
+        if not last:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("receipt", "means")}
+
+    def _ground_for_export(self) -> dict:
+        """The last grounding, if it describes the model being exported.
+
+        Same epoch rule as the head labels, and the same reasoning: grounding
+        is measured on its own document and question rather than on the
+        current generation, so it survives a new one -- and dies on a model
+        swap, because "the answer came from the weights" is a claim about
+        WHICH weights.
+
+        `means` and `receipt` are dropped. The sentence is regenerated from
+        the numbers by `Grounding.means()` on the way back out, so carrying a
+        copy is a second thing to keep in step with the fields it describes,
+        and the receipts list already holds the receipt once.
+        """
+        last = self._last_ground
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {
+            k: v for k, v in last.items() if k not in ("epoch", "receipt", "means")
+        }
 
     def _ranking_for_export(self) -> dict:
         """The last head ranking, if it belongs to the state being exported.
@@ -3112,6 +3417,14 @@ class ModelRuntime:
                 "available": self.replay.has_patch(),
                 "clean": self.replay.patch.get("clean", ""),
                 "corrupt": self.replay.patch.get("corrupt", ""),
+            },
+            # Same reason as `patch`: the grounding panel needs a document and
+            # a question, and a recording carries neither the document nor a
+            # model to re-run it on. Telling the panel it HAS a result lets it
+            # show the finding instead of a form whose only button refuses.
+            "ground": {
+                "available": self.replay.has_ground(),
+                "question": self.replay.ground.get("question", ""),
             },
         }
 

@@ -561,6 +561,188 @@ def _check_lens(parsed, runtime, blocked: str) -> Check | None:
     )
 
 
+def _check_model_diff(parsed, runtime, blocked: str) -> Check | None:
+    """Is the recorded comparison consistent with its own numbers?
+
+    NEVER RE-RUN, and for a blunter reason than grounding's. Grounding needs a
+    document the file deliberately does not carry; this needs TWO OTHER
+    MODELS, neither of which is the one this file describes and neither of
+    which is necessarily on this machine at all. Loading them to check would
+    be a different and much larger operation than verifying a `.mri`.
+
+    What it can check is that the section agrees with itself: the consensus
+    layer against what the per-prompt rows actually say, and the spread counts
+    against the number of prompts. A file edited to move the headline without
+    moving the rows fails here.
+    """
+    stored = parsed.model_diff or {}
+    rows = stored.get("prompts") or []
+    if not rows:
+        if not _receipt_for(parsed, "model_diff"):
+            return None
+        return Check(
+            "model diff",
+            NOT_VERIFIABLE,
+            "this file records that a model comparison ran but does not carry "
+            "it.",
+        )
+
+    model_a = stored.get("model_a") or "?"
+    model_b = stored.get("model_b") or "?"
+    measured = {
+        "prompts": len(rows),
+        "model_a": model_a,
+        "model_b": model_b,
+        "consensus_layer": stored.get("consensus_layer"),
+    }
+
+    problems: list[str] = []
+
+    # The headline against the rows it claims to summarise.
+    firsts = [r.get("first_divergent_layer") for r in rows]
+    diverged = [f for f in firsts if isinstance(f, int)]
+    claimed = stored.get("consensus_layer")
+    if diverged:
+        commonest = max(set(diverged), key=diverged.count)
+        if claimed != commonest:
+            problems.append(
+                f"the file names layer {claimed} as where the streams come "
+                f"apart, and its own per-prompt rows name layer {commonest} "
+                f"most often"
+            )
+        share = diverged.count(commonest) / len(rows)
+        stated = stored.get("consensus_share")
+        if isinstance(stated, (int, float)) and abs(stated - share) > 1e-3:
+            problems.append(
+                f"the file says that layer was first on {stated:.0%} of "
+                f"prompts and its rows say {share:.0%}"
+            )
+    elif claimed is not None:
+        problems.append(
+            f"the file names layer {claimed} as where the streams come apart "
+            f"and not one of its prompt rows reports a divergence at all"
+        )
+
+    # The spreads against the prompt count they claim to be over.
+    for key in ("kl", "flips"):
+        spread = stored.get(key)
+        if isinstance(spread, dict) and spread.get("n") != len(rows):
+            problems.append(
+                f"the {key} spread says it is over {spread.get('n')} prompts "
+                f"and the file carries {len(rows)}"
+            )
+
+    if problems:
+        measured["problems"] = problems
+        return Check(
+            "model diff",
+            DIFFERS,
+            "this comparison does not agree with itself — "
+            + "; ".join(problems[:3])
+            + ". The file has been edited, or written by something that did "
+            "not derive its headline from its own rows.",
+            measured,
+        )
+
+    return Check(
+        "model diff",
+        NOT_VERIFIABLE,
+        f"{model_a} against {model_b} over {len(rows)} prompts, and the "
+        f"summary agrees with the per-prompt rows underneath it. NOT "
+        f"RE-MEASURED: this compares two models, neither of which is the one "
+        f"this file describes and neither of which need be on this machine. "
+        f"Re-run it against the same pair and the same prompts to reproduce "
+        f"it.",
+        measured,
+    )
+
+
+def _check_ground(parsed, runtime, blocked: str) -> Check | None:
+    """Does the same passage still carry the answer, by the same margin?
+
+    THE ONE CHECK HERE THAT NEEDS NO GENERATION. Grounding runs its own
+    document and its own question, so unlike attention, the lens and the head
+    ranking it does not need this file's run re-established first — it needs
+    the document, and the document is not in the file.
+
+    That is the whole difficulty. A `.mri` carries the passage PREVIEWS, which
+    are about 120 characters each and deliberately not the passages: a
+    grounding document is usually the private half of the pair, and a format
+    that quietly shipped somebody's source material to whoever they forwarded
+    the file to would be a worse failure than not verifying. So this cannot
+    re-take the measurement, and it does not pretend to.
+
+    What it CAN check is the part that is about the model rather than about
+    the text: whether the recorded verdicts are internally consistent with the
+    floor recorded beside them, and whether the passage the file names as
+    carrying the answer is still the one its own numbers point at. A file
+    edited to move the verdict without moving the numbers fails here.
+    """
+    stored = parsed.ground or {}
+    rows = stored.get("chunks") or []
+    if not rows:
+        if not _receipt_for(parsed, "ground"):
+            return None
+        # Written before the grounding section existed, or exported from a
+        # state where the epoch had moved. Named rather than skipped: silence
+        # would read as "it reproduced".
+        return Check(
+            "grounding",
+            NOT_VERIFIABLE,
+            "this file records that a grounding ran but does not carry it. "
+            "Files written before the grounding section existed have nothing "
+            "here to compare against.",
+        )
+
+    floor = float(stored.get("noise_floor") or 0.0)
+    degenerate = bool(stored.get("floor_degenerate"))
+    measured = {
+        "passages": len(rows),
+        "noise_floor": floor,
+        "floor_degenerate": degenerate,
+        "attention_available": bool(stored.get("attention_available")),
+    }
+
+    # The document is not in the file, so this is never REPRODUCED. Saying so
+    # in the same words every time is the point: a reader scanning a verify
+    # report should not have to work out which of these checks re-ran the
+    # model and which one read the file.
+    inconsistent = [
+        row["index"]
+        for row in rows
+        if bool(row.get("depended_on")) != (float(row.get("dependence") or 0.0) > floor)
+    ]
+    if inconsistent:
+        measured["inconsistent_passages"] = inconsistent
+        return Check(
+            "grounding",
+            DIFFERS,
+            f"{len(inconsistent)} passage(s) carry a verdict their own "
+            f"numbers do not support — {inconsistent[:4]} say the answer did "
+            f"or did not depend on them, against a recorded floor of "
+            f"{floor:.6f} that says the opposite. The file has been edited, "
+            f"or written by something that did not use the floor it stored.",
+            measured,
+        )
+
+    top = max(rows, key=lambda r: float(r.get("dependence") or 0.0))
+    detail = (
+        f"the {len(rows)} recorded passages are internally consistent with "
+        f"the floor stored beside them ({floor:.6f}), and #{top['index']} "
+        f"carries the answer at {float(top['dependence']):.4f} nats. "
+        f"NOT RE-MEASURED: a `.mri` carries passage previews rather than your "
+        f"passages, deliberately — a grounding document is usually the "
+        f"private half of the pair — so there is nothing here to mask out and "
+        f"run again. Re-run it against the same document to reproduce it."
+    )
+    if degenerate:
+        detail += (
+            " The recorded floor is exactly zero, so 'depended on' there means "
+            "'moved the answer at all' and no significance test was taken."
+        )
+    return Check("grounding", NOT_VERIFIABLE, detail, measured)
+
+
 def _check_ranking(parsed, runtime, blocked: str) -> Check | None:
     """Does the same head still carry the answer, by the same margin?
 
@@ -843,6 +1025,23 @@ def verify(path: str | Path, runtime) -> Report:
         ranking = None
     if ranking is not None:
         report.checks.append(ranking)
+
+    # Deliberately NOT gated on the generation. Grounding runs its own
+    # document and question, so this file's run being unreproducible here says
+    # nothing about it — and it is a file check rather than a re-measurement,
+    # so `blocked` does not apply either.
+    ground = _check_ground(parsed, runtime, blocked)
+    if ground is not None:
+        report.checks.append(ground)
+
+    # Deliberately NOT gated on the generation, and not on `blocked` either.
+    # A model diff is about two OTHER models; this file's own run being
+    # unreproducible here says nothing about it.
+    model_diff_check = _check_model_diff(parsed, runtime, blocked)
+    if model_diff_check is not None:
+        report.checks.append(model_diff_check)
+
+
     return report
 
 

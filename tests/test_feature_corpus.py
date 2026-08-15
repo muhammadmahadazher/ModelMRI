@@ -174,6 +174,68 @@ def test_the_evidence_shows_spans_with_context(sae_runtime, swept):
     assert out["histogram"] and len(out["histogram"]) == fc.HISTOGRAM_BINS
 
 
+def test_every_span_says_where_in_it_the_feature_fired(sae_runtime, swept):
+    """The offset, not the first match.
+
+    A span is a window either side of the firing position, so the same word
+    can appear in it twice. MEASURED on gpt2 layer 8 with a corpus of court
+    sentences: " appeals court disagreed with the trial court's reading."
+    fired at the SECOND "court", at character 39 -- `text.index(token)` would
+    have pointed at character 8, and highlighting every match would have
+    claimed two firings where there was one.
+    """
+    _, per_feature = swept
+    for feature in list(per_feature)[:20]:
+        out = fc.evidence(
+            sae_runtime.model,
+            sae_runtime._block(8),
+            sae_runtime.tokenizer,
+            sae_runtime.sae,
+            CORPUS,
+            feature,
+            device=sae_runtime.device,
+        )
+        for span in out["spans"]:
+            at = span["offset"]
+            assert span["text"][at : at + len(span["token"])] == span["token"], (
+                "the offset must land exactly on the token that fired"
+            )
+
+
+def test_the_offset_picks_the_right_one_when_a_word_repeats(sae_runtime):
+    """The case the first-match version got wrong, made deliberately."""
+    corpus = ["The appeals court disagreed with the trial court's reading."]
+    stats, per_feature = fc.sweep(
+        sae_runtime.model,
+        sae_runtime._block(8),
+        sae_runtime.tokenizer,
+        sae_runtime.sae,
+        corpus,
+        device=sae_runtime.device,
+        layer=8,
+        corpus_label="repeat",
+    )
+    assert stats.n_tokens > 0
+    repeated = 0
+    for feature in per_feature:
+        out = fc.evidence(
+            sae_runtime.model,
+            sae_runtime._block(8),
+            sae_runtime.tokenizer,
+            sae_runtime.sae,
+            corpus,
+            feature,
+            device=sae_runtime.device,
+        )
+        for span in out["spans"]:
+            if span["text"].count(span["token"]) < 2:
+                continue
+            repeated += 1
+            at = span["offset"]
+            assert span["text"][at : at + len(span["token"])] == span["token"]
+    assert repeated, "this corpus repeats ' court', so some span must contain it twice"
+
+
 def test_no_natural_language_label_is_produced(sae_runtime, swept):
     """Naming the concept is the reader's job. A generated label would be the
     one thing on the page nothing measured."""

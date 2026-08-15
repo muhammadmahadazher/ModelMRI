@@ -16,6 +16,11 @@ export interface ModelStatus {
    *  which is a caveat about the numbers, not about the model, so it rides
    *  with the status rather than being recomputed per panel. */
   gguf?: GgufLoaded | null;
+  /** Transformer blocks in the loaded model. A property of the MODEL, not of
+   *  a run — `/api/attention/meta` carries the same number but only after a
+   *  generation, and the probe and patchscope panels both need to offer a
+   *  layer before there is anything to generate from. */
+  n_layers?: number | null;
 }
 
 export interface SessionInfo {
@@ -67,6 +72,11 @@ export interface SessionState {
    *  this tool that is causal rather than correlational was the one you could
    *  not send anybody. */
   patch?: { available: boolean; clean: string; corrupt: string };
+  /** Whether the recording carries a grounding result, and what it asked.
+   *  The document itself is NOT in the file — a `.mri` carries passage
+   *  previews, deliberately, because a grounded document is usually the
+   *  private half of the pair. */
+  ground?: { available: boolean; question: string };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -484,6 +494,10 @@ export async function exportSession(
   layer: number,
   head: number,
   note: string,
+  /** Bundle an agent run alongside the mechanistic snapshot, and optionally
+   *  name the step that failed. The recipient clicks it and lands in the
+   *  attention view of the generation that produced the bad argument. */
+  bundle?: { trace_id: string; step_ref?: string },
 ): Promise<{ blob: Blob; filename: string }> {
   // This one call wants bytes and a Content-Disposition, so it never went
   // through the patched fetch — which meant "Share this view" 404'd on the
@@ -495,9 +509,16 @@ export async function exportSession(
     if (!blob) throw new ApiError(409, "this demo bundle carries no .mri");
     return { blob, filename: "modelmri-demo.mri" };
   }
-  const r = await fetch(
-    `/api/session/export?layer=${layer}&head=${head}&note=${encodeURIComponent(note)}`,
-  );
+  const params = new URLSearchParams({
+    layer: String(layer),
+    head: String(head),
+    note,
+  });
+  if (bundle?.trace_id) {
+    params.set("trace_id", bundle.trace_id);
+    if (bundle.step_ref) params.set("step_ref", bundle.step_ref);
+  }
+  const r = await fetch(`/api/session/export?${params}`);
   if (!r.ok) throw new ApiError(r.status, await r.text());
   const disposition = r.headers.get("Content-Disposition") || "";
   const match = /filename="([^"]+)"/.exec(disposition);
@@ -1113,6 +1134,13 @@ export interface TraceStep {
   truncated_out?: number;
   tokens_in: number | null;
   tokens_out: number | null;
+  /** Providers report these only sometimes — Anthropic returns cache counts
+   *  only when a cache was in play, reasoning tokens only from models that
+   *  reason. **null is "the provider said nothing", 0 is "it said zero"**, and
+   *  the panel must never print one as the other. */
+  tokens_cache_read: number | null;
+  tokens_cache_write: number | null;
+  tokens_reasoning: number | null;
   error: boolean;
   seq: number;
   /** True when this step was produced by a model on THIS machine and carries
@@ -1125,11 +1153,153 @@ export interface TraceStep {
   meta?: Record<string, unknown>;
 }
 
+/** One token field summed over a set of steps.
+ *
+ *  `total` is **null when nothing in the set reported it** — not 0. `reported`
+ *  and `silent` are both carried so "3 of 11 calls said nothing" is answerable
+ *  without re-walking the steps. */
+export interface TokenCount {
+  field: string;
+  total: number | null;
+  reported: number;
+  silent: number;
+}
+
+export interface TokenRollup {
+  counts: Record<string, TokenCount>;
+  n_steps: number;
+  n_llm_steps: number;
+}
+
+/** What a run cost, and how much of it is actually known.
+ *
+ *  There is no bundled price map: a map goes stale between releases and a user
+ *  on a six-month-old install would see six-month-old prices with no way to
+ *  know. Cost appears only when `MODELMRI_PRICES` points at the user's own
+ *  file, matched by EXACT model id — never a prefix or a regex, because a
+ *  regex matching the wrong model produces a plausible figure with no signal
+ *  it is wrong. */
+export interface TraceCost {
+  total: number | null;
+  currency: string;
+  n_calls: number;
+  n_priced: number;
+  unpriced_models: string[];
+  partial: boolean;
+  means: string;
+  /** Set when the price file itself could not be read. The token counts are
+   *  complete and useful without it, so this is a field rather than a failed
+   *  request. */
+  error?: string;
+}
+
+/** One exact predicate over recorded runs. No model, so nothing is a verdict.
+ *
+ *  A rule says a run MATCHED. It does not say the run was good, bad or
+ *  wasteful — the name is the reader's own words, and appears as theirs. */
+export interface RubricRule {
+  name: string;
+  kind: string;
+  pattern?: string;
+  step_kind?: string;
+  op?: string;
+  value?: number;
+  means?: string;
+}
+
+export interface RubricReport {
+  rows: {
+    trace_id: string;
+    name: string;
+    matched: string[];
+    hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
+  }[];
+  n_traces: number;
+  n_traces_available: number;
+  truncated: number;
+  rules: RubricRule[];
+  /** Rules that could not be ANSWERED, keyed by name, with why. A
+   *  distribution rule below its minimum n lands here rather than reporting
+   *  "no matches" — which reads identically to having looked. */
+  skipped: Record<string, string>;
+  counts: Record<string, number>;
+  means: string;
+}
+
+export const scoreRubric = (rules: RubricRule[]) =>
+  fetch("/api/rubric/score", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rules }),
+  }).then((r) => json<RubricReport>(r));
+
+/** One UK AISI Inspect `.eval` sample, read onto this timeline.
+ *
+ *  Reader only, and version-gated: an unrecognised schema version is refused
+ *  with the version named rather than guessed at. `mapping.dropped` counts
+ *  every event kind that has no step kind here — Inspect's schema is not
+ *  frozen, and "we showed you what we understood" is only honest when the
+ *  rest is on screen too. */
+export interface InspectImport {
+  trace_id: string;
+  trace: TraceDoc;
+  mapping: {
+    mapped: Record<string, number>;
+    dropped: Record<string, number>;
+    means: string;
+  };
+  scores: Record<string, string | number | boolean>;
+  failed: boolean;
+  error: string;
+  header: {
+    version: number;
+    task: string;
+    model: string;
+    created: string;
+    status: string;
+    n_samples: number;
+  };
+  samples: { name: string; id: string; epoch: number }[];
+  means: string;
+}
+
+export const importInspect = (file: File, sampleId = "") =>
+  fetch(
+    `/api/traces/import/inspect${sampleId ? `?sample_id=${encodeURIComponent(sampleId)}` : ""}`,
+    { method: "POST", body: file },
+  ).then((r) => json<InspectImport>(r));
+
+/** What a shared bundle would contain — fetched BEFORE anything is written.
+ *
+ *  This is the one path in the project where data leaves the machine, so the
+ *  panel shows what is in the file before offering to save it. A share button
+ *  that ships a file without showing its contents asks the user to trust a
+ *  process they cannot see. */
+export interface BundlePreview {
+  n_steps: number;
+  n_steps_dropped: number;
+  n_payloads_clipped: number;
+  chars_clipped: number;
+  redactions: { label: string; count: number }[];
+  n_redactions: number;
+  fields_scanned: number;
+  means: string;
+}
+
+export const bundlePreview = (traceId: string) =>
+  fetch(`/api/traces/${traceId}/bundle/preview`).then((r) =>
+    json<BundlePreview>(r),
+  );
+
 export interface TraceDoc {
   id: string;
   name: string;
   started_at: string;
   steps: TraceStep[];
+  /** Rolled up over the whole run, and per step over its own subtree. */
+  tokens?: TokenRollup;
+  tokens_by_step?: Record<string, TokenRollup>;
+  cost?: TraceCost;
 }
 
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
@@ -1600,6 +1770,48 @@ export interface CustomCandidate {
   kind?: "gguf" | "torchscript" | "checkpoint" | "legacy" | "unreadable";
 }
 
+/** #15 — one thing that was ablated in a network you trained yourself. */
+export interface AblationSite {
+  name: string;
+  kind: string;
+  /** The task's unit: nats for a classifier, output-spread for a regressor. */
+  effect: number;
+  /** The strongest control draw at this site. **null**, never 0, when this
+   *  site was not among the strongest and so was never tested — "random edits
+   *  here do nothing" is a claim, and nothing measured it. */
+  control_max: number | null;
+  control_draws: number;
+  /** null when untested. */
+  beats_control: boolean | null;
+}
+
+export interface Ablation {
+  kind: "layers" | "inputs";
+  task: string;
+  unit: string;
+  sites: AblationSite[];
+  n_sites: number;
+  n_controlled: number;
+  n_samples: number;
+  passes: number;
+  seconds: number;
+  /** Sites past the cap. Missing from the list, NOT measured as zero. */
+  truncated: number;
+  control_ceiling: number | null;
+  /** n_tested / (draws + 1) — each site is compared against the strongest of
+   *  its draws, so under a null where every site is equivalent the real edit
+   *  wins one time in nine. */
+  expected_false_positives: number;
+  means: string;
+}
+
+export const ablateCustom = (kind: "layers" | "inputs", grid = 0) =>
+  fetch("/api/custom/ablate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind, grid }),
+  }).then((r) => json<Ablation>(r));
+
 export interface CustomRun {
   layers: CustomLayer[];
   input_shape: number[];
@@ -1685,6 +1897,485 @@ export interface LensRow {
   probs: number[];
   entropy: number;
 }
+
+/** #44 — one occluded block of the camera frame. */
+export interface OcclusionBlock {
+  row: number;
+  col: number;
+  /** Shift in the tower's pooled embedding, in units of its own spread. */
+  shift: number;
+  /** **null**, never 0, when this block was never controlled. */
+  control_max: number | null;
+  control_draws: number;
+  clears_control: boolean | null;
+  attention: number | null;
+}
+
+export interface OcclusionMap {
+  baseline: string;
+  grid: number[];
+  stride: number;
+  blocks: OcclusionBlock[];
+  n_blocks: number;
+  n_controlled: number;
+  passes: number;
+  seconds: number;
+  scale: number;
+  scale_frames: number;
+  /** Spearman between the causal map and the attention map for THIS frame.
+   *  null when no attention map was supplied — a state, not a zero. */
+  attention_agreement: number | null;
+  /** WHICH attention map that was. The agreement is layer-dependent, so the
+   *  Spearman is not reportable without it. null when nothing was compared. */
+  compared_layer: number | null;
+  compared_head: number | null;
+  means: string;
+}
+
+export const occludeFrame = (body: {
+  episode: number;
+  t: number;
+  baseline?: string;
+  stride?: number;
+  layer?: number;
+  head?: number;
+}) =>
+  fetch("/api/vla/occlude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<OcclusionMap>(r));
+
+export const occlusionCost = (stride = 0) =>
+  fetch(`/api/vla/occlude/cost?stride=${stride}`).then((r) =>
+    json<{ blocks: number; passes: number; stride: number; grid: number[] }>(r),
+  );
+
+/** #48 — one frame of a cross-episode sweep. */
+export interface SweepRow {
+  episode: number;
+  timestep: number;
+  value: number;
+}
+
+export interface VLASweep {
+  metric: string;
+  unit: string;
+  rows: SweepRow[];
+  n_frames: number;
+  n_episodes: number;
+  frames_total: number;
+  episode_stride: number;
+  frame_stride: number;
+  seconds: number;
+  failed: { episode: number; timestep: number; why: string }[];
+  means: string;
+  strip: {
+    rows: { episode: number; timesteps: number[]; values: number[] }[];
+    low: number;
+    high: number;
+    frame_stride: number;
+    /** Episodes have different lengths, so the strip is ragged rather than
+     *  padded with zeros that would read as measured lows. */
+    ragged: boolean;
+  };
+}
+
+export const runVlaSweep = (body: {
+  metric: string;
+  episode_stride?: number;
+  frame_stride?: number;
+}) =>
+  fetch("/api/vla/sweep", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<VLASweep>(r));
+
+export const vlaSweepCost = (metric: string, frameStride: number) =>
+  fetch(
+    `/api/vla/sweep/cost?metric=${metric}&frame_stride=${frameStride}`,
+  ).then((r) =>
+    json<{
+      frames: number;
+      frames_total: number;
+      passes: number;
+      coverage: number;
+      seconds: number | null;
+      seconds_from: string;
+    }>(r),
+  );
+
+/** #46 — a robot finding as a `.mri` somebody else can open. */
+export const shareVlaFinding = (body: {
+  episode: number;
+  t: number;
+  layer?: number;
+  head?: number;
+  occlusion?: unknown;
+  note?: string;
+}) =>
+  fetch("/api/vla/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    if (!r.ok) throw new ApiError(r.status, await r.text());
+    return r.blob();
+  });
+
+/** #20 — one prompt of a finetune comparison. Never reported on its own. */
+export interface DiffPromptResult {
+  prompt: string;
+  n_tokens: number;
+  mean_kl: number;
+  max_kl: number;
+  flips: number;
+  /** Where this prompt's residual cosine falls furthest in one step. No
+   *  threshold is involved. null when the curve never decreases. */
+  first_divergent_layer: number | null;
+  drop: number;
+  cosine: number[];
+}
+
+export interface DiffSpread {
+  name: string;
+  median: number;
+  low: number;
+  high: number;
+  n: number;
+  n_nonzero: number;
+}
+
+export interface DiffLayer {
+  layer: number;
+  median: number;
+  low: number;
+  high: number;
+  n: number;
+  /** On how many prompts this layer was where the cosine fell furthest. */
+  n_first: number;
+}
+
+export interface DiffHead {
+  layer: number;
+  head: number;
+  median_a: number;
+  median_b: number;
+  shift: number;
+  n: number;
+  top_a: number;
+  top_b: number;
+}
+
+export interface DiffToken {
+  prompt_index: number;
+  index: number;
+  token: string;
+  kl_a: number;
+  kl_b: number;
+  shift: number;
+  /** Crossed its own side's noise floor. The two models have different
+   *  floors, so this is the only comparison that survives. */
+  newly_used: boolean;
+  newly_ignored: boolean;
+}
+
+export interface ModelDiffReport {
+  model_a: string;
+  model_b: string;
+  n_prompts: number;
+  n_layers: number;
+  prompts: DiffPromptResult[];
+  layers: DiffLayer[];
+  kl: DiffSpread | null;
+  flips: DiffSpread | null;
+  consensus_layer: number | null;
+  consensus_share: number;
+  heads: DiffHead[];
+  head_passes: number;
+  tokens: DiffToken[];
+  seconds: number;
+  notes: string[];
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const diffModels = (body: {
+  a: string;
+  b: string;
+  prompts?: string[];
+  file?: string;
+  include_heads?: boolean;
+  include_tokens?: boolean;
+}) =>
+  fetch("/api/diff/models", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ModelDiffReport>(r));
+
+/** #14 — one passage of your document, and what it did to the answer. */
+export interface GroundScore {
+  index: number;
+  preview: string;
+  n_tokens: number;
+  /** Nats. How far the answer moved when this passage was masked out. */
+  dependence: number;
+  /** Share of the answer position's attention that landed here, meaned over
+   *  every layer and head. **null**, never 0, when this model's attention
+   *  implementation never builds the score matrix — a passage nothing looked
+   *  at and a number that was never returned are different facts. */
+  attention: number | null;
+  depended_on: boolean;
+  /** Attention on it, no causal dependence on it — the signature of an answer
+   *  coming from the weights rather than from your document.
+   *
+   *  **null** means the reading could not be taken: without the attention
+   *  half there is no "looked at", and with a noise floor of exactly 0.0
+   *  every passage that moved the answer counts as depended-on, so the flag
+   *  can never fire. `false` would read as "this passage is fine", which on
+   *  either of those runs nothing measured. */
+  looked_not_used: boolean | null;
+}
+
+export interface Grounding {
+  question: string;
+  answer: string;
+  answer_p: number;
+  position: number;
+  chunks: GroundScore[];
+  n_chunks: number;
+  n_prompt_tokens: number;
+  noise_floor: number;
+  /** Every passage masked at once. Printed beside the parts precisely because
+   *  it is not their sum — which is why nothing here is a percentage. */
+  joint: number;
+  attention_share: number | null;
+  attention_available: boolean;
+  attention_note: string;
+  /** The repeat pass reproduced the answer bit for bit, so the floor is 0.0
+   *  and "cleared the floor" degrades to "moved the answer at all". */
+  floor_degenerate: boolean;
+  ungrounded: boolean;
+  passes: number;
+  seconds: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const groundAnswer = (body: {
+  document?: string;
+  file?: string;
+  question: string;
+  max_chunks?: number;
+}) =>
+  fetch("/api/ground", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<Grounding>(r));
+
+/** #10 — a probe at every layer, with the two references behind the curve. */
+export interface LayerProbe {
+  layer: number;
+  accuracy: number;
+  null_low: number;
+  null_high: number;
+  /** The field the feature exists for: this layer did not beat what the same
+   *  fit achieves on shuffled labels. */
+  inside_null: boolean;
+  beats_majority: boolean;
+  /** The shuffled fit reached the top of the scale, so NO accuracy could have
+   *  cleared it — untestable with this many examples, not uninformative. */
+  null_saturated: boolean;
+}
+
+export interface ProbeReport {
+  layers: LayerProbe[];
+  majority: number;
+  n_train: number;
+  n_test: number;
+  n_permutations: number;
+  /** null when nothing cleared anywhere, which is a result. */
+  best_layer: number | null;
+  n_readable_layers: number;
+  n_underpowered_layers: number;
+  /** n_layers x 5%: sweeping every layer against a 95th-percentile band is a
+   *  multiple comparison, so this many clear by chance. */
+  expected_false_positives: number;
+  means: string;
+  saved?: { name: string; path: string; dims: number };
+  receipt?: Receipt | null;
+}
+
+export const runProbe = (body: {
+  examples: { text: string; label: number }[];
+  n_permutations?: number;
+  save_as?: string;
+}) =>
+  fetch("/api/probe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ProbeReport>(r));
+
+/** #11 — one component's contribution into a later block's residual input. */
+export interface PathSender {
+  layer: number;
+  head: number | null;
+  name: string;
+  recovery: number;
+  delta_norm: number;
+  control_max?: number;
+  control_min?: number;
+  control_draws?: number;
+  shifted_position?: number;
+  clears_control?: boolean;
+  clears_position?: boolean;
+}
+
+export interface PathTrace {
+  receiver: { layer: number; position: number };
+  senders: PathSender[];
+  n_senders: number;
+  n_controlled: number;
+  gap: number;
+  /** Two senders closer than this are TIED, not ranked. */
+  recovery_resolution: number;
+  seeding: string;
+  scope: string;
+  means: string;
+  passes: number;
+  seconds: number;
+  receipt?: Receipt | null;
+}
+
+export const pathTrace = (body: {
+  clean: string;
+  corrupt: string;
+  layer: number;
+  position: number;
+}) =>
+  fetch("/api/patch/path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<PathTrace>(r));
+
+/** #12 — a hidden state described in words, with two controls. */
+export interface Patchscope {
+  source: {
+    prompt: string;
+    layer: number;
+    position: number;
+    tokens: string[];
+    norm: number;
+  };
+  /** Returned with EVERY response, because two decodes taken under
+   *  different targets are not comparable and a hidden default would make
+   *  that invisible. */
+  target: {
+    prompt: string;
+    layer: number;
+    position: number;
+    tokens: string[];
+  };
+  decode: string;
+  controls: { identity: string; random: string[]; draws: number };
+  same_as_identity: boolean;
+  same_as_random: boolean;
+  /** How much of the decode's vocabulary each control already used. Reported,
+   *  never thresholded. */
+  overlap_identity: number;
+  overlap_random: number;
+  informative: boolean;
+  cross_layer: boolean;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const runPatchscope = (body: {
+  prompt: string;
+  layer: number;
+  position?: number;
+  target?: string;
+  target_layer?: number | null;
+  max_new_tokens?: number;
+}) =>
+  fetch("/api/patchscope", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<Patchscope>(r));
+
+/** #13 — what a feature fires on in YOUR corpus, and what it promotes. */
+export interface FeatureSpan {
+  text: string;
+  token: string;
+  activation: number;
+  position: number;
+  sequence: number;
+  /** Character index of the firing token inside `text`. Not the same as
+   *  `text.indexOf(token)` — a span can contain the same word twice and only
+   *  one of those positions fired. */
+  offset: number;
+}
+
+export interface FeatureEvidence {
+  corpus: {
+    corpus_label: string;
+    n_tokens: number;
+    n_sequences: number;
+    n_features: number;
+    n_never_fired: number;
+    never_fired_share: number;
+    truncated: boolean;
+    means: string;
+  };
+  top_by_firing_rate: {
+    feature: number;
+    n_fired: number;
+    max_activation: number;
+  }[];
+  evidence?: {
+    feature: number;
+    spans: FeatureSpan[];
+    n_fired: number;
+    n_tokens: number;
+    firing_rate: number;
+    max_activation: number;
+    histogram: number[];
+    bin_edges: number[];
+    /** false when the feature fires on more than a fifth of tokens — not a
+     *  concept, whatever its top spans look like. */
+    selective: boolean;
+    means: string;
+    /** Always null. Naming the concept is the reader's job. */
+    label: null;
+  };
+  logit_weights?: {
+    feature: number;
+    promotes: { token: string; logit: number }[];
+    suppresses: { token: string; logit: number }[];
+    exact: boolean;
+    means: string;
+  };
+  receipt?: Receipt | null;
+}
+
+export const featureEvidence = (body: {
+  texts?: string[];
+  file?: string;
+  label?: string;
+  feature?: number;
+  top_k?: number;
+}) =>
+  fetch("/api/features/evidence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<FeatureEvidence>(r));
 
 /** A behavioural label for one head, with the evidence it cleared. */
 export interface HeadTypeLabel {

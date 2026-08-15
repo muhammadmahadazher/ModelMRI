@@ -16,6 +16,7 @@ import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
+import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
@@ -273,6 +274,7 @@ export default function App() {
         onModelChange={refresh}
         replay={session.open}
         sessionPatch={session.patch}
+        sessionGround={session.ground}
       />
       {/* The viewer has no machine behind it. Panels that can only ever say
           "install ModelMRI" are worse than absent — the one thing this page
@@ -289,6 +291,10 @@ export default function App() {
               setResetKey((k) => k + 1);
             }}
           />
+          {/* Its own surface, and one that needs nothing loaded: it runs
+              its own two models and its own prompts, so it sits beside the
+              custom-model panel rather than inside the playground. */}
+          <ModelDiffPanel epoch={resetKey} />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to

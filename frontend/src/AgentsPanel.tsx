@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useScanOnData } from "./useScanOnData";
+import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
+import ShareRun from "./ShareRun";
+import InspectDrop from "./InspectDrop";
+import RubricPanel from "./RubricPanel";
 import {
   Adopted,
   adoptStep,
@@ -201,6 +205,18 @@ with trace("my-agent"):
             <b>uv run python examples/record_demo.py</b>
             &nbsp;— this panel picks it up on its own.
           </div>
+
+          {/* HERE TOO, not only in the populated branch. This panel returns
+              early when the list is empty, so mounting the drop zone below
+              the list alone made it invisible to the one reader who needs it
+              most: somebody whose only data is an eval log they already have.
+              An empty flight recorder was a dead end for them. */}
+          <InspectDrop
+            onImported={(id) => {
+              void getTraces().then(setList);
+              void getTrace(id).then(setDoc);
+            }}
+          />
         </div>
       </div>
     );
@@ -398,6 +414,28 @@ with trace("my-agent"):
         </p>
       )}
 
+      {/* Sited above the list, because what it produces IS a row in that
+          list — an Inspect sample becomes an ordinary trace and everything
+          below reads it without knowing where it came from. */}
+      <InspectDrop
+        onImported={(id) => {
+          setSel(null);
+          // The list, so the imported sample appears as a row; then the
+          // trace itself, so the timeline is already showing it. `load` is
+          // scoped inside the polling effect, so this calls the same two
+          // clients directly rather than reaching into it.
+          void getTraces().then(setList);
+          void getTrace(id).then(setDoc);
+        }}
+      />
+
+      <RubricPanel
+        onPick={(id) => {
+          setSel(null);
+          void getTrace(id).then(setDoc);
+        }}
+      />
+
       <div className="trace-list">
         {groups.map(({ name, runs }) => {
           const open = expanded.has(name);
@@ -490,6 +528,22 @@ with trace("my-agent"):
               </span>
             ))}
           </div>
+          {/* The whole run. Tokens are the honest unit for an audience running
+              local models, and they are free — so they are always here, while
+              the cost line appears only if the reader brought their own
+              prices. */}
+          <div className="tok-run">
+            <TokenTable rollup={doc.tokens} title="this run" />
+            <CostBanner cost={doc.cost} />
+          </div>
+          {/* The share half. Sited under the run summary rather than beside
+              the timeline: what leaves the machine is a decision about the
+              whole run, not about whichever step happens to be selected. */}
+          <ShareRun
+            traceId={doc.id}
+            selected={sel}
+            ready={Boolean(sel?.adoptable)}
+          />
 
           {sel && (
             <div className={`inspector ${sel.error ? "err" : ""}`}>
@@ -505,7 +559,11 @@ with trace("my-agent"):
                   {sel.duration_ms == null
                     ? "duration not recorded"
                     : `${sel.duration_ms}ms`}
-                  {sel.tokens_in != null && ` · ${sel.tokens_in}→${sel.tokens_out} tok`}
+                  {/* Was `tokens_in != null && \`${in}→${out} tok\``, which
+                      rendered "100→null tok" when a provider reported one and
+                      not the other. Each field is now drawn only if it is
+                      actually there. */}
+                  <StepTokens step={sel} />
                   {sel.error && " · FAILED"}
                 </span>
               </div>
@@ -539,6 +597,16 @@ with trace("my-agent"):
                     </span>
                   )}
                 </pre>
+              )}
+              {/* This step and everything beneath it. A subagent's own row
+                  carries no tokens — they belong to its llm_call children —
+                  so the subtree total is the only figure that answers "what
+                  did this branch cost". */}
+              {doc?.tokens_by_step?.[sel.id] && (
+                <TokenTable
+                  rollup={doc.tokens_by_step[sel.id]}
+                  title="this step and everything under it"
+                />
               )}
               {/* The join. Every other panel on this page reads whatever the
                   server is holding as its current generation, so a step that

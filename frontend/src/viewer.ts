@@ -91,6 +91,23 @@ interface Doc {
     summary?: Record<string, unknown>;
     notes?: string[];
   };
+  /** The agent run this analysis belongs to, and which step failed. Optional
+   *  and additive like `graph`.
+   *
+   *  This is the half no hosted platform can ship: every competitor's share
+   *  artefact is a link into their own trace UI, which dies when the account
+   *  lapses. Here the recipient opens the file with nothing installed, clicks
+   *  the failing tool call, and lands in the attention view of the generation
+   *  that produced the bad argument. */
+  trace?: {
+    id?: string;
+    name?: string;
+    started_at?: string;
+    steps?: Record<string, unknown>[];
+    n_steps_total?: number;
+    truncated?: number;
+    step_ref?: string;
+  };
 }
 
 let open: Doc | null = null;
@@ -364,7 +381,46 @@ export async function viewerFetch(
   if (p === "/api/custom") return ok({ loaded: false, roots: [] });
   if (p === "/api/vla") return ok({ loaded: false });
   if (p === "/api/vla/datasets") return ok({ datasets: [] });
-  if (p === "/api/traces") return ok({ traces: [] });
+  // A LIST, not `{traces: []}`. The real route returns a bare array and
+  // `api.ts` types it as one, so the object this used to return made the
+  // agents panel call `.map` on a non-array in the standalone viewer.
+  if (p === "/api/traces") {
+    const t = open?.trace;
+    if (!t?.steps?.length) return ok([]);
+    return ok([
+      {
+        id: t.id || "bundled",
+        name: t.name || "the bundled run",
+        started_at: t.started_at || "",
+        n_steps: t.steps.length,
+      },
+    ]);
+  }
+  if (p.startsWith("/api/traces/")) {
+    const t = open?.trace;
+    if (!t?.steps?.length) {
+      // 404, matching the app's own route for an id it does not hold. A
+      // refusal here would read as "the viewer cannot do this", when the
+      // truth is that this particular file carries no run.
+      return {
+        status: 404,
+        payload: { error: "this file carries no agent run" },
+      };
+    }
+    // Patterns and token rollups are computed server-side in the app. The
+    // viewer has no Python, so it serves the steps and omits those keys
+    // rather than shipping a second implementation that could disagree with
+    // the first — the exact drift `viewer_check.py` exists to prevent.
+    return ok({
+      id: t.id || "bundled",
+      name: t.name || "the bundled run",
+      started_at: t.started_at || "",
+      steps: t.steps,
+      step_ref: t.step_ref || "",
+      truncated: t.truncated || 0,
+      n_steps_total: t.n_steps_total ?? t.steps.length,
+    });
+  }
   if (p === "/api/paths") {
     return ok({
       override: null,

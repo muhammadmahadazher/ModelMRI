@@ -80,6 +80,14 @@ class Span:
     activation: float
     position: int
     sequence: int
+    # Where the firing token STARTS inside `text`, in characters.
+    #
+    # Not derivable by searching for `token`: "The appeals court disagreed
+    # with the trial court's" contains "court" twice and only one of those
+    # positions fired. A reader shown both highlighted is being told the
+    # feature fired twice there. The index is free here and unrecoverable
+    # downstream, so it travels with the span.
+    offset: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -350,6 +358,7 @@ def evidence(
                     activation=round(activation, 5),
                     position=position,
                     sequence=index,
+                    offset=len("".join(tokens[lo:position])),
                 )
             )
 

@@ -1,5 +1,11 @@
 import { CSSProperties, useState } from "react";
-import { errorText, patchTrace, PatchTrace } from "./api";
+import {
+  errorText,
+  pathTrace,
+  PathTrace,
+  patchTrace,
+  PatchTrace,
+} from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
 
@@ -32,6 +38,25 @@ const BLURB: Record<string, string> = {
 
 const CLEAN_DEFAULT = "The Eiffel Tower is located in the city of";
 const CORRUPT_DEFAULT = "The Colosseum is located in the city of";
+
+/** Which senders are worth a row.
+ *
+ *  A path trace on gpt2 returns 143 of them and 130 sit at one representable
+ *  step above zero, untested — measured, not guessed. Printing all of them
+ *  buries the one that beat its controls under a hundred rows that say the
+ *  same thing, and dropping them silently would claim the list is complete.
+ *  So the default is the ones that carry a claim — anything tested against
+ *  chance, plus anything the resolution can actually separate from zero — and
+ *  the rest are folded behind a COUNTED button.
+ */
+function shownSenders(path: PathTrace, all: boolean): PathTrace["senders"] {
+  if (all) return path.senders;
+  return path.senders.filter(
+    (s) =>
+      s.control_max !== undefined ||
+      Math.abs(s.recovery) >= path.recovery_resolution,
+  );
+}
 
 /** Blue for recovered, red for pushed away, transparent at zero. */
 function cell(v: number): string {
@@ -66,6 +91,16 @@ export default function PatchPanel({
   // comparison IS the finding — the residual grid says where, the two
   // sublayer grids say through what, and they do not agree.
   const [comp, setComp] = useState("resid");
+  // The follow-up to a bright cell. Patching a residual stream restores
+  // EVERYTHING that ever wrote into it at once, so the grid says where the
+  // answer is carried and cannot say what put it there. Clicking a cell asks
+  // that second question at that site.
+  const [pinned, setPinned] = useState<{ l: number; p: number } | null>(null);
+  const [path, setPath] = useState<PathTrace | null>(null);
+  const [tracing, setTracing] = useState(false);
+  const [pathErr, setPathErr] = useState("");
+  // Folded by default, and the fold is counted rather than silent.
+  const [allSenders, setAllSenders] = useState(false);
   // The specular scan, on the same terms as every other panel: keyed on the
   // payload, so it fires when a trace ARRIVES and not on every re-render.
   // Switching tabs re-reads a grid that was already here, and deliberately
@@ -77,6 +112,11 @@ export default function PatchPanel({
     setBusy(true);
     setErr("");
     setData(null);
+    // A sender list is about one site of one pair. A new pair makes it a
+    // claim about a grid that is no longer on screen.
+    setPinned(null);
+    setPath(null);
+    setPathErr("");
     try {
       setData(await patchTrace(clean, corrupt));
     } catch (e) {
@@ -95,6 +135,24 @@ export default function PatchPanel({
       .map((s) => [`${s.layer}:${s.position}`, s]),
   );
   const hovered = hover ? controlled.get(`${hover.l}:${hover.p}`) : undefined;
+
+  async function trace(l: number, p: number) {
+    setPinned({ l, p });
+    setPath(null);
+    setPathErr("");
+    setAllSenders(false);
+    setTracing(true);
+    try {
+      setPath(await pathTrace({ clean, corrupt, layer: l, position: p }));
+    } catch (e) {
+      // Layer 0 has nothing upstream of it, and the refusal says so — which
+      // is a better answer than an empty list that reads as "no component
+      // mattered".
+      setPathErr(errorText(e));
+    } finally {
+      setTracing(false);
+    }
+  }
   // `?.` on grids, not just on data. A built bundle can be older or newer
   // than the server it is served by — during this feature it was, and
   // `data.grids[comp]` on a response that still carried the old single `grid`
@@ -217,14 +275,32 @@ export default function PatchPanel({
                           <td
                             key={pi}
                             style={{ background: cell(v) }}
-                            className={
+                            className={[
                               site && site.clears_control && site.clears_position
                                 ? "clears"
-                                : undefined
-                            }
+                                : "",
+                              pinned && pinned.l === li && pinned.p === pi
+                                ? "pinned"
+                                : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ") || undefined}
                             onMouseEnter={() => setHover({ l: li, p: pi })}
                             onMouseLeave={() => setHover(null)}
-                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${v.toFixed(3)}`}
+                            /* A cell is a button, not a decoration: keyboard
+                               reachable and announced, because the follow-up
+                               measurement is only available through it. */
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => void trace(li, pi)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                void trace(li, pi);
+                              }
+                            }}
+                            aria-label={`layer ${li}, token ${data.corrupt.tokens[pi]}, recovery ${v.toFixed(3)} — trace what wrote here`}
+                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${v.toFixed(3)}. Click to trace what wrote here.`}
                           >
                             {Math.abs(v) >= 0.1 ? v.toFixed(2) : ""}
                           </td>
@@ -256,10 +332,154 @@ export default function PatchPanel({
                 Blue recovered the clean answer, red pushed it further away. 1.0
                 is the clean answer and 0.0 the corrupted one. Outlined cells are
                 the {data.controlled} strongest sites, and they are the only ones
-                that were tested against chance — hover for the verdict.
+                that were tested against chance — hover for the verdict.{" "}
+                <b>Click any cell</b> to ask what wrote into it: a residual
+                stream carries everything that ever wrote there, so this grid
+                cannot say which component put it there.
               </>
             )}
           </div>
+
+          {/* ─── what wrote into that site ─────────────────────────────────
+              The grid patches a residual stream, which restores everything
+              that ever wrote into it AT ONCE. This splits that apart: one
+              component's contribution at a time, on the same recovery scale
+              and against the same controls, so an edge number and a node
+              number can be read together. */}
+          {pinned && (
+            <div className="patch-path">
+              <div className="row">
+                <span className="meta">
+                  what wrote into <b>layer {pinned.l}</b> at{" "}
+                  <b>{data.corrupt.tokens[pinned.p]?.trim() || "␣"}</b>
+                </span>
+                <span className="spacer" />
+                <button
+                  className="ghost sm"
+                  onClick={() => {
+                    setPinned(null);
+                    setPath(null);
+                    setPathErr("");
+                  }}
+                >
+                  close
+                </button>
+              </div>
+
+              {tracing && (
+                <p className="meta">
+                  Patching every earlier head and MLP into this site, one at a
+                  time…
+                </p>
+              )}
+              {pathErr && <div className="hint err">{pathErr}</div>}
+
+              {path && !path.senders.length && (
+                <p className="meta">
+                  Nothing upstream writes into this site — it is at the top of
+                  the model's first block, so there is no earlier component to
+                  test.
+                </p>
+              )}
+
+              {path && path.senders.length > 0 && (
+                <>
+                  {/* Ties, not a ranking. Recovery is quantised by the
+                      model's dtype, and on gpt2 in bf16 one representable
+                      step is worth 0.25 of the gap — 23 senders came back
+                      within one step of the top, which as a ranked list would
+                      have read as a 1st, 2nd and 3rd place that the numbers
+                      cannot support. */}
+                  <p className="meta">
+                    {path.n_senders} components tested, {path.n_controlled}{" "}
+                    against chance, in {path.passes} passes ({path.seconds}s).
+                    Two senders closer than{" "}
+                    <b>{path.recovery_resolution.toFixed(3)}</b> are{" "}
+                    <b>tied</b>, not ranked — that is what one step of this
+                    model's number format is worth on this scale.
+                  </p>
+
+                  <ol className="path-list stagger">
+                    {shownSenders(path, allSenders).map((s, i) => {
+                      const top = path.senders[0].recovery;
+                      const tied =
+                        i > 0 &&
+                        Math.abs(top - s.recovery) < path.recovery_resolution;
+                      const tested = s.control_max !== undefined;
+                      const clears = s.clears_control && s.clears_position;
+                      return (
+                        <li
+                          key={s.name}
+                          className={tied ? "tied" : undefined}
+                          style={{ "--i": i } as CSSProperties}
+                        >
+                          <span className="mid path-name">{s.name}</span>
+                          <span className="path-track">
+                            <span
+                              className="path-bar"
+                              style={{
+                                width: `${Math.min(100, Math.abs(s.recovery) * 100)}%`,
+                                background:
+                                  s.recovery >= 0
+                                    ? "var(--color-cobalt)"
+                                    : "var(--crimson-500)",
+                              }}
+                            />
+                          </span>
+                          <span className="mid path-val">
+                            {s.recovery.toFixed(3)}
+                          </span>
+                          <span className="meta path-verd">
+                            {/* Short enough to fit its column. The full form
+                                — "not distinguished from an edit of that size
+                                at that layer" — ellipsised at "an edit of t…"
+                                on a 1000px viewport, which says nothing at
+                                all. What the controls ARE is spelled out in
+                                the paragraph below, once, rather than
+                                truncated on every row. */}
+                            {tied
+                              ? "tied with the top"
+                              : !tested
+                                ? "not tested against chance"
+                                : clears
+                                  ? "beats both controls"
+                                  : "no better than its controls"}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ol>
+
+                  {/* NOT a silent cap. Every sender is counted, the reason
+                      the rest are folded away is stated, and one click brings
+                      them back — a list that quietly stopped at twelve would
+                      read as "these are all of them". */}
+                  {path.senders.length > shownSenders(path, allSenders).length && (
+                    <button
+                      className="ghost sm"
+                      onClick={() => setAllSenders(true)}
+                    >
+                      show the other {path.senders.length -
+                        shownSenders(path, allSenders).length}{" "}
+                      — all below the {path.recovery_resolution.toFixed(3)}{" "}
+                      resolution and none tested against chance
+                    </button>
+                  )}
+                  {allSenders && (
+                    <button className="ghost sm" onClick={() => setAllSenders(false)}>
+                      fold the untested ones away again
+                    </button>
+                  )}
+
+                  <p className="meta">
+                    {path.seeding} {path.scope}
+                  </p>
+                  <p className="meta">{path.means}</p>
+                  <ReceiptLine receipt={path.receipt} />
+                </>
+              )}
+            </div>
+          )}
 
           <ul className="patch-notes meta stagger">
             {data.notes.map((n, i) => (

@@ -78,6 +78,47 @@ def example_input() -> torch.Tensor:
 LABELS = ["negative", "neutral", "positive"]
 
 
+# ---------------------------------------------------------------------------
+# Everything below is for the CAUSAL sweep — "what in this network actually
+# matters", as opposed to the layer map, which only says what each layer
+# emitted. Both are optional; without them the map still works.
+# ---------------------------------------------------------------------------
+
+
+TASK = "classification"
+"""What kind of model this is: "classification" or "regression".
+
+ModelMRI will not guess. KL over a softmax is the right way to measure how far
+a classifier's answer moved and is meaningless for a regressor — and both
+still produce a plausible-looking ranking, which is exactly why picking one
+for you would be dangerous rather than convenient.
+"""
+
+
+def sample_inputs() -> torch.Tensor:
+    """A batch of REAL inputs — at least eight.
+
+    The causal sweep replaces a layer's output with its average over these, so
+    the average has to be over inputs your model actually sees. Random noise
+    would make every score a statement about noise.
+
+    In practice this is usually a slice of your validation set:
+
+        def sample_inputs():
+            return torch.stack([x for x, _ in list(val_dataset)[:64]])
+
+    Eight is the floor, not the target. The mean of one sample IS that sample,
+    so a layer would be replaced by itself and every score would come back
+    zero — a clean-looking result from a measurement that did not happen.
+    """
+    # SEEDED, only because this is the template. Unseeded, the numbers in the
+    # panel move a little every time it is swept, and the first thing anybody
+    # would conclude is that the measurement is unstable rather than that the
+    # inputs changed. Your real sample_inputs() returns your real data and
+    # needs no seed.
+    return torch.randn(64, 20, generator=torch.Generator().manual_seed(0))
+
+
 if __name__ == "__main__":
     m = load()
     x = example_input()

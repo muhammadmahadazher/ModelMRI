@@ -259,6 +259,190 @@ the receiver reads — not which of its query, key or value paths carried it.
 Splitting those across GQA, fused QKV and rotary embeddings would produce
 confident and subtly wrong numbers.
 
+## Finetune-vs-base diff over a prompt set
+
+`POST /api/diff/models` with `{"a": ..., "b": ..., "prompts": [...]}`, or
+`file` instead of `prompts`. Optional `include_heads`.
+
+`behavdiff` compares two models on ONE prompt and was built for a different
+question — what a quantisation cost you, where both sides are the same weights
+at two precisions. A finetune is not that: it changed the model on purpose, in
+some places and not others, so one prompt's diff presented as a property of
+the finetune is the error this refuses. **Every number is a median over your
+prompts with its middle half, `n`, and how often the thing happened at all.**
+
+Each side is loaded **once**, in sequence: 8 GB will not hold both, and the
+models worth comparing are exactly the ones near that limit.
+
+| field | what it is |
+|---|---|
+| `kl` | how far the answers differ per position, as a spread |
+| `flips` | positions whose top token changed, as a spread |
+| `layers` | residual cosine per layer, as a spread, plus how often each was the divergence point |
+| `consensus_layer` | the layer where the cosine falls furthest, on the most prompts |
+| `heads` | how far each head's ablation score moved — only with `include_heads` |
+
+**No threshold decides where the streams come apart.** The first version
+compared each layer against a floor of `0.999`, wearing a docstring that
+claimed the floor was measured on the pair. Measured on gpt2 against a copy
+with one head zeroed in block 6: the cosine reads `1.000000000` through layer
+6 and `0.999475` at layer 7 — exactly where that block's output appears — and
+`0.999475` sits *above* `0.999`. A real divergence, correctly measured,
+reported as none. It is now the largest single-step **drop**, with the size of
+the drop printed beside the layer.
+
+**Cosine, not distance.** A finetune that changed a norm gain moves every
+vector's length and none of their meanings, and a distance would report that
+as the model having changed everywhere.
+
+**A plurality is not the answer.** When the divergence layer is first on fewer
+than half the prompts, the summary says the point of divergence *moves*
+between them rather than naming one. `consensus_share` is out of all prompts,
+not out of the ones that diverged.
+
+**The head half is opt-in and priced.** `rank_heads` is one pass per head plus
+three, times two sides, times every prompt: 1,176 on gpt2 with four prompts,
+5,412 on a 1.7B with six. Both sides' medians are carried rather than the
+difference alone — a head that went from 0.02 to 0.06 and one that went from
+4.00 to 4.04 moved by the same amount and are not the same finding — and the
+list is sorted by the *size* of the move, because a head the finetune started
+leaning on is as much a finding as one it abandoned. Measured on the damaged
+gpt2: zeroing L0H10 dropped it from 0.3583 to 0.0000 and sent L1H11 from
+0.0026 to **1.2494**.
+
+**The pair is refused when a per-layer table would line up the wrong things** —
+different layer counts, hidden sizes or vocabularies — from the configs alone,
+before either model loads, naming both sides. Depths are never normalised to a
+0–1 fraction: layer 12 of 24 and layer 12 of 32 are not the same place.
+Tokenisers are checked **per prompt**, because two models can share a config
+and still split one string differently.
+
+**This is not model diffing in the crosscoder sense.** crosscode and OpenMOSS
+train a shared autoencoder over both models and can say a *feature* moved;
+that is GPU-months and neither ships a license file. This is a diff of
+behaviour on your prompts and of where the residual stream rotated, and the
+summary says so rather than leaving a reader to assume the stronger claim.
+
+## Causal ablation for your own nn.Module
+
+`POST /api/custom/ablate` with `{"kind": "layers"}` or `{"kind": "inputs"}`,
+optional `grid`.
+
+The custom-model panel maps one forward pass and everything in it is
+descriptive — shapes, activation statistics, dead units. All of that can be
+true of a layer the answer does not depend on. This asks the causal question
+instead, on the one surface in this category nothing else covers: every
+platform ModelMRI competes with is a fixed catalogue of transformers, and none
+of them will look at the CNN you trained last week.
+
+| kind | what is ablated |
+|---|---|
+| `layers` | each leaf module's output, replaced by its mean over your samples |
+| `inputs` | each input feature, or each patch of an image, replaced the same way |
+
+**It refuses rather than defaults, twice.**
+
+An adapter with no `TASK` is refused. KL over a softmax is right for a
+classifier and meaningless for a regressor, and *both still produce a
+plausible ranking* — which is exactly why picking one for you would be
+dangerous rather than convenient. Declare `TASK = "classification"` or
+`"regression"` beside `load()`.
+
+An adapter with no `sample_inputs()` is refused, and one returning fewer than
+`MIN_SAMPLES` is refused with the arithmetic: the mean of one sample **is**
+that sample, so every layer would be replaced by itself and every score would
+come back zero — a clean-looking result from a measurement that did not
+happen.
+
+**The two nulls are different constructions, deliberately.** A layer output has
+hundreds of dimensions, so its control is a random edit of the same *size* —
+the same distance the mean moves that sample's activation, in a random
+direction. Matching the *norm of the replacement* instead, as `patch.py` does,
+was measured at 1.41× the intervention it was the null for and no site could
+ever beat it. A single input feature has one dimension, where a "random
+direction" is `+1` or `-1` and the control becomes the treatment up to a sign;
+its null is therefore occluding a **different region** the same way. With the
+wrong one, a trained net whose label depended only on features 0 and 1
+reported both as not significant and four noise features as significant.
+
+`expected_false_positives` is `n_tested / (draws + 1)`: each site is compared
+against the strongest of its draws, so under a null where every site is
+equivalent the real edit wins one time in nine. Read the margin, not the flag.
+
+**Two things it cannot do.** Mean ablation is off-distribution — the mean is
+not a value the layer ever produces, so a large effect can mean the layer
+matters or that the model has never seen an input like the one the ablation
+just built. And in a purely sequential model, replacing any module's output
+with a constant makes every module after it constant too, so the final answer
+is the same constant wherever the chain was cut: measured at 1.19e-07 apart
+with zero variance across samples. The sweep separates what is *wired in* from
+what is not — a dead branch scores exactly `0.0` — and cannot rank depth along
+a chain.
+
+## Grounding — the document, or the weights?
+
+`POST /api/ground` with `{"document": "...", "question": "..."}`, or
+`{"file": "notes.txt", "question": "..."}`. Optional `max_chunks`.
+
+**Nothing is downloaded, nothing is indexed and nothing is embedded.** This is
+not a retrieval engine: chunking is by blank line and heading, spans come from
+the tokeniser's own offset mapping, and every passage you send is in the
+prompt. Retrieval is somebody else's job — the question here is what the model
+did with what it was given.
+
+Every RAG interface in this category shows you which chunks were *retrieved*.
+None of them shows whether the answer *used* them, and a retriever that pulled
+the right paragraph next to a model that ignored it and answered from memory
+looks identical to a working system in all of them.
+
+So each passage comes back with two numbers, and the interesting case is where
+they disagree:
+
+| field | what it measures |
+|---|---|
+| `dependence` | nats the answer's next-token distribution moved when that passage was masked out of attention |
+| `attention` | share of the answer position's attention that landed on it, meaned over every layer and head |
+
+`looked_not_used` is set for a passage with attention on it and no measurable
+dependence — the signature of an answer coming from the weights.
+
+**Three things it will not say.**
+
+`dependence` is never a percentage. Masking a whole passage is a large
+intervention and the effects are not additive: the response carries `joint`,
+the move when *every* passage is masked at once, precisely so a reader can see
+the parts do not sum to it.
+
+`attention` is `null`, never `0.0`, on a model whose attention implementation
+never builds the score matrix. SDPA and FlashAttention return an **empty
+tuple** for `output_attentions=True` rather than `None`, so the obvious loop
+completes, sums nothing and reports a measured-looking zero for a number that
+was never returned. `attention_available` says which happened.
+
+`looked_not_used` is `null` — not `false` — whenever the reading could not be
+taken. That is either cause above, or a `noise_floor` of exactly `0.0`, where
+every passage that moved the answer at all counts as depended-on and the flag
+could never fire. `floor_degenerate` marks it. A deterministic model reproduces
+its own answer bit for bit, so on gpt2/cuda/bf16 this is the ordinary case, not
+an edge one.
+
+Cost is `n_chunks + 4` forward passes. Past `max_chunks` it **refuses** with
+the count rather than truncating: an answer scored against the first twelve
+paragraphs of forty, presented as grounding, is worse than no answer, because
+the passages it used might all be in the tail.
+
+**In a `.mri`.** The section travels, and the document does not — a `.mri`
+carries a ~120-character preview of each passage, because the text somebody
+grounds an answer in is usually the half they do not want forwarded. That is
+also why `modelmri verify` reports grounding as *not verifiable* rather than
+reproducing it: there is nothing in the file to mask out and run again. What it
+does check is that each recorded verdict is consistent with the floor stored
+beside it, so a file edited to move a verdict without moving its number is
+caught. `modelmri diff` reports the regression this exists for — the answer
+starting or stopping depending on the document — and refuses when the two
+files' passage previews disagree, because that is the document changing rather
+than the model.
+
 ## Layer-sweep probes
 
 `POST /api/probe` with `{"examples": [{"text": ..., "label": 0|1}, ...]}`,

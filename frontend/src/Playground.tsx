@@ -12,6 +12,9 @@ import {
 import AttentionPanel from "./AttentionPanel";
 import TelemetryBar from "./TelemetryBar";
 import FeaturesPanel from "./FeaturesPanel";
+import GroundPanel from "./GroundPanel";
+import ProbePanel from "./ProbePanel";
+import PatchscopePanel from "./PatchscopePanel";
 import PatchPanel from "./PatchPanel";
 import ModelPicker from "./ModelPicker";
 import { DEMO } from "./demo";
@@ -24,6 +27,7 @@ interface Props {
   replay?: boolean;
   /** The recorded patching trace that `.mri` carries, if it carries one. */
   sessionPatch?: { available: boolean; clean: string; corrupt: string };
+  sessionGround?: { available: boolean; question: string };
 }
 
 const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
@@ -38,6 +42,7 @@ export default function Playground({
   onModelChange,
   replay,
   sessionPatch,
+  sessionGround,
 }: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
@@ -462,6 +467,30 @@ export default function Playground({
           recording, only when the file actually carries a trace — a panel
           whose one button can only apologise is worse than no panel. */}
       {introspectable && !replay && <PatchPanel epoch={epoch} />}
+      {/* Two surfaces of their own, deliberately.
+
+          A probe fits to YOUR labelled examples rather than to the current
+          generation, so it needs no prompt and appears before one — but it
+          does need a residual stream and a live model, which is the same gate
+          the patching grid uses.
+
+          A patchscope reports a SENTENCE the model produced. Beside the logit
+          lens it would read as a second measurement of the same thing, and it
+          is a different kind of evidence entirely: the lens reads a state
+          through the unembedding, this hands the state back to the model. */}
+      {introspectable && !replay && <ProbePanel epoch={epoch} />}
+      {introspectable && !replay && <PatchscopePanel epoch={epoch} />}
+      {/* Grounding runs its own document and question, so like the two above
+          it needs no generation — but it masks passages out of an attention
+          mask, which needs a live HuggingFace model. */}
+      {introspectable && !replay && <GroundPanel epoch={epoch} />}
+      {/* On a recording, only when the file actually carries one. Grounding
+          cannot be re-taken from a `.mri` — masking a passage out needs the
+          model, and the document is not in the file — so a panel offering the
+          form here would be a form whose only button refuses. */}
+      {replay && sessionGround?.available && (
+        <GroundPanel epoch={epoch} recorded={sessionGround} />
+      )}
       {replay && sessionPatch?.available && (
         <PatchPanel epoch={epoch} recorded={sessionPatch} />
       )}

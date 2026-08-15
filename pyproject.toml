@@ -82,6 +82,10 @@ modelmri = "modelmri.cli:main"
 [project.optional-dependencies]
 vla-lite = [
     "av>=13,<18",
+    # ALOHA and robomimic files. In the LITE extra rather than the full one:
+    # reading an HDF5 dataset needs no policy, no GPU and no lerobot, which is
+    # the whole distinction this extra draws.
+    "h5py>=3.8",
     "pillow>=10",
     "pyarrow>=15",
 ]

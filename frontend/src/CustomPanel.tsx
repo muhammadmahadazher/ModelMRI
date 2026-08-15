@@ -15,6 +15,7 @@ import {
   GgufReport,
 } from "./api";
 import { useScanOnData } from "./useScanOnData";
+import CustomAblate from "./CustomAblate";
 import GgufReader from "./GgufReader";
 import RestingSketch from "./RestingSketch";
 
@@ -511,6 +512,13 @@ export default function CustomPanel({
           </div>
         </>
       )}
+
+      {/* The causal half, sited under the map rather than beside it. The map
+          says what each layer emitted; this says what the answer would be
+          without it, and reading the second without having seen the first is
+          how a reader ends up believing a dead layer was load-bearing. Shown
+          only once a model is loaded — there is nothing to sweep before. */}
+      {status.loaded && <CustomAblate epoch={runId} />}
 
       <div className="hint">
         one real forward pass, hooked at every leaf module · dead = exactly

@@ -162,6 +162,98 @@ def run_sweep(
     return 0 if any(r.measured for r in rows) else 1
 
 
+
+def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
+    """Prove a robot dataset is intact, or say exactly where it is not.
+
+    Exit code is 1 when a check FAILED and 0 otherwise, so this drops into a
+    pre-training script. A check that could not run here is NOT a failure --
+    a missing PyAV is a fact about the machine, and exiting non-zero for it
+    would make the gate about the environment rather than the data.
+    """
+    import json as _json
+
+    from . import vla_audit
+    # Imported here rather than at module scope, like every other command in
+    # this file: `cli.py` is what `modelmri --help` runs, and pulling errors
+    # (and through it the rest of the package) at import time would put a
+    # second of torch on the front of every invocation.
+    from .errors import BadRequest, Refusal
+    from .vla_data import LeRobotV3Reader
+
+    try:
+        reader = LeRobotV3Reader.discover(repo_id=repo_id or None)
+    except ImportError as err:
+        # `err.name` and never `err` — the same rule `_missing_reader_dep`
+        # already follows on the HTTP side. The module name is the useful half
+        # and is bounded; the exception's own prose is free-form text about
+        # this machine, and a leak test walks every sink in the package
+        # looking for exactly that interpolation. Caught by it, not by review.
+        what = f" ({err.name} is missing)" if getattr(err, "name", None) else ""
+        print(f"Reading a LeRobot dataset needs pyarrow and av{what}.")
+        print("  pip install 'modelmri[vla-lite]'")
+        return 2
+    except (Refusal, BadRequest) as err:
+        print(err)
+        return 2
+
+    report = vla_audit.audit(reader)
+    if as_json:
+        print(_json.dumps(report.to_dict(), indent=2, allow_nan=False))
+        return 1 if report.broken else 0
+
+    mark = {vla_audit.OK: "OK  ", vla_audit.BROKEN: "FAIL", vla_audit.UNCHECKED: "--  "}
+    print(
+        f"{report.repo_id} — {report.n_episodes} episodes, "
+        f"{report.n_frames} frames, {report.seconds}s"
+    )
+    print()
+    for check in report.checks:
+        print(f"  {mark[check.verdict]} {check.name}")
+        for line in _wrap(check.detail, 72):
+            print(f"         {line}")
+    print()
+    for line in _wrap(report.means(), 76):
+        print(f"  {line}")
+    return 1 if report.broken else 0
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    import textwrap
+
+    return textwrap.wrap(text, width=width) or [""]
+
+
+def check_trace(args) -> int:
+    """`modelmri check` — structural assertions, for a CI step.
+
+    Imports nothing heavy: no torch, no transformers, no network. The point is
+    that this runs in a build container with no account, so anything that
+    would need one is not allowed in this path.
+    """
+    from . import check as check_mod
+
+    result, code, error = check_mod.check(
+        args.target,
+        no_errors=args.no_errors,
+        max_steps=args.max_steps,
+        no_retry_storms=args.no_retry_storms,
+        no_loops=args.no_loops,
+        max_repeat=args.max_repeat,
+        max_ms=args.max_ms,
+    )
+    if result is None:
+        # Unreadable is its own exit code: a missing file is a broken
+        # pipeline, not a broken agent.
+        if args.json:
+            print(json.dumps({"error": error, "ok": False}, indent=2))
+        else:
+            print(error, file=sys.stderr)
+        return code
+    print(json.dumps(result.to_dict(), indent=2) if args.json else result.report())
+    return code
+
+
 def verify_session(path, *, as_json: bool = False) -> int:
     """Re-run a `.mri`'s measurements here and report what came back the same.
 
@@ -986,6 +1078,20 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
+    audit = sub.add_parser(
+        "audit",
+        help="Prove a robot dataset is intact, or say exactly where it is not",
+    )
+    audit.add_argument(
+        "dataset",
+        nargs="?",
+        default="",
+        help="a cached LeRobot repo id, e.g. lerobot/pusht",
+    )
+    audit.add_argument(
+        "--json", action="store_true", help="machine-readable, for a CI gate"
+    )
+
     serve = sub.add_parser("serve", help="Start the ModelMRI server")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=5900)
@@ -1061,6 +1167,59 @@ def main() -> None:
         "--yes", action="store_true", help="run even when the projection is large"
     )
     sweeper.add_argument("--json", action="store_true", help="emit JSON")
+
+    mcp = sub.add_parser(
+        "mcp",
+        help="Speak MCP over stdio, so an agent can call the measurements "
+        "directly (read-only)",
+    )
+    mcp.add_argument(
+        "--attach",
+        default="",
+        metavar="URL",
+        help="drive an already-running `modelmri serve` instead of loading a "
+        "second copy of the model, e.g. http://127.0.0.1:5900",
+    )
+
+    gate = sub.add_parser(
+        "check",
+        help="Gate a merge on structural facts about a recorded run "
+        "(exits non-zero when an assertion fails)",
+    )
+    gate.add_argument("target", help="a trace id in this machine's store, or a .json")
+    gate.add_argument(
+        "--no-errors", action="store_true", help="fail if any step recorded an error"
+    )
+    gate.add_argument(
+        "--max-steps", type=int, default=None, help="fail above this many steps"
+    )
+    gate.add_argument(
+        "--no-retry-storms",
+        action="store_true",
+        help="fail if one name failed twice in a row inside the retry window",
+    )
+    gate.add_argument(
+        "--no-loops",
+        action="store_true",
+        help="fail if any sequence of steps repeated back to back",
+    )
+    gate.add_argument(
+        "--max-repeat",
+        type=int,
+        default=None,
+        help="fail if a step ran more than N times with the same input",
+    )
+    gate.add_argument(
+        "--max-ms",
+        type=int,
+        default=None,
+        help="OPT-IN AND FLAKY: fail above this total wall-clock. A shared CI "
+        "runner is slow for reasons unrelated to your diff, and a gate that "
+        "goes red on a noisy neighbour teaches people to ignore the check",
+    )
+    gate.add_argument(
+        "--json", action="store_true", help="emit the report as JSON instead of text"
+    )
 
     checker = sub.add_parser(
         "verify",
@@ -1240,8 +1399,16 @@ def main() -> None:
                 as_json=args.json,
             )
         )
+    elif args.command == "mcp":
+        from . import mcp_server
+
+        raise SystemExit(mcp_server.serve(attach=args.attach))
+    elif args.command == "check":
+        raise SystemExit(check_trace(args))
     elif args.command == "verify":
         raise SystemExit(verify_session(args.file, as_json=args.json))
+    elif args.command == "audit":
+        raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":
