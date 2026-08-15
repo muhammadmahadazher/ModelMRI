@@ -769,3 +769,56 @@ def test_no_crossing_is_reported_as_a_result():
         [_attr({1: 0.90}, floor=0.05)], [_attr({1: 0.95}, floor=0.05)]
     )
     assert "depend on the same words" in diff.means()
+
+
+# --------------------------------------- heads only line up if there are as many
+
+
+def _shape(**over) -> dict:
+    return {"n_layers": 12, "hidden": 768, "vocab": 50257, "n_heads": 12, **over}
+
+
+def test_a_head_table_across_different_head_counts_is_refused():
+    """`summarise_heads` aligns rows by (layer, head) and drops any key one
+    side lacks, so 12 against 6 reported six heads and said nothing about the
+    other six. And with one hidden size split two ways, head 3 of 12 spans 64
+    dimensions where head 3 of 6 spans 128 — the six it did report were pairs
+    nothing had established were comparable."""
+    with pytest.raises(md.DiffError) as caught:
+        md.check_pair(
+            _shape(), _shape(n_heads=6), "base", "finetune", compare_heads=True
+        )
+    message = str(caught.value)
+    assert "12 attention heads" in message and "6" in message
+    # Both sides named, and a way forward that is not "give up".
+    assert "base" in message and "finetune" in message
+    assert "without the head table" in message
+
+
+def test_the_same_pair_still_gets_a_per_layer_diff():
+    """The residual cosine compares hidden states and does not care how those
+    states were produced. Refusing this pair outright would cost a real
+    measurement for a table nobody asked for."""
+    md.check_pair(_shape(), _shape(n_heads=6), "base", "finetune")
+
+
+def test_a_head_count_nothing_read_is_refused_rather_than_compared():
+    with pytest.raises(md.DiffError) as caught:
+        md.check_pair(
+            _shape(), _shape(n_heads=0), "base", "finetune", compare_heads=True
+        )
+    assert "does not state how many attention heads" in str(caught.value)
+
+
+def test_a_matching_pair_passes_the_head_gate():
+    md.check_pair(_shape(), _shape(), "base", "finetune", compare_heads=True)
+
+
+def test_the_gate_runs_before_either_model_is_loaded():
+    """The pre-load call has to carry `compare_heads` too, or the refusal
+    arrives after two multi-gigabyte loads — which is the wrong way round for
+    exactly the pairs that are near the limit of the machine."""
+    import inspect
+
+    source = inspect.getsource(md.compare)
+    assert source.count("compare_heads=include_heads") == 2

@@ -387,7 +387,14 @@ def shape_without_loading(spec: str) -> dict | None:
     return _shape_from_config(config)
 
 
-def check_pair(shape_a: dict, shape_b: dict, label_a: str, label_b: str) -> None:
+def check_pair(
+    shape_a: dict,
+    shape_b: dict,
+    label_a: str,
+    label_b: str,
+    *,
+    compare_heads: bool = False,
+) -> None:
     """Refuse a pair whose per-layer table would line up the wrong things.
 
     NAMES BOTH SIDES in every message. "the models are incompatible" sends the
@@ -441,6 +448,35 @@ def check_pair(shape_a: dict, shape_b: dict, label_a: str, label_b: str) -> None
             f"over different vocabularies is not a KL — and a finetune that "
             f"added tokens is a real and common case, which is why this says "
             f"both numbers rather than refusing anonymously."
+        )
+    # Only when a head table is actually being built. The per-layer cosine is
+    # a comparison of hidden states and does not care how those states were
+    # produced, so a pair that differs only in head count is a legitimate
+    # layer-wise diff and refusing it here would cost a real measurement.
+    #
+    # The head table is another matter. `summarise_heads` aligns rows by
+    # (layer, head) and DROPS any key missing from one side, so 12 heads
+    # against 6 silently reported six of them and said nothing about the
+    # other six. Worse than the silence: with one hidden size split two ways,
+    # head 3 of 12 spans 64 dimensions and head 3 of 6 spans 128, so the six
+    # it did report were pairs that nothing had established were comparable —
+    # the same objection this function already makes to layer depth.
+    if compare_heads and shape_a.get("n_heads") != shape_b.get("n_heads"):
+        for shape, label in ((shape_a, label_a), (shape_b, label_b)):
+            if not shape.get("n_heads"):
+                raise DiffError(
+                    f"{label}'s config does not state how many attention "
+                    f"heads it has, and a per-head comparison cannot be made "
+                    f"against a number nothing has read."
+                )
+        raise DiffError(
+            f"{label_a} has {shape_a['n_heads']} attention heads and "
+            f"{label_b} has {shape_b['n_heads']}. Ranking them side by side "
+            f"would drop the heads only one model has and compare the rest by "
+            f"index, when head 3 of {shape_a['n_heads']} and head 3 of "
+            f"{shape_b['n_heads']} divide the same hidden size differently. "
+            f"Run it without the head table to get the per-layer comparison, "
+            f"which does not depend on how the heads were cut."
         )
 
 
@@ -881,7 +917,7 @@ def compare(
     cheap_a = shape_without_loading(model_a)
     cheap_b = shape_without_loading(model_b)
     if cheap_a and cheap_b:
-        check_pair(cheap_a, cheap_b, model_a, model_b)
+        check_pair(cheap_a, cheap_b, model_a, model_b, compare_heads=include_heads)
 
     captures: dict[str, list] = {}
     head_rankings: dict[str, list] = {}
@@ -894,7 +930,13 @@ def compare(
         try:
             shapes[spec] = _shape_of(model)
             if len(shapes) == 2:
-                check_pair(shapes[model_a], shapes[model_b], model_a, model_b)
+                check_pair(
+                    shapes[model_a],
+                    shapes[model_b],
+                    model_a,
+                    model_b,
+                    compare_heads=include_heads,
+                )
             rows = []
             rankings = []
             attributions = []
