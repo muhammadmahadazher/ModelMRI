@@ -79,3 +79,7 @@ modelmri/static/viewer/*
 demo-dist/
 
 tests/fixtures/parity.mri
+
+# Claude Code session tooling: a local launch config and worktree state.
+# Machine-specific, not project code.
+.claude/
