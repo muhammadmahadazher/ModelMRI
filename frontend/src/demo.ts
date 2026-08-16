@@ -503,7 +503,6 @@ export async function demoFetch(
         "there is a run behind the file.",
     );
   }
-  if (p === "/api/attention/baselines") return recorded("baselines");
   if (p === "/api/attention/types") return recorded("types");
   if (p === "/api/attention/direct") return recorded("direct");
   if (p === "/api/attention/ablate/estimate") return recorded("ablate_estimate");
