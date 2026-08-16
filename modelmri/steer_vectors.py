@@ -34,7 +34,7 @@ instead of by sentiment: **0 of 12 layers beat their null**, under the
 identical estimator. Signal passes, noise does not, and layer 0 failing is
 right: that is the embedding, before anything has been computed.
 
-**RepE is not centred, and `pca_lowrank` centres by default.** The first
+**RepE is not centred, and it is not randomised either.** The first
 version of this file subtracted the mean of the paired differences before the
 PCA, reasoning that otherwise PC1 is dominated by the centroid shift. That is
 backwards for contrastive pairs — the centroid shift IS the signal — and on
@@ -49,9 +49,12 @@ clean the data is. Measured directly, 200 trials per method on structureless
 Gaussian clouds with arbitrary labels and no real direction at all:
 
     caa    32/200 beat their own null   16.0%
-    repe   24/200                       12.0%
+    repe   26/200                       13.0%
 
-against 50/50 detection of a real separation of 4.0 sigma. So it is a useful
+against 50/50 detection of a real separation of 4.0 sigma, both methods.
+(`repe` read 24/200 while it used `torch.pca_lowrank`; see `_fit` for why
+that call is gone. `caa` never touched it and is unchanged, which is the
+control on the re-measurement.) So it is a useful
 screen and it is not a significance test: roughly one direction in six that
 this reports as real, on data with nothing in it, is noise. `p_value` is
 published alongside `beats_null` for that reason — a boolean hides whether the
@@ -169,8 +172,8 @@ def _fit(pos, neg, method: str):
     elif method == "repe":
         # First principal component of the paired differences.
         #
-        # NOT centred, and `pca_lowrank` centres by default — which is why this
-        # is spelled out. The first version subtracted the mean of the
+        # NOT centred. `pca_lowrank` centres by default, which is why this was
+        # spelled out when that was the call. The first version subtracted the mean of the
         # differences first, reasoning that otherwise PC1 is dominated by the
         # centroid shift and the method is CAA with extra steps. That reasoning
         # is backwards: with contrastive pairs the centroid shift IS the
@@ -180,8 +183,28 @@ def _fit(pos, neg, method: str):
         # worst shuffle reached 1.30 — a real direction that failed its own
         # control, because the estimator had thrown the direction away.
         diffs = pos - neg
-        _, _, v = torch.pca_lowrank(diffs, q=min(4, *diffs.shape), center=False)
-        direction = v[:, 0]
+        # EXACT SVD, not `torch.pca_lowrank`. That function is a RANDOMISED
+        # algorithm -- it draws a projection matrix internally -- and it takes
+        # no `generator`, so it draws from the GLOBAL torch RNG. Every `repe`
+        # direction was therefore a function of whatever had last touched that
+        # RNG, while `fit_direction` published a `seed` and this module's own
+        # comment two functions down promises the split and the shuffles are
+        # reproducible.
+        #
+        # MEASURED on 24x32 structureless activations, identical data and
+        # identical seed, varying only the global RNG over 400 states: the
+        # effect ranged 0.289 to 0.519, `null_max` 0.777 to 0.982, and the
+        # margin that decides `beats_null` came within 0.0014 of flipping the
+        # verdict. `caa` over the same sweep was identical to the last digit.
+        # A seed that does not reproduce its own result is not a seed, and a
+        # receipt naming one is claiming something it cannot deliver.
+        #
+        # The exact call is also cheap here, and would be on a real model: the
+        # pair axis is the small one -- half of at least 8 pairs against a
+        # d_model in the thousands -- and `full_matrices=False` makes the cost
+        # scale with that axis rather than with d_model.
+        _, _, vh = torch.linalg.svd(diffs, full_matrices=False)
+        direction = vh[0]
         # PCA has no sign convention; align it with the mean difference so
         # "positive" means the same thing it means for CAA.
         if float(direction @ (pos.mean(0) - neg.mean(0))) < 0:

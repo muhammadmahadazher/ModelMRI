@@ -4784,8 +4784,8 @@ main > [id^="sec-"] {
 .pgraph-dials label { display: grid; gap: 3px; }
 .pgraph-dials input {
   width: 5rem; padding: 5px 7px; border-radius: 7px;
-  border: 1px solid var(--line-soft); background: var(--paper-1);
-  color: var(--ink-1); font: inherit; font-size: 12px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-size: 12px;
 }
 
 /* Horizontal scroller, like the attention strip: a graph over a long prompt
@@ -4798,13 +4798,20 @@ main > [id^="sec-"] {
   position: absolute; transform: translate(-50%, -50%);
   padding: 3px 7px; border-radius: 6px; white-space: nowrap;
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.02em;
-  color: var(--ink-1);
-  background: var(--paper-0);
-  border: 1px solid var(--line-soft);
+  /* The tokens `.tok` uses, not the ones I first reached for: `--ink-1`,
+     `--paper-0`, `--paper-1` and `--dur-fast` are not defined in this
+     stylesheet, and a declaration reading an undefined var is dropped
+     ENTIRELY rather than falling back — the chips would have rendered with
+     no background, no colour and no transition, and nothing would have said
+     so. The same mistake is recorded at `.ins-drop` a few hundred lines up;
+     `tests/test_css_vars.py` is what catches it. */
+  color: var(--color-ink);
+  background: var(--color-paper);
+  border: 1px solid var(--hair-soft);
   box-shadow: 0 1px 0 color-mix(in oklab, var(--ink-4) 8%, transparent);
-  transition: border-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out);
+  transition: border-color var(--dur-micro) var(--ease-hover),
+    box-shadow var(--dur-micro) var(--ease-hover),
+    transform var(--dur-micro) var(--ease-hover);
   pointer-events: none;
 }
 /* Ringed: a site the node grid flagged, which is where the walk started.

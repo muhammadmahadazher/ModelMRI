@@ -118,10 +118,41 @@ def test_repe_is_sign_aligned_with_caa():
     assert caa.effect > 0 and repe.effect > 0
 
 
-def test_the_result_is_reproducible_from_its_seed():
-    a, _ = sv.fit_direction(separated(), 0, seed=3)
-    b, _ = sv.fit_direction(separated(), 0, seed=3)
+@pytest.mark.parametrize("method", ["caa", "repe"])
+def test_the_result_is_reproducible_from_its_seed(method):
+    """Parametrized over BOTH methods, which is the whole reason this caught
+    nothing for so long: it ran on the default (`caa`) only, and `caa` was
+    never the method with a problem."""
+    a, _ = sv.fit_direction(separated(), 0, seed=3, method=method)
+    b, _ = sv.fit_direction(separated(), 0, seed=3, method=method)
     assert a.effect == b.effect and a.null_max == b.null_max
+
+
+@pytest.mark.parametrize("method", ["caa", "repe"])
+def test_the_seed_is_the_only_randomness_there_is(method):
+    """A seed that does not reproduce its own result is not a seed.
+
+    `repe` used `torch.pca_lowrank`, which is a RANDOMISED algorithm taking no
+    `generator` — so it drew from the GLOBAL torch RNG, and every `repe`
+    direction was a function of whatever had last touched it. Measured over 400
+    global states on identical data with identical `seed`: the effect ranged
+    0.289 to 0.519, `null_max` 0.777 to 0.982, and the margin deciding
+    `beats_null` came within 0.0014 of flipping. `caa` over the same sweep was
+    identical to the last digit.
+
+    Perturbing the global RNG between fits is the test the old one was not: a
+    result that moves when nothing it was given has moved is not reproducible,
+    whatever the receipt says.
+    """
+    seen = set()
+    for global_seed in (0, 1, 7, 99, 12345):
+        torch.manual_seed(global_seed)
+        judged, vec = sv.fit_direction(structureless(), 5, seed=3, method=method)
+        seen.add((judged.beats_null, judged.effect, judged.null_max, float(vec[0])))
+    assert len(seen) == 1, (
+        f"{method} produced {len(seen)} different results from one seed — the "
+        f"only thing that changed between them was the global torch RNG"
+    )
 
 
 def test_residual_norm_is_reported_so_a_coefficient_can_mean_something():
