@@ -117,6 +117,18 @@ MAX_GRAPH_NODES = 200_000
 # 40 MB one is a payload, and it renders into somebody else's browser.
 MAX_GRAPH_TEXT = 4_000
 
+# A PATCHING graph, which is a different section from `graph` above and far
+# smaller: `patch_graph.MAX_EDGES` is 400 and every edge cost eight control
+# passes to earn. These bounds are generous over that and nowhere near
+# `MAX_GRAPH_EDGES`, because a file claiming 50,000 patched edges is claiming
+# 400,000 forward passes nobody sat through.
+MAX_PATCH_GRAPH_EDGES = 4_000
+MAX_PATCH_GRAPH_NODES = 4_000
+
+# Draws behind one edge. `patch.CONTROL_DRAWS` is 8 and a caller may raise it;
+# a file claiming hundreds per edge is claiming a run nobody made.
+MAX_CONTROL_DRAWS = 128
+
 # One row per passage. `ground.MAX_CHUNKS` is 24 and a caller may raise it, but
 # a file claiming thousands of passages is not a document anybody read.
 MAX_GROUND_CHUNKS = 2_000
@@ -1317,6 +1329,247 @@ def _patch(doc: dict) -> dict:
     }
 
 
+def _is_index(v: Any) -> bool:
+    """A non-negative whole number, and `True` is not one.
+
+    `isinstance(True, int)` is True in Python, so a file carrying
+    `{"layer": true}` passes a bare int check and then indexes as layer 1.
+    """
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _patch_graph(doc: dict) -> dict:
+    """The PATCHING graph of an untrusted file, or nothing.
+
+    A different section from `graph`, and deliberately not the same key.
+    `graph` carries a transcoder attribution graph THIS TOOL DID NOT COMPUTE
+    and is gated on provenance saying so. This one carries a graph built here,
+    out of `patch.path_trace`, from nothing but the model that was loaded. Two
+    different objects from two different measurements, and merging them into
+    one key would make the panel's whole disclaimer unreadable.
+
+    Three rules specific to this section, and all three are about the claim
+    rather than the bytes:
+
+    An edge with no VERDICT is refused. The section's guarantee is that every
+    drawn edge was run against the eight same-norm draws behind it -- that is
+    what makes the picture a measurement instead of a ranking -- so a
+    hand-written file whose edges carry a score and no `clears_control` is
+    refused rather than rendered as though everything in it had passed.
+    `clears_control: false` is a real verdict and travels; `null` does not.
+
+    A graph with no SEEDING SENTENCE is refused. Edge count is quadratic in
+    sites, so every such graph is a subset by construction; one whose rule for
+    choosing edges has been stripped is a picture, not a measurement, and
+    ROADMAP #52 makes printing the rule with the graph the condition of the
+    feature existing at all.
+
+    An edge naming a node the file does not carry is refused. It reaches the
+    viewer as a lookup, and a dangling one draws as an edge from nowhere.
+
+    `control_max` survives as None -- but only on an edge that has no verdict
+    either, which the first rule already refuses. Where a verdict exists the
+    control must be a real number, because 0.0 means "random noise at this
+    site recovered nothing", which is a finding, and "we did not draw" is not.
+    """
+    raw = doc.get("patch_graph")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError(
+            "this session's patching graph is not a set of fields",
+        )
+
+    nodes = raw.get("nodes")
+    edges = raw.get("edges")
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        raise SessionError("this session's patching graph carries no nodes or edges")
+    if len(nodes) > MAX_PATCH_GRAPH_NODES or len(edges) > MAX_PATCH_GRAPH_EDGES:
+        raise SessionError(
+            f"this session claims {len(nodes):,} nodes and {len(edges):,} "
+            f"patched edges, above the {MAX_PATCH_GRAPH_NODES:,} and "
+            f"{MAX_PATCH_GRAPH_EDGES:,} this reads. Every edge in a patching "
+            f"graph costs eight control passes to earn, so a file this size is "
+            f"not one anybody measured."
+        )
+
+    seeding = raw.get("seeding")
+    if not (isinstance(seeding, str) and seeding.strip()):
+        raise SessionError(
+            "this session's patching graph does not say how its edges were "
+            "chosen. Edge count is quadratic in sites, so every such graph is "
+            "a subset — and one whose seeding rule has been stripped is a "
+            "picture rather than a measurement."
+        )
+
+    clean_nodes: list[dict] = []
+    ids: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise SessionError("this session has a graph node that is not fields")
+        nid = node.get("id")
+        if not isinstance(nid, str) or not nid or len(nid) > MAX_GRAPH_TEXT:
+            raise SessionError("a node in this session's patching graph has no name")
+        layer = node.get("layer")
+        position = node.get("position")
+        if not _is_index(layer) or not _is_index(position):
+            raise SessionError(
+                f"node {nid!r} does not say which layer and position it is, so "
+                f"it cannot be placed."
+            )
+        head = node.get("head")
+        if head is not None and not _is_index(head):
+            raise SessionError(f"node {nid!r} names a head that is not an index")
+        ids.add(nid)
+        clean_nodes.append(
+            {
+                "id": nid,
+                "layer": int(layer),
+                "head": None if head is None else int(head),
+                "position": int(position),
+                "role": node.get("role") if isinstance(node.get("role"), str) else "",
+                "depth": int(node["depth"]) if _is_index(node.get("depth")) else 0,
+            }
+        )
+
+    clean_edges: list[dict] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            raise SessionError("this session has a graph edge that is not fields")
+        source, target = edge.get("source"), edge.get("target")
+        if source not in ids or target not in ids:
+            raise SessionError(
+                "this session's patching graph has an edge between nodes it "
+                "does not carry, so the file is damaged."
+            )
+
+        recovery = edge.get("recovery")
+        if (
+            not isinstance(recovery, (int, float))
+            or isinstance(recovery, bool)
+            or not math.isfinite(recovery)
+        ):
+            raise SessionError(
+                f"the edge {source} → {target} carries no finite recovery, so "
+                f"there is nothing measured to draw."
+            )
+
+        clears = edge.get("clears_control")
+        if not isinstance(clears, bool):
+            raise SessionError(
+                f"the edge {source} → {target} carries no verdict against its "
+                f"controls. Every edge in a patching graph is drawn only "
+                f"because it was tested against eight same-norm draws, and one "
+                f"without them would render as though it had passed."
+            )
+        control = edge.get("control_max")
+        if (
+            not isinstance(control, (int, float))
+            or isinstance(control, bool)
+            or not math.isfinite(control)
+        ):
+            raise SessionError(
+                f"the edge {source} → {target} claims a verdict with no control "
+                f"behind it. A verdict without its reference is the bare claim "
+                f"this section exists to replace."
+            )
+        draws = edge.get("control_draws")
+        if not _is_index(draws) or draws < 1:
+            raise SessionError(
+                f"the edge {source} → {target} does not say how many control "
+                f"draws it was tested against, so its verdict cannot be read."
+            )
+
+        # The individual draws, which the panel opens behind an edge. Optional
+        # -- the verdict rests on `control_max` and is complete without them --
+        # but when they are here they must AGREE with it. Two numbers answering
+        # "what did random noise recover at this site" differently is a defect
+        # even when each is individually plausible, and the one the reader
+        # clicks would be the one that is wrong.
+        raw_draws = edge.get("controls")
+        controls: list[float] = []
+        if raw_draws is not None:
+            if not isinstance(raw_draws, list) or len(raw_draws) > MAX_CONTROL_DRAWS:
+                raise SessionError(
+                    f"the edge {source} → {target} carries a control list that "
+                    f"is not one, or is longer than the {MAX_CONTROL_DRAWS} "
+                    f"draws this reads."
+                )
+            for c in raw_draws:
+                if (
+                    not isinstance(c, (int, float))
+                    or isinstance(c, bool)
+                    or not math.isfinite(c)
+                ):
+                    raise SessionError(
+                        f"the edge {source} → {target} has a control draw that "
+                        f"is not a finite number."
+                    )
+                controls.append(float(c))
+            if controls and abs(max(controls) - float(control)) > 1e-6:
+                raise SessionError(
+                    f"the edge {source} → {target} says its strongest control "
+                    f"was {float(control):g} and carries draws whose strongest "
+                    f"is {max(controls):g}. The verdict rests on one of those "
+                    f"and the panel shows the other."
+                )
+
+        position_clears = edge.get("clears_position")
+        clean_edges.append(
+            {
+                "source": source,
+                "target": target,
+                "recovery": float(recovery),
+                "control_max": float(control),
+                "controls": controls,
+                "control_draws": int(draws),
+                "clears_control": clears,
+                # Three-valued on the way out. The shifted-position control is
+                # a separate pass and a file may legitimately carry an edge
+                # that never got one; coercing None to False here would turn
+                # "not run" into "run, and failed".
+                "clears_position": position_clears
+                if isinstance(position_clears, bool)
+                else None,
+                "tested": True,
+            }
+        )
+
+    return {
+        "nodes": clean_nodes,
+        "edges": clean_edges,
+        "seeding": seeding[:MAX_GRAPH_TEXT],
+        "means": raw.get("means")[:MAX_GRAPH_TEXT]
+        if isinstance(raw.get("means"), str)
+        else "",
+        "clean": raw.get("clean")[:MAX_GRAPH_TEXT]
+        if isinstance(raw.get("clean"), str)
+        else "",
+        "corrupt": raw.get("corrupt")[:MAX_GRAPH_TEXT]
+        if isinstance(raw.get("corrupt"), str)
+        else "",
+        "depth": int(raw["depth"]) if _is_index(raw.get("depth")) else 0,
+        "n_scored": int(raw["n_scored"]) if _is_index(raw.get("n_scored")) else 0,
+        "n_pruned": int(raw["n_pruned"]) if _is_index(raw.get("n_pruned")) else 0,
+        "passes": int(raw["passes"]) if _is_index(raw.get("passes")) else 0,
+        "prune_threshold": float(raw["prune_threshold"])
+        if isinstance(raw.get("prune_threshold"), (int, float))
+        and not isinstance(raw.get("prune_threshold"), bool)
+        and math.isfinite(raw["prune_threshold"])
+        else 0.0,
+        "prune_from": raw.get("prune_from")[:MAX_GRAPH_TEXT]
+        if isinstance(raw.get("prune_from"), str)
+        else "",
+        # Names the receivers whose senders were never expanded. Dropping it
+        # would turn "we stopped asking here" into "nothing wrote this".
+        "frontier": [
+            f for f in (raw.get("frontier") or []) if isinstance(f, str) and f in ids
+        ]
+        if isinstance(raw.get("frontier"), list)
+        else [],
+    }
+
+
 def _boundary(doc: dict, n_tokens: int) -> int:
     """Where the prompt ends, from an untrusted file.
 
@@ -1443,6 +1696,16 @@ class Session:
     #
     # Its `provenance` is not optional: see `_graph`.
     graph: dict = field(default_factory=dict)
+    # A patching graph THIS TOOL DID compute, walked backwards from the sites
+    # the node grid flagged. A SEPARATE KEY from `graph` above on purpose: that
+    # one is somebody else's transcoder attribution graph and this one is ours,
+    # from a different measurement, and a viewer that could not tell them apart
+    # would make the disclaimer on both unreadable. Optional and additive, so
+    # the format version does not move.
+    #
+    # Its `seeding` sentence and its per-edge verdicts are not optional: see
+    # `_patch_graph`.
+    patch_graph: dict = field(default_factory=dict)
     # What produced each number in this file: model, revision, dtype, device,
     # attention implementation, seed, tokenizer and prompt hashes. Optional and
     # additive like `patch` and `graph`, so the format version does not move
@@ -1550,6 +1813,9 @@ class Session:
     def has_graph(self) -> bool:
         return bool(self.graph.get("edges") or self.graph.get("n_nodes"))
 
+    def has_patch_graph(self) -> bool:
+        return bool(self.patch_graph.get("edges"))
+
     def attention_slice(self, layer: int, head: int) -> dict:
         key = f"{layer}:{head}"
         block = self.attention.get(key)
@@ -1590,6 +1856,7 @@ def build(
     scope: str = "",
     patch: dict | None = None,
     graph: dict | None = None,
+    patch_graph: dict | None = None,
     ranking: dict | None = None,
     head_types: dict | None = None,
     ground: dict | None = None,
@@ -1676,6 +1943,13 @@ def build(
                 "saying so is the confusion this section exists to prevent."
             )
         doc["graph"] = graph
+    # Through the READER's validator like every additive section below, which
+    # here means a graph whose seeding rule was left out, or one carrying an
+    # edge with no verdict behind it, is refused at WRITE time. Both are the
+    # section's whole guarantee, and a writer laxer than the reader would build
+    # files this tool signs its name to and then cannot open.
+    if patch_graph and patch_graph.get("edges"):
+        doc["patch_graph"] = _patch_graph({"patch_graph": patch_graph})
     # Same additive rule. Written through the same validator the READER uses,
     # not straight from the caller: a writer laxer than the reader is how you
     # build files nobody can open, and `_graph` records that lesson two
@@ -1887,6 +2161,7 @@ def parse(data: bytes) -> Session:
         patch=_patch(doc),
         trace=_trace(doc),
         graph=_graph(doc),
+        patch_graph=_patch_graph(doc),
         ranking=_ranking(doc),
         head_types=_head_types(doc),
         ground=_ground(doc),

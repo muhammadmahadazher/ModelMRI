@@ -4773,3 +4773,72 @@ main > [id^="sec-"] {
 @media (max-width: 720px) {
   .rub-row { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* ── patching graph ─────────────────────────────────────────────────────────
+   #52. No graph library: the curves are ArcCanvas's geometry applied in two
+   dimensions, on a canvas, and the nodes are absolutely positioned chips over
+   it so they stay real text — selectable, translatable and readable by a
+   screen reader, which SVG <text> in a force layout is not. */
+
+.pgraph-dials { gap: 12px; align-items: end; margin-bottom: 10px; flex-wrap: wrap; }
+.pgraph-dials label { display: grid; gap: 3px; }
+.pgraph-dials input {
+  width: 5rem; padding: 5px 7px; border-radius: 7px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  color: var(--color-ink); font: inherit; font-size: 12px;
+}
+
+/* Horizontal scroller, like the attention strip: a graph over a long prompt
+   is wider than the card and must not squash to fit. */
+.pgraph-stage-wrap { overflow-x: auto; margin: 10px 0 6px; }
+.pgraph-stage { position: relative; }
+.pgraph-canvas { display: block; cursor: crosshair; }
+
+.pgraph-node {
+  position: absolute; transform: translate(-50%, -50%);
+  padding: 3px 7px; border-radius: 6px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.02em;
+  /* The tokens `.tok` uses, not the ones I first reached for: `--ink-1`,
+     `--paper-0`, `--paper-1` and `--dur-fast` are not defined in this
+     stylesheet, and a declaration reading an undefined var is dropped
+     ENTIRELY rather than falling back — the chips would have rendered with
+     no background, no colour and no transition, and nothing would have said
+     so. The same mistake is recorded at `.ins-drop` a few hundred lines up;
+     `tests/test_css_vars.py` is what catches it. */
+  color: var(--color-ink);
+  background: var(--color-paper);
+  border: 1px solid var(--hair-soft);
+  box-shadow: 0 1px 0 color-mix(in oklab, var(--ink-4) 8%, transparent);
+  transition: border-color var(--dur-micro) var(--ease-hover),
+    box-shadow var(--dur-micro) var(--ease-hover),
+    transform var(--dur-micro) var(--ease-hover);
+  pointer-events: none;
+}
+/* Ringed: a site the node grid flagged, which is where the walk started.
+   Without the mark the seeds are indistinguishable from what they reached,
+   and "where we began looking" is half of what the seeding rule says. */
+.pgraph-node.seed {
+  border-color: color-mix(in oklab, var(--color-cobalt) 60%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-cobalt) 16%, transparent);
+}
+.pgraph-node.on {
+  border-color: var(--color-cobalt);
+  transform: translate(-50%, -50%) scale(1.08);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-cobalt) 22%, transparent);
+}
+
+.pgraph-key { margin-top: 4px; line-height: 1.55; }
+.pgraph-controls { margin-top: 12px; }
+/* Two columns, not the sender list's four: a control draw has no name and no
+   verdict, only a number against the edge it was drawn to test. */
+.pgraph-draws > li { grid-template-columns: 4.5rem minmax(0, 1fr) 4rem; }
+.pgraph-draws > li.pgraph-actual {
+  margin-top: 4px; padding-top: 5px;
+  border-top: 1px solid color-mix(in oklab, var(--color-cobalt) 30%, transparent);
+}
+.pgraph-draws > li.pgraph-actual .path-name { font-weight: 600; opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pgraph-node { transition: none; }
+  .pgraph-node.on { transform: translate(-50%, -50%); }
+}

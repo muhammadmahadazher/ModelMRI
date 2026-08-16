@@ -8,6 +8,103 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#39, finished: the `/v1` surface hands back an `.mri` id, and refuses an
+  extension key it does not understand.** The OpenAI-compatible routes,
+  `logprobs` from real logits and the `modelmri` block were already here; two
+  things the roadmap asks for were not.
+
+  `{"modelmri": {"mri": true}}` now mints the whole analysis as a portable
+  `.mri` and returns `{id, url, bytes, extra_ms, held}` — fetchable at
+  `GET /v1/mri/{id}`. Opt-in, unlike the other blocks, because building one
+  captures attention, so a client that does not want a file does not pay for
+  one; its cost is reported apart from the block's total for the same reason.
+  The store is bounded to the last 8 and in memory, and says so in the
+  response rather than leaving a client to find out: an eval loop asking for
+  one per completion would otherwise grow the server without limit, and
+  writing a file per completion on a client's say-so is what #40's caveat
+  refuses. An id that WAS held and has been evicted answers **410**, one that
+  never existed answers **404** — "ask again, sooner" and "you have the wrong
+  id" have different fixes, and one code for both sends people to debug the
+  wrong one.
+
+  An unknown key inside `modelmri` is now refused by name. `{"lense": true}`
+  used to return 200 with an empty block, which reads as "the lens found
+  nothing" rather than "you misspelled it" — the same silent-ignore failure
+  this surface exists to refuse against `logit_bias`, one level down.
+  `MODELMRI_KEYS` is the enumeration, and `/v1/models` publishes it as
+  `extension_keys` so nobody has to read the source.
+
+  Verified against Qwen3-1.7B through a real client: `/v1/models` listing 22
+  models, `logit_bias` and `'lense'` both refused by name with 400, a
+  completion carrying real `top_logprobs` (`'<think>'` at −0.0001 with three
+  alternatives), the lens over all 29 layers, heads showing 5 of 448, and a
+  175,133-byte `.mri` fetched back by id and re-parsed. `attribute` refused
+  itself with a reason — the next token was `'<think>'` at p=0.9999, a
+  formatting decision rather than an answer — and that refusal is named in
+  `not_measured` rather than dropped.
+
+
+- **#52, completed: a patching graph — what wrote the thing that wrote the
+  answer.** `patch.trace` answers "does this site matter" one cell at a time
+  and `patch.path_trace` answers "what wrote into this one receiver". Neither
+  answers the question a circuit view is actually opened for, because that
+  needs the second question asked again of its own senders.
+  `patch_graph.build` walks it backwards from the sites the node grid already
+  flagged, and the result travels in a `.mri` and draws in a panel.
+
+  It is a **patching graph** everywhere it appears — module, payload, `.mri`
+  key and panel heading. circuit-tracer's attribution graphs are built from
+  transcoders, which exist for a handful of models and whose gemma-2-2b set
+  does not fit 8 GB; this is a different object from a different measurement,
+  out of nothing but the model already loaded. `graph` in a `.mri` stays
+  reserved for one of *theirs*, read from a `.pt` under a provenance banner;
+  `patch_graph` is one of *ours*. One key for both would make the disclaimer on
+  each unreadable.
+
+  Two rules about controls that are easy to confuse, and both hold. **Every
+  drawn edge was controlled** — an edge with a score and no verdict has nothing
+  behind it to click, so a sender that was never controlled is pruned and
+  counted rather than drawn as though it had passed. But **an edge that was
+  controlled and lost is still drawn**, dashed and marked
+  `clears_control: false`, because "we tested this and it did not survive" and
+  "we never saw this" are different findings.
+
+  Bounding the graph by what was controlled also stops the arithmetic deciding
+  how big the picture is. The recovery resolution is not a constant of the
+  dtype: measured **in bfloat16 on both**, Qwen3-1.7B reads 0.006231 on the
+  Eiffel/Colosseum pair where gpt2 reads 0.25 — two orders of magnitude apart
+  in one number format, because the resolution is one representable step of the
+  *gap between the two runs' answers*, and that gap differs per model and per
+  pair.
+
+  Edge count is quadratic in sites, so every such graph is a subset by
+  construction. `seeding()` says so in those words and travels with the payload
+  and the file; `frontier` names the receivers that still had senders when the
+  depth ran out; `estimate()` projects the cost before anybody waits and
+  refuses rather than quoting zero when the config cannot be read. The reader
+  refuses a file whose seeding sentence has been stripped, for the same reason.
+
+  `path_trace` computed its eight control draws and kept only the strongest, so
+  the roadmap's "click an edge for the control draws behind it" had nothing to
+  open. They travel now, and the spread is the finding: on Qwen3-1.7B one edge
+  recovered 0.0207 against draws running −0.0083 to 0.0372, which reads very
+  differently from the bare verdict. Where both are present the reader refuses a
+  file whose strongest draw disagrees with its own `control_max`.
+
+  The panel adds no graph library. The geometry is `ArcCanvas.tsx`'s applied in
+  two dimensions — quadratic Béziers between node centres, canvas sized in
+  device pixels and drawn in CSS pixels, repainted on the theme version because
+  painted pixels do not re-cascade. Nodes sit on the model's own grid, layer up
+  the page and position across it, so two runs of one prompt draw the same
+  picture, which a force layout cannot promise. Curves are hit-tested by
+  sampling so an edge is clickable.
+
+  Measured end to end on Qwen3-1.7B at depth 2 with 2 receivers per level: 35
+  nodes, 48 edges, 153 senders scored, 105 not drawn — built, exported to a
+  101,315-byte `.mri`, reopened and served back with every edge and every draw
+  intact.
+
+
 - **#13, completed: feature evidence from your own corpus.**
   `POST /api/features/evidence` sweeps a local `.txt`/`.jsonl` through the
   already-calibrated SAE and gives one feature three independent readouts: the
@@ -64,6 +161,35 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   measurement of the same thing.
 
 ### Fixed
+
+- **`repe` steering directions were not reproducible from their seed.**
+  `torch.pca_lowrank` is a *randomised* algorithm and takes no `generator`, so
+  it draws its projection matrix from the **global** torch RNG. Every `repe`
+  direction was therefore a function of whatever had last touched that RNG,
+  while `fit_direction` publishes a `seed`, a receipt names it, and the module
+  promises the split and the shuffles are reproducible.
+
+  Measured on identical data with an identical seed, varying only the global
+  RNG: over 400 states the effect ranged 0.289 to 0.519 and `null_max` 0.777 to
+  0.982, with the margin deciding `beats_null` coming within 0.0014 of
+  flipping; over five states on `seed=3` it *did* flip, four of five reporting
+  `beats_null=True` on structureless noise where the answer is False. `caa`
+  over the same sweeps was identical to the last digit, which is the control on
+  all of it.
+
+  `_fit` now takes an exact `torch.linalg.svd` — deterministic, no RNG, and
+  cheap in the shape that matters, since the pair axis is the small one and
+  `full_matrices=False` scales the cost with it rather than with `d_model`. The
+  published false-positive rate is re-measured against the estimator that now
+  ships: `repe` moves 24/200 (12.0%) to 26/200 (13.0%), `caa` stays at 32/200
+  (16.0%), detection of a real 4.0σ separation is 50/50 for both.
+
+  It surfaced as one test failing one full-suite run in two and passing in
+  isolation — under `-n auto` a worker's global RNG state depends on which
+  files landed there first. `test_the_result_is_reproducible_from_its_seed` ran
+  on the default method only, and the default was never the one with the
+  problem; it is parametrized over both now.
+
 
 **A twenty-defect sweep over what already shipped.** An adversarial review of
 every module, with each finding reproduced against the real code before it was

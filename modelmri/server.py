@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, behavdiff, custom, gguf_read, otel, paths
+from . import openai_api as openai_api_mod
 from .custom import AdapterError, CustomHandle
 
 # Every browser-facing handler below answers `str(err)` for these types, and
@@ -228,6 +229,17 @@ class CustomRunRequest(BaseModel):
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
 
 
+class PatchGraphRequest(BaseModel):
+    """A pair, and how far back to walk from what the grid flagged."""
+
+    clean: str
+    corrupt: str
+    # 0 means "the module's default". Named rather than defaulted here so the
+    # two do not drift apart the way a duplicated constant always does.
+    depth: int = 0
+    max_receivers: int = 0
+
+
 class PatchRequest(BaseModel):
     # Two prompts, not one, and the pair is the unit of meaning: neither is
     # usable without the other, so they arrive together rather than as a
@@ -342,6 +354,10 @@ def create_app(
     paths.ensure_models_home()
 
     app.state.vla = VLAHandle()
+    # `.mri` files minted by `/v1` for `{"modelmri": {"mri": true}}`, held by
+    # id so a client can fetch one it was handed. Bounded and in memory: see
+    # `openai_api.MriStore` for why it is neither unbounded nor on disk.
+    app.state.mri_store = openai_api_mod.MriStore()
     app.state.vla_reader = None
     app.state.custom = CustomHandle()
     if trace_db:
@@ -2372,7 +2388,9 @@ def create_app(
                 else None
             )
             extension = (
-                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                await asyncio.to_thread(
+                    openai_api.internals, runtime, ask, app.state.mri_store
+                )
                 if ask
                 else None
             )
@@ -2426,7 +2444,9 @@ def create_app(
             # surfaces rather than ending as a clean [DONE].
             await task
             extension = (
-                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                await asyncio.to_thread(
+                    openai_api.internals, runtime, ask, app.state.mri_store
+                )
                 if ask
                 else None
             )
@@ -2455,6 +2475,54 @@ def create_app(
             return JSONResponse({"error": {"message": str(err)}}, status_code=400)
         except Exception as err:
             return _internal(err, "/v1/completions")
+
+    @app.get("/v1/mri/{mri_id}")
+    async def v1_mri(mri_id: str):
+        """A `.mri` this server minted for a `/v1` completion.
+
+        410 for one that WAS held and has been evicted, 404 for one that never
+        existed. Collapsing those into a single 404 sends a client to debug the
+        wrong thing: "ask again, sooner" and "you have the wrong id" have
+        different fixes.
+        """
+        store = app.state.mri_store
+        blob = store.get(mri_id)
+        if blob is None:
+            if store.was_evicted(mri_id):
+                return JSONResponse(
+                    {
+                        "error": {
+                            "message": (
+                                f"{mri_id} was held and has been evicted — this "
+                                f"server keeps only the last {store.limit}, in "
+                                f"memory. Ask for another with "
+                                f'\'{{"modelmri": {{"mri": true}}}}\' and fetch '
+                                f"it before the run moves on."
+                            )
+                        }
+                    },
+                    status_code=410,
+                )
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": (
+                            f"no `.mri` with id {mri_id!r}. This server has "
+                            f"never issued that id — ids come back in the "
+                            f"`modelmri.mri.id` field of a completion asked "
+                            f'for with \'{{"modelmri": {{"mri": true}}}}\'.'
+                        )
+                    }
+                },
+                status_code=404,
+            )
+        return Response(
+            content=blob,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{mri_id}.mri"',
+            },
+        )
 
     @app.post("/api/judge")
     async def judge_score(body: dict):
@@ -2779,6 +2847,51 @@ def create_app(
             return JSONResponse({"error": str(err)}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch")
+
+    @app.post("/api/patch/graph")
+    async def patch_graph(req: PatchGraphRequest):
+        """A PATCHING graph: what wrote the thing that wrote the answer.
+
+        `/api/patch` says WHERE the answer is carried and `path_trace` says
+        what wrote into one receiver. This asks that second question again of
+        the senders that survived their controls -- which is the question a
+        circuit view is actually opened for, and the one neither of the others
+        answers.
+
+        NOT AN ATTRIBUTION GRAPH, and the payload says so in `means`.
+        circuit-tracer's are built from transcoders, which exist for a handful
+        of models and whose gemma-2-2b set does not fit 8 GB. This is a
+        different object from a different measurement, built out of nothing but
+        the model already loaded. `/api/graph` READS one of theirs; this
+        computes one of ours.
+
+        Every edge carries the same eight same-norm draws the node grid uses,
+        and an edge that does not beat them is returned marked rather than
+        dropped -- "we tested this and it did not survive" and "we never saw
+        this" are different findings. The seeding rule and the prune threshold
+        travel in the payload for the same reason: edge count is quadratic in
+        sites, so anything drawable is a subset, and a graph whose edges were
+        chosen by an undisclosed rule is a picture rather than a measurement.
+
+        Expensive. One `path_trace` per receiver per level, each of which is
+        one pass per earlier component plus its controls. 409 when there is no
+        live model; 422 when the pair cannot be compared or the walk has
+        nothing to start from.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.patch_graph,
+                req.clean,
+                req.corrupt,
+                depth=req.depth,
+                max_receivers=req.max_receivers,
+            )
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch/graph")
 
     @app.get("/api/attention/attribute")
     async def attribute_tokens(position: int | None = None):

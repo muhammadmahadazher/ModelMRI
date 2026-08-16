@@ -313,3 +313,114 @@ def test_asking_for_no_heads_asks_for_nothing():
 def test_true_still_means_the_default_slice():
     out = openai_api.internals(_Measuring(), {"heads": True})
     assert out["heads"]["shown"] == openai_api.DEFAULT_HEADS_SHOWN
+
+
+# ------------------------------------ an unknown extension key is refused too
+
+
+def test_an_unknown_modelmri_key_is_refused_by_name():
+    """The same rule as `logit_bias`, one level down. `{"lense": true}` used to
+    return a 200 with an empty block, which reads as "the lens found nothing"
+    rather than "you misspelled it"."""
+    with pytest.raises(BadRequest) as caught:
+        openai_api.check_parameters({"modelmri": {"lense": True}})
+    said = str(caught.value)
+    assert "'lense'" in said
+    assert "lens" in said and "heads" in said, "it must name what IS understood"
+
+
+def test_every_understood_extension_key_is_accepted():
+    """The enumeration and the implementation cannot drift: anything listed
+    must pass the check that guards the implementation."""
+    openai_api.check_parameters(
+        {"modelmri": {k: True for k in openai_api.MODELMRI_KEYS}}
+    )
+
+
+def test_a_modelmri_block_that_is_not_an_object_is_refused():
+    with pytest.raises(BadRequest, match="must be an object"):
+        openai_api.check_parameters({"modelmri": True})
+
+
+def test_the_extension_keys_are_published_so_nobody_reads_the_source():
+    payload = openai_api.models_payload(_Runtime())
+    assert set(payload["modelmri"]["extension_keys"]) == set(openai_api.MODELMRI_KEYS)
+
+
+# ------------------------------------------------- the `.mri` id, and its bounds
+
+
+class _Exporting(_Measuring):
+    def __init__(self):
+        self.exports = 0
+
+    def export_session(self, *a, **kw):
+        self.exports += 1
+        return b"gzipped-mri-bytes"
+
+
+def test_asking_for_an_mri_hands_back_a_fetchable_id():
+    store = openai_api.MriStore()
+    out = openai_api.internals(_Exporting(), {"mri": True}, store)
+
+    assert out["mri"]["id"].startswith("mri")
+    assert out["mri"]["url"] == f"/v1/mri/{out['mri']['id']}"
+    assert out["mri"]["bytes"] == len(b"gzipped-mri-bytes")
+    assert store.get(out["mri"]["id"]) == b"gzipped-mri-bytes"
+
+
+def test_the_mri_is_opt_in_because_building_one_costs_a_capture():
+    runtime = _Exporting()
+    openai_api.internals(runtime, {"lens": True}, openai_api.MriStore())
+    assert runtime.exports == 0, "a client that did not ask for one paid for one"
+
+
+def test_the_mri_cost_is_reported_apart_from_the_rest():
+    """It is the one part of the block a client can decline to pay for, so it
+    needs its own number rather than being folded into the total."""
+    out = openai_api.internals(
+        _Exporting(), {"lens": True, "mri": True}, openai_api.MriStore()
+    )
+    assert isinstance(out["mri"]["extra_ms"], int)
+    assert out["mri"]["extra_ms"] <= out["extra_ms"]
+
+
+def test_how_long_it_is_held_is_stated_rather_than_discovered():
+    out = openai_api.internals(_Exporting(), {"mri": True}, openai_api.MriStore())
+    held = out["mri"]["held"]
+    assert "in memory" in held and "restart" in held and "evict" in held
+
+
+def test_the_store_is_bounded_and_remembers_what_it_evicted():
+    """An id that WAS held and an id that never existed are different answers:
+    "ask again, sooner" and "you have the wrong id" have different fixes."""
+    store = openai_api.MriStore(limit=2)
+    first = store.put(b"a")
+    store.put(b"b")
+    third = store.put(b"c")
+
+    assert store.get(first) is None, "the store grew past its limit"
+    assert store.was_evicted(first) is True
+    assert store.get(third) == b"c"
+    assert store.was_evicted("mri-never-issued") is False
+
+
+def test_an_export_that_refuses_is_named_not_omitted():
+    from modelmri.errors import Refusal
+
+    class Refusing(_Exporting):
+        def export_session(self, *a, **kw):
+            raise Refusal("Generate something first.")
+
+    out = openai_api.internals(
+        Refusing(), {"mri": True, "heads": 5}, openai_api.MriStore()
+    )
+    assert "mri" not in out
+    assert "Generate something first." in out["not_measured"]["mri"]
+    assert out["heads"]["shown"] == 5
+
+
+def test_asking_for_an_mri_with_no_store_says_so_rather_than_dropping_it():
+    out = openai_api.internals(_Exporting(), {"mri": True})
+    assert "mri" not in out
+    assert "not holding" in out["not_measured"]["mri"]

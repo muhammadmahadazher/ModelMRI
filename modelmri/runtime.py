@@ -437,6 +437,9 @@ class ModelRuntime:
         # just quietly reports numbers about nothing.
         self.epoch = 0
         self._last_patch: dict = {}
+        # The PATCHING graph, kept separate from `_last_patch` because it
+        # is a separate `.mri` section and a separate measurement.
+        self._last_patch_graph: dict = {}
         self._last_ranking: dict = {}
         self._last_lens: dict = {}
         # Head type labels. Tagged with the epoch and NOT cleared on
@@ -1218,6 +1221,7 @@ class ModelRuntime:
         # on the same rebase for the same reason; the generate path was the
         # one rebase that did not.
         self._last_patch = {}
+        self._last_patch_graph = {}
         self._last_ranking = {}
         self._last_lens = {}
         # The generation itself gets a receipt, and it is the one every other
@@ -1842,6 +1846,7 @@ class ModelRuntime:
             self._attn_variants = {}
             self._attn_tokens = None
             self._last_patch = {}
+            self._last_patch_graph = {}
             self._last_ranking = {}
             self._last_lens = {}
             # `_feats` too. Every other rebase path clears it; this one did
@@ -2416,6 +2421,101 @@ class ModelRuntime:
                 receiver_position=position,
             )
             return out
+
+    def patch_graph(
+        self,
+        clean: str,
+        corrupt: str,
+        *,
+        depth: int = 0,
+        max_receivers: int = 0,
+    ) -> dict:
+        """A patching graph: what wrote the thing that wrote the answer.
+
+        The node grid says WHERE the answer is carried and `path_trace` says
+        what wrote into one receiver. This asks that second question again of
+        the senders that survived their controls, which is the question a
+        circuit view is actually opened for.
+
+        A PATCHING graph, never an attribution graph: circuit-tracer's are
+        built from transcoders and this is a different object from a different
+        measurement. `circuit.py` reads one of theirs; this computes one of
+        ours, and the payload says so in both places.
+        """
+        from . import patch
+        from . import patch_graph as graph_mod
+
+        # A recording that CARRIES a graph serves it, for the same reason
+        # `patch_trace` serves a recorded trace: this one cost roughly 1,500
+        # forward passes to build, the recipient has no weights to rebuild it
+        # with, and refusing a file that already holds the answer is the format
+        # failing to be worth sending.
+        if self.replay is not None:
+            recorded = self.replay.patch_graph
+            if recorded.get("edges"):
+                return {**recorded, "recorded": True}
+            raise Refusal(
+                "This is a recording, and it does not carry a patching graph. "
+                "Building one means running the model again with activations "
+                "replaced, hundreds of times, and a `.mri` holds activations "
+                "rather than weights — there is nothing here to re-run. "
+                "Whoever exported it can build the graph and share it again."
+            )
+
+        depth = int(depth or graph_mod.DEFAULT_DEPTH)
+        max_receivers = int(max_receivers or graph_mod.DEFAULT_MAX_RECEIVERS)
+
+        # The node grid FIRST, and its own flagged sites are the seeds. A
+        # threshold invented here would be a second opinion about which cells
+        # matter, disagreeing with the grid the reader is looking at.
+        grid = self.patch_trace(clean, corrupt)
+        sites = list(grid.get("sites") or [])
+
+        n_layers = int(self.model.config.num_hidden_layers)
+        blocks = [self._block(i) for i in range(n_layers)]
+
+        def trace_fn(layer: int, position: int) -> dict:
+            with self._lock:
+                return patch.path_trace(
+                    self.model,
+                    self.tokenizer,
+                    blocks,
+                    clean,
+                    corrupt,
+                    device=self.device,
+                    receiver_layer=layer,
+                    receiver_position=position,
+                )
+
+        try:
+            built = graph_mod.build(
+                trace_fn,
+                sites,
+                depth=depth,
+                max_receivers=max_receivers,
+                clean=clean,
+                corrupt=corrupt,
+                answer=str((grid.get("clean") or {}).get("answer") or ""),
+            )
+        except patch.PatchError as err:
+            raise BadRequest(str(err)) from err  # leak-ok: authored
+
+        out = built.to_dict()
+        # The grid's own passes count too -- it was run to get the seeds, and
+        # a cost that omits the step it depended on is not the cost.
+        out["passes"] = int(out.get("passes") or 0) + int(grid.get("passes") or 0)
+        out["receipt"] = self.receipt(
+            "patch_graph",
+            clean_sha256=receipts.digest(clean),
+            corrupt_sha256=receipts.digest(corrupt),
+            depth=depth,
+            max_receivers=max_receivers,
+        )
+        # Stamped with the epoch for the same reason the patch trace is: a
+        # graph measured on an earlier prompt, or on a model since swapped out,
+        # must not be written into a `.mri` beside a different run's tokens.
+        self._last_patch_graph = dict(out, epoch=self.epoch)
+        return out
 
     def probe_layers(
         self,
@@ -3235,6 +3335,12 @@ class ModelRuntime:
             # in this tool that is causal rather than correlational was the
             # one you could not send anybody.
             patch=self._patch_for_export(),
+            # The graph walked backwards from those same sites, when one was
+            # built. A SEPARATE argument from `graph`, which is somebody
+            # else's transcoder attribution graph — two different objects from
+            # two different measurements, and `session.py` keeps them apart on
+            # purpose.
+            patch_graph=self._patch_graph_for_export(),
             ranking=self._ranking_for_export(),
             head_types=self._types_for_export(),
             ground=self._ground_for_export(),
@@ -3408,6 +3514,19 @@ class ModelRuntime:
             return {}
         return {k: v for k, v in last.items() if k != "epoch"}
 
+    def _patch_graph_for_export(self) -> dict:
+        """The last patching graph, if it belongs to the state being exported.
+
+        Same epoch rule and the same reason as `_patch_for_export`. The
+        `receipt` is dropped: `session.build` writes the run's receipts as one
+        list, and a second copy nested inside a section would be a second
+        answer to the question of what produced these numbers.
+        """
+        last = self._last_patch_graph
+        if not last or last.get("epoch") != self.epoch:
+            return {}
+        return {k: v for k, v in last.items() if k not in ("epoch", "receipt")}
+
     def open_session(self, data: bytes) -> dict:
         """Open a `.mri`. Replaces any session already open; leaves the model."""
         parsed = session.parse(data)
@@ -3444,6 +3563,15 @@ class ModelRuntime:
             "ground": {
                 "available": self.replay.has_ground(),
                 "question": self.replay.ground.get("question", ""),
+            },
+            # Same reason again. The graph cost 1,500 forward passes to build
+            # and the recipient has no model to rebuild it with, so the panel
+            # needs to know the recording HAS one — otherwise it offers a
+            # button whose only outcome is a refusal.
+            "patch_graph": {
+                "available": self.replay.has_patch_graph(),
+                "n_nodes": len(self.replay.patch_graph.get("nodes", [])),
+                "n_edges": len(self.replay.patch_graph.get("edges", [])),
             },
         }
 
