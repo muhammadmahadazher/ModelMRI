@@ -111,6 +111,35 @@ export class ApiError extends Error {
   }
 }
 
+/** Refuse, in the builds that have no model behind them, naming what this
+ *  particular measurement would need.
+ *
+ *  The demo and viewer are static pages on GitHub Pages. `demo.ts` answers the
+ *  endpoints the bundle has REAL recorded data for; everything else would
+ *  reach the network and 404, and a 404 inside a panel reads as "this
+ *  measurement is broken" rather than "this page has no model behind it".
+ *  `tests/demo_check.py` holds the line: every endpoint the frontend can reach
+ *  is either answered by the shim or carries a written exemption saying it is
+ *  gated off here.
+ *
+ *  One implementation, a sentence per call site. The sentence is the whole
+ *  point — "install it" without saying what the measurement actually costs
+ *  teaches nobody anything — so every caller passes its own.
+ */
+function noModelHere(needs: string): Promise<never> {
+  return Promise.reject(
+    new ApiError(
+      409,
+      JSON.stringify({
+        error:
+          needs +
+          " There is no model behind this page — install ModelMRI " +
+          "(`pip install modelmri`) to run it on your own.",
+      }),
+    ),
+  );
+}
+
 function explain(body: string): string {
   try {
     const parsed = JSON.parse(body);
@@ -1238,7 +1267,11 @@ export interface RubricReport {
 }
 
 export const scoreRubric = (rules: RubricRule[]) =>
-  fetch("/api/rubric/score", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Scoring a rubric runs its predicates over a live generation.",
+      )
+    : fetch("/api/rubric/score", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rules }),
@@ -1727,7 +1760,11 @@ export const compareQuantisation = (
   prompt: string,
   attention = true,
 ) =>
-  fetch("/api/quantdiff/behaviour", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Comparing what a quantisation cost loads BOTH builds of the model and runs them side by side — two multi-gigabyte downloads.",
+      )
+    : fetch("/api/quantdiff/behaviour", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quantised, original, prompt, attention }),
@@ -1766,7 +1803,11 @@ export interface GraphView {
 
 /** The attribution graph carried by the open session, if any. */
 export const getGraph = () =>
-  fetch("/api/graph").then((r) => json<GraphView>(r));
+  DEMO || VIEWER
+    ? noModelHere(
+        "Opening a circuit-tracer attribution graph reads a `.pt` from your disk, which a static page cannot see.",
+      )
+    : fetch("/api/graph").then((r) => json<GraphView>(r));
 
 export interface CustomCandidate {
   path: string;
@@ -1817,7 +1858,11 @@ export interface Ablation {
 }
 
 export const ablateCustom = (kind: "layers" | "inputs", grid = 0) =>
-  fetch("/api/custom/ablate", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Ablating your own network needs that network loaded, and this page carries recordings rather than weights.",
+      )
+    : fetch("/api/custom/ablate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind, grid }),
@@ -2127,7 +2172,11 @@ export const diffModels = (body: {
   include_heads?: boolean;
   include_tokens?: boolean;
 }) =>
-  fetch("/api/diff/models", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Diffing a finetune against its base loads two checkpoints and runs a prompt set through both.",
+      )
+    : fetch("/api/diff/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2188,7 +2237,11 @@ export const groundAnswer = (body: {
   question: string;
   max_chunks?: number;
 }) =>
-  fetch("/api/ground", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Asking whether the answer came from your document or the weights masks passages out and re-runs the model — and the document is yours, not the bundle’s.",
+      )
+    : fetch("/api/ground", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2232,7 +2285,11 @@ export const runProbe = (body: {
   n_permutations?: number;
   save_as?: string;
 }) =>
-  fetch("/api/probe", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Fitting a probe trains on YOUR labelled examples and scores against shuffled nulls, which needs a live residual stream.",
+      )
+    : fetch("/api/probe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2425,7 +2482,11 @@ export const runPatchscope = (body: {
   target_layer?: number | null;
   max_new_tokens?: number;
 }) =>
-  fetch("/api/patchscope", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "A patchscope hands a hidden state back to the model and asks it to describe that state in words, so it needs the model.",
+      )
+    : fetch("/api/patchscope", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -2596,7 +2657,11 @@ export interface TunedLensInfo {
 }
 
 export const trainTunedLens = (body: { texts?: string[]; file?: string; steps?: number }) =>
-  fetch("/api/lens/tune", {
+  DEMO || VIEWER
+    ? noModelHere(
+        "Training a tuned lens is a training run over a corpus — minutes of compute against a live model.",
+      )
+    : fetch("/api/lens/tune", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

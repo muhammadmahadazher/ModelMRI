@@ -232,6 +232,34 @@ def bake_llm(scenario: dict) -> dict:
                 bake_diff(at, best["head"], row["layer"], row["head"])
 
     session = get("/api/session")
+
+    # Six endpoints the panels reach that had no recorded answer, so their
+    # controls 404'd on Pages. Each is a GET with no argument the visitor
+    # chooses, which is exactly what makes it bakeable: the response is a
+    # property of THIS recording rather than of something typed on the day.
+    #
+    # `/api/patch/path` is deliberately NOT here. Its parent `/api/patch` is
+    # refused by the shim -- the grid is not baked, because patching re-runs a
+    # live model -- and an edge trace hanging off a grid that does not exist
+    # would be a measurement with nothing to click it from.
+    extra: dict = {}
+    for name, path in (
+        ("baselines", "/api/attention/baselines"),
+        ("types", "/api/attention/types"),
+        ("direct", "/api/attention/direct"),
+        ("ablate_estimate", "/api/attention/ablate/estimate"),
+        ("telemetry", "/api/telemetry"),
+        ("lens_tuned", "/api/lens/tuned"),
+    ):
+        try:
+            extra[name] = get(path)
+            print(f"  {path}")
+        except urllib.error.HTTPError as err:
+            # NOT silently skipped. A missing key makes the demo answer 404
+            # again, and the whole point of this pass is that it stops doing
+            # that -- so the bake says which one and why, out loud.
+            print(f"  SKIP {path}: {err.code} {err.read().decode()[:120]}")
+
     write(
         f"llm-{slug}.json",
         {
@@ -246,6 +274,8 @@ def bake_llm(scenario: dict) -> dict:
             "attention": attn,
             "ablate": ablate,
             "diff": diff,
+            # See the capture block above for why each of these is bakeable.
+            "extra": extra,
             # What produced this bundle. A demo that cannot say what it
             # replayed is a screenshot with buttons.
             "provenance": {

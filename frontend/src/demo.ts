@@ -432,6 +432,84 @@ export async function demoFetch(
         "model you load.",
     );
   }
+  // The edge-level follow-up to a grid that is not here. Reached only by
+  // clicking a flagged cell, and there are no flagged cells to click, so this
+  // says the same thing its parent says rather than inventing a sender list.
+  if (p === "/api/patch/path") {
+    return refuse(
+      409,
+      "Asking what wrote into one site patches every earlier head and MLP " +
+        "into it one at a time, against the same live model the grid above " +
+        "needs. This page has recordings, not weights.",
+    );
+  }
+
+  // Six recordings that ARE here. Each is a GET with no argument the reader
+  // chooses, which is what makes it bakeable: the answer is a property of this
+  // recording rather than of something typed on the day.
+  //
+  // Written as six literal `p === "..."` lines on purpose. `demo_check.py`
+  // finds handlers by exactly that pattern, and its docstring records why it
+  // refuses to be cleverer — an earlier version treated every handler as a
+  // prefix and reported `/api/sae/available` as covered by `/api/sae`, so the
+  // check under-reported the very gaps it exists to find. A lookup table would
+  // be invisible to it, which is the same failure wearing nicer clothes.
+  const recorded = async (key: string) => {
+    const extra = (await llm()).extra ?? {};
+    // A key the bundle lacks refuses BY NAME rather than returning undefined:
+    // a panel handed `undefined` renders blank, and blank reads as a
+    // measurement that found nothing.
+    if (!(key in extra)) {
+      return refuse(
+        409,
+        "This recording does not carry that measurement — it was baked " +
+          "before the endpoint existed, or the bake could not reach it. " +
+          "Either way the honest answer is that nothing is recorded here, " +
+          "rather than an empty panel that reads as a measurement of nothing.",
+      );
+    }
+    return ok(extra[key]);
+  };
+  // The robot half of the same line the LLM panels already draw. What is
+  // baked is CORRELATIONAL — the frames the policy saw and where its attention
+  // went — and those replay honestly. Occlusion and the sweep are CAUSAL: they
+  // black out a patch of the frame and run the policy again to see what the
+  // action does. That needs the policy loaded, which is what a static page
+  // does not have, and a baked occlusion map would be the one thing this
+  // project will not ship: a fabricated causal claim rendered beside real
+  // recordings, indistinguishable from them.
+  if (p === "/api/vla/occlude" || p === "/api/vla/sweep") {
+    return refuse(
+      409,
+      "Occluding the frame re-runs the policy once per patch to see what the " +
+        "action does without it — a causal measurement, against a policy this " +
+        "page does not carry. The frames and attention above are recordings " +
+        "and replay honestly; this one cannot. `pip install modelmri` to run " +
+        "it on a policy of your own.",
+    );
+  }
+  if (p === "/api/vla/occlude/cost" || p === "/api/vla/sweep/cost") {
+    return refuse(
+      409,
+      "This projects the cost of a run this page cannot make, so the number " +
+        "would describe a wait nobody here is going to have.",
+    );
+  }
+  if (p === "/api/vla/share") {
+    return refuse(
+      409,
+      "Exporting the robot analysis as a `.mri` writes a file from the live " +
+        "runtime's own state. Use the share control on a local install, where " +
+        "there is a run behind the file.",
+    );
+  }
+  if (p === "/api/attention/baselines") return recorded("baselines");
+  if (p === "/api/attention/types") return recorded("types");
+  if (p === "/api/attention/direct") return recorded("direct");
+  if (p === "/api/attention/ablate/estimate") return recorded("ablate_estimate");
+  if (p === "/api/telemetry") return recorded("telemetry");
+  if (p === "/api/lens/tuned") return recorded("lens_tuned");
+
   if (p === "/api/traces") return ok((await bundle<any>("traces")).list);
   if (p.startsWith("/api/traces/")) return ok((await bundle<any>("traces")).trace);
 
