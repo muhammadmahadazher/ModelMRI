@@ -2356,12 +2356,34 @@ export const patchGraph = (body: {
   corrupt: string;
   depth?: number;
   max_receivers?: number;
-}) =>
-  fetch("/api/patch/graph", {
+}) => {
+  // The second lock on a door the panel already keeps shut in these builds.
+  // A graph is thousands of forward passes with activations replaced —
+  // MEASURED at 1,735 on Qwen3-1.7B at depth 2 — and there is no model behind
+  // the Pages demo to run one. `demo.ts` has no handler for this path, so
+  // without the refusal the call would reach the real fetch and 404 on a
+  // static host: a visitor would learn that the measurement is broken rather
+  // than that the page has no model.
+  if (DEMO || VIEWER) {
+    return Promise.reject(
+      new ApiError(
+        409,
+        JSON.stringify({
+          error:
+            "Building a patching graph replaces activations and re-runs the " +
+            "model thousands of times — 1,735 forward passes on Qwen3-1.7B at " +
+            "depth 2 — and there is no model behind this page. Install " +
+            "ModelMRI (`pip install modelmri`) to build one on your own.",
+        }),
+      ),
+    );
+  }
+  return fetch("/api/patch/graph", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then((r) => json<PatchGraphView>(r));
+};
 
 /** #12 — a hidden state described in words, with two controls. */
 export interface Patchscope {

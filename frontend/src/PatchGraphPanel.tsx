@@ -357,10 +357,17 @@ export default function PatchGraphPanel({
         <span className="spacer" />
         {/* Every level is one path trace per receiver, and each of those is a
             forward pass per earlier component plus its controls. Saying so
-            before the click is the difference between a wait and a surprise. */}
+            before the click is the difference between a wait and a surprise.
+            The arithmetic is `estimate`'s own — at most `max_receivers` per
+            level for `depth` levels — because a panel that quotes a different
+            number from the projection is a third answer to one question.
+            NO DURATION: this said "a minute or so on a laptop", which was a
+            constant nobody measured, printed as guidance. It is 12s on gpt2
+            and 119s on Qwen3-1.7B for the same dials, and `estimate` refuses
+            to quote seconds for exactly that reason. */}
         <span className="meta">
-          each level is one path trace per receiver — {depth * maxReceivers + 1} traces,
-          a minute or so on a laptop
+          each level is one path trace per receiver — at most{" "}
+          {depth * maxReceivers} traces, several hundred forward passes each
         </span>
       </div>
 

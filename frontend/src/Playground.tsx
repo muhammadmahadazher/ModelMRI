@@ -487,8 +487,17 @@ export default function Playground({
       {introspectable && !replay && <PatchPanel epoch={epoch} />}
       {/* Directly under the grid it walks backwards from, and gated the same
           way: it seeds from the grid's own flagged sites, so it needs the same
-          live model the grid does. */}
-      {introspectable && !replay && <PatchGraphPanel epoch={epoch} />}
+          live model the grid does.
+
+          NOT OFFERED in the demo or viewer builds, for the reason
+          `AttentionPanel` gates token attribution off: the control would be a
+          button whose only outcome is a refusal, and a visitor reads that as
+          "this measurement is broken" rather than "this page has no model
+          behind it". `api.ts`'s `patchGraph` refuses in those builds too —
+          that is the second lock, and `tests/demo_check.py` checks this one. */}
+      {introspectable && !replay && !DEMO && !VIEWER && (
+        <PatchGraphPanel epoch={epoch} />
+      )}
       {/* Two surfaces of their own, deliberately.
 
           A probe fits to YOUR labelled examples rather than to the current

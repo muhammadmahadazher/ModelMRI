@@ -284,13 +284,33 @@ def estimate(
     # earlier components, and averaged over the stack that is about half.
     per_receiver = max(1, (n_layers * (n_heads + 1)) // 2)
     per_receiver += max_controlled * (draws + 1)
-    receivers = sum(min(max_receivers, max_receivers**level) for level in range(depth))
+    # `build` seeds with `ranked[:max_receivers]` and then caps every level at
+    # `next_frontier[:max_receivers]`, so it expands up to `max_receivers` per
+    # level for `depth` levels. The old formula here was
+    # `sum(min(m, m**level) ...)`, which makes level 0 a SINGLE receiver and
+    # under-quoted every walk: at depth 2 with 2 receivers it projected 3 where
+    # the walk expanded 4 (MEASURED on Qwen3-1.7B), and at depth 2 with 4 it
+    # projected 5 against 8. A preflight that under-quotes is worse than no
+    # preflight, which is this function's whole reason to exist.
+    #
+    # An UPPER bound, and it says so below: a walk stops early when the seeds
+    # or the surviving senders run out, and erring high is the safe direction
+    # for a number somebody decides to wait on.
+    receivers = max_receivers * depth
     return {
         "receivers": receivers,
         "passes_per_receiver": per_receiver,
         "passes_total": receivers * per_receiver,
         "depth": depth,
         "max_receivers": max_receivers,
+        # Stated, not implied. A walk that runs out of seeds or of senders that
+        # beat their controls expands fewer, and a reader comparing this to the
+        # `passes` a finished graph reports should know which way they differ.
+        "bound": (
+            f"an upper bound: at most {max_receivers} receivers per level for "
+            f"{depth} level(s). A walk that runs out of seeds, or of senders "
+            f"that beat their controls, expands fewer and costs less."
+        ),
         # No seconds. A pass costs what it costs on THIS machine, and
         # `ablate.py` measured the same model between 12 and 71 ms/pass across
         # sessions on one card -- a figure in seconds would be fiction.
@@ -359,8 +379,20 @@ def build(
         return key
 
     frontier: list[tuple[int, int, str]] = []
-    for site in ranked[:max_receivers]:
+    # Same one-entry-per-receiver rule as the level loop below, and it bites
+    # here first: the node grid scores THREE components at every cell, so its
+    # flagged sites routinely name one (layer, position) more than once --
+    # `resid` and `mlp` at the same site are two rows and one receiver. Taking
+    # `ranked[:max_receivers]` off the raw list therefore spent a whole seed
+    # slot, and a whole `path_trace`, re-answering a question already asked.
+    seeded: set[tuple[int, int]] = set()
+    for site in ranked:
+        if len(frontier) >= max_receivers:
+            break
         layer, position = int(site.get("layer", 0)), int(site.get("position", 0))
+        if (layer, position) in seeded:
+            continue
+        seeded.add((layer, position))
         key = remember(layer, None, position, role="seed", level=0)
         frontier.append((layer, position, key))
 
@@ -411,7 +443,26 @@ def build(
                     continue
                 # And a controlled edge still has to clear what the dtype can
                 # express, or the number behind it is arithmetic.
-                if recovery <= resolution:
+                #
+                # ON THE MAGNITUDE, because recovery is SIGNED. A sender that
+                # pushes the answer AWAY from the clean run is a finding, not a
+                # weak one: `patch.trace` keeps exactly those (its docstring
+                # records 5 of 132 sites moving it away, the worst by -0.157)
+                # and it is the reason the metric is a signed fraction rather
+                # than KL. `recovery <= resolution` dropped every one of them
+                # and so conflated "too small for this dtype to express" with
+                # "in the other direction" -- two different findings, and the
+                # node grid one panel up distinguishes them by colour.
+                #
+                # Rare rather than impossible today: `path_trace` ranks by
+                # SIGNED recovery and controls only the strongest
+                # `max_controlled`, so the most negative senders are at the
+                # bottom of its list and usually go uncontrolled -- MEASURED on
+                # Qwen3-1.7B into L2@2, 4 of 34 senders were negative and none
+                # of those were among the 12 controlled. That is an upstream
+                # ranking choice, and relying on it to keep this arm unreachable
+                # would make the sign here a lie that happens to hold.
+                if abs(recovery) <= resolution:
                     graph.n_pruned += 1
                     continue
                 if len(graph.edges) >= max_edges:
@@ -468,7 +519,30 @@ def build(
                 graph.frontier.append(target)
         # The strongest few, so the next level does not fan out quadratically.
         next_frontier.sort(key=lambda item: -item[0])
-        frontier = next_frontier[:max_receivers]
+        # ONE ENTRY PER RECEIVER. `path_trace(layer, position)` takes only
+        # those two, so two queue entries with the same pair are the same
+        # receiver and tracing both spends the whole pass budget twice for one
+        # answer. It happens whenever two receivers share a sender, which is
+        # the normal case rather than a corner: MEASURED on a two-seed walk
+        # where both seeds were written by one MLP, `path_trace` was called for
+        # (5, 3) twice -- several hundred forward passes on a real model, for a
+        # result already in hand.
+        #
+        # It also made the seeding sentence's own arithmetic wrong. The second
+        # visit re-scored the same senders into `n_scored` while `seen_edges`
+        # silently dropped the repeated edges, so `n_scored - n_pruned` came to
+        # 4 against 3 edges drawn -- a reader doing the subtraction the
+        # sentence invites got a number the picture did not have.
+        seen_receivers: set[tuple[int, int]] = set()
+        frontier = []
+        for item in next_frontier:
+            key = (item[0], item[1])
+            if key in seen_receivers:
+                continue
+            seen_receivers.add(key)
+            frontier.append(item)
+            if len(frontier) >= max_receivers:
+                break
 
     # Anything still queued when the depth ran out is a place the walk stopped,
     # not a place with nothing in it.

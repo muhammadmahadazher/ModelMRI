@@ -50,6 +50,18 @@ EXEMPT = {
     # because the control that would call it does not exist in this build. See
     # `token_ranking_is_not_offered` below for why that is the right shape of
     # answer here and a 501 is not.
+    # Exempt on the same route as `/api/attention/attribute` below: never
+    # reachable, because the panel that would call it is not built here.
+    # Building a graph replaces activations and re-runs the model thousands of
+    # times -- MEASURED at 1,735 forward passes on Qwen3-1.7B at depth 2 --
+    # against a live model this page does not have. A 501 would be the wrong
+    # answer for the same reason it is wrong there: a control that can only
+    # fail teaches a visitor that the measurement is broken.
+    "/api/patch/graph": (
+        "walks the patching grid backwards, thousands of forward passes "
+        "against a live model; the whole panel is gated off in demo and "
+        "viewer builds instead"
+    ),
     "/api/attention/attribute": (
         "ranks tokens by masking them one at a time, which is dozens of "
         "forward passes against a live model; the button is gated off in "
