@@ -8,6 +8,42 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **#39, finished: the `/v1` surface hands back an `.mri` id, and refuses an
+  extension key it does not understand.** The OpenAI-compatible routes,
+  `logprobs` from real logits and the `modelmri` block were already here; two
+  things the roadmap asks for were not.
+
+  `{"modelmri": {"mri": true}}` now mints the whole analysis as a portable
+  `.mri` and returns `{id, url, bytes, extra_ms, held}` — fetchable at
+  `GET /v1/mri/{id}`. Opt-in, unlike the other blocks, because building one
+  captures attention, so a client that does not want a file does not pay for
+  one; its cost is reported apart from the block's total for the same reason.
+  The store is bounded to the last 8 and in memory, and says so in the
+  response rather than leaving a client to find out: an eval loop asking for
+  one per completion would otherwise grow the server without limit, and
+  writing a file per completion on a client's say-so is what #40's caveat
+  refuses. An id that WAS held and has been evicted answers **410**, one that
+  never existed answers **404** — "ask again, sooner" and "you have the wrong
+  id" have different fixes, and one code for both sends people to debug the
+  wrong one.
+
+  An unknown key inside `modelmri` is now refused by name. `{"lense": true}`
+  used to return 200 with an empty block, which reads as "the lens found
+  nothing" rather than "you misspelled it" — the same silent-ignore failure
+  this surface exists to refuse against `logit_bias`, one level down.
+  `MODELMRI_KEYS` is the enumeration, and `/v1/models` publishes it as
+  `extension_keys` so nobody has to read the source.
+
+  Verified against Qwen3-1.7B through a real client: `/v1/models` listing 22
+  models, `logit_bias` and `'lense'` both refused by name with 400, a
+  completion carrying real `top_logprobs` (`'<think>'` at −0.0001 with three
+  alternatives), the lens over all 29 layers, heads showing 5 of 448, and a
+  175,133-byte `.mri` fetched back by id and re-parsed. `attribute` refused
+  itself with a reason — the next token was `'<think>'` at p=0.9999, a
+  formatting decision rather than an answer — and that refusal is named in
+  `not_measured` rather than dropped.
+
+
 - **#52, completed: a patching graph — what wrote the thing that wrote the
   answer.** `patch.trace` answers "does this site matter" one cell at a time
   and `patch.path_trace` answers "what wrote into this one receiver". Neither

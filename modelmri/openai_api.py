@@ -60,6 +60,20 @@ SUPPORTED = (
     "modelmri",
 )
 
+# The keys the `modelmri` block itself understands. Enumerated for the same
+# reason `SUPPORTED` is, one level down: `{"modelmri": {"lense": true}}` used
+# to return a block with nothing in it and a 200, which reads as "the lens
+# found nothing" rather than "you misspelled it". A silently-ignored extension
+# key is the same failure as a silently-ignored `logit_bias`.
+MODELMRI_KEYS = {
+    "lens": "the logit-lens trajectory for this completion",
+    "heads": "the ablation-ranked attention heads",
+    "attribute": "per-token attribution for this completion",
+    "mri": "the whole analysis as a portable `.mri`, fetchable by id",
+    "top_k": "how many tokens per layer the lens reports",
+    "baseline": "the ablation baseline the head ranking uses",
+}
+
 # Parameters a client may legitimately send that this cannot honour. Each is
 # refused BY NAME with what it would have changed, so the caller can decide
 # rather than receiving a completion computed without it.
@@ -91,6 +105,49 @@ DEFAULT_HEADS_SHOWN = 10
 MAX_HEADS_SHOWN = 4096
 DEFAULT_LENS_TOP_K = 5
 MAX_LENS_TOP_K = 100
+
+# `.mri` files held for `{"mri": true}` to hand back by id. A `.mri` of a real
+# analysis is on the order of 100 KB, so this is a few megabytes at most.
+# BOUNDED on purpose: an eval loop asking for one per completion would
+# otherwise grow the server's memory without limit for the length of the run.
+MAX_HELD_MRI = 8
+
+
+class MriStore:
+    """The last `MAX_HELD_MRI` exports, by id.
+
+    In memory and bounded, and BOTH of those are reported rather than left for
+    a client to discover. An id whose file has been evicted answers differently
+    from an id that never existed: "this expired, ask again" and "you have the
+    wrong id" lead to different fixes, and collapsing them into one 404 sends
+    people to debug the wrong one.
+
+    Not on disk. Writing a file per completion on a client's say-so is the
+    thing #40's caveat refuses for `export_mri`, and the same reasoning holds
+    here: an eval loop would fill the user's data directory silently.
+    """
+
+    def __init__(self, limit: int = MAX_HELD_MRI):
+        self.limit = limit
+        self._held: dict[str, bytes] = {}
+        # Ids evicted rather than never-issued. Just the ids, so this stays
+        # small; it is what lets 410 and 404 be different answers.
+        self._evicted: set[str] = set()
+
+    def put(self, blob: bytes) -> str:
+        mri_id = _rid("mri")
+        self._held[mri_id] = blob
+        while len(self._held) > self.limit:
+            oldest = next(iter(self._held))
+            del self._held[oldest]
+            self._evicted.add(oldest)
+        return mri_id
+
+    def get(self, mri_id: str) -> bytes | None:
+        return self._held.get(mri_id)
+
+    def was_evicted(self, mri_id: str) -> bool:
+        return mri_id in self._evicted
 
 
 def _now() -> int:
@@ -151,6 +208,25 @@ def check_parameters(body: dict) -> None:
             f"than returning a completion computed without it — which is what "
             f"the runners that silently ignore it give you."
         )
+
+    ask = body.get("modelmri")
+    if ask is not None:
+        if not isinstance(ask, dict):
+            raise BadRequest(
+                f"'modelmri' must be an object naming what to measure, not "
+                f"{type(ask).__name__}. For example "
+                f'{{"modelmri": {{"lens": true, "heads": 10}}}}.'
+            )
+        unknown = [k for k in ask if k not in MODELMRI_KEYS]
+        if unknown:
+            known = ", ".join(sorted(MODELMRI_KEYS))
+            raise BadRequest(
+                f"this server does not understand "
+                f"{', '.join(repr(k) for k in sorted(unknown))} inside "
+                f"'modelmri'. It understands: {known}. Refusing rather than "
+                f"returning a block without it — an extension key that is "
+                f"silently dropped reads as a measurement that found nothing."
+            )
 
     top = body.get("top_logprobs")
     if top is not None:
@@ -276,7 +352,7 @@ def token_logprobs(runtime, top_k: int = 0) -> list:
     return out
 
 
-def internals(runtime, ask: dict) -> dict:
+def internals(runtime, ask: dict, store: MriStore | None = None) -> dict:
     """The `modelmri` extension block, and what it cost to produce.
 
     Every measurement here is the SAME call the HTTP routes make. A second
@@ -326,6 +402,37 @@ def internals(runtime, ask: dict) -> dict:
         except (Refusal, BadRequest) as err:
             failed["attribute"] = str(err)
 
+    # The whole analysis as one portable file, when asked for. Opt-in, unlike
+    # the blocks above, because it captures attention to build -- so a client
+    # that does not want a file does not pay for one.
+    if ask.get("mri"):
+        if store is None:
+            failed["mri"] = (
+                "this server is not holding `.mri` files, so there is no id to "
+                "hand back. Use GET /api/session/export to download one."
+            )
+        else:
+            mri_started = time.perf_counter()
+            try:
+                blob = runtime.export_session(note="via /v1")
+                mri_id = store.put(blob)
+                out["mri"] = {
+                    "id": mri_id,
+                    "url": f"/v1/mri/{mri_id}",
+                    "bytes": len(blob),
+                    # Separate from the block's own `extra_ms`, because this is
+                    # the one part a client can decline to pay for.
+                    "extra_ms": int((time.perf_counter() - mri_started) * 1000),
+                    "held": (
+                        f"in memory, and only the last {store.limit}. It does "
+                        f"not survive a restart of this server, and asking for "
+                        f"{store.limit} more will evict it — fetch it before "
+                        f"the run moves on."
+                    ),
+                }
+            except (Refusal, BadRequest) as err:
+                failed["mri"] = str(err)
+
     if failed:
         out["not_measured"] = failed
     # MEASURED, on the run that paid it. Asking for internals roughly doubles
@@ -365,8 +472,11 @@ def models_payload(runtime) -> dict:
         "modelmri": {
             "supported": list(SUPPORTED),
             "unsupported": dict(UNSUPPORTED),
+            # The extension's own keys, for the same reason: a client should
+            # not have to read the source to learn what it may ask for.
+            "extension_keys": dict(MODELMRI_KEYS),
             "note": "Unsupported parameters are refused by name with a 400, "
-            "not silently ignored.",
+            "not silently ignored. That applies inside 'modelmri' too.",
         },
     }
 

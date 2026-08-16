@@ -1774,3 +1774,37 @@ def test_the_paths_endpoint_reports_them():
     body = r.json()
     for key in ("data", "config", "cache", "hf_home", "hf_hub_cache", "cwd"):
         assert body.get(key), f"/api/paths did not report {key}"
+
+
+# ------------------------------------- `.mri` ids minted by the `/v1` surface
+
+
+def test_an_mri_id_that_was_never_issued_is_a_404():
+    r = client().get("/v1/mri/mri-nothing-like-this")
+    assert r.status_code == 404
+    assert "never issued" in r.json()["error"]["message"]
+
+
+def test_an_evicted_mri_id_is_a_410_and_not_a_404():
+    """ "Ask again, sooner" and "you have the wrong id" have different fixes,
+    so they get different codes. One 404 for both sends a client to debug the
+    wrong one."""
+    app = create_app()
+    store = app.state.mri_store
+    store.limit = 1
+    gone = store.put(b"first")
+    store.put(b"second")
+
+    r = TestClient(app).get(f"/v1/mri/{gone}")
+    assert r.status_code == 410
+    assert "evicted" in r.json()["error"]["message"]
+
+
+def test_a_held_mri_comes_back_as_the_bytes_that_went_in():
+    app = create_app()
+    mri_id = app.state.mri_store.put(b"gzipped-mri-bytes")
+
+    r = TestClient(app).get(f"/v1/mri/{mri_id}")
+    assert r.status_code == 200
+    assert r.content == b"gzipped-mri-bytes"
+    assert mri_id in r.headers["content-disposition"]

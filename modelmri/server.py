@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, behavdiff, custom, gguf_read, otel, paths
+from . import openai_api as openai_api_mod
 from .custom import AdapterError, CustomHandle
 
 # Every browser-facing handler below answers `str(err)` for these types, and
@@ -353,6 +354,10 @@ def create_app(
     paths.ensure_models_home()
 
     app.state.vla = VLAHandle()
+    # `.mri` files minted by `/v1` for `{"modelmri": {"mri": true}}`, held by
+    # id so a client can fetch one it was handed. Bounded and in memory: see
+    # `openai_api.MriStore` for why it is neither unbounded nor on disk.
+    app.state.mri_store = openai_api_mod.MriStore()
     app.state.vla_reader = None
     app.state.custom = CustomHandle()
     if trace_db:
@@ -2383,7 +2388,9 @@ def create_app(
                 else None
             )
             extension = (
-                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                await asyncio.to_thread(
+                    openai_api.internals, runtime, ask, app.state.mri_store
+                )
                 if ask
                 else None
             )
@@ -2437,7 +2444,9 @@ def create_app(
             # surfaces rather than ending as a clean [DONE].
             await task
             extension = (
-                await asyncio.to_thread(openai_api.internals, runtime, ask)
+                await asyncio.to_thread(
+                    openai_api.internals, runtime, ask, app.state.mri_store
+                )
                 if ask
                 else None
             )
@@ -2466,6 +2475,54 @@ def create_app(
             return JSONResponse({"error": {"message": str(err)}}, status_code=400)
         except Exception as err:
             return _internal(err, "/v1/completions")
+
+    @app.get("/v1/mri/{mri_id}")
+    async def v1_mri(mri_id: str):
+        """A `.mri` this server minted for a `/v1` completion.
+
+        410 for one that WAS held and has been evicted, 404 for one that never
+        existed. Collapsing those into a single 404 sends a client to debug the
+        wrong thing: "ask again, sooner" and "you have the wrong id" have
+        different fixes.
+        """
+        store = app.state.mri_store
+        blob = store.get(mri_id)
+        if blob is None:
+            if store.was_evicted(mri_id):
+                return JSONResponse(
+                    {
+                        "error": {
+                            "message": (
+                                f"{mri_id} was held and has been evicted — this "
+                                f"server keeps only the last {store.limit}, in "
+                                f"memory. Ask for another with "
+                                f'\'{{"modelmri": {{"mri": true}}}}\' and fetch '
+                                f"it before the run moves on."
+                            )
+                        }
+                    },
+                    status_code=410,
+                )
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": (
+                            f"no `.mri` with id {mri_id!r}. This server has "
+                            f"never issued that id — ids come back in the "
+                            f"`modelmri.mri.id` field of a completion asked "
+                            f'for with \'{{"modelmri": {{"mri": true}}}}\'.'
+                        )
+                    }
+                },
+                status_code=404,
+            )
+        return Response(
+            content=blob,
+            media_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{mri_id}.mri"',
+            },
+        )
 
     @app.post("/api/judge")
     async def judge_score(body: dict):
