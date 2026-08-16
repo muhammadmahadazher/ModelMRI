@@ -268,9 +268,39 @@ def test_the_cost_is_projected_before_anybody_waits():
     out = pg.estimate(12, 12, depth=2, max_receivers=4)
 
     assert out["passes_total"] > 0
-    assert out["receivers"] == 5
     assert out["seconds"] is None, "a duration measured elsewhere is fiction here"
     assert "not" in out["seconds_from"]
+
+
+def test_the_projection_does_not_under_quote_what_the_walk_expands():
+    """A preflight that under-quotes is worse than no preflight. `build` seeds
+    with `max_receivers` and caps every level at `max_receivers`, so the cost
+    is that many per level for `depth` levels — the old formula made level 0 a
+    single receiver and projected 3 where the walk expanded 4."""
+    for depth in (1, 2, 3):
+        for receivers in (1, 2, 4):
+            projected = pg.estimate(12, 12, depth=depth, max_receivers=receivers)
+
+            senders = [_sender(layer, 0, 0.7) for layer in range(6)]
+            trace_fn = _tracer(
+                dict.fromkeys([(layer, 3) for layer in range(12)], senders)
+            )
+            sites = [
+                {"layer": 8 + i, "position": 3, "recovery": 0.9 - i / 100}
+                for i in range(6)
+            ]
+            walked = pg.build(trace_fn, sites, depth=depth, max_receivers=receivers)
+            assert projected["receivers"] >= walked.n_receivers_expanded, (
+                f"depth={depth} receivers={receivers}: projected "
+                f"{projected['receivers']} but the walk expanded "
+                f"{walked.n_receivers_expanded}"
+            )
+
+
+def test_the_projection_says_it_is_an_upper_bound():
+    """A walk that runs out of seeds expands fewer, and a reader comparing this
+    to a finished graph's `passes` should know which way they differ."""
+    assert "upper bound" in pg.estimate(12, 12)["bound"]
 
 
 def test_an_unreadable_config_is_refused_rather_than_projected_at_zero():
@@ -278,3 +308,91 @@ def test_an_unreadable_config_is_refused_rather_than_projected_at_zero():
     preflight that under-quotes is worse than no preflight."""
     with pytest.raises(pg.GraphError, match="cannot be projected"):
         pg.estimate(0, 0)
+
+
+# ---------------------------------------- the score is signed, and stays signed
+
+
+def test_a_sender_that_pushes_the_answer_away_is_drawn_not_pruned():
+    """Recovery is a SIGNED fraction, which is the whole reason it is not KL —
+    `patch.trace` keeps the sites that move the answer further from the clean
+    run and colours them differently. Pruning on the raw value instead of the
+    magnitude conflated "too small for this dtype to express" with "in the
+    other direction", and those are different findings."""
+    trace_fn = _tracer(
+        {(8, 3): [_sender(6, 2, 0.7), _sender(4, 1, -0.6)]}, resolution=0.01
+    )
+    graph = pg.build(trace_fn, SITES, depth=1)
+
+    drawn = {e.source: e.recovery for e in graph.edges}
+    assert "L4H1@3" in drawn, "the sender that pushed the answer away was dropped"
+    assert drawn["L4H1@3"] == pytest.approx(-0.6)
+    assert graph.n_pruned == 0
+
+
+def test_a_negative_sender_too_small_to_express_is_still_pruned():
+    """The magnitude rule is a magnitude rule in both directions: below the
+    dtype's resolution the number is arithmetic whichever way it points."""
+    trace_fn = _tracer(
+        {(8, 3): [_sender(6, 2, 0.7), _sender(4, 1, -0.005)]}, resolution=0.01
+    )
+    graph = pg.build(trace_fn, SITES, depth=1)
+
+    assert [e.source for e in graph.edges] == ["L6H2@3"]
+    assert graph.n_pruned == 1
+
+
+# ------------------------------------------ one entry per receiver, everywhere
+
+
+def test_a_shared_sender_does_not_get_traced_twice():
+    """`path_trace(layer, position)` takes only those two, so two queue entries
+    with the same pair are the same receiver — and tracing both spends the
+    whole pass budget twice for one answer. Two receivers sharing a sender is
+    the normal case, not a corner."""
+    shared = _sender(5, None, 0.7)
+    trace_fn = _tracer(
+        {(8, 3): [shared], (9, 3): [shared], (5, 3): [_sender(1, 0, 0.5)]}
+    )
+    sites = [
+        {"layer": 8, "position": 3, "recovery": 0.9},
+        {"layer": 9, "position": 3, "recovery": 0.8},
+    ]
+    graph = pg.build(trace_fn, sites, depth=2, max_receivers=2)
+
+    assert trace_fn.calls.count((5, 3)) == 1, "the same receiver was traced twice"
+    assert graph.n_receivers_expanded == len(set(trace_fn.calls))
+
+
+def test_the_seeding_arithmetic_adds_up():
+    """The sentence invites a subtraction — N scored, M pruned — and a reader
+    doing it must land on the number of edges actually drawn."""
+    shared = _sender(5, None, 0.7)
+    trace_fn = _tracer(
+        {(8, 3): [shared], (9, 3): [shared], (5, 3): [_sender(1, 0, 0.5)]}
+    )
+    sites = [
+        {"layer": 8, "position": 3, "recovery": 0.9},
+        {"layer": 9, "position": 3, "recovery": 0.8},
+    ]
+    graph = pg.build(trace_fn, sites, depth=2, max_receivers=2)
+
+    assert graph.n_scored - graph.n_pruned == len(graph.edges)
+
+
+def test_two_components_flagged_at_one_site_are_one_receiver():
+    """The node grid scores three components per cell, so its flagged sites
+    routinely name one (layer, position) more than once. Spending a seed slot
+    on each would re-ask a question already asked."""
+    trace_fn = _tracer({(8, 3): [_sender(6, 2, 0.7)], (7, 3): [_sender(6, 2, 0.7)]})
+    sites = [
+        {"layer": 8, "position": 3, "component": "resid", "recovery": 0.9},
+        {"layer": 8, "position": 3, "component": "mlp", "recovery": 0.85},
+        {"layer": 7, "position": 3, "component": "resid", "recovery": 0.8},
+    ]
+    graph = pg.build(trace_fn, sites, depth=1, max_receivers=2)
+
+    assert sorted(trace_fn.calls) == [(7, 3), (8, 3)], (
+        "a seed slot was spent twice on one receiver"
+    )
+    assert graph.n_receivers_expanded == 2

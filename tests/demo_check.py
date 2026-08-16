@@ -50,6 +50,37 @@ EXEMPT = {
     # because the control that would call it does not exist in this build. See
     # `token_ranking_is_not_offered` below for why that is the right shape of
     # answer here and a 501 is not.
+    # Exempt on the same route as `/api/attention/attribute` below: never
+    # reachable, because the panel that would call it is not built here.
+    # Building a graph replaces activations and re-runs the model thousands of
+    # times -- MEASURED at 1,735 forward passes on Qwen3-1.7B at depth 2 --
+    # against a live model this page does not have. A 501 would be the wrong
+    # answer for the same reason it is wrong there: a control that can only
+    # fail teaches a visitor that the measurement is broken.
+    # --- needs YOUR input, or a file only your machine has -------------
+    #
+    # None of these can be baked, and that is the point rather than a gap: the
+    # answer depends on something the visitor supplies. `api.ts` refuses each
+    # in DEMO and VIEWER builds through `noModelHere`, naming what the
+    # measurement would cost, so the panel says "no model here" instead of
+    # showing a 404 that reads as "this measurement is broken".
+    "/api/probe": "trains on YOUR labelled examples against a live residual stream",
+    "/api/ground": "masks passages out of YOUR document and re-runs the model",
+    "/api/patchscope": "hands a hidden state back to the model to describe",
+    "/api/custom/ablate": "ablates a network the visitor loaded, not a recording",
+    "/api/diff/models": "loads two checkpoints and runs a prompt set through both",
+    "/api/lens/tune": "a training run over a corpus, minutes of live compute",
+    "/api/quantdiff/behaviour": "loads both quantisations of a model side by side",
+    "/api/rubric/score": "runs rubric predicates over a live generation",
+    "/api/graph": "opens a circuit-tracer `.pt` from disk, which a page cannot see",
+    "/api/gguf": "reads a GGUF from disk; the browser cannot see the filesystem",
+    "/api/gguf/plan": "reads a GGUF header from disk to project its memory cost",
+    "/api/gguf/load": "loads a GGUF from disk as the live model",
+    "/api/patch/graph": (
+        "walks the patching grid backwards, thousands of forward passes "
+        "against a live model; the whole panel is gated off in demo and "
+        "viewer builds instead"
+    ),
     "/api/attention/attribute": (
         "ranks tokens by masking them one at a time, which is dozens of "
         "forward passes against a live model; the button is gated off in "
