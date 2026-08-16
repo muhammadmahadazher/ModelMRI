@@ -169,6 +169,25 @@ dev = [
 #
 # Sublinear because roughly 20s of every worker is importing torch, and each
 # worker pays that separately. 3.5x is still 3.5x.
+[tool.uv]
+# Pinned so CI does not have to ask the network what version to install.
+#
+# `astral-sh/setup-uv` looks for a version in uv.toml and then in this file,
+# and finding neither it "falls back to latest" -- which means fetching a
+# manifest from raw.githubusercontent.com on every job. That is a network call
+# in the setup step of every CI job, and on 2026-08-16 it failed:
+#
+#     Could not determine uv version from uv.toml or pyproject.toml.
+#       Falling back to latest.
+#     Fetching manifest data from .../astral-sh/versions/.../uv.ndjson ...
+#     ##[error]fetch failed
+#
+# One job red on main, nothing to do with the code, and the same fetch sits in
+# front of every other job. Declaring the version here is read locally, so the
+# call does not happen at all -- and it also states which uv this project is
+# actually developed against instead of leaving it to whatever shipped today.
+required-version = ">=0.10,<0.11"
+
 [tool.pytest.ini_options]
 addopts = [
   # `auto` reads the machine, so a 2-core CI runner gets 2 workers and a
