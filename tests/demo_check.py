@@ -144,6 +144,28 @@ def demo_handlers() -> tuple[set[str], set[str]]:
     return exact, prefix
 
 
+def _own_vocabulary(needle: str) -> bool:
+    """Does the project's own source already write this string?
+
+    Only the authored text matters, so this reads the source rather than the
+    build output: a match in `node_modules` or a `.pyc` would be somebody
+    else's vocabulary standing in for ours.
+    """
+    roots = (
+        (ROOT / "modelmri", "*.py"),
+        (SRC, "*.ts"),
+        (SRC, "*.tsx"),
+    )
+    lowered = needle.lower()
+    for base, pattern in roots:
+        for f in base.rglob(pattern):
+            if "node_modules" in f.parts or "__pycache__" in f.parts:
+                continue
+            if lowered in f.read_text("utf-8", errors="replace").lower():
+                return True
+    return False
+
+
 def static_coverage() -> None:
     print("\nstatic — can the demo answer everything the UI asks?")
     wanted = {p for p in api_paths() if p not in EXEMPT}
@@ -534,11 +556,34 @@ def no_machine_leaks() -> None:
         ("the home directory", home.replace("\\", "/")),
         ("the OS account name", user),
     ]
-    hits = [
-        label
-        for label, needle in probes
-        if needle and len(needle) > 2 and needle.lower() in blob.lower()
-    ]
+    hits = []
+    for label, needle in probes:
+        if not needle or len(needle) <= 2:
+            continue
+        if needle.lower() not in blob.lower():
+            continue
+        # A string this project already writes cannot be evidence that the
+        # BUNDLE leaked who baked it.
+        #
+        # The account-name probe is a bare substring test, which is the right
+        # shape for a name nobody would type by accident and the wrong shape
+        # for one that is also an English word. On GitHub Actions the account
+        # is `runner`, and `telemetry.py`'s own sentence — "the attention
+        # scores ModelMRI asks for and a plain runner never allocates" — ships
+        # in the bundle as authored copy. So this reported a leak that was the
+        # tool describing itself, and it did it only in CI, where the username
+        # happens to be a common word. It cost a red main.
+        #
+        # Reported rather than silently dropped: a probe that quietly stops
+        # probing is the failure this whole function exists to avoid.
+        if _own_vocabulary(needle):
+            print(
+                f"  note  '{needle}' is in this project's own source, so "
+                f"{label} cannot be told from the tool's own prose here "
+                f"— skipped, and the path probes below still run"
+            )
+            continue
+        hits.append(label)
 
     # Absolute paths of any shape, on any OS. `~/...` is fine — it names a
     # location without naming a person.
