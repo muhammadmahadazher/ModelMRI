@@ -755,7 +755,6 @@ def sweep_inputs(
             )
 
         rows.sort(key=lambda s: -s.effect)
-        by_name = dict(regions)
         ceiling = None
         for site in rows[:max_controlled]:
             # A DIFFERENT REGION, not a random direction in this one. The
@@ -777,7 +776,6 @@ def sweep_inputs(
             # a DIFFERENT region the same way and see whether this one did
             # more. That answers the question the reader is actually asking --
             # is it this region, or does occluding anything here do this?
-            where = by_name[site.name]
             others = [w for name, w in regions if name != site.name]
             if not others:
                 # One region is the whole input. There is nowhere else to

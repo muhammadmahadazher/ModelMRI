@@ -235,7 +235,14 @@ def _graph(doc: dict) -> dict:
                 )
         if not isinstance(weight, (int, float)) or isinstance(weight, bool):
             raise SessionError("a graph edge has a weight that is not a number")
-        if weight != weight or weight in (float("inf"), float("-inf")):
+        # `math.isfinite`, for the reason spelled out forty lines down and not
+        # followed here: the identity trick is a correct NaN test and an
+        # obscure one, `weight in (inf, -inf)` is the second half bolted on,
+        # and CodeQL reads the first as a comparison of identical values. One
+        # call says what it means and covers all three. The file had already
+        # decided this; this line predated the decision and kept the old shape,
+        # which is how one module ends up answering one question two ways.
+        if not math.isfinite(weight):
             raise SessionError("a graph edge has a non-finite weight")
         clean.append(
             {"source": int(source), "target": int(target), "weight": float(weight)}
