@@ -6,6 +6,39 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-16
+
+The release that finishes the roadmap. Every item on it is now built, and the
+two that are not are gated on evidence rather than effort: #49 waits for the
+robot panel to show it has users, and #53's reader shipped while its build did
+not.
+
+**A patching graph (#52).** `patch.trace` answers "does this site matter" one
+cell at a time and `path_trace` answers "what wrote into this one receiver".
+Neither answers the question people open a circuit view for — *what wrote the
+thing that wrote the answer* — because that needs the second question asked
+again of its own senders. `patch_graph.build` walks it backwards from the
+sites the node grid already flagged, and the result travels in a `.mri` and
+draws in a panel that adds no graph library.
+
+It is a **patching** graph everywhere it appears. circuit-tracer's attribution
+graphs need transcoders, which exist for a handful of models and whose
+gemma-2-2b set does not fit 8 GB; this is a different object from a different
+measurement, out of nothing but the model already loaded.
+
+**`/v1` hands back an `.mri` id (#39).** Point any OpenAI client at
+`http://127.0.0.1:5900/v1`, ask for `{"modelmri": {"mri": true}}`, and the
+completion comes back with a portable file you can fetch by id — plus the
+logit-lens trajectory, the ablation-ranked heads and per-token attribution for
+that exact completion. Parameters this cannot honour are refused by name,
+inside the extension block as well as outside it.
+
+**A security fix worth naming.** Four endpoints turned a string from an
+unauthenticated request body into a path and read it. `serve` defaults to
+loopback, but `--host` takes anything, so on a server bound to 0.0.0.0 that
+was arbitrary file read for anyone who could route to the port. See *Fixed*.
+
+
 ### Added
 
 - **#39, finished: the `/v1` surface hands back an `.mri` id, and refuses an
