@@ -316,6 +316,85 @@ class _Recording:
         )
 
 
+def _is_loopback(host: str) -> bool:
+    """Is this client on the same machine?
+
+    Parsed rather than compared against a list of three spellings. Loopback is
+    all of 127.0.0.0/8 and ::1, and a dual-stack listener reports an IPv4 peer
+    as the IPv4-mapped `::ffff:127.0.0.1` — so `host in ("127.0.0.1", "::1")`
+    refuses `127.0.0.5` and the mapped form, both of which are this machine.
+    `ipaddress` already knows the ranges; a hand-written list is a smaller
+    version of the same knowledge that drifts.
+
+    A host that is not an IP at all is NOT loopback. That covers `localhost`,
+    which is a name a resolver decides the meaning of rather than an address,
+    and it is why the tests hand the client an explicit address: a request
+    whose origin cannot be established is not one to widen a boundary for.
+    """
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _not_from_this_machine(
+    request, doing: str, because: str = ""
+) -> JSONResponse | None:
+    """A refusal when the request did not come from the person at the keyboard.
+
+    Two checks, because loopback alone does not settle it.
+
+    A page on ANY website can POST to `localhost`, and the request arrives from
+    127.0.0.1 like every other. A JSON body already forces a preflight that
+    fails without CORS headers -- there are none -- but relying on that is
+    relying on a side effect, so an `Origin` from anywhere else is refused
+    explicitly: a defence you can read rather than one you have to derive.
+
+    And a client on the network is not the user either. `serve` defaults to
+    loopback, but `--host` takes anything, and on a server bound to 0.0.0.0
+    every handler here is reachable by whoever can route to the port.
+
+    Used by everything that turns a string from a request body into a path on
+    THIS filesystem. `custom.allowed_roots` says why in one line -- "a local
+    tool that will import any path on the filesystem on request is a nastier
+    primitive than it looks" -- and that reasoning is not specific to
+    adapters: reading a corpus, a document or a prompt set is the same
+    primitive with the result coming back as text instead of code.
+    """
+    origin = request.headers.get("origin") or ""
+    if origin:
+        from urllib.parse import urlparse
+
+        host = (urlparse(origin).hostname or "").lower()
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            return JSONResponse(
+                {
+                    "error": (
+                        f"That request came from another site. {doing} is "
+                        f"something only this machine's own page may do."
+                    )
+                },
+                status_code=403,
+            )
+
+    if not _is_loopback(request.client.host if request.client else ""):
+        # `because` rather than one flattened sentence for everybody: what to
+        # do INSTEAD differs by caller, and a refusal that does not say is
+        # half a refusal.
+        tail = because or (
+            "Naming a path is naming a file on the SERVER's disk, and that is "
+            "not something a request over the network gets to do — send the "
+            "text itself instead, or run ModelMRI where the file lives."
+        )
+        return JSONResponse(
+            {"error": f"{doing} is only possible from this machine. {tail}"},
+            status_code=403,
+        )
+    return None
+
+
 def create_app(
     trace_db: str | None = None, dataset_repo: str = "lerobot/pusht"
 ) -> FastAPI:
@@ -1022,6 +1101,14 @@ def create_app(
         texts = body.get("texts")
         label = str(body.get("label") or "")
         try:
+            # A path in the body names a file on the SERVER's disk. See
+            # `_not_from_this_machine`: loopback alone does not settle it.
+            if body.get("file"):
+                refusal = _not_from_this_machine(
+                    request, "Reading a corpus off this machine's disk"
+                )
+                if refusal is not None:
+                    return refusal
             if body.get("file"):
                 texts, label = fc.load_corpus(str(body["file"]))
             if not isinstance(texts, list) or not texts:
@@ -1067,6 +1154,14 @@ def create_app(
             return JSONResponse({"error": "this request body is not JSON"}, 422)
 
         prompts = body.get("prompts")
+        # A path in the body names a file on the SERVER's disk. See
+        # `_not_from_this_machine`: loopback alone does not settle it.
+        if body.get("file"):
+            refusal = _not_from_this_machine(
+                request, "Reading a prompt set off this machine's disk"
+            )
+            if refusal is not None:
+                return refusal
         if body.get("file"):
             from . import feature_corpus as fc
 
@@ -1162,6 +1257,14 @@ def create_app(
             return JSONResponse({"error": "this request body is not JSON"}, 422)
 
         document = body.get("document")
+        # A path in the body names a file on the SERVER's disk. See
+        # `_not_from_this_machine`: loopback alone does not settle it.
+        if body.get("file"):
+            refusal = _not_from_this_machine(
+                request, "Reading a document off this machine's disk"
+            )
+            if refusal is not None:
+                return refusal
         if body.get("file"):
             from . import feature_corpus as fc
 
@@ -1352,6 +1455,14 @@ def create_app(
             return JSONResponse({"error": "this request body is not JSON"}, 422)
 
         texts = body.get("texts")
+        # A path in the body names a file on the SERVER's disk. See
+        # `_not_from_this_machine`: loopback alone does not settle it.
+        if body.get("file"):
+            refusal = _not_from_this_machine(
+                request, "Reading a corpus off this machine's disk"
+            )
+            if refusal is not None:
+                return refusal
         source = body.get("file")
         label = str(body.get("label") or "")
         steps = int(body.get("steps") or 250)
@@ -1494,37 +1605,16 @@ def create_app(
         # are none — but relying on that is relying on a side effect. An Origin
         # from anywhere else is refused explicitly, which is a defence you can
         # read rather than one you have to derive.
-        origin = request.headers.get("origin") or ""
-        if origin:
-            from urllib.parse import urlparse
-
-            host = (urlparse(origin).hostname or "").lower()
-            if host not in ("127.0.0.1", "::1", "localhost"):
-                return JSONResponse(
-                    {
-                        "error": (
-                            "That request came from another site. Choosing a "
-                            "folder to scan is something only this machine's "
-                            "own page may do."
-                        )
-                    },
-                    status_code=403,
-                )
-
-        client = (request.client.host if request.client else "") or ""
-        if client not in ("127.0.0.1", "::1", "localhost"):
-            return JSONResponse(
-                {
-                    "error": (
-                        "Choosing a folder to scan is only possible from this "
-                        "machine. ModelMRI imports what it loads, so widening "
-                        "where it may import from is not something a request "
-                        "over the network gets to do — start the server where "
-                        "your model lives, or set MODELMRI_MODELS_DIR."
-                    )
-                },
-                status_code=403,
-            )
+        refusal = _not_from_this_machine(
+            request,
+            "Choosing a folder to scan",
+            "ModelMRI imports what it loads, so widening where it may import "
+            "from is not something a request over the network gets to do — "
+            "start the server where your model lives, or set "
+            "MODELMRI_MODELS_DIR.",
+        )
+        if refusal is not None:
+            return refusal
         try:
             root = custom.add_root(req.path)
             adapters, scripts = await asyncio.to_thread(

@@ -471,7 +471,12 @@ def client():
 
     from modelmri.server import create_app
 
-    return TestClient(create_app())
+    # An explicit loopback peer, because one of these tests names a FILE and
+    # the server only reads a path for a request it can tell came from this
+    # machine. TestClient's default peer is the literal string "testclient",
+    # which is not an address at all — so without this the suite would be
+    # exercising a path no real local client takes.
+    return TestClient(create_app(), client=("127.0.0.1", 51111))
 
 
 def test_a_request_without_a_document_says_nothing_is_downloaded(client):

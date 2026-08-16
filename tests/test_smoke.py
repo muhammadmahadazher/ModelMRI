@@ -1808,3 +1808,57 @@ def test_a_held_mri_comes_back_as_the_bytes_that_went_in():
     assert r.status_code == 200
     assert r.content == b"gzipped-mri-bytes"
     assert mri_id in r.headers["content-disposition"]
+
+
+# ------------------------- a path in the body names a file on the SERVER's disk
+
+
+REMOTE = {"client": ("203.0.113.9", 51234)}
+PATH_ENDPOINTS = [
+    "/api/features/evidence",
+    "/api/diff/models",
+    "/api/ground",
+    "/api/lens/tune",
+]
+
+
+@pytest.mark.parametrize("route", PATH_ENDPOINTS)
+def test_a_file_path_from_the_network_is_refused(route: str):
+    """These turn a string from the request body into a path and read it.
+    `custom.allowed_roots` says why that matters in one line — "a local tool
+    that will import any path on the filesystem on request is a nastier
+    primitive than it looks" — and reading a corpus, a document or a prompt
+    set is the same primitive with the result coming back as text.
+
+    `serve` defaults to loopback but `--host` takes anything, so on a server
+    bound to 0.0.0.0 this was an arbitrary file read for anyone who could
+    route to the port.
+    """
+    r = TestClient(create_app(), client=REMOTE["client"]).post(
+        route, json={"file": "/etc/passwd", "question": "q", "prompts": ["a"]}
+    )
+    assert r.status_code == 403
+    assert "only possible from this machine" in r.json()["error"]
+
+
+@pytest.mark.parametrize("route", PATH_ENDPOINTS)
+def test_a_file_path_from_another_site_is_refused(route: str):
+    """Loopback alone does not settle it: a tab open on any website can POST
+    to localhost and the request arrives from 127.0.0.1 like every other."""
+    r = TestClient(create_app()).post(
+        route,
+        json={"file": "/etc/passwd", "question": "q", "prompts": ["a"]},
+        headers={"Origin": "https://example.com"},
+    )
+    assert r.status_code == 403
+    assert "came from another site" in r.json()["error"]
+
+
+@pytest.mark.parametrize("route", PATH_ENDPOINTS)
+def test_the_guard_only_covers_the_branch_that_names_a_path(route: str):
+    """A request that sends its text inline names no file, so it must not be
+    turned away — the guard is about the filesystem, not about the endpoint."""
+    r = TestClient(create_app(), client=REMOTE["client"]).post(
+        route, json={"texts": ["a"], "question": "q", "prompts": ["a"]}
+    )
+    assert r.status_code != 403, "a request naming no path was refused as if it did"
