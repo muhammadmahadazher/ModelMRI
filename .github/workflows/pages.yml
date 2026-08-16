@@ -14,6 +14,14 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - ".github/workflows/pages.yml"
+      # The build's own assertions, and the script that produces what they
+      # read. Neither was listed, so the job that RUNS demo_check.py did not
+      # re-run when demo_check.py changed: a fix to it sat on main with the
+      # last red run still showing, and a change that BROKE it would have gone
+      # unnoticed until some unrelated frontend edit happened along. A check
+      # you can edit without re-running is not a check.
+      - "tests/demo_check.py"
+      - "scripts/bake_demo.py"
   workflow_dispatch:
 
 # Only the deploy job may write Pages. The build job compiles a frontend
