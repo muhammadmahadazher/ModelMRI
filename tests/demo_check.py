@@ -65,6 +65,10 @@ EXEMPT = {
     # measurement would cost, so the panel says "no model here" instead of
     # showing a 404 that reads as "this measurement is broken".
     "/api/probe": "trains on YOUR labelled examples against a live residual stream",
+    "/api/attention/baselines": (
+        "runs the resample arm, whose replacements come from a corpus the "
+        "reader supplies; a bundled one would be somebody else's text"
+    ),
     "/api/ground": "masks passages out of YOUR document and re-runs the model",
     "/api/patchscope": "hands a hidden state back to the model to describe",
     "/api/custom/ablate": "ablates a network the visitor loaded, not a recording",

@@ -242,9 +242,13 @@ def bake_llm(scenario: dict) -> dict:
     # refused by the shim -- the grid is not baked, because patching re-runs a
     # live model -- and an edge trace hanging off a grid that does not exist
     # would be a measurement with nothing to click it from.
+    # NOT `/api/attention/baselines`: it runs the resample arm, which draws
+    # replacements from a corpus of at least 8 long sentences that the reader
+    # supplies. There is no HTTP way to install one, and bundling a corpus
+    # would publish a baseline measured against somebody else's text. It is
+    # refused in demo builds instead, naming the corpus.
     extra: dict = {}
     for name, path in (
-        ("baselines", "/api/attention/baselines"),
         ("types", "/api/attention/types"),
         ("direct", "/api/attention/direct"),
         ("ablate_estimate", "/api/attention/ablate/estimate"),

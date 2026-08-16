@@ -385,9 +385,16 @@ export const estimateAblation = (
  *  Deliberately not called on load: it runs all three, and resample dominates
  *  the total. */
 export const compareBaselines = (layer: number) =>
-  fetch(`/api/attention/baselines?layer=${layer}`).then((r) =>
-    json<BaselineComparison>(r),
-  );
+  DEMO || VIEWER
+    ? noModelHere(
+        "Comparing the three ablation baselines runs all three, and the " +
+          "resample arm draws its replacements from a corpus of at least 8 " +
+          "sentences you supply — there is no corpus here, and a bundled one " +
+          "would be a baseline measured against somebody else's text.",
+      )
+    : fetch(`/api/attention/baselines?layer=${layer}`).then((r) =>
+        json<BaselineComparison>(r),
+      );
 
 /** How far masking one token moves the answer at one position.
  *
