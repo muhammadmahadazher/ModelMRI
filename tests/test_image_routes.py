@@ -128,7 +128,13 @@ def test_an_empty_repo_is_rejected_by_the_schema(client):
     assert client.post("/api/image/load", json={"repo": ""}).status_code == 422
 
 
-def test_a_checkpoint_that_is_not_an_image_model_is_refused_by_name(client, tmp_path):
+def test_a_checkpoint_that_is_not_an_image_model_is_refused_by_name(
+    client, tmp_path, monkeypatch
+):
+    """The machine guard fires FIRST for a local path — correctly — so it is
+    patched out here to reach the layer beneath it. Both refusals are real and
+    they are tested separately rather than one masking the other."""
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
     empty = tmp_path / "nothing"
     empty.mkdir()
     r = client.post("/api/image/load", json={"repo": str(empty)})
@@ -167,3 +173,37 @@ def test_a_knockout_seed_is_required_rather_than_optional():
     assert ImageKnockoutRequest(prompt="a cat").seed == 0
     field = ImageKnockoutRequest.model_fields["seed"]
     assert field.annotation is int, "an optional seed makes the comparison noise"
+
+
+def test_a_local_path_carries_the_same_guard_every_other_path_route_has(
+    client, tmp_path
+):
+    """The real defect CodeQL surfaced. This route accepted a directory on the
+    server's disk while the four other path-accepting routes in the file had
+    carried a not-from-this-machine guard for months — two routes answering
+    the same question about the same kind of input differently."""
+    r = client.post("/api/image/load", json={"repo": str(tmp_path)})
+    assert r.status_code == 403
+    assert "only possible from this machine" in r.json()["error"]
+
+
+def test_a_hub_id_is_not_treated_as_a_path(client):
+    """`owner/name` is a public name, and refusing it from a remote caller
+    would be refusing the ordinary case. The guard applies to the second kind
+    of input, not to both."""
+    from modelmri.server import _looks_like_a_local_path
+
+    assert _looks_like_a_local_path("stabilityai/stable-diffusion-x4-upscaler") is False
+    assert _looks_like_a_local_path("runwayml/stable-diffusion-v1-5") is False
+
+
+def test_anything_that_resolves_to_a_real_directory_here_counts_as_local():
+    """The test that actually matters: `_resolve` uses an existing directory
+    as-is, whatever it is called. Generous toward local on purpose — a false
+    positive asks a local caller for a guard they pass anyway, a false
+    negative lets a remote caller name somebody else's disk."""
+    from modelmri.server import _looks_like_a_local_path
+
+    for value in ("/etc/passwd", "C:/models/x", "../../elsewhere", "~/models"):
+        assert _looks_like_a_local_path(value) is True, value
+    assert _looks_like_a_local_path("") is False

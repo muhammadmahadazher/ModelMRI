@@ -472,6 +472,34 @@ def _not_from_this_machine(
     return None
 
 
+def _looks_like_a_local_path(value: str) -> bool:
+    """Is this naming a directory on this machine, or a Hub id?
+
+    A Hub id is `owner/name` — no drive letter, no leading separator, no `..`,
+    and it does not exist on this disk. Anything that resolves to a real
+    directory here IS a local path whatever it is called, which is the test
+    that actually matters: `_resolve` uses an existing directory as-is.
+
+    Deliberately generous toward "local". A false positive asks a remote
+    caller for a guard they will pass anyway when they are on this machine; a
+    false negative lets a remote caller name a directory on somebody else's
+    disk.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.startswith(("/", "\\", "~", ".")) or ".." in text:
+        return True
+    # A Windows drive letter, which `owner/name` can never be.
+    if len(text) > 1 and text[1] == ":":
+        return True
+    try:
+        return Path(text).expanduser().is_dir()
+    except (OSError, ValueError):
+        # A name the OS will not even look at is not a directory here.
+        return False
+
+
 def _scan_summary(reports, dangerous, unscanned) -> str:
     """One sentence that does not contradict itself.
 
@@ -1791,12 +1819,32 @@ def create_app(
         }
 
     @app.post("/api/image/load")
-    async def image_load(req: ImageLoadRequest):
+    async def image_load(req: ImageLoadRequest, request: Request):
         """Hold one pipeline, after three refusals that cost nothing.
 
         Identify from JSON, scan the opcodes, price from real bytes — then
         load. Off the event loop because a pipeline is gigabytes off disk.
         """
+        # `repo` is EITHER a Hub id or a directory on this machine, and only
+        # the second needs the guard — which is why it is applied on the
+        # second and not on both. A Hub id is a public name and refusing it
+        # from a remote caller would be refusing the ordinary case.
+        #
+        # This route had no guard at all, while the four other path-accepting
+        # routes in this file have carried one for months. CodeQL found it as
+        # an uncontrolled path expression; the real defect is that two routes
+        # answered the same question about the same kind of input differently.
+        if _looks_like_a_local_path(req.repo):
+            refusal = _not_from_this_machine(
+                request,
+                "loading a model from a path on this machine",
+                because=(
+                    "a path names a directory on the disk this server is "
+                    "running on, not on yours"
+                ),
+            )
+            if refusal is not None:
+                return refusal
 
         already = 0
         if runtime.loaded and runtime.model is not None:

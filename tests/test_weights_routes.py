@@ -184,9 +184,12 @@ def test_a_traversal_is_normalised_before_anything_is_scanned(loaded, tmp_path):
 def test_an_unresolvable_path_is_a_refusal_not_a_500(client, monkeypatch):
     """A symlink loop or a bad drive letter is a fact about the input, not a
     fault in here — 422 with the reason rather than an internal error."""
-    import modelmri.server as srv
-
-    monkeypatch.setattr(srv, "_not_from_this_machine", lambda *a, **k: None)
+    # Patched by dotted string, so this file reaches `modelmri.server` ONE way
+    # rather than two. CodeQL flagged `import modelmri.server as srv` here
+    # against the `from modelmri.server import create_app` at the top — same
+    # module under two names, and the next person patching one of them wonders
+    # why the other did not move.
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
     from pathlib import Path as _P
 
     def _explode(self):
