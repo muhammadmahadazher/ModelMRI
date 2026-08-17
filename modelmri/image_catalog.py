@@ -1,0 +1,368 @@
+"""Finding image models: what is downloadable, what is already here, what it costs.
+
+The text side has had this for a long time — `hub.search` for what exists,
+`discover.scan` for what is on disk, `hub.weight_bytes` for what a download
+weighs, and `capacity.guard` to refuse before it starts. The image side had a
+cache scan and nothing else, so the only way to open a diffusion model was to
+already know its name.
+
+This is the missing half, and it deliberately reuses the text side's machinery
+rather than growing a second one: `hub._api` for the request, `hub.token` for
+credentials, `hub.weight_bytes` for the size arithmetic. A second Hub client
+with its own idea of what a timeout is, or its own idea of what "gated" means,
+is two answers to one question.
+
+## A pipeline tag is a TASK, not an architecture
+
+This is the honest limit of anything read from a listing, and it is why the
+rows here do not claim a family. `text-to-image` covers a UNet and a DiT, and
+those two have their cross-attention in different places — so a row says what
+the model DOES, names the families that tag is consistent with, and leaves the
+architecture to `imaging.detect`, which reads the checkpoint's own config.
+
+Claiming a family from a tag would put a confident wrong word in a list, and
+`imaging`'s whole argument is that a panel drawn for the wrong family is a
+picture of something that does not exist.
+
+## Size is read, and 0 means unknown
+
+`hub.weight_bytes` does arithmetic on the per-dtype parameter counts the Hub
+publishes, and returns 0 for a repo that publishes nothing to go on — which is
+most GGUF and pickle repos. Zero is passed through as `None` here rather than
+as a number, because a picker that renders "0.0 GB" for an unknown invites
+exactly the click that a size column exists to prevent.
+
+## Cached is answered from the disk, not from the listing
+
+Whether a repo is already here is a question about this machine, so it is
+answered by looking — `imaging.scan_cache` already walks the local cache and
+names what it finds. A listing that guessed would be wrong for the one user
+who moved their cache.
+"""
+
+from __future__ import annotations
+
+import http.client
+import logging
+import urllib.error
+import urllib.parse
+
+from . import imaging
+from .errors import BadRequest, Refusal
+
+log = logging.getLogger(__name__)
+
+# The Hub pipeline tags this tool can actually open, each with the families
+# `imaging.detect` might name once the config is read.
+#
+# A translation table like `imaging._BY_MODEL_TYPE`, and it earns its place the
+# same way: these are the Hub's own vocabulary, not model names. A tag missing
+# from here is simply not offered, which is better than offering a task whose
+# checkpoints this cannot load.
+TASKS: dict[str, dict] = {
+    "text-to-image": {
+        "label": "Text to image",
+        "families": (imaging.UNET_DIFFUSION, imaging.DIT_DIFFUSION),
+        "means": (
+            "Generates a picture from a prompt. Cross-attention maps and word "
+            "knockout apply once the checkpoint says which denoiser it uses."
+        ),
+    },
+    "image-to-image": {
+        "label": "Image to image",
+        "families": (imaging.UNET_DIFFUSION, imaging.DIT_DIFFUSION),
+        "means": "Transforms a picture under a prompt — upscalers, edits, depth.",
+    },
+    "unconditional-image-generation": {
+        "label": "Unconditional generation",
+        "families": (imaging.UNET_DIFFUSION, imaging.DIT_DIFFUSION),
+        "means": (
+            "Generates without a prompt. There is no cross-attention to a "
+            "prompt, so there are no word-to-pixel maps to draw."
+        ),
+    },
+    "image-classification": {
+        "label": "Image classification",
+        "families": (imaging.VIT,),
+        "means": (
+            "Names what is in a picture. Occlusion attribution applies — cover "
+            "a region, re-run, and measure what the answer did."
+        ),
+    },
+    "object-detection": {
+        "label": "Object detection",
+        "families": (imaging.DETECTION,),
+        "means": "Finds and boxes things in a picture.",
+    },
+    "image-segmentation": {
+        "label": "Segmentation",
+        "families": (imaging.SEGMENTATION,),
+        "means": "Labels a picture pixel by pixel, or cuts objects out of it.",
+    },
+    "mask-generation": {
+        "label": "Mask generation",
+        "families": (imaging.SEGMENTATION,),
+        "means": "Segments anything it is pointed at, without a fixed label set.",
+    },
+    "zero-shot-image-classification": {
+        "label": "Image-text embedding",
+        "families": (imaging.CLIP,),
+        "means": (
+            "Scores a picture against arbitrary text, so its label set is "
+            "whatever you type rather than what it was trained on."
+        ),
+    },
+    "image-feature-extraction": {
+        "label": "Image embedding",
+        "families": (imaging.VIT, imaging.CLIP),
+        "means": "Turns a picture into a vector, with no classifier on top.",
+    },
+    "image-text-to-text": {
+        "label": "Vision-language",
+        "families": (imaging.VLM,),
+        "means": "Reads a picture and answers about it in words.",
+    },
+}
+
+# What `search` asks for when no task is named. Every tag at once is not a
+# valid Hub filter — the API ANDs repeated `filter` values — so the default is
+# the one task most people mean by "image model", and the caller picks
+# otherwise. Stated rather than silently one of ten.
+DEFAULT_TASK = "text-to-image"
+
+MAX_RESULTS = 50
+
+
+def tasks() -> list[dict]:
+    """Every task that can be searched, for a picker to render.
+
+    Ordered as written rather than alphabetically: generation first because it
+    is what most people arrive wanting, then the understanding tasks. A tag
+    this tool cannot open is not in the table at all.
+    """
+    return [
+        {
+            "task": tag,
+            "label": spec["label"],
+            "families": list(spec["families"]),
+            "means": spec["means"],
+        }
+        for tag, spec in TASKS.items()
+    ]
+
+
+def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
+    """Image models on the Hub, annotated with size and whether they are here.
+
+    Nothing is downloaded. This reads a listing, and the one thing it touches
+    on this machine is the cache index, to say which rows are already local.
+    """
+    from . import hub
+
+    tag = (task or DEFAULT_TASK).strip()
+    if tag not in TASKS:
+        raise BadRequest(
+            f"`{tag}` is not a task this reads. The ones it can open are: "
+            f"{', '.join(TASKS)}. A tag outside that list would return "
+            f"checkpoints nothing here can load."
+        )
+
+    params: list[tuple[str, str]] = [
+        ("limit", str(max(1, min(int(limit or 24), MAX_RESULTS)))),
+        ("sort", "downloads"),
+        ("direction", "-1"),
+        ("filter", tag),
+        # `expand[]` rather than `full=true` — the two are mutually exclusive
+        # and `full` does NOT include `safetensors`, which is where the size
+        # comes from. `hub.search` carries the same comment and the same scar:
+        # a picker that cannot say how big a model is invites a click that
+        # starts a 1.5 TB download on an 8 GB laptop.
+        *[
+            ("expand[]", k)
+            for k in ("safetensors", "downloads", "gated", "lastModified", "likes")
+        ],
+    ]
+    if query.strip():
+        params.append(("search", query.strip()))
+
+    tok = hub.token()
+    try:
+        raw = hub._api("/models?" + urllib.parse.urlencode(params), tok)
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+        # The same four-way failure `hub.search` documents at length: URLError
+        # for a failure to connect, OSError for a stall or a mid-read close,
+        # HTTPException for a malformed status line or a truncated body. All
+        # four mean "the Hub did not answer" to a reader.
+        #
+        # Deliberately does not interpolate `err`: this string is published to
+        # the browser and `str(URLError)` is machinery talking to itself.
+        log.warning("image hub search failed", exc_info=err)
+        raise Refusal(
+            "Could not reach the HuggingFace Hub. Check your connection — the "
+            "full error is in the terminal running `modelmri serve`. Image "
+            "models already downloaded still load: they are listed under what "
+            "is on this machine."
+        ) from err
+
+    here = _cached_ids()
+    spec = TASKS[tag]
+    out: list[dict] = []
+    for m in raw if isinstance(raw, list) else []:
+        repo = m.get("id")
+        if not repo:
+            continue
+        gated = bool(m.get("gated", False))
+        weighs = hub.weight_bytes(m)
+        out.append(
+            {
+                "id": repo,
+                "task": tag,
+                "task_label": spec["label"],
+                # What the tag is CONSISTENT with. Not a claim about this
+                # checkpoint — only its own config can settle that, and
+                # `imaging.detect` reads it at load time.
+                "families_possible": list(spec["families"]),
+                "downloads": m.get("downloads", 0),
+                "likes": m.get("likes", 0),
+                "gated": gated,
+                "updated": (m.get("lastModified") or "")[:10],
+                # `None`, never 0. The Hub publishes nothing to go on for GGUF
+                # and pickle repos, and a picker rendering "0.0 GB" for an
+                # unknown invites the exact click a size column prevents.
+                "size_bytes": weighs or None,
+                # Answered by looking at the disk rather than guessed.
+                "cached": repo in here,
+            }
+        )
+    return out
+
+
+def _cached_ids() -> set:
+    """Repo ids already in this machine's cache, or an empty set.
+
+    Never raises. A cache that cannot be read is a reason to say "not cached"
+    for every row, not a reason to fail a search — the listing is still useful
+    and the load will answer for itself.
+    """
+    try:
+        return {m.path for m in imaging.scan_cache()}
+    except Exception:
+        log.warning("could not read the image cache while searching", exc_info=True)
+        return set()
+
+
+def local() -> list[dict]:
+    """Every image model on this disk, with what it actually weighs.
+
+    `imaging.scan_cache` says what each one IS. This adds what it costs, read
+    off the files rather than from the Hub, because the question "will this
+    fit" is about the copy on this machine.
+    """
+    from . import image_runtime
+
+    out: list[dict] = []
+    for found in imaging.scan_cache():
+        bytes_on_disk = 0
+        try:
+            bytes_on_disk = image_runtime._weights_bytes(_path_of(found))
+        except Exception:
+            # A cache entry that cannot be sized is still worth listing. 0
+            # travels as None below, which every reader treats as unknown.
+            log.warning("could not size %s", found.path, exc_info=True)
+        out.append(
+            {
+                "path": found.path,
+                "family": found.family,
+                "label": imaging.label(found.family),
+                "known": found.known,
+                "architecture": found.architecture,
+                "capabilities": list(found.capabilities),
+                "reason": found.reason,
+                # Unknown stays unknown. A cache entry holding only configs is
+                # a real state — an interrupted download — and reporting it as
+                # 0 GB would say it is ready to load.
+                "size_bytes": bytes_on_disk or None,
+                "complete": bytes_on_disk > 0,
+            }
+        )
+    out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
+    return out
+
+
+def _path_of(found):
+    """The directory an `ImageModel` was read from.
+
+    `scan_cache` renames `path` to the repo id — the name a reader recognises
+    and the one `load` takes — so `directory` is what still points at the
+    files. Reconstructing one from the other would mean rebuilding the cache's
+    own layout in a second place.
+    """
+    from pathlib import Path
+
+    return Path(found.directory or found.path)
+
+
+def size_of(repo: str) -> dict:
+    """What downloading `repo` would cost, before any of it moves.
+
+    The counterpart to `capacity.guard`: that refuses against free memory, and
+    this answers the question a reader asks first, which is how big the thing
+    is at all.
+    """
+    from . import hub
+
+    name = (repo or "").strip()
+    if not name:
+        raise BadRequest("no model was named, so there is nothing to price.")
+
+    tok = hub.token()
+    try:
+        raw = hub._api(
+            "/models/"
+            + urllib.parse.quote(name, safe="/")
+            + "?"
+            + urllib.parse.urlencode(
+                [("expand[]", k) for k in ("safetensors", "gated", "siblings")]
+            ),
+            tok,
+        )
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
+        log.warning("image size lookup failed", exc_info=err)
+        raise Refusal(
+            f"Could not ask the Hub how big `{name}` is. The full error is in "
+            f"the terminal running `modelmri serve`."
+        ) from err
+
+    if not isinstance(raw, dict):
+        raise Refusal(f"The Hub did not describe `{name}` in a shape this reads.")
+
+    weighs = hub.weight_bytes(raw)
+    cached = name in _cached_ids()
+    return {
+        "id": name,
+        "size_bytes": weighs or None,
+        "gated": bool(raw.get("gated", False)),
+        "cached": cached,
+        "means": _size_means(name, weighs, cached),
+    }
+
+
+def _size_means(name: str, weighs: int, cached: bool) -> str:
+    if cached:
+        where = f"`{name}` is already on this machine, so nothing would be downloaded."
+    elif weighs:
+        where = (
+            f"`{name}` publishes {weighs / 1e9:,.2f} GB of weights, which is "
+            f"what a download would transfer and roughly what it would need "
+            f"resident."
+        )
+    else:
+        where = (
+            f"`{name}` publishes no size metadata — usually a GGUF or pickle "
+            f"repo — so how big it is is UNKNOWN rather than small. Nothing "
+            f"here will guess it."
+        )
+    return (
+        f"{where} Whether it fits is a separate question, answered against "
+        f"this machine's free memory when you load it."
+    )

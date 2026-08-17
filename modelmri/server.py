@@ -1801,6 +1801,94 @@ def create_app(
             ),
         }
 
+    @app.get("/api/image/tasks")
+    def image_tasks() -> dict:
+        """Which kinds of image model can be searched for, and what each offers.
+
+        A picker asks this rather than hardcoding a list, so a task added to
+        `image_catalog.TASKS` appears without a second edit here.
+        """
+        from . import image_catalog
+
+        return {
+            "tasks": image_catalog.tasks(),
+            "default": image_catalog.DEFAULT_TASK,
+            "means": (
+                "Each of these is a task the Hub publishes and this tool can "
+                "open. A task says what a model DOES — the architecture, and "
+                "so which panels apply, is read from the checkpoint's own "
+                "config when it loads."
+            ),
+        }
+
+    @app.get("/api/image/search")
+    async def image_search(q: str = "", task: str = "", limit: int = 24) -> dict:
+        """Image models on the Hub, with what they weigh and whether they are here.
+
+        The image counterpart to `/api/hub/models`. Downloads nothing: it reads
+        a listing, and the only local thing it touches is the cache index, to
+        mark the rows that are already on this disk.
+        """
+        from . import image_catalog
+
+        try:
+            rows = await asyncio.to_thread(image_catalog.search, q, task, limit)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=503)
+
+        sized = [r for r in rows if r["size_bytes"]]
+        return {
+            "models": rows,
+            "task": (task or image_catalog.DEFAULT_TASK),
+            "means": (
+                f"{len(rows)} model(s) from the Hub, "
+                f"{sum(1 for r in rows if r['cached'])} of them already on this "
+                f"machine. {len(rows) - len(sized)} publish no size metadata, "
+                f"which is UNKNOWN rather than small. Nothing was downloaded."
+            ),
+        }
+
+    @app.get("/api/image/local")
+    async def image_local() -> dict:
+        """What is on this disk, what it weighs, and whether it finished.
+
+        `/api/image/available` answers what each cached model IS.
+        This answers what it COSTS, read off the files rather than the Hub —
+        including the case a browse list cannot show: a cache entry holding
+        configs and no weights, which is an interrupted download and not a
+        model that is ready.
+        """
+        from . import image_catalog
+
+        rows = await asyncio.to_thread(image_catalog.local)
+        whole = [r for r in rows if r["complete"]]
+        held = sum(r["size_bytes"] or 0 for r in whole)
+        return {
+            "models": rows,
+            "bytes_on_disk": held,
+            "means": (
+                f"{len(rows)} image model(s) on this machine, {len(whole)} of "
+                f"them with weights actually present, {held / 1e9:,.1f} GB in "
+                f"total. The rest are cache entries holding configs and no "
+                f"weights — an interrupted download rather than a model that "
+                f"is ready."
+            ),
+        }
+
+    @app.get("/api/image/size")
+    async def image_size(repo: str = "") -> dict:
+        """What downloading one model would cost, before any of it moves."""
+        from . import image_catalog
+
+        try:
+            return await asyncio.to_thread(image_catalog.size_of, repo)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=503)
+
     @app.post("/api/image/load")
     async def image_load(req: ImageLoadRequest, request: Request):
         """Hold one pipeline, after three refusals that cost nothing.

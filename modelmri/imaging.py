@@ -178,6 +178,14 @@ class ImageModel:
     """What was found, and what may be done with it."""
 
     path: str = ""
+    # WHERE it was read from, which is not always what it is CALLED.
+    # `scan_cache` renames `path` to the repo id, because that is the name a
+    # reader recognises and the one `load` takes — and the snapshot directory
+    # underneath it was being thrown away with it. Anything that needs to
+    # measure the files (their size on disk, whether the download finished)
+    # needs the directory, and reconstructing one from a repo id means
+    # rebuilding the cache's own layout in a second place.
+    directory: str = ""
     family: str = UNKNOWN
     # The class the checkpoint names for itself. Reported even when the family
     # is unknown -- "PixArtSigmaPipeline, which this does not recognise" is
@@ -256,7 +264,7 @@ class ImageModel:
 def detect(path: str | Path) -> ImageModel:
     """Read a checkpoint directory and say what it is. Loads nothing."""
     p = Path(path)
-    found = ImageModel(path=str(p))
+    found = ImageModel(path=str(p), directory=str(p))
     if not p.exists():
         found.reason = "There is nothing at that path."
         return found
