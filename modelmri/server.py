@@ -1834,9 +1834,9 @@ def create_app(
         try:
             rows = await asyncio.to_thread(image_catalog.search, q, task, limit)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=503)
+            return JSONResponse({"error": err.sentence}, status_code=503)
 
         sized = [r for r in rows if r["size_bytes"]]
         return {
@@ -1885,9 +1885,9 @@ def create_app(
         try:
             return await asyncio.to_thread(image_catalog.size_of, repo)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=503)
+            return JSONResponse({"error": err.sentence}, status_code=503)
 
     @app.post("/api/image/load")
     async def image_load(req: ImageLoadRequest, request: Request):

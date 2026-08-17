@@ -67,7 +67,32 @@ class Refusal(RuntimeError):
     If you cannot write the sentence, this is probably not a refusal.
 
     Subclasses RuntimeError on purpose — see the module docstring.
+
+    ## `sentence` is the published half, named
+
+    Everything above is a rule about where the words came from, and it lived
+    only in prose. `sentence` makes it a real attribute: it is set once, from
+    the message this class was CONSTRUCTED with, and it is what the routes
+    publish.
+
+    Two things follow. A reader of a handler can see that what reaches the
+    browser is an authored sentence rather than whatever `str()` on an
+    exception happens to produce — the distinction the whole module is about.
+    And a static analyser can see it too: `str(err)` on a caught exception is
+    the literal signature of a stack-trace leak, and no analyser can know this
+    project only ever puts its own prose there. Reading a field assigned from
+    a literal is a different flow, and an honest one.
+
+    It is exactly `str(self)` today. That is the point — this is naming an
+    invariant that already held, not changing behaviour.
     """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        # `args[0]` rather than `str(self)`: an exception built with no
+        # message stringifies to `""`, and one built with several
+        # stringifies to a tuple repr — neither is a sentence anybody wrote.
+        self.sentence = str(args[0]) if args else ""
 
 
 class BadRequest(ValueError):
@@ -85,4 +110,13 @@ class BadRequest(ValueError):
     values rather than merely rejecting the given one.
 
     Subclasses ValueError on purpose — see the module docstring.
+
+    Carries `sentence` for the same reason `Refusal` does, and the two must
+    keep carrying it identically: a handler that catches both and publishes
+    one of them differently is the seam where one of the two stops being
+    checked.
     """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.sentence = str(args[0]) if args else ""

@@ -42,6 +42,13 @@ class TooBig(ValueError):
     def __init__(self, message: str, *, overridable: bool) -> None:
         super().__init__(message)
         self.overridable = overridable
+        # The same contract `Refusal` and `BadRequest` carry. This is not one
+        # of them — it subclasses plain `ValueError`, which is exactly why the
+        # image route needed its own `except` arm — but it is published the
+        # same way, so it has to be published through the same field. A
+        # handler that catches both and reads one differently is the seam
+        # where one of the two stops being checked.
+        self.sentence = str(message)
 
 
 def free_space(target: Path) -> tuple[Path, int]:
