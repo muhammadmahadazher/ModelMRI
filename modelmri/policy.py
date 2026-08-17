@@ -643,15 +643,13 @@ def _get(port: int, route: str, *, timeout: float) -> dict:
         ) from None
     except urllib.error.URLError as err:
         raise SidecarError(
-            f"The policy sidecar is not answering on port {port} "
-            f"({err.reason})."
+            f"The policy sidecar is not answering on port {port} ({err.reason})."
         ) from None
     except (TimeoutError, OSError) as err:
         # The type, not the text. A socket error's message carries whatever
         # the OS put in it, and this value is published to a browser.
         raise SidecarError(
-            f"The policy sidecar did not answer on port {port} "
-            f"({type(err).__name__})."
+            f"The policy sidecar did not answer on port {port} ({type(err).__name__})."
         ) from None
     except ValueError:
         raise SidecarError(
