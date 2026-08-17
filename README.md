@@ -1,6 +1,7 @@
 <h1 align="center">ModelMRI</h1>
 
-<p align="center"><strong>Chrome DevTools for AI models and agents.</strong></p>
+<p align="center"><strong>Chrome DevTools for AI models and agents.</strong><br>
+See inside any local LLM, VLM or robot policy while it runs.</p>
 
 <p align="center">
   <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/v/modelmri?color=2563eb&label=pypi" alt="PyPI version"></a>
@@ -17,35 +18,69 @@
   <a href="https://modelmri.substack.com"><b>Build log</b></a>
 </p>
 
-Load any local model — LLM, VLM, or robot policy — and see inside it while it runs: what it attended to, which concepts fired, what happens when you turn one off, and exactly where your agent went wrong.
+```bash
+pip install modelmri && modelmri serve      # → http://localhost:5900
+```
 
-**ModelMRI is an open-source, local-first interpretability and debugging tool
-for transformer language models, vision-language models, robot policies and
-LLM agents.** It visualizes per-layer, per-head attention weights from a live
-forward pass, ranks attention heads by causal ablation scored with KL
-divergence, decomposes the residual stream with sparse autoencoders, steers
-generation along a feature direction, maps activations in any custom
-`nn.Module`, and records agent runs as an inspectable timeline. It runs on
-your own machine — no cloud, no account, no telemetry — and writes findings
-to a `.mri` file a colleague can open in a browser with nothing installed.
+<!-- Both themes. The GIFs used to be dark-only, which sold half the product
+     to anybody who works in light mode. GitHub swaps these on the reader's
+     own theme via the #gh-dark-mode-only / #gh-light-mode-only anchors. -->
+<p align="center">
+  <img src="docs/media/attention.gif#gh-dark-mode-only" alt="Hovering a token; attention arcs follow the cursor across the strip" width="820">
+  <img src="docs/media/light/attention.gif#gh-light-mode-only" alt="Hovering a token; attention arcs follow the cursor across the strip" width="820">
+</p>
+<p align="center"><em>Hover any token — arcs show what it attended to. Every layer, every head. Light and dark.</em></p>
 
-Python 3.10+, Windows / macOS / Linux, MIT licensed.
+---
+
+## Why
+
+|  | |
+|:--:|---|
+| 🔍 | **You cannot debug what you cannot see.** Your model gave a wrong answer. The logs show the prompt and the output, and nothing in between. |
+| 🖥️ | **It runs on your machine.** No cloud, no account, no telemetry, no API key. An 8 GB laptop GPU is the target, not a footnote. |
+| 🧾 | **Every number carries a receipt.** What was measured, on which model revision, with how many forward passes, and what it does *not* prove. |
+| 🚫 | **It refuses rather than guesses.** When a measurement would be misleading, you get a sentence explaining why — not a plausible number. |
+
+---
+
+## What it does
+
+| | | |
+|:--:|---|---|
+| 👁️ | **Attention** | Every layer, every head, from a live forward pass — with a causal ranking of which heads actually mattered, scored in KL nats. |
+| 🎯 | **Activation patching** | Where in the model the answer is decided, on a (layer × position) grid — each site checked against eight same-norm random draws. |
+| 🧠 | **Concepts** | SAE features, or contrastive steering vectors when no SAE exists. Find one, turn it off, watch the output change. |
+| 🔭 | **Lenses** | Logit lens and a tuned lens trained on *your* text, scored on held-out KL and shown side by side. |
+| 🤖 | **Robot policies** | What a VLA looked at, and — through a sidecar with its own environment — what it would *do*. |
+| 🕵️ | **Agent traces** | The step where your agent died, as a timeline you can click into the model's internals from. |
+| 🧩 | **Your own models** | Any `nn.Module`, TorchScript, or GGUF. Nothing hardcoded to one architecture. |
+| 🔒 | **Weight scanning** | Looks inside a checkpoint for anything that executes on load, *before* loading it. |
 
 <p align="center">
-  <img src="docs/media/attention.gif" alt="Hovering tokens; attention arcs follow the cursor across the strip" width="800">
+  <img src="docs/media/patching.gif#gh-dark-mode-only" alt="An activation patching grid filling in, site by site" width="820">
+  <img src="docs/media/light/patching.gif#gh-light-mode-only" alt="An activation patching grid filling in, site by site" width="820">
 </p>
+<p align="center"><em>Activation patching: which (layer, position) actually decides the answer.</em></p>
 
-<p align="center"><em>Hover any token — arcs show what it attended to. Every layer, every head.</em></p>
+---
+
+## 60 seconds
 
 ```bash
 pip install modelmri
-modelmri serve          # open http://localhost:5900
+modelmri serve                      # the UI, on localhost only
+modelmri models                     # what is already on this disk
+modelmri scan ./my_model            # is anything in there executable?
+modelmri open finding.mri           # someone sent you a result
 ```
 
-<p align="center">
-  <img src="docs/media/picker.gif" alt="The model picker listing models already on disk" width="800">
-</p>
+Python 3.10+ · Windows, macOS, Linux · MIT.
 
+<p align="center">
+  <img src="docs/media/picker.gif#gh-dark-mode-only" alt="The model picker listing models already on disk" width="820">
+  <img src="docs/media/light/hero.png#gh-light-mode-only" alt="ModelMRI in light mode, with an accelerator and model loaded" width="820">
+</p>
 <p align="center"><em>It finds the models you already have — HF cache, plain folders, GGUF — before asking you to type anything.</em></p>
 
 ---
@@ -541,6 +576,13 @@ with no notebook in between.
 | [Neuronpedia](https://www.neuronpedia.org/) | hosted browser for SAE features | Neuronpedia has far richer feature data for the models it covers; ModelMRI runs an SAE against *your* prompt, locally, and steers with it |
 | [SAELens](https://github.com/jbloomAus/SAELens) | training and analysing sparse autoencoders | ModelMRI consumes SAEs, it does not train them |
 | [Langfuse](https://langfuse.com/) · [Phoenix](https://github.com/Arize-ai/phoenix) · [LangSmith](https://www.langsmith.com/) | LLM application observability — traces, prompts, cost | These are production observability platforms and much stronger at it. ModelMRI records a run so you can open it next to the model's internals |
+| [promptfoo ModelAudit](https://www.promptfoo.dev/) | scans model files for malicious payloads | promptfoo scans a file you point it at; `modelmri scan` runs on the load path and **refuses** to load one |
+| [Rerun](https://rerun.io/) · [Foxglove](https://foxglove.dev/) | robotics data viewers | Far better timelines and 3-D. Neither can tell you what the policy *attended to*, or what it would do on a frame you choose |
+
+**The one thing nothing else does:** hold the recorder and the weights in one
+process. Every observability platform stops at the API boundary; every
+interpretability library has no agent traces. Joining a failing agent step to
+the heads that moved the token needs both in memory at once.
 
 Use TransformerLens if you are doing research and want precision. Use Langfuse
 or Phoenix if you are running an agent in production and need dashboards,
@@ -622,6 +664,51 @@ No, and the package says so — it is classified alpha. It is a debugging and
 research tool, not infrastructure. The measurements it reports are tested, but
 the API surface still moves between minor versions; see the
 [changelog](CHANGELOG.md).
+
+### Can it check a downloaded model for malicious code?
+
+Yes. `modelmri scan <path>` reads the pickle opcode stream **without
+unpickling it** and reports anything that executes on load — `os.system`,
+`eval`, decode-then-execute chains, embedded executables, zip bombs. It exits
+non-zero on a finding, so it works as a CI gate.
+
+It runs automatically on the load path, so a dangerous file is refused rather
+than reported after the fact. Three verdicts: `safe`, `dangerous`, and
+`unscanned` — a format it could not read is never called clean.
+
+A `.bin`, `.pt`, `.pth` or `.ckpt` is a pickle, and unpickling is not parsing:
+the payload runs before a single tensor is read. `safetensors` has no
+mechanism to execute anything, and ModelMRI tells you when a repository
+publishes one.
+
+### Can it tell me what a robot policy would *do*, not just what it looked at?
+
+Yes, through a sidecar that holds the action expert in its own process and
+virtual environment — because lerobot pins torch and numpy hard enough that
+installing it beside ModelMRI breaks ModelMRI.
+
+`modelmri policy install` builds it; `modelmri policy start` runs it. Then you
+get predicted-versus-recorded actions across an episode, an instruction-swap
+test measured against the policy's own sampling variance, and input-stream
+knockout.
+
+It refuses to overlay a policy's actions on a dataset's recorded ones when the
+two are in different units — which is the common case, and the plausible-wrong
+chart everything else draws.
+
+### Why does it refuse to show me things?
+
+Because a measurement that would be misleading is worse than no measurement.
+Some real examples it will refuse:
+
+- an SAE whose activation convention does not reconstruct your model
+- a patching pair whose two prompts predict the same token, making the
+  denominator zero
+- an instruction-swap test on a deterministic policy, where the reference
+  spread is exactly zero
+- two action curves whose units were never published
+
+Every refusal is a sentence naming what to change.
 
 ### How do I cite it?
 
