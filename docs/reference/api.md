@@ -152,6 +152,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/lens/tuned` | Tuned Lens Status |
 | `GET` | `/api/paths` | Where |
 | `GET` | `/api/patterns/across` | Patterns Across |
+| `GET` | `/api/policy` | Policy Status |
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/rubric` | Rubric List |
 | `GET` | `/api/telemetry` | Read Telemetry |

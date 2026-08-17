@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -904,6 +905,114 @@ def _tree_bytes(root) -> int:
     return total
 
 
+def policy_command(args) -> int:
+    """`modelmri policy …` — the action expert's own environment and process.
+
+    Separate from every other command in this file because it is the only one
+    that builds a SECOND Python environment. That is not an implementation
+    detail to be hidden: it costs about 6 GB, it exists because lerobot's pins
+    cannot share an environment with ModelMRI's, and a user who does not know
+    that will be surprised by the disk usage and by the fact that upgrading
+    ModelMRI does not upgrade this.
+    """
+    from . import policy as _policy
+
+    what = getattr(args, "policy_command", None)
+
+    if what == "install":
+        # Ask before spending gigabytes. `--yes` for scripts; the prompt is
+        # for the person who typed the command without reading the help.
+        if not args.yes:
+            local = _policy.source_dir()
+            print(f"ModelMRI {__version__} — installing the action expert\n")
+            print(f"  into    {_policy.venv_dir()}")
+            print(f"  package {_policy.requirement()}")
+            print(
+                f"  source  {'this checkout' if local else 'PyPI'}\n"
+                f"  size    about {_policy.VENV_DISK_BYTES / 1e9:,.0f} GB — it "
+                f"downloads its own torch\n"
+                f"  why     lerobot pins torch and numpy hard enough that "
+                f"installing it\n"
+                f"          beside ModelMRI breaks ModelMRI."
+            )
+            try:
+                reply = input("\nBuild it? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                reply = ""
+            if reply not in ("y", "yes"):
+                print("nothing installed.")
+                return 1
+
+        try:
+            result = _policy.install(
+                force=args.force, echo=lambda line: print(f"  {line}", flush=True)
+            )
+        except Exception as err:
+            print(f"\nmodelmri: {err}", file=sys.stderr)
+            return 2
+        print(f"\n{result['means']}")
+        return 0
+
+    if what == "start":
+        try:
+            status = _policy.start(
+                policy_repo=args.repo,
+                device=args.device,
+                echo=lambda line: print(f"  {line}", flush=True),
+                confirm=args.yes,
+            )
+        except Exception as err:
+            print(f"modelmri: {err}", file=sys.stderr)
+            return 2
+        print(f"\n  port      {status.port}")
+        print(f"  {status.means()}")
+        if not args.wait:
+            return 0
+        # Foreground by default: the sidecar is a child of THIS process, and a
+        # command that returned here would take its own child down with it.
+        # `--no-wait` is for the case where the caller has its own supervisor.
+        print("\nServing. Ctrl-C stops it.")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            print("\nstopping.")
+        finally:
+            _policy.stop()
+        return 0
+
+    if what == "status":
+        status = _policy.status()
+        if args.json:
+            print(json.dumps(status.to_dict(), indent=2))
+            return 0
+        print(f"ModelMRI {__version__} — the action expert on this machine\n")
+        print(f"  installed {'yes' if _policy.installed() else 'no'}")
+        print(f"  venv      {_policy.venv_dir()}")
+        print(f"  running   {'yes' if status.running else 'no'}")
+        if status.port:
+            print(f"  port      {status.port}")
+        if status.policy_repo:
+            print(f"  policy    {status.policy_repo}")
+            print(f"  revision  {status.revision or 'not recorded'}")
+            print(f"  device    {status.device} · {status.dtype}")
+            # An empty dict is a fact worth printing. It means an overlay
+            # against a dataset's recorded actions must be refused rather
+            # than drawn, and a blank line here would read as "fine".
+            units = status.normalisation
+            named = (
+                ", ".join(sorted(units))
+                if units
+                else "not published by this policy — do not overlay"
+            )
+            print(f"  units     {named}")
+        print(f"\n  {status.means()}")
+        return 0 if status.running else 1
+
+    print("modelmri policy: say install, start or status", file=sys.stderr)
+    return 2
+
+
 def uninstall(*, yes: bool = False, models: bool = False) -> int:
     """Remove everything ModelMRI has written, after showing what that is.
 
@@ -953,6 +1062,19 @@ def uninstall(*, yes: bool = False, models: bool = False) -> int:
         print("  nothing to remove — ModelMRI has not written anything here.")
     for label, path in targets:
         print(f"  {label:<8} {path}  ({_tree_bytes(path) / 1e6:.1f} MB)")
+
+    # Named separately even though it is INSIDE `data` and already counted
+    # there. A 6 GB figure on a line labelled "data" reads as recordings; this
+    # is a whole second Python with its own torch, and somebody deciding
+    # whether to delete deserves to know which of the two they are looking at.
+    from . import policy as _policy
+
+    venv = _policy.venv_dir()
+    if venv.exists():
+        print(
+            f"\n  of which {_tree_bytes(venv) / 1e9:.2f} GB is the action "
+            f"expert's own\n           Python environment at {venv}."
+        )
 
     # Existence, not size, decides whether this is disclosed and whether
     # `--models` acts on it. Gating on bytes meant an empty-but-present cache
@@ -1280,6 +1402,53 @@ def main() -> None:
         help="Report what this machine can and cannot run, and why",
     )
 
+    # Nested subcommands, and the only place in this CLI that has them. The
+    # action expert is a second environment with its own lifecycle — build it,
+    # run it, ask about it — and flattening that into `modelmri policy-install`
+    # would hide that these three act on one thing.
+    policy_parser = sub.add_parser(
+        "policy",
+        help="The robot action expert: its own environment and its own process",
+    )
+    policy_sub = policy_parser.add_subparsers(dest="policy_command")
+
+    policy_install = policy_sub.add_parser(
+        "install",
+        help="Build the action expert's separate environment (about 6 GB)",
+    )
+    policy_install.add_argument(
+        "--force", action="store_true", help="rebuild even if one already exists"
+    )
+    policy_install.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
+
+    policy_start = policy_sub.add_parser(
+        "start", help="Start the policy sidecar and wait until it can answer"
+    )
+    policy_start.add_argument(
+        "--repo", default="", help="a policy to load once it is up, e.g. lerobot/…"
+    )
+    policy_start.add_argument(
+        "--device", default="", help="cuda, cuda:1 or cpu (default: whatever it finds)"
+    )
+    policy_start.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        help="return once it is serving instead of holding the terminal",
+    )
+    policy_start.add_argument(
+        "--yes",
+        action="store_true",
+        help="start it even when this machine's VRAM says two copies will not fit",
+    )
+
+    policy_status = policy_sub.add_parser(
+        "status", help="Say whether an action expert is installed and running"
+    )
+    policy_status.add_argument("--json", action="store_true", help="machine-readable")
+
     remove = sub.add_parser(
         "uninstall", help="Remove everything ModelMRI has written to this machine"
     )
@@ -1404,6 +1573,8 @@ def main() -> None:
         raise SystemExit(verify_session(args.file, as_json=args.json))
     elif args.command == "audit":
         raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
+    elif args.command == "policy":
+        raise SystemExit(policy_command(args))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":

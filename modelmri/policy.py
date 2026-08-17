@@ -35,8 +35,10 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -273,6 +275,297 @@ def check_contract(theirs: object, *, side: str = "policy sidecar") -> int:
     return theirs
 
 
+def source_dir() -> Path | None:
+    """The sidecar's source tree, when ModelMRI is running from a checkout.
+
+    `None` from an installed wheel, where `packages/` was never shipped. The
+    two cases install from different places and the difference is worth being
+    explicit about: a contributor editing the sidecar wants THEIR copy in the
+    venv, and a user who ran `pip install modelmri` wants the released one.
+    """
+    candidate = Path(__file__).resolve().parents[1] / "packages" / "modelmri-policy"
+    return candidate if (candidate / "pyproject.toml").is_file() else None
+
+
+def requirement() -> str:
+    """What to hand pip: the local checkout if there is one, else the release."""
+    local = source_dir()
+    return f"{local}[policy]" if local is not None else "modelmri-policy[policy]"
+
+
+def port_file() -> Path:
+    """Where a running sidecar records how to reach it.
+
+    A sidecar started by `modelmri policy start` in one terminal has to be
+    findable from the server in another, and the port is chosen by the OS
+    rather than fixed. The file is a claim, never a guarantee: every reader
+    below asks `/status` before believing it, because a file outlives the
+    process that wrote it and a stale port is worse than no port.
+    """
+    return venv_dir().parent / "policy-port.json"
+
+
+def _drain(stream, sink: deque[str], echo) -> None:
+    """Read a child's output to EOF, keeping the tail and passing it on.
+
+    On a thread, and never optional. A child whose stdout is a pipe nobody
+    reads blocks once the OS buffer fills -- roughly 64 KB, which pip clears
+    in seconds. That exact deadlock is recorded in `runtime.py`'s prefetch
+    comment; the difference here is that this side WANTS the output, so it
+    drains rather than sending it to DEVNULL.
+    """
+    try:
+        for raw in iter(stream.readline, ""):
+            line = raw.rstrip("\r\n")
+            sink.append(line)
+            if echo is not None and line:
+                echo(line)
+    except (ValueError, OSError):
+        # The pipe was closed under us -- the child exited. Not an error:
+        # the exit code is what the caller reads, and it is already on its way.
+        pass
+    finally:
+        try:
+            stream.close()
+        except (ValueError, OSError):
+            pass
+
+
+def _run(argv: list[str], *, echo=None, cancel=None, timeout: float) -> tuple[int, str]:
+    """Run a child to completion, streaming its output, killable throughout.
+
+    Returns `(returncode, tail)`. The tail is bounded at 40 lines because it
+    exists to be quoted in a refusal: pip's failures put the reason at the
+    END, and a wall of resolver output helps nobody.
+    """
+    import subprocess
+    import time
+    from collections import deque
+
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        # Windows: its own process group, so terminating the install does not
+        # also signal the server that spawned it.
+        creationflags=(
+            subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+        ),
+    )
+    tail: deque[str] = deque(maxlen=40)
+    reader = threading.Thread(
+        target=_drain, args=(proc.stdout, tail, echo), daemon=True
+    )
+    reader.start()
+
+    deadline = time.monotonic() + timeout
+    stopped = ""
+    while proc.poll() is None:
+        if cancel is not None and cancel.wait(0.2):
+            stopped = "cancelled"
+            break
+        if time.monotonic() > deadline:
+            stopped = "timeout"
+            break
+        if cancel is None:
+            time.sleep(0.1)
+
+    if stopped:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)
+    reader.join(timeout=5)
+    text = "\n".join(tail)
+    if stopped == "cancelled":
+        raise SidecarError(
+            f"Stopped `{argv[0]} …` before it finished, as asked. The "
+            f"half-built environment at {venv_dir()} is not usable; rerun "
+            f"`modelmri policy install --force` to start it again."
+        )
+    if stopped == "timeout":
+        raise SidecarError(
+            f"`{Path(argv[0]).name} …` ran past {timeout / 60:,.0f} minutes "
+            f"without finishing, so it was stopped. Last output:\n{text}"
+        )
+    return proc.returncode, text
+
+
+# How long a full sidecar build may take. Generous because it downloads torch
+# and CUDA wheels -- gigabytes, on whatever connection this machine has -- and
+# a build killed at minute nine leaves the user with nothing to show for the
+# nine minutes. Bounded because a pip resolver that has gone circular will
+# otherwise sit there all day printing nothing.
+INSTALL_TIMEOUT_S = 3600.0
+
+
+def install(
+    *,
+    force: bool = False,
+    echo=None,
+    cancel=None,
+    vram_gb: float | None = None,
+) -> dict:
+    """Build the sidecar's own environment, and verify it speaks this contract.
+
+    Four steps, each of which can fail out loud: capacity, venv, pip, and a
+    handshake against the thing just installed. The last one is the point --
+    an install that finishes is not the same as an install that WORKS, and the
+    failure this whole feature exists to prevent is a sidecar that answers
+    with a contract nobody checked.
+
+    `echo` receives each line of pip's output as it arrives, so a caller can
+    show a live log rather than a spinner over a ten-minute silence.
+    """
+    import shutil
+
+    venv = venv_dir()
+    exe = python_in(venv)
+
+    if exe.exists() and not force:
+        # `probe`'s refusal is allowed straight through rather than re-wrapped.
+        # It already names the environment, quotes what its interpreter said
+        # and gives the remedy, and restating that here would either duplicate
+        # it or replace the specifics with something vaguer. It also carries
+        # the child's stderr, which is exactly the text this project refuses
+        # to interpolate into a second sentence -- see test_no_exception_leaks.
+        existing = probe(exe)
+        return {
+            "installed": True,
+            "rebuilt": False,
+            "venv": str(venv),
+            "contract": existing,
+            "requirement": requirement(),
+            "means": (
+                f"The action expert was already installed at {venv} and "
+                f"speaks contract {existing}, which matches this side. "
+                f"Nothing was rebuilt."
+            ),
+        }
+
+    # Disk only. VRAM is not the question at install time -- nothing is
+    # resident yet, and refusing to INSTALL because a model happens to be
+    # loaded right now would be refusing a permanent thing over a temporary
+    # one. `check_capacity` runs again, with residency, before the sidecar
+    # actually starts.
+    check_capacity(vram_gb=None)
+
+    if venv.exists():
+        if echo is not None:
+            echo(f"removing the existing environment at {venv}")
+        shutil.rmtree(venv, ignore_errors=True)
+        if venv.exists():
+            raise SidecarError(
+                f"Could not remove the existing environment at {venv}. "
+                f"Something is still holding a file inside it — a running "
+                f"sidecar is the usual answer. Stop it and try again."
+            )
+
+    venv.parent.mkdir(parents=True, exist_ok=True)
+    if echo is not None:
+        echo(f"creating a virtual environment at {venv}")
+    code, tail = _run(
+        [sys.executable, "-m", "venv", str(venv)],
+        echo=echo,
+        cancel=cancel,
+        timeout=300.0,
+    )
+    if code != 0 or not python_in(venv).exists():
+        raise SidecarError(
+            f"Could not create a virtual environment at {venv} "
+            f"(exit {code}). On Debian and Ubuntu this usually means the "
+            f"python3-venv package is missing. Output:\n{tail}"
+        )
+
+    exe = python_in(venv)
+    want = requirement()
+    if echo is not None:
+        echo(f"installing {want} — this downloads its own torch, so it is slow")
+    code, tail = _run(
+        [
+            str(exe),
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            # Off on purpose. pip's bar redraws with carriage returns, and
+            # every redraw becomes its own line once stdout is a pipe -- which
+            # turns a download into thousands of near-identical log lines.
+            "--progress-bar",
+            "off",
+            want,
+        ],
+        echo=echo,
+        cancel=cancel,
+        timeout=INSTALL_TIMEOUT_S,
+    )
+    if code != 0:
+        local = source_dir()
+        where = (
+            f"from the checkout at {local}"
+            if local is not None
+            else "from PyPI, where modelmri-policy may not be published yet"
+        )
+        raise SidecarError(
+            f"Installing {want} {where} failed (exit {code}). The environment "
+            f"at {venv} is half-built and should be removed. pip said:\n{tail}"
+        )
+
+    # The handshake, against what was just installed rather than what was
+    # asked for. A pip that resolved to a DIFFERENT release of the sidecar --
+    # an old wheel cached locally, a version pin somewhere upstream -- is
+    # exactly the drift the contract number exists to catch, and catching it
+    # here is far cheaper than catching it mid-analysis.
+    contract = probe(exe)
+    return {
+        "installed": True,
+        "rebuilt": True,
+        "venv": str(venv),
+        "contract": contract,
+        "requirement": want,
+        "means": (
+            f"The action expert now lives in its own environment at {venv} "
+            f"and speaks contract {contract}, which matches this side. It "
+            f"holds its own torch, so it does not disturb ModelMRI's."
+        ),
+    }
+
+
+def probe(exe: Path) -> int:
+    """Ask an installed sidecar what contract it speaks, without starting it.
+
+    Runs in the sidecar's interpreter and prints one number. Deliberately
+    imports only `modelmri_policy.contract`, which is stdlib-only -- so this
+    answers even when lerobot itself is broken, and the two failures stay
+    distinguishable instead of both arriving as "it does not work".
+    """
+    code, tail = _run(
+        [
+            str(exe),
+            "-c",
+            "import modelmri_policy.contract as c; print(c.CONTRACT)",
+        ],
+        timeout=120.0,
+    )
+    if code != 0:
+        raise SidecarError(
+            f"The environment at {exe.parent.parent} does not have a working "
+            f"modelmri_policy in it, so nothing there could answer for a "
+            f"policy. Rebuild it with `modelmri policy install --force`. Its "
+            f"interpreter exited {code} saying:\n{tail}"
+        )
+    stated = tail.strip().splitlines()[-1].strip() if tail.strip() else ""
+    return check_contract(
+        int(stated) if stated.isdigit() else stated, side="installed sidecar"
+    )
+
+
 def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, bytes]:
     """One request, with the contract on it and checked on the way back.
 
@@ -319,3 +612,298 @@ def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, b
         side="policy sidecar",
     )
     return {}, raw
+
+
+# ---------------------------------------------------------------- lifecycle
+
+# The sidecar this process started, if it started one. Module state rather
+# than a parameter because there is exactly one per machine by construction:
+# the port file is a single path, and two sidecars would be two processes both
+# claiming to be the policy.
+_CHILD = None
+_CHILD_LOCK = threading.Lock()
+
+# The ready line, restated here for the same reason CONTRACT is. This side
+# cannot import `modelmri_policy.contract` -- different venv -- so it declares
+# what it expects to read, and a sidecar printing something else is a sidecar
+# this cannot talk to, which is exactly what should be visible.
+READY_PREFIX = "MODELMRI_POLICY_PORT="
+
+
+def _get(port: int, route: str, *, timeout: float) -> dict:
+    """A GET with the contract checked on the way back. See `_post`."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{route}", method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", "replace")[:400]
+        raise SidecarError(
+            f"The policy sidecar refused {route} ({err.code}): {detail}"
+        ) from None
+    except urllib.error.URLError as err:
+        raise SidecarError(
+            f"The policy sidecar is not answering on port {port} "
+            f"({err.reason})."
+        ) from None
+    except (TimeoutError, OSError) as err:
+        # The type, not the text. A socket error's message carries whatever
+        # the OS put in it, and this value is published to a browser.
+        raise SidecarError(
+            f"The policy sidecar did not answer on port {port} "
+            f"({type(err).__name__})."
+        ) from None
+    except ValueError:
+        raise SidecarError(
+            f"The policy sidecar answered {route} with something that is not "
+            f"JSON, so there is nothing here to read."
+        ) from None
+    check_contract(data.get("contract"), side="policy sidecar")
+    return data
+
+
+def _write_port(port: int, pid: int) -> None:
+    path = port_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"port": port, "pid": pid, "contract": CONTRACT}),
+        encoding="utf-8",
+    )
+
+
+def _read_port() -> int:
+    """The recorded port, or 0.
+
+    A missing file and a corrupt one both mean the same thing to every caller
+    here -- there is no sidecar to attach to -- and `status` deciding by
+    ASKING is what makes that safe. A port read out of a file is a claim.
+    """
+    try:
+        data = json.loads(port_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    port = data.get("port")
+    if not isinstance(port, int) or isinstance(port, bool):
+        return 0
+    return port if 0 < port < 65536 else 0
+
+
+def _forget_port() -> None:
+    try:
+        port_file().unlink()
+    except OSError:
+        pass
+
+
+def status(*, timeout: float = 5.0) -> PolicyStatus:
+    """What the sidecar is right now, measured rather than remembered.
+
+    Every branch ends in a sentence a panel can show. "running: false" is the
+    least useful true thing this could return: "install it", "start it" and
+    "it died" are three problems with three different fixes, and a boolean
+    collapses them into one.
+    """
+    port = _read_port()
+    if not port:
+        if not installed():
+            return PolicyStatus(
+                reason=f"The action expert is not installed. {INSTALL_HINT}"
+            )
+        return PolicyStatus(
+            reason=(
+                "The action expert is installed but no sidecar is running. "
+                "`modelmri policy start` brings one up."
+            )
+        )
+
+    try:
+        data = _get(port, "/status", timeout=timeout)
+    except SidecarError:
+        # The file said a port and nothing is there: that is a crash, not a
+        # configuration. Say so, and clear the claim so the next caller is
+        # told "not running" instead of being sent to the same dead port.
+        #
+        # The caught sentence is deliberately not repeated. It says "not
+        # answering on port N", which is the thing this line already says
+        # better, with the reason attached.
+        _forget_port()
+        return PolicyStatus(
+            port=port,
+            reason=(
+                f"A sidecar was recorded on port {port} but is not answering, "
+                f"so it has exited. `modelmri policy start` brings one back."
+            ),
+        )
+
+    if not data.get("ready"):
+        return PolicyStatus(
+            contract=CONTRACT,
+            port=port,
+            reason=(
+                "The sidecar is up but has no policy loaded, so there is "
+                "nothing yet that could act. Load one to ask what it would do."
+            ),
+        )
+    return PolicyStatus(
+        running=True,
+        contract=CONTRACT,
+        policy_repo=str(data.get("policy_repo") or ""),
+        revision=str(data.get("revision") or ""),
+        device=str(data.get("device") or ""),
+        dtype=str(data.get("dtype") or ""),
+        normalisation=data.get("normalisation") or {},
+        port=port,
+    )
+
+
+def start(
+    *,
+    policy_repo: str = "",
+    device: str = "",
+    echo=None,
+    already_held_bytes: int = 0,
+    vram_gb: float | None = None,
+    accel_name: str = "",
+    confirm: bool = False,
+) -> PolicyStatus:
+    """Bring a sidecar up, wait until it can answer, and record where it is.
+
+    Attaches to a live one rather than starting a second. Two processes each
+    holding a policy is the capacity failure this module exists to refuse, and
+    starting one by accident would be this code causing it.
+
+    The wait is for the READY line, not for the socket. A port that accepts
+    connections before the server loop is running would let a caller send
+    `/act` and get a refused connection that looks like a bug rather than a
+    sequence.
+    """
+    import subprocess
+
+    global _CHILD
+
+    with _CHILD_LOCK:
+        live = status()
+        if live.port:
+            return live
+
+        exe = require_installed()
+        # Residency, with what this process is already holding, BEFORE the
+        # subprocess exists. A refusal that costs nothing is the point.
+        check_capacity(
+            vram_gb=vram_gb,
+            accel_name=accel_name,
+            already_held_bytes=already_held_bytes,
+            confirm=confirm,
+        )
+
+        if echo is not None:
+            echo(f"starting the policy sidecar from {exe}")
+        proc = subprocess.Popen(
+            [str(exe), "-m", "modelmri_policy", "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            ),
+        )
+
+        # One thread does both jobs: find the ready line, then keep draining.
+        # Both halves are required. The line is what "started" means, and a
+        # pipe left unread after it deadlocks the child the moment it writes
+        # 64 KB of anything -- a traceback out of a request thread, say. That
+        # exact deadlock is recorded in `runtime.py`'s prefetch comment.
+        port = 0
+        tail: deque[str] = deque(maxlen=40)
+        ready = threading.Event()
+
+        def _pump() -> None:
+            nonlocal port
+            try:
+                for raw in iter(proc.stdout.readline, ""):
+                    line = raw.rstrip("\r\n")
+                    tail.append(line)
+                    if echo is not None and line:
+                        echo(line)
+                    if port == 0 and line.startswith(READY_PREFIX):
+                        stated = line[len(READY_PREFIX) :].strip()
+                        if stated.isdigit():
+                            port = int(stated)
+                            ready.set()
+            except (ValueError, OSError):
+                pass
+            finally:
+                # EOF means the child exited. Set it either way, so a sidecar
+                # that dies during import ends the wait immediately instead of
+                # holding the caller for the full three minutes.
+                ready.set()
+
+        threading.Thread(target=_pump, daemon=True).start()
+        ready.wait(START_TIMEOUT_S)
+
+        if port == 0:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            said = "\n".join(tail).strip()
+            raise SidecarError(
+                "The policy sidecar did not report a port, so it was "
+                "stopped. This is usually its environment failing to import "
+                "lerobot; `modelmri policy install --force` rebuilds it."
+                + (f" It said:\n{said}" if said else " It said nothing at all.")
+            )
+
+        _CHILD = proc
+        _write_port(port, proc.pid)
+
+    if policy_repo:
+        load(policy_repo, device=device)
+    return status()
+
+
+def load(policy_repo: str, *, device: str = "") -> PolicyStatus:
+    """Ask the running sidecar to hold a policy. Refuses if none is running."""
+    port = _read_port()
+    if not port:
+        raise SidecarError(
+            "No policy sidecar is running, so there is nothing to load a "
+            "policy into. `modelmri policy start` brings one up."
+        )
+    _post(
+        port,
+        "/load",
+        {"policy_repo": policy_repo, "device": device},
+        timeout=START_TIMEOUT_S,
+    )
+    return status()
+
+
+def stop(*, timeout: float = 15.0) -> bool:
+    """Stop the sidecar THIS process started. Says whether one was running.
+
+    Deliberately only a child of this process. A sidecar started in another
+    terminal is that terminal's to stop: reading a pid out of a file and
+    signalling it means signalling whatever inherited that pid after a crash,
+    which is how a cleanup routine ends up killing something it never started.
+    """
+    import subprocess
+
+    global _CHILD
+
+    with _CHILD_LOCK:
+        proc, _CHILD = _CHILD, None
+        _forget_port()
+        if proc is None or proc.poll() is not None:
+            return False
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        return True

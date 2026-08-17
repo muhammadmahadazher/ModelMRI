@@ -1645,6 +1645,35 @@ def create_app(
             "policy_repo": VLA_DEFAULT_REPO,
         }
 
+    @app.get("/api/policy")
+    async def policy_status() -> dict:
+        """Whether anything on this machine can say what the robot would DO.
+
+        A GET that reaches out to another process, so it runs off the event
+        loop: the sidecar answers in milliseconds when it is up, but a machine
+        that has just been suspended can leave the connection hanging for the
+        full timeout, and blocking the loop on that would freeze every panel.
+
+        Deliberately never raises. "no action expert" is the resting state of
+        most machines, not an error, and a 500 here would paint the panel red
+        for a configuration that is completely normal.
+        """
+        from . import policy as _policy
+
+        state = await asyncio.to_thread(_policy.status)
+        return {
+            **state.to_dict(),
+            "installed": _policy.installed(),
+            "venv": str(_policy.venv_dir()),
+            "contract_here": _policy.CONTRACT,
+            "install_hint": _policy.INSTALL_HINT,
+            # What the second process would cost, from the same constants the
+            # capacity refusal uses. A panel offering a 6 GB install should
+            # say 6 GB before the click, not after.
+            "venv_disk_bytes": _policy.VENV_DISK_BYTES,
+            "assumed_policy_bytes": _policy.ASSUMED_POLICY_BYTES,
+        }
+
     @app.post("/api/vla/load")
     async def vla_load(req: VLALoadRequest):
         try:

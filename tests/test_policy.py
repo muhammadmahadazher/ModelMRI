@@ -18,6 +18,8 @@ reaching a panel is trustworthy:
 from __future__ import annotations
 
 import json
+import pathlib
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,9 +45,7 @@ def _responder(payload: dict, *, code: int = 200, kind: str = "application/json"
         def log_message(self, *a):
             pass
 
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            self.rfile.read(length)
+        def _answer(self):
             body = json.dumps(payload).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", kind)
@@ -53,6 +53,13 @@ def _responder(payload: dict, *, code: int = 200, kind: str = "application/json"
             self.send_header("X-ModelMRI-Contract", str(payload.get("contract", "")))
             self.end_headers()
             self.wfile.write(body)
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self._answer()
+
+        def do_GET(self):
+            self._answer()
 
     return Handler
 
@@ -201,6 +208,15 @@ def test_a_running_status_never_calls_an_action_ground_truth():
     assert "ground truth" in said
 
 
+def test_a_status_never_reports_an_empty_normalisation_as_identity():
+    """The word "identity" would be a claim. Empty means the policy did not
+    publish its statistics, and the only honest thing to do with that is
+    refuse the overlay."""
+    said = policy.PolicyStatus(running=True, normalisation={}).to_dict()
+    assert said["normalisation"] == {}
+    assert "identity" not in said["means"].lower()
+
+
 def test_normalisation_travels_so_an_overlay_can_be_refused():
     """A policy's actions are normalised against ITS training statistics and a
     dataset's against its own. Overlaying two curves in different units is the
@@ -209,3 +225,212 @@ def test_normalisation_travels_so_an_overlay_can_be_refused():
     status = policy.PolicyStatus(running=True, normalisation={"mean": [0.0, 1.0]})
     assert status.to_dict()["normalisation"] == {"mean": [0.0, 1.0]}
     assert policy.PolicyStatus(running=True).to_dict()["normalisation"] == {}
+
+
+# ------------------------------------------- installing, starting, stopping
+
+
+def test_a_stale_port_file_is_a_crash_report_not_a_running_sidecar(
+    monkeypatch, tmp_path
+):
+    """The file outlives the process that wrote it. A port read out of a file
+    is a claim, and `status` decides by ASKING — otherwise a crashed sidecar
+    stays "running" until somebody reboots."""
+    recorded = tmp_path / "policy-port.json"
+    recorded.write_text(json.dumps({"port": 1, "pid": 999999, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+
+    status = policy.status(timeout=1.0)
+    assert not status.running
+    assert "has exited" in status.reason
+    # And the dead claim is gone, so the next caller is told "not running"
+    # rather than being sent to the same dead port.
+    assert not recorded.exists()
+
+
+def test_a_port_file_that_is_not_a_port_is_no_sidecar(monkeypatch, tmp_path):
+    """Corrupt and absent mean the same thing to every caller: nothing to
+    attach to. 70000 is not a port; True is not a port either."""
+    recorded = tmp_path / "policy-port.json"
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+
+    for payload in (
+        '{"port": 70000}',
+        '{"port": true}',
+        '{"port": "5900"}',
+        "not json",
+    ):
+        recorded.write_text(payload)
+        assert policy._read_port() == 0, payload
+
+
+def test_status_with_nothing_installed_names_the_install_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(policy, "venv_dir", lambda: tmp_path / "nope")
+    monkeypatch.setattr(policy, "port_file", lambda: tmp_path / "gone.json")
+    status = policy.status()
+    assert not status.running
+    assert "modelmri policy install" in status.reason
+
+
+def test_a_sidecar_up_with_no_policy_is_not_reported_as_running(monkeypatch, tmp_path):
+    """ "the process exists" and "it can answer what the robot would do" are
+    different states, and only the second is `running`."""
+    httpd, port = _fake_sidecar(
+        _responder({"contract": policy.CONTRACT, "ready": False})
+    )
+    try:
+        state = _status_on(port, monkeypatch, tmp_path)
+        assert not state.running
+        assert state.port == port
+        assert "no policy loaded" in state.reason
+    finally:
+        httpd.shutdown()
+
+
+def test_a_ready_sidecar_reports_what_it_is_holding(monkeypatch, tmp_path):
+    httpd, port = _fake_sidecar(
+        _responder(
+            {
+                "contract": policy.CONTRACT,
+                "ready": True,
+                "policy_repo": "lerobot/smolvla_base",
+                "revision": "deadbeef",
+                "device": "cuda:0",
+                "dtype": "bfloat16",
+                "normalisation": {"mean": [0.0]},
+            }
+        )
+    )
+    try:
+        state = _status_on(port, monkeypatch, tmp_path)
+        assert state.running
+        assert state.policy_repo == "lerobot/smolvla_base"
+        assert state.revision == "deadbeef"
+        assert state.normalisation == {"mean": [0.0]}
+    finally:
+        httpd.shutdown()
+
+
+def test_a_status_route_speaking_the_wrong_contract_is_refused():
+    """The version rides on EVERY exchange, `/status` included. A sidecar can
+    be restarted — upgraded, even — under a live client, and a check that ran
+    once at connect would not see it."""
+    httpd, port = _fake_sidecar(
+        _responder({"contract": policy.CONTRACT + 7, "ready": True})
+    )
+    try:
+        with pytest.raises(policy.SidecarError, match="different wire formats"):
+            policy._get(port, "/status", timeout=5)
+    finally:
+        httpd.shutdown()
+
+
+def _status_on(port: int, monkeypatch, tmp_path):
+    """Point `status` at a fake sidecar by writing the port file it reads."""
+    handle = pathlib.Path(tmp_path) / "policy-port.json"
+    handle.write_text(json.dumps({"port": port, "pid": 0, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: handle)
+    return policy.status(timeout=5.0)
+
+
+def test_loading_a_policy_with_no_sidecar_refuses_rather_than_posting_nowhere(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(policy, "port_file", lambda: tmp_path / "absent.json")
+    with pytest.raises(policy.SidecarError, match="nothing to load a policy into"):
+        policy.load("lerobot/smolvla_base")
+
+
+def test_stop_reports_false_when_this_process_started_nothing(monkeypatch, tmp_path):
+    """It only kills a child of THIS process. Signalling a pid out of a file
+    means signalling whatever inherited that pid after a crash."""
+    monkeypatch.setattr(policy, "port_file", lambda: tmp_path / "absent.json")
+    monkeypatch.setattr(policy, "_CHILD", None)
+    assert policy.stop() is False
+
+
+def test_the_requirement_prefers_the_checkout_over_the_release():
+    """A contributor editing the sidecar wants THEIR copy in the venv; a user
+    who ran `pip install modelmri` wants the published one. This checkout has
+    `packages/modelmri-policy`, so this run must resolve to the local path."""
+    want = policy.requirement()
+    assert want.endswith("[policy]")
+    local = policy.source_dir()
+    if local is not None:
+        assert str(local) in want
+    else:
+        assert want == "modelmri-policy[policy]"
+
+
+def test_an_environment_without_the_sidecar_in_it_is_refused_by_the_handshake(
+    tmp_path,
+):
+    """An install that FINISHES is not an install that WORKS, and the probe is
+    what separates the two.
+
+    Against a REAL empty environment rather than a stub. `--without-pip` makes
+    one in about a third of a second, and it is the honest shape of the
+    failure this catches: a venv that exists, has an interpreter, and cannot
+    import what it was built for. Deliberately not the suite's own interpreter
+    — whether that happens to have `modelmri_policy` on its path is a fact
+    about somebody's machine, and a test that asserts it is testing the
+    machine.
+    """
+    import subprocess
+
+    bare = tmp_path / "bare"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(bare)], check=True
+    )
+
+    with pytest.raises(policy.SidecarError) as caught:
+        policy.probe(policy.python_in(bare))
+    said = str(caught.value)
+    assert "does not have a working" in said
+    assert "install --force" in said
+    # The child's own words, not a swallowed exit code.
+    assert "ModuleNotFoundError" in said or "No module named" in said
+
+
+def test_a_broken_environments_refusal_is_not_re_wrapped(monkeypatch, tmp_path):
+    """`probe` already names the environment, quotes what its interpreter said
+    and gives the remedy. Re-wrapping it would either duplicate that or blur
+    the specifics — and it would interpolate a caught exception's text, which
+    `test_no_exception_leaks` exists to stop."""
+    venv = tmp_path / "policy-venv"
+    where = venv / ("Scripts" if sys.platform == "win32" else "bin")
+    where.mkdir(parents=True)
+    (where / ("python.exe" if sys.platform == "win32" else "python")).write_text("")
+    monkeypatch.setattr(policy, "venv_dir", lambda: venv)
+    monkeypatch.setattr(
+        policy,
+        "probe",
+        lambda _exe: (_ for _ in ()).throw(policy.SidecarError("exact words.")),
+    )
+    with pytest.raises(policy.SidecarError) as caught:
+        policy.install()
+    assert str(caught.value) == "exact words."
+
+
+def test_a_cancelled_install_says_the_environment_is_unusable(monkeypatch, tmp_path):
+    """Half a torch is not a working environment, and "stopped" that leaves
+    somebody thinking otherwise is the wrong message."""
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(policy.SidecarError, match="not usable"):
+        policy._run(
+            [__import__("sys").executable, "-c", "import time; time.sleep(30)"],
+            cancel=cancel,
+            timeout=30.0,
+        )
+
+
+def test_the_child_runner_returns_output_as_well_as_a_code():
+    """The tail exists to be quoted in a refusal — pip puts the reason at the
+    END — so it has to actually arrive."""
+    code, tail = policy._run(
+        [__import__("sys").executable, "-c", "print('hello from the child')"],
+        timeout=60.0,
+    )
+    assert code == 0
+    assert "hello from the child" in tail

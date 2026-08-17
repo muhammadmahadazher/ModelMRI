@@ -957,6 +957,40 @@ export interface VLAHeat {
 
 export const getVLA = () => fetch("/api/vla").then((r) => json<VLAStatus>(r));
 
+/** The ACTION half of a robot policy, which lives in another process.
+ *
+ *  `VLAStatus` above describes the vision tower this server holds — where a
+ *  policy LOOKED. This describes the sidecar that would say what it would DO.
+ *  They are separate because lerobot's pins cannot share an environment with
+ *  ModelMRI's, and the panel shows them separately for the same reason: on
+ *  most machines one is loaded and the other is not, and a single "VLA" light
+ *  would have to pick one of those to lie about. */
+export interface PolicyStatus {
+  running: boolean;
+  /** The wire version the sidecar answered with. `null` when none answered. */
+  contract: number | null;
+  policy_repo: string;
+  revision: string;
+  device: string;
+  dtype: string;
+  /** Empty means the policy did not publish its action statistics — which
+   *  means an overlay against a dataset's recorded actions must be refused,
+   *  never drawn on an assumed identity scale. */
+  normalisation: Record<string, number[]>;
+  port: number;
+  reason: string;
+  means: string;
+  installed: boolean;
+  venv: string;
+  contract_here: number;
+  install_hint: string;
+  venv_disk_bytes: number;
+  assumed_policy_bytes: number;
+}
+
+export const getPolicy = () =>
+  fetch("/api/policy").then((r) => json<PolicyStatus>(r));
+
 /** Load a policy's vision tower. Blank repo = the server's default.
  *
  *  Any checkpoint carrying a vision tower works: the tensor prefix and the
