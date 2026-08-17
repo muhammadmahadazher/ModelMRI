@@ -1033,6 +1033,64 @@ def policy_command(args) -> int:
     return 2
 
 
+def scan_weights(target, *, as_json: bool = False, limit: int = 200) -> int:
+    """`modelmri scan` — look inside weights before anything loads them.
+
+    Exit 1 when something dangerous is found, so this drops into CI. An
+    UNSCANNED file is exit 0 and is still printed: refusing every format the
+    scanner cannot read would make the gate a function of its own coverage,
+    and most of what it cannot read is harmless. What it must never do is
+    print "safe" for a file nobody looked inside.
+    """
+    from pathlib import Path
+
+    from . import weights_scan
+
+    where = Path(target).expanduser()
+    reports = (
+        weights_scan.scan_dir(where, limit=limit)
+        if where.is_dir()
+        else [weights_scan.scan(where)]
+    )
+    if as_json:
+        print(json.dumps([r.to_dict() for r in reports], indent=2))
+        return 1 if any(r.dangerous for r in reports) else 0
+
+    print(f"ModelMRI {__version__} — what is inside {where}")
+    print()
+    if not reports:
+        print("  nothing weight-shaped here.")
+        return 0
+
+    mark = {
+        weights_scan.DANGEROUS: "DANGER",
+        weights_scan.UNSCANNED: "  --  ",
+        weights_scan.SAFE: "  ok  ",
+    }
+    for r in reports:
+        print(f"  {mark[r.verdict]} {Path(r.path).name}")
+        for f in r.findings:
+            for line in _wrap(f"{f.kind}: {f.detail}", 66):
+                print(f"           {line}")
+        if r.verdict == weights_scan.UNSCANNED and r.reason:
+            for line in _wrap(r.reason, 66):
+                print(f"           {line}")
+
+    bad = [r for r in reports if r.dangerous]
+    unknown = [r for r in reports if r.verdict == weights_scan.UNSCANNED]
+    print()
+    if bad:
+        for line in _wrap(bad[0].means(), 76):
+            print(f"  {line}")
+    else:
+        print(
+            f"  {len(reports)} file(s) read, nothing executable found. "
+            f"{len(unknown)} could not be read and are reported as unscanned "
+            f"rather than clean."
+        )
+    return 1 if bad else 0
+
+
 def uninstall(*, yes: bool = False, models: bool = False) -> int:
     """Remove everything ModelMRI has written, after showing what that is.
 
@@ -1469,6 +1527,19 @@ def main() -> None:
     )
     policy_status.add_argument("--json", action="store_true", help="machine-readable")
 
+    scanner = sub.add_parser(
+        "scan",
+        help="Look inside weights for anything that executes on load",
+    )
+    scanner.add_argument("path", help="a checkpoint, or a directory of them")
+    scanner.add_argument("--json", action="store_true", help="machine-readable")
+    scanner.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="how many files a directory walk may read (default 200)",
+    )
+
     remove = sub.add_parser(
         "uninstall", help="Remove everything ModelMRI has written to this machine"
     )
@@ -1595,6 +1666,8 @@ def main() -> None:
         raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
     elif args.command == "policy":
         raise SystemExit(policy_command(args))
+    elif args.command == "scan":
+        raise SystemExit(scan_weights(args.path, as_json=args.json, limit=args.limit))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":

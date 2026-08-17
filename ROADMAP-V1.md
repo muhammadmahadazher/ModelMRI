@@ -83,15 +83,102 @@ CI-gateable with the machinery that already exists.
 
 ## Theme B — Close every competitor gap
 
-Driven by a live analysis rather than a guess, so the list is not written
-here: it is produced by comparing what ships against what every tool in the
-category offers, verified against the repo before anything is called a gap.
+Not guessed. A five-lens sweep across mechanistic-interpretability tooling,
+observability platforms, model-debugging tools, vision/diffusion
+interpretability and robotics analysis raised **79 candidate gaps**; each was
+then checked against this repo before it counted, and **37 survived**. Three
+were already shipped and are recorded as such.
 
-The standing rule for this theme: **parity is not the target.** For each gap,
-either build the better version or write down why the competitor's approach is
-wrong for a local-first tool that refuses to fabricate. Copying a cloud
-platform's feature into a laptop tool usually produces a worse version of
-both.
+The standing rule: **parity is not the target.** For each gap, either build
+the better version or write down why the competitor's approach is wrong for a
+local-first tool that refuses to fabricate.
+
+### B0. The one that is a hole in our own posture — do this first
+
+**Scan the weights before loading them.** ModelMRI downloads arbitrary
+checkpoints from the Hub onto somebody's laptop, checks the *size* with
+`capacity.guard`, and then calls `from_pretrained` on them without ever asking
+what is inside. It also accepts user-supplied `adapter.py` and TorchScript as
+a documented feature. It already knows this risk class exists — `circuit.py`
+reads `.pt` through a restricted unpickler — and applies the defence in
+exactly one place.
+
+*Who has it:* promptfoo's ModelAudit scans 30+ formats for malicious pickle
+opcodes, decode-exec chains, unsafe Keras Lambda layers, embedded
+PE/ELF/Mach-O, hidden credentials and zip bombs.
+
+*How we beat it:* every reader this needs is already here — the safetensors
+header parser in `fit.py`, the stdlib GGUF reader, the restricted unpickler in
+`circuit.py`. promptfoo scans a file you point it at; ModelMRI can **refuse to
+load one**, enforced on the download path beside the disk and VRAM refusals.
+An unrecognised format reports as *unscanned, with the reason* — never clean —
+the rule `gguf_read` already applies to unknown ggml types.
+
+### B1. Datasets and experiments as first-class objects
+
+The single load-bearing abstraction all thirteen observability platforms
+share, and the one this does not have. `sweep` runs one metric over many
+prompts; `diff` compares two `.mri` of the *same* prompt. Neither answers
+"did my edit help on the 40 cases I care about".
+
+*How we beat it:* every competitor's experiment row holds an output and a
+score. Ours can hold the output, the score, **and the receipt plus the
+internals that produced it** — so a regression row says the top-5 head ranking
+changed and the patching site at (attn, L14, p7) flipped sign, not just
+"faithfulness 0.71 → 0.63". JSONL on disk, no server; comparison as a
+torch-free extension of `modelmri diff` so it runs in CI in milliseconds.
+
+### B2. The cheap ones with real value
+
+- **Trace → dataset.** A recorded failure currently leaves the loop. Curation
+  needs no model at all, so we can do offline exactly what Braintrust needs a
+  cloud LLM for. The row is *evidence*; naming the failure mode is the
+  fabrication we already refuse.
+- **Resumable long runs.** A sweep that dies at prompt 180 of 200 starts over.
+  Losing four hours to a sleeping laptop is a worse failure than any missing
+  feature here. `budget.py` already prices the remainder in exact passes.
+- **Trajectory comparison.** Everybody scores this with an LLM judge. It is a
+  sequence alignment — exact, offline, milliseconds — and it fits the
+  no-verdicts rule: report *2 steps missing, 1 extra, 3 with changed
+  arguments*, never "Plan Adherence 0.71", because a shorter path is not a
+  worse path.
+- **A named scorer library**, but only the metrics that need no model — and
+  each one carrying its own **measured** error rate, the way `steer_vectors`
+  publishes CAA 16.0% / RepE 13.0% against its own shuffled null. A catalogue
+  whose entries carry a measured false-positive rate is a different product
+  from one whose entries carry a docstring.
+- **Numeric health and a weight/architecture table** for the loaded model —
+  what Netron and TensorBoard's Debugger V2 give, on a model that is live.
+
+### B3. Interpretability the field has and we do not
+
+Gradient attribution with the completeness check, anchors (minimal
+*sufficient* token sets with measured precision), counterfactual generation,
+attribution patching as a first-order screen before the exact grid, QK/OV
+circuits as factored matrices, a raw-neuron browser with NMF for models with
+no SAE, and SAE fidelity metrics (CE-recovered, L0) on your own model.
+
+Plus the one that is embarrassing to lack: **corpus evidence for an attention
+head**, the way we already have it for an SAE feature.
+
+### B4. Robotics, now that the sidecar exists
+
+OOD scoring per frame, a synchronised multi-track episode timeline, export to
+MCAP and `.rrd` so findings open in Foxglove and Rerun, dataset-level action
+statistics, and ACT-family policies — the most common architecture in the
+category, which we cannot open at all.
+
+*(Predicted-vs-recorded action was raised as a gap and shipped as ROADMAP #50
+while this analysis was running.)*
+
+### What we are deliberately not building
+
+Cloud-shaped features that would require abandoning local-first: hosted
+leaderboards, seat-priced annotation, remote inference against a shared
+cluster. And every **score** a competitor sells that we would have to
+fabricate — risk scores, OWASP compliance letters, Plan Adherence numbers.
+Where the underlying question is real, we answer it with counts and a receipt
+instead.
 
 ---
 

@@ -452,8 +452,19 @@ def nearby_model_classes(weights: Path) -> list[tuple[str, str]]:
 
 
 def load_torchscript(path: Path):
-    """Load a TorchScript archive, or explain why a plain checkpoint can't be."""
+    """Load a TorchScript archive, or explain why a plain checkpoint can't be.
+
+    Scanned BEFORE `torch.jit.load` touches it. A TorchScript archive is a zip
+    that can carry pickles, and `jit.load` unpickles them — so the window
+    between "the user chose this file" and "arbitrary code has run" is this
+    call. The scan closes it, and a dangerous file is a refusal with the
+    finding named rather than a warning printed after the fact.
+    """
     import torch
+
+    from . import weights_scan
+
+    weights_scan.guard(path)
 
     try:
         return torch.jit.load(str(path), map_location="cpu")
