@@ -320,3 +320,24 @@ def test_the_browse_list_excludes_models_with_no_visual_evidence():
         assert "ForCausalLM" not in m.architecture, (
             f"{m.path} is a causal LM and should not be in the image list"
         )
+
+
+def test_the_family_label_has_one_home():
+    """Three callers were reading `_FAMILY_LABEL` directly and a fourth was
+    about to. A second place that decides what a family is CALLED is a second
+    place for the name to drift."""
+    from modelmri import imaging
+
+    assert imaging.label(imaging.SEGMENTATION) == "a segmentation model"
+    assert imaging.label(imaging.UNET_DIFFUSION) == "a UNet diffusion model"
+
+
+def test_an_unrecognised_family_is_not_echoed_back_at_the_reader():
+    """An identifier printed at somebody is not a label. A name this does not
+    know falls through to the UNKNOWN sentence rather than appearing raw in
+    the middle of a refusal."""
+    from modelmri import imaging
+
+    said = imaging.label("something_nobody_added_here")
+    assert "something_nobody_added_here" not in said
+    assert said == imaging.label(imaging.UNKNOWN)

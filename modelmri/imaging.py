@@ -153,6 +153,19 @@ _FAMILY_LABEL = {
     UNKNOWN: "an architecture this does not recognise",
 }
 
+
+def label(family: str) -> str:
+    """The family in prose, for anything that has a family but no `ImageModel`.
+
+    `ImageModel.to_dict` and `means` already read this table; a third caller
+    reaching into `_FAMILY_LABEL` would be a third place that decides what a
+    family is called, and they drift. An unrecognised name falls through to
+    the UNKNOWN sentence rather than being echoed back at somebody — an
+    identifier printed at a reader is not a label.
+    """
+    return _FAMILY_LABEL.get(family, _FAMILY_LABEL[UNKNOWN])
+
+
 # The safetensors header is a little-endian u64 length followed by that many
 # bytes of JSON. Bounded because the length is read from the file: a corrupt
 # or hostile one can claim the header is 16 exabytes, and `read(n)` would
@@ -194,7 +207,7 @@ class ImageModel:
         return {
             "path": self.path,
             "family": self.family,
-            "label": _FAMILY_LABEL.get(self.family, _FAMILY_LABEL[UNKNOWN]),
+            "label": label(self.family),
             "architecture": self.architecture,
             "pipeline": self.pipeline,
             "components": dict(self.components),
@@ -218,7 +231,7 @@ class ImageModel:
                 f"something that does."
             ).strip()
 
-        label = _FAMILY_LABEL[self.family]
+        name = label(self.family)
         detail = ""
         if self.family in (UNET_DIFFUSION, DIT_DIFFUSION):
             if self.cross_attention_dim:
@@ -234,7 +247,7 @@ class ImageModel:
                     "any would be inventing them."
                 )
         return (
-            f"{self.architecture or self.pipeline or 'This'} is {label}."
+            f"{self.architecture or self.pipeline or 'This'} is {name}."
             f"{detail} What ModelMRI can measure on it: "
             f"{', '.join(self.capabilities) or 'nothing yet'}."
         )

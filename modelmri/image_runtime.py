@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -199,14 +200,19 @@ class ImageHandle:
         from . import imaging
 
         with self._lock:
-            local = _resolve(repo)
+            # Configs only. The family decides both whether this is loadable
+            # at all and WHICH loader opens it, and both answers are in a few
+            # kilobytes of JSON — so neither costs a download.
+            local = _resolve_configs(repo)
             found = imaging.detect(local)
             if not found.known:
-                # Refused before a byte is downloaded or scanned. A panel drawn
-                # for the wrong family is a picture of something that does not
-                # exist.
+                # Refused before a weight is downloaded or scanned. A panel
+                # drawn for the wrong family is a picture of something that
+                # does not exist.
                 raise Refusal(found.means())
 
+            # Only now do the weights move.
+            local = _resolve(repo)
             self._scan(local)
             resident = _weights_bytes(local)
             _guard(
@@ -217,7 +223,7 @@ class ImageHandle:
             )
 
             pipe, chosen_device, chosen_dtype, seconds = _load_pipeline(
-                local, device=device, dtype=dtype
+                local, family=found.family, device=device, dtype=dtype
             )
             self.pipe = pipe
             self.status_ = ImageStatus(
@@ -273,11 +279,67 @@ class ImageHandle:
                 raise weights_scan.Unsafe(report.means())
 
 
+# The JSON a family can be named from. Kilobytes, and every one of them is
+# read by `imaging.detect` — `model_index.json` for a pipeline,
+# `config.json` for a single transformers checkpoint, `*/config.json` for a
+# pipeline's components.
+_CONFIG_PATTERNS = ["*.json", "*/*.json"]
+
+
+def _resolve_configs(repo: str) -> Path:
+    """Enough of `repo` to say WHAT it is, and nothing that weighs anything.
+
+    The order in `load` claims that every step refuses before the next one
+    costs anything, and for a while step zero quietly broke that promise:
+    `_resolve` downloaded the entire repository, and only then did
+    `imaging.detect` get a chance to say the family was one nothing here can
+    open. Asking this tool to read `facebook/sam3` spent **fifteen minutes**
+    pulling eight files and then raised a `diffusers` `OSError` about a
+    missing `model_index.json` — a refusal that was knowable from a 4 KB
+    config before a single weight moved.
+
+    So the configs come down first. On a second call `snapshot_download`
+    serves both from the same cache entry, so the JSON is not fetched twice
+    and the weights are not fetched at all if the family is refused.
+    """
+    return _snapshot(repo, _CONFIG_PATTERNS)
+
+
 def _resolve(repo: str) -> Path:
     """A local directory for `repo`, downloading only if it is not cached.
 
     A path that exists is used as-is, so somebody can point at a pipeline that
     never came from the Hub — the same rule `custom.py` follows.
+    """
+    # Weights and configs. No `.ckpt`/`.pt` mirrors of the same tensors, which
+    # are usually duplicates and always pickles. `.bin` included, because most
+    # published pipelines still ship it and excluding it downloaded a
+    # directory of configs with no weights in it — `from_pretrained` then
+    # failed with a confusing message about a missing file rather than the
+    # honest one.
+    #
+    # It is a pickle, and that is not waved through: `_scan` walks every one
+    # before anything loads, which is the whole reason that step is in the
+    # sequence.
+    return _snapshot(
+        repo,
+        [
+            *_CONFIG_PATTERNS,
+            "*.txt",
+            "*.safetensors",
+            "*.bin",
+            "*/*.txt",
+            "*/*.safetensors",
+            "*/*.bin",
+        ],
+    )
+
+
+def _snapshot(repo: str, allow: list) -> Path:
+    """One cache entry, fetched to whatever depth the caller asked for.
+
+    A path that exists is used as-is, so somebody can point at a checkpoint
+    that never came from the Hub — the same rule `custom.py` follows.
     """
     candidate = Path(repo).expanduser()
     if candidate.is_dir():
@@ -291,26 +353,7 @@ def _resolve(repo: str) -> Path:
         snapshot_download(
             repo_id=repo,
             cache_dir=str(paths.hf_hub_cache()),
-            # Weights and configs. No `.ckpt`/`.pt` mirrors of the same
-            # tensors, which are usually duplicates and always pickles.
-            # `.bin` included, because most published pipelines still ship it
-            # and excluding it downloaded a directory of configs with no
-            # weights in it — `from_pretrained` then failed with a confusing
-            # message about a missing file rather than the honest one.
-            #
-            # It is a pickle, and that is not waved through: `_scan` walks
-            # every one before anything loads, which is the whole reason that
-            # step is in the sequence.
-            allow_patterns=[
-                "*.json",
-                "*.txt",
-                "*.safetensors",
-                "*.bin",
-                "*/*.json",
-                "*/*.txt",
-                "*/*.safetensors",
-                "*/*.bin",
-            ],
+            allow_patterns=list(allow),
         )
     )
 
@@ -373,19 +416,36 @@ def _guard(
     )
 
 
-def _load_pipeline(local: Path, *, device: str, dtype: str):
-    """`DiffusionPipeline.from_pretrained`, with the choices stated."""
-    import torch
+# Which loader opens which family, most specific first.
+#
+# `imaging.detect` already names every family this tool claims to read, and
+# for a while `_load_pipeline` only knew ONE of them. Every ViT, CLIP,
+# detector, segmenter and VLM went through `DiffusionPipeline.from_pretrained`
+# and came back as a raw `diffusers` OSError about a missing
+# `model_index.json` — a sentence about a file the user never heard of, for a
+# checkpoint that is not a pipeline and was never going to have one.
+#
+# The fallback to `AutoModel` is the point of the tuples rather than a single
+# name: a checkpoint for a family whose task head transformers does not
+# expose still loads as a bare backbone, which is enough for `weights_scan`,
+# the weight table, and patch attention. What is NOT done is silently
+# pretending it loaded as the head — `_load_transformers` reports which class
+# actually opened it, and `imaging` decides capabilities from the family, so
+# a bare backbone never claims a head's measurements.
+_TRANSFORMERS_LOADERS = {
+    imaging.VIT: ("AutoModelForImageClassification", "AutoModel"),
+    imaging.CLIP: ("AutoModel",),
+    imaging.DETECTION: ("AutoModelForObjectDetection", "AutoModel"),
+    imaging.SEGMENTATION: ("AutoModelForSemanticSegmentation", "AutoModel"),
+    imaging.VLM: ("AutoModelForVision2Seq", "AutoModel"),
+}
 
-    try:
-        from diffusers import DiffusionPipeline
-    except ImportError:
-        raise Refusal(
-            "Reading a diffusion pipeline needs the `diffusers` package, "
-            "which is not installed. `pip install 'modelmri[image]'` adds it "
-            "— it is optional because most people open a language model and "
-            "should not pay for a dependency they will never import."
-        ) from None
+_DIFFUSION_FAMILIES = frozenset({imaging.UNET_DIFFUSION, imaging.DIT_DIFFUSION})
+
+
+def _load_pipeline(local: Path, *, family: str, device: str, dtype: str):
+    """Open the checkpoint with the loader its FAMILY actually needs."""
+    import torch
 
     from . import devices
 
@@ -398,7 +458,45 @@ def _load_pipeline(local: Path, *, device: str, dtype: str):
     torch_dtype = getattr(torch, want_dtype, torch.float32)
 
     t0 = time.time()
-    pipe = DiffusionPipeline.from_pretrained(
+    if family in _DIFFUSION_FAMILIES:
+        model = _load_diffusion(local, torch_dtype)
+    elif family in _TRANSFORMERS_LOADERS:
+        model = _load_transformers(local, family, torch_dtype)
+    else:
+        # Unreachable through `load`, which refuses an unknown family before
+        # it gets here. Stated anyway: a family added to `imaging` and not to
+        # this table must say so rather than fall through to whichever loader
+        # happens to be written first.
+        raise Refusal(
+            f"`{family}` is a family this tool can identify but has no loader "
+            f"for yet, so there is nothing honest to open it with. It was "
+            f"named rather than guessed at, and nothing was loaded."
+        )
+
+    model = model.to(want_device)
+    # Inference only. A pipeline left in train mode still builds a graph, the
+    # memory that costs is memory the measurement wanted, and `vision_attr`
+    # refuses a training-mode model outright because dropout makes the same
+    # input give a different answer every pass.
+    if hasattr(model, "set_progress_bar_config"):
+        model.set_progress_bar_config(disable=True)
+    if hasattr(model, "eval"):
+        model.eval()
+    return model, str(want_device), str(want_dtype), time.time() - t0
+
+
+def _load_diffusion(local: Path, torch_dtype):
+    try:
+        from diffusers import DiffusionPipeline
+    except ImportError:
+        raise Refusal(
+            "Reading a diffusion pipeline needs the `diffusers` package, "
+            "which is not installed. `pip install 'modelmri[image]'` adds it "
+            "— it is optional because most people open a language model and "
+            "should not pay for a dependency they will never import."
+        ) from None
+
+    return DiffusionPipeline.from_pretrained(
         str(local),
         torch_dtype=torch_dtype,
         # NEVER downloaded silently. A pipeline that needs code from the Hub
@@ -408,12 +506,63 @@ def _load_pipeline(local: Path, *, device: str, dtype: str):
         safety_checker=None,
         requires_safety_checker=False,
     )
-    pipe = pipe.to(want_device)
-    # Inference only. A pipeline left in train mode still builds a graph, and
-    # the memory that costs is memory the measurement wanted.
-    if hasattr(pipe, "set_progress_bar_config"):
-        pipe.set_progress_bar_config(disable=True)
-    return pipe, str(want_device), str(want_dtype), time.time() - t0
+
+
+def _load_transformers(local: Path, family: str, torch_dtype):
+    """A single transformers checkpoint, through the first class that opens it.
+
+    Each candidate is tried in turn and the LAST failure is what gets
+    reported. Reporting the first would name `AutoModelForObjectDetection`
+    for a checkpoint whose only real problem is a corrupt weight file, which
+    sends somebody looking for a head that was never the issue.
+    """
+    import transformers
+
+    # transformers 5 renamed `torch_dtype` to `dtype` and warns on every load
+    # that still uses the old name; 4.x only knows the old one. Both
+    # `from_pretrained`s take `**kwargs`, so the signature cannot be asked and
+    # the installed version is the only thing that answers. Read, not assumed:
+    # pinning either name breaks on half the versions this supports.
+    dtype_kw = "torch_dtype"
+    try:
+        if int(str(transformers.__version__).split(".")[0]) >= 5:
+            dtype_kw = "dtype"
+    except (AttributeError, ValueError):
+        # A build with no parseable version. The older keyword is the safer
+        # guess because 5 still accepts it, warning; 4 rejects the new one.
+        pass
+
+    last = None
+    for name in _TRANSFORMERS_LOADERS[family]:
+        auto = getattr(transformers, name, None)
+        if auto is None:
+            # This transformers build does not ship that class. Not an error:
+            # the next candidate is there precisely for this.
+            continue
+        try:
+            return auto.from_pretrained(
+                str(local),
+                # Same rule as the diffusion path, for the same reason.
+                trust_remote_code=False,
+                **{dtype_kw: torch_dtype},
+            )
+        except Exception as err:
+            last = err
+
+    # The exception TYPE, never its text. `from_pretrained` puts absolute
+    # paths from this machine into its messages, and a refusal is something a
+    # user pastes into an issue.
+    why = (
+        type(last).__name__
+        if last is not None
+        else "the installed transformers ships none of the classes for it"
+    )
+    raise Refusal(
+        f"This is {imaging.label(family)}, and none of the loaders for that "
+        f"family could open it: {why}. The checkpoint was identified from its "
+        f"config before anything was loaded, so this is about the weights "
+        f"rather than about what it is."
+    ) from last
 
 
 def _free() -> None:

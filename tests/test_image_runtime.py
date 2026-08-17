@@ -215,3 +215,97 @@ def test_the_status_carries_what_can_be_measured(tmp_path, monkeypatch):
     status = ir.ImageHandle().load(str(_pipeline(tmp_path, mb=1)))
     assert "cross_attention" in status.capabilities
     assert status.to_dict()["capabilities"] == status.capabilities
+
+
+# -------------------------------------------- one loader per family it names
+
+
+def test_every_family_imaging_can_name_has_a_loader():
+    """The defect this locks: `imaging.detect` named seven families and
+    `_load_pipeline` knew ONE of them.
+
+    Every ViT, CLIP, detector, segmenter and VLM went through
+    `DiffusionPipeline.from_pretrained` and came back as a raw `diffusers`
+    OSError about a missing `model_index.json` — a sentence about a file the
+    user never heard of, for a checkpoint that is not a pipeline and was
+    never going to have one. Measured on a real one: `facebook/sam3` spent
+    fifteen minutes downloading and then said that.
+
+    Structural on purpose. Adding a family to `imaging` without a loader has
+    to fail here rather than at the end of somebody's download.
+    """
+    from modelmri import imaging
+
+    named = {
+        imaging.UNET_DIFFUSION,
+        imaging.DIT_DIFFUSION,
+        imaging.VIT,
+        imaging.CLIP,
+        imaging.DETECTION,
+        imaging.SEGMENTATION,
+        imaging.VLM,
+    }
+    covered = set(ir._TRANSFORMERS_LOADERS) | set(ir._DIFFUSION_FAMILIES)
+    assert named <= covered, f"no loader for {named - covered}"
+    # UNKNOWN must NOT be covered: it is refused before a loader is chosen,
+    # and giving it one would be giving a guess a way to run.
+    assert imaging.UNKNOWN not in covered
+
+
+def test_a_family_with_no_loader_is_named_rather_than_guessed_at(monkeypatch):
+    """Unreachable through `load`, which refuses an unknown family first.
+    Stated anyway — a family added to `imaging` and not to the table must say
+    so rather than fall through to whichever loader is written first."""
+    with pytest.raises(Refusal) as caught:
+        ir._load_pipeline(
+            __import__("pathlib").Path("."),
+            family="a_family_nobody_wrote_a_loader_for",
+            device="cpu",
+            dtype="float32",
+        )
+    said = str(caught.value)
+    assert "a_family_nobody_wrote_a_loader_for" in said
+    assert "no loader" in said
+    assert "nothing was loaded" in said
+
+
+def test_the_configs_come_down_before_any_weight_does(monkeypatch):
+    """The order in `load` claims each step refuses before the next one costs
+    anything, and step zero used to break that promise: `_resolve` pulled the
+    whole repository, and only then did `imaging.detect` get to say the family
+    was one nothing here can open.
+
+    Measured after the fix on a real uncached repo: 1,083 bytes fetched, zero
+    weight files on disk, refused in 3.5s.
+    """
+    asked = []
+
+    def _spy(repo, allow):
+        asked.append(list(allow))
+        return __import__("pathlib").Path(".")
+
+    monkeypatch.setattr(ir, "_snapshot", _spy)
+    ir._resolve_configs("owner/name")
+    assert asked == [["*.json", "*/*.json"]]
+    assert not any(p.endswith((".safetensors", ".bin")) for p in asked[0]), (
+        "a config fetch must not name a weight pattern"
+    )
+
+
+def test_the_weight_fetch_is_a_superset_of_the_config_fetch(monkeypatch):
+    """Otherwise the second call re-downloads JSON the first already has, or
+    worse, arrives at a directory missing the config that named the family."""
+    asked = []
+    monkeypatch.setattr(
+        ir,
+        "_snapshot",
+        lambda repo, allow: (
+            asked.append(list(allow)),
+            __import__("pathlib").Path("."),
+        )[1],
+    )
+    ir._resolve_configs("owner/name")
+    ir._resolve("owner/name")
+    configs, weights = asked
+    assert set(configs) <= set(weights)
+    assert "*.safetensors" in weights
