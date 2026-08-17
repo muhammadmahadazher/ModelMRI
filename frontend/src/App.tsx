@@ -11,6 +11,7 @@ import {
   unloadModel,
 } from "./api";
 import AgentsPanel from "./AgentsPanel";
+import CategoryBar from "./CategoryBar";
 import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
@@ -266,6 +267,11 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Under the .mri bar, above everything it filters. It reads the page
+          rather than carrying a list, so it is correct by construction — see
+          the file for why that matters more here than it looks. */}
+      <CategoryBar />
 
       <SessionBar session={session} onChange={setSession} />
 

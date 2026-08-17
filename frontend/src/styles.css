@@ -5141,3 +5141,83 @@ main > [id^="sec-"] {
   .pgraph-node { transition: none; }
   .pgraph-node.on { transform: translate(-50%, -50%); }
 }
+
+/* ── filter the page by what you came to inspect ─────────────────────────
+   Chips, not tabs. Tabs claim the content below is a different PAGE, and it
+   is not: hiding here is `display: none`, so a panel that was mid-measurement
+   when you switched is still mid-measurement when you switch back. Unmounting
+   would silently cancel a forward pass somebody is waiting on. */
+.cat-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-2);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-pill);
+  background: var(--sf-sunk);
+  box-shadow: var(--etch);
+}
+
+.cat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--color-mute);
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background var(--dur-small) var(--ease),
+    color var(--dur-small) var(--ease),
+    border-color var(--dur-small) var(--ease),
+    box-shadow var(--dur-small) var(--ease);
+}
+.cat-chip:hover { color: var(--color-ink); background: var(--sf-ground); }
+
+/* The selected chip is a RAISED plate on a sunken rail — the same material
+   logic the panels use, so "this one is chosen" reads without a colour that
+   would compete with the section dots. */
+.cat-chip.on {
+  background: var(--sf-plate);
+  border-color: var(--hair);
+  color: var(--color-ink);
+  box-shadow: var(--rim), var(--e1);
+}
+.cat-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--acc) 28%, transparent);
+}
+
+/* How much is behind a chip, before you press it. The difference between a
+   filter and a guess. */
+.cat-count {
+  min-width: 1.4em;
+  padding: 1px 5px;
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--color-mute) 16%, transparent);
+  font-size: var(--t-3xs);
+  text-align: center;
+}
+.cat-chip.on .cat-count {
+  background: color-mix(in oklab, var(--acc) 18%, transparent);
+  color: var(--acc);
+}
+
+/* Set by CategoryBar on each .panel. An attribute rather than a class so the
+   filter never fights React over className. */
+.panel[data-mri-hidden="1"] { display: none; }
+
+@media (max-width: 560px) {
+  .cat-bar { border-radius: var(--r-well); }
+  .cat-chip { padding: 6px 10px; }
+}
