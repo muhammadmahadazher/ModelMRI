@@ -663,11 +663,11 @@ def create_app(
             # moves. Still a plain ValueError there, and this arm answers the
             # same 422 the pull path does — the two must not drift, which is
             # why capacity.guard is shared between them in the first place.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/model/load")
 
@@ -688,7 +688,7 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.unload)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/model/unload")
 
@@ -748,9 +748,9 @@ def create_app(
         try:
             return hub.sign_in(req.token).to_dict()
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/hub/signin")
 
@@ -769,9 +769,9 @@ def create_app(
                 return await asyncio.to_thread(hub.suggested)
             return await asyncio.to_thread(hub.search, q, limit)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/hub/models")
 
@@ -913,9 +913,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/ollama/pull")
 
@@ -983,10 +983,10 @@ def create_app(
             # plain RuntimeErrors into Refusals at the call, which is what
             # lets this handler tell them apart from the next arm.
             await _file(rec, str(err))
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
             await _file(rec, str(err))
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             # CUDA out of memory, a streamer timeout, an architecture
             # transformers cannot run eagerly. These were 409s carrying
@@ -1015,9 +1015,9 @@ def create_app(
             status = await asyncio.to_thread(runtime.load_sae, req.repo, req.hook)
             return asdict(status)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/sae/load")
 
@@ -1026,9 +1026,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.features_summary, top_k)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/features/summary")
 
@@ -1111,9 +1111,9 @@ def create_app(
                 runtime.rank_features, position, scope, top_k
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             # A full GPU is not a conflict. `rank_features` translates only
             # FeatureAblationError, so a torch OOM during 262 forward passes —
@@ -1126,9 +1126,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.feature_detail, feature_id)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/features/{feature_id}")
 
@@ -1137,9 +1137,9 @@ def create_app(
         try:
             return runtime.set_steering(req.feature_id, req.scale)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/steer")
 
@@ -1202,9 +1202,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.logit_lens, top_k, kind)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/lens")
 
@@ -1255,9 +1255,9 @@ def create_app(
                 top_k=int(body.get("top_k") or 10),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/features/evidence")
 
@@ -1294,7 +1294,7 @@ def create_app(
             try:
                 prompts, _ = fc.load_corpus(str(body["file"]))
             except BadRequest as err:
-                return JSONResponse({"error": str(err)}, status_code=422)
+                return JSONResponse({"error": err.sentence}, status_code=422)
         if not isinstance(prompts, list):
             return JSONResponse(
                 {
@@ -1328,9 +1328,9 @@ def create_app(
                 include_tokens=bool(body.get("include_tokens")),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/diff/models")
 
@@ -1358,9 +1358,9 @@ def create_app(
                 grid=int(body.get("grid") or 0),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/ablate")
 
@@ -1397,7 +1397,7 @@ def create_app(
             try:
                 texts, _ = fc.load_corpus(str(body["file"]))
             except BadRequest as err:
-                return JSONResponse({"error": str(err)}, status_code=422)
+                return JSONResponse({"error": err.sentence}, status_code=422)
             # Blank line between lines, because that is exactly what
             # `ground.split` treats as a passage boundary — a corpus file's
             # one-per-line convention would otherwise arrive as a single
@@ -1421,9 +1421,9 @@ def create_app(
                 max_chunks=int(body.get("max_chunks") or 0),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/ground")
 
@@ -1461,9 +1461,9 @@ def create_app(
                 max_new_tokens=int(body.get("max_new_tokens") or 12),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patchscope")
 
@@ -1489,9 +1489,9 @@ def create_app(
                 position=int(body.get("position", -1)),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch/path")
 
@@ -1516,9 +1516,9 @@ def create_app(
                 save_as=str(body.get("save_as") or ""),
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/probe")
 
@@ -1536,9 +1536,9 @@ def create_app(
                 runtime.head_types, seq_len, n_sequences, seed
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/types")
 
@@ -1555,9 +1555,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.direct_attribution, position, top_k)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/direct")
 
@@ -1619,9 +1619,9 @@ def create_app(
             )
             return out
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/lens/tune")
 
@@ -1684,7 +1684,7 @@ def create_app(
             # test_smoke.py::test_custom_load_never_500s_on_a_users_broken_adapter,
             # which asserts "ModuleNotFoundError" reaches the browser at 422 —
             # still true, through AdapterError.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/load")
         return status.to_dict()
@@ -1700,7 +1700,7 @@ def create_app(
             # also allocates the example tensor and installs the hooks, and
             # both of those are ModelMRI's — a CUDA OOM while building
             # `torch.randn(*shape)` is not a fact about the user's file.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/run")
 
@@ -1753,7 +1753,7 @@ def create_app(
                 "roots": [str(r) for r in custom.allowed_roots()],
             }
         except AdapterError as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/custom/scan")
 
@@ -1990,10 +1990,10 @@ def create_app(
             # what to do" BEFORE a twenty-minute download, and a reader was
             # shown a crash instead. Four other capacity-gated routes have
             # carried this arm since they were written; this one did not.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
-            return JSONResponse({"error": str(err)}, status_code=code)
+            return JSONResponse({"error": err.sentence}, status_code=code)
         except Exception as err:
             return _internal(err, "/api/image/load")
 
@@ -2042,7 +2042,7 @@ def create_app(
         try:
             handle = _image_can("cross_attention")
         except (Refusal, BadRequest) as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         try:
             run = await asyncio.to_thread(
@@ -2054,9 +2054,9 @@ def create_app(
             )
             return run.to_dict()
         except (image_attention.NotSupported, Refusal) as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/image/attention")
 
@@ -2073,7 +2073,7 @@ def create_app(
         try:
             handle = _image_can("token_knockout")
         except (Refusal, BadRequest) as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         if not req.words:
             return JSONResponse(
                 {
@@ -2097,9 +2097,9 @@ def create_app(
                 steps=req.steps,
             )
         except (image_attention.NotSupported, Refusal) as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/image/knockout")
 
@@ -2128,7 +2128,7 @@ def create_app(
                 kwargs["threshold"] = float(threshold)
             return image_steps.plan(int(steps), **kwargs)
         except (Refusal, BadRequest) as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
     @app.get("/api/weights/cost")
     def weights_cost(exhaustive: bool = False):
@@ -2200,7 +2200,7 @@ def create_app(
             )
             return table.to_dict()
         except (Refusal, BadRequest) as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/weights")
 
@@ -2315,9 +2315,9 @@ def create_app(
             status = await asyncio.to_thread(app.state.vla.load, req.repo)
             return status.to_dict()
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/load")
 
@@ -2367,7 +2367,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         match = next((e for e in reader.episodes() if e.index == episode), None)
         if match is None:
@@ -2378,7 +2378,7 @@ def create_app(
         try:
             frames, chosen = vla_actions.plan_frames(match.length, stride=stride)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
         return {
             "episode": episode,
@@ -2408,7 +2408,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         # Units BEFORE any forward pass. Spending three minutes and then
         # refusing to draw the result is a refusal that wasted three minutes,
@@ -2420,9 +2420,9 @@ def create_app(
         try:
             return await asyncio.to_thread(_run_compare, reader, state, req)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/actions/compare")
 
@@ -2475,7 +2475,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         if not state.samples:
             # Refused here rather than after the passes, for the same reason
@@ -2496,9 +2496,9 @@ def create_app(
         try:
             return await asyncio.to_thread(_run_swap, reader, state, req)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/actions/swap")
 
@@ -2554,14 +2554,14 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         try:
             return await asyncio.to_thread(_run_knockout, reader, state, req)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/actions/knockout")
 
@@ -2670,7 +2670,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
 
         status = app.state.vla.status()
         try:
@@ -2682,7 +2682,7 @@ def create_app(
                 grid=status.grid or None,
             )
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
     @app.post("/api/vla/sweep")
     async def vla_sweep_run(request: Request):
@@ -2707,7 +2707,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/vla/sweep")
 
@@ -2730,9 +2730,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/sweep")
 
@@ -2759,7 +2759,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/vla/share")
 
@@ -2800,9 +2800,9 @@ def create_app(
         try:
             blob = await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/share")
         return Response(
@@ -2833,7 +2833,7 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/vla/occlude")
 
@@ -2873,9 +2873,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/occlude")
 
@@ -2889,9 +2889,9 @@ def create_app(
         try:
             return app.state.vla.occlusion_cost(stride)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
     @app.get("/api/vla/audit")
     async def vla_audit_dataset():
@@ -2911,16 +2911,16 @@ def create_app(
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Exception as err:
             return _internal(err, "/api/vla/audit")
 
         try:
             report = await asyncio.to_thread(audit_mod.audit, reader)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/audit")
         return report.to_dict()
@@ -2952,9 +2952,9 @@ def create_app(
             # the reader's to run and not something in a traceback.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/dataset")
         app.state.vla_reader = reader
@@ -2979,9 +2979,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/episodes")
 
@@ -3001,9 +3001,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/frame")
 
@@ -3021,9 +3021,9 @@ def create_app(
             # one of them.
             return _missing_reader_dep(err)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/analyse")
 
@@ -3036,9 +3036,9 @@ def create_app(
         try:
             return await asyncio.to_thread(app.state.vla.attention, layer, head)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/attention")
 
@@ -3084,9 +3084,9 @@ def create_app(
             doc = await asyncio.to_thread(otel.ingest, payload)
             trace_id = await asyncio.to_thread(traces.import_trace, doc)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/otel/v1/traces")
         # partialSuccess with rejectedSpans 0 is what an OTLP client expects
@@ -3105,9 +3105,9 @@ def create_app(
             trace_id = await asyncio.to_thread(traces.import_trace, doc)
             return {"id": trace_id}
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/import")
 
@@ -3177,11 +3177,11 @@ def create_app(
             target = await asyncio.to_thread(custom.resolve_under_roots, path)
             return await asyncio.to_thread(lambda: gguf_read.read(target).to_dict())
         except AdapterError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf")
 
@@ -3202,11 +3202,11 @@ def create_app(
                 lambda: runtime.plan_gguf(str(target), dtype=dtype)
             )
         except AdapterError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf/plan")
 
@@ -3229,11 +3229,11 @@ def create_app(
             )
             return st.to_dict()
         except AdapterError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/gguf/load")
 
@@ -3277,11 +3277,11 @@ def create_app(
                 )
             )
         except AdapterError as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/quantdiff/behaviour")
 
@@ -3303,7 +3303,7 @@ def create_app(
         try:
             return await asyncio.to_thread(traces.search, q, min(int(limit), 500))
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/search")
 
@@ -3380,7 +3380,7 @@ def create_app(
         except BadRequest as err:
             # `InspectError` is one of these: an unrecognised schema version,
             # a file that is not a zip, a sample the log does not carry.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/import/inspect")
 
@@ -3407,7 +3407,7 @@ def create_app(
         except BadRequest as err:
             # `BundleError` is one of these, so a run too long to ship answers
             # 422 through the same path as every other authored refusal.
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
     @app.get("/api/traces/{trace_id}/patterns")
     def trace_patterns(trace_id: str, window_ms: int = 0):
@@ -3631,9 +3631,9 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/judge")
 
@@ -3649,7 +3649,7 @@ def create_app(
                 int(body.get("n_paraphrases") or 0),
             )
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         return {"prompts": prompts, "n_passes": len(prompts)}
 
     @app.post("/api/rubric/score")
@@ -3672,7 +3672,7 @@ def create_app(
         try:
             return await asyncio.to_thread(run)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/rubric/score")
 
@@ -3692,7 +3692,7 @@ def create_app(
         try:
             rules = rubric_mod.parse(body.get("rules", []))
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         traces.save_rubric(name, rules)
         return {"name": name, "n_rules": len(rules)}
 
@@ -3731,9 +3731,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attention, layer, head, variant)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention")
 
@@ -3750,9 +3750,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attention_diff, layer, head, a, b)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/diff")
 
@@ -3776,9 +3776,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.ablate_heads, target, baseline)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate")
 
@@ -3797,9 +3797,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.estimate_ablation, target, baseline)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/ablate/estimate")
 
@@ -3828,9 +3828,9 @@ def create_app(
                 return JSONResponse({"error": "no such step"}, status_code=404)
             return await asyncio.to_thread(runtime.adopt_step, step)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/traces/adopt")
 
@@ -3856,9 +3856,9 @@ def create_app(
                 seed,
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/control")
 
@@ -3876,9 +3876,9 @@ def create_app(
                 runtime.compare_baselines, layer if layer is not None else 0
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/baselines")
 
@@ -3917,9 +3917,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.patch_trace, req.clean, req.corrupt)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch")
 
@@ -3962,9 +3962,9 @@ def create_app(
                 max_receivers=req.max_receivers,
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/patch/graph")
 
@@ -4003,9 +4003,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.attribute_tokens, position)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/attribute")
 
@@ -4081,9 +4081,9 @@ def create_app(
                 runtime.export_session, layer, head, note, run, step_ref
             )
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/session/export")
         # The basename, sanitised -- never the id itself. `hf_id` is not always
@@ -4126,9 +4126,9 @@ def create_app(
         try:
             return await asyncio.to_thread(runtime.open_session, data)
         except Refusal as err:
-            return JSONResponse({"error": str(err)}, status_code=409)
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": str(err)}, status_code=422)
+            return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/session/open")
 
