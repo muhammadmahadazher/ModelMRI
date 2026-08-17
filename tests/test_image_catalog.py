@@ -31,6 +31,7 @@ from __future__ import annotations
 import http.client
 import json
 import urllib.error
+from functools import partial
 
 import pytest
 from test_no_exception_leaks import CERT, WEIGHTS, leaked  # the same rule
@@ -303,9 +304,13 @@ def test_an_unreachable_hub_is_a_refusal_that_quotes_none_of_the_library(
     ), "the fixture is not a shape the Hub actually fails in"
     _hub_fails(monkeypatch, err)
 
+    # The functions themselves rather than lambdas wrapping them: a
+    # zero-argument `lambda: f()` IS `f`, and the indirection only hides which
+    # sink a failure came from. `partial` carries the one argument the second
+    # sink needs.
     for asking in (
-        lambda: image_catalog.search(),
-        lambda: image_catalog.size_of("someone/sdxl"),
+        image_catalog.search,
+        partial(image_catalog.size_of, "someone/sdxl"),
     ):
         with pytest.raises(Refusal) as caught:
             asking()
