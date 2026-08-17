@@ -211,6 +211,18 @@ class VLADatasetRequest(BaseModel):
     repo_id: str = Field(min_length=1, max_length=200)
 
 
+class ScanRequest(BaseModel):
+    """A checkpoint or a directory of them.
+
+    `limit` bounds a directory walk, and what it drops is reported rather than
+    silently omitted — a scan that stopped at 200 files reads as "200 files,
+    all fine".
+    """
+
+    path: str = Field(min_length=1, max_length=4096)
+    limit: int = Field(default=200, ge=1, le=5000)
+
+
 class VLAFrameRequest(BaseModel):
     """One frame, plus the seed that makes the answer reproducible.
 
@@ -420,6 +432,38 @@ def _not_from_this_machine(
             status_code=403,
         )
     return None
+
+
+def _scan_summary(reports, dangerous, unscanned) -> str:
+    """One sentence that does not contradict itself.
+
+    The first version said "N file(s) read and nothing executable found" and
+    then "N could not be read", which are opposite claims about the same N —
+    and on a directory of Python source, where every file is unscanned by
+    design, it printed both about all of them. A summary whose two halves
+    disagree is worse than either half alone.
+    """
+    if dangerous:
+        return dangerous[0].means()
+    if not reports:
+        return "Nothing weight-shaped was found at that path."
+
+    read = len(reports) - len(unscanned)
+    if read == 0:
+        return (
+            f"NONE of the {len(reports)} file(s) here could be looked inside — "
+            f"they are formats this cannot read, or Python source, which runs "
+            f"in full when imported and cannot be made safe by a scan. This is "
+            f"not a clean bill of health."
+        )
+    tail = (
+        f" {len(unscanned)} could not be read and are reported as unscanned "
+        f"rather than clean — a scanner that answers 'safe' for a file it "
+        f"could not open is worse than no scanner."
+        if unscanned
+        else ""
+    )
+    return f"{read} file(s) read and nothing executable found.{tail}"
 
 
 def create_app(
@@ -1661,6 +1705,125 @@ def create_app(
     @app.post("/api/custom/unload")
     def custom_unload() -> dict:
         return app.state.custom.unload().to_dict()
+
+    # ---------------- what the weights themselves look like ----------------
+    #
+    # Netron and TensorBoard's Debugger V2 both do a version of this and
+    # neither does it on a model that is LIVE: Netron reads a file, the
+    # Debugger needs a TensorFlow run instrumented in advance. These read the
+    # module already sitting in this process's memory.
+
+    @app.get("/api/weights/cost")
+    def weights_cost(exhaustive: bool = False):
+        """What a health scan would read, before it reads a single weight.
+
+        The table half is free and the health half is memory bandwidth, so the
+        price of the expensive half is knowable from the cheap half — element
+        counts come out of the module's own shapes.
+        """
+        from . import weights_table
+
+        if not runtime.loaded or runtime.model is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        "No model is loaded in this process, so there are no "
+                        "weights to price. Load one and ask again."
+                    )
+                },
+                status_code=409,
+            )
+        counts = [
+            row.elements for row, _ in weights_table.rows_from_module(runtime.model)
+        ]
+        return {
+            "tensors": len(counts),
+            "elements_total": sum(counts),
+            **weights_table.scan_cost(counts, exhaustive=bool(exhaustive)),
+        }
+
+    @app.get("/api/weights")
+    async def weights_view(
+        health: bool = False,
+        exhaustive: bool = False,
+        limit: int = 0,
+    ):
+        """The per-tensor table for the loaded model.
+
+        `health=false` by default, and that default is the honest one: the
+        table is free, the health scan reads every element it is allowed to,
+        and `/api/weights/cost` prices it first.
+
+        Off the event loop when health is on — it is pure memory bandwidth and
+        would block every other panel for as long as it ran.
+        """
+        from . import weights_table
+
+        if not runtime.loaded or runtime.model is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        "No model is loaded in this process. This reads the "
+                        "module in memory rather than a file on disk, which is "
+                        "the whole difference from a checkpoint viewer."
+                    )
+                },
+                status_code=409,
+            )
+        try:
+            kwargs = {
+                "health": bool(health),
+                "exhaustive": bool(exhaustive),
+                "source": runtime.hf_id or "the loaded model",
+            }
+            if limit > 0:
+                kwargs["limit"] = int(limit)
+            table = await asyncio.to_thread(
+                weights_table.table, runtime.model, **kwargs
+            )
+            return table.to_dict()
+        except (Refusal, BadRequest) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except Exception as err:
+            return _internal(err, "/api/weights")
+
+    @app.post("/api/weights/scan")
+    async def weights_scan_path(req: ScanRequest, request: Request):
+        """Look inside a checkpoint for anything that executes on load.
+
+        A path, so it carries the same not-from-this-machine guard every other
+        file-path route does: a request from elsewhere on the network naming a
+        path is a request to read somebody else's disk.
+        """
+        from . import weights_scan
+
+        refusal = _not_from_this_machine(
+            request,
+            "reading a path on this machine",
+            because="a scan names a file on the disk this server is running on",
+        )
+        if refusal is not None:
+            return refusal
+
+        try:
+            target = Path(req.path).expanduser()
+            reports = await asyncio.to_thread(
+                (lambda: weights_scan.scan_dir(target, limit=req.limit))
+                if target.is_dir()
+                else (lambda: [weights_scan.scan(target)])
+            )
+        except Exception as err:
+            return _internal(err, "/api/weights/scan")
+
+        dangerous = [r for r in reports if r.dangerous]
+        unscanned = [r for r in reports if r.verdict == weights_scan.UNSCANNED]
+        return {
+            "reports": [r.to_dict() for r in reports],
+            "dangerous": len(dangerous),
+            "unscanned": len(unscanned),
+            "safe": len(reports) - len(dangerous) - len(unscanned),
+            "means": _scan_summary(reports, dangerous, unscanned),
+        }
 
     @app.get("/api/vla")
     def vla_status() -> dict:

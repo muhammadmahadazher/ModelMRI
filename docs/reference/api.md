@@ -160,6 +160,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/rubric` | Rubric List |
 | `GET` | `/api/telemetry` | Read Telemetry |
+| `GET` | `/api/weights` | Weights View |
+| `GET` | `/api/weights/cost` | Weights Cost |
 | `GET` | `/v1/models` | V1 Models |
 | `GET` | `/v1/mri/{mri_id}` | V1 Mri |
 | `POST` | `/api/diff/models` | Diff Models |
@@ -177,6 +179,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 | `POST` | `/api/rubric` | Rubric Save |
 | `POST` | `/api/rubric/score` | Rubric Score |
+| `POST` | `/api/weights/scan` | Weights Scan Path |
 | `POST` | `/v1/chat/completions` | V1 Chat |
 | `POST` | `/v1/completions` | V1 Completions |
 
