@@ -17,6 +17,7 @@ import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
+import ImagePanel from "./ImagePanel";
 import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
@@ -313,6 +314,15 @@ export default function App() {
               its own two models and its own prompts, so it sits beside the
               custom-model panel rather than inside the playground. */}
           <ModelDiffPanel epoch={resetKey} />
+          {/* Text → Image. Its own handle, its own lifecycle, and nothing
+              above it loaded: a diffusion pipeline is several models and the
+              server refuses to hold one beside a resident text model without
+              being asked twice, so this panel is inert until you name a
+              checkpoint. Sited beside the robot panel because both are a
+              second modality rather than another view of the language model.
+              Inside `!VIEWER` for the same reason VLAPanel is — a shared
+              `.mri` has no machine to run a pipeline on. */}
+          <ImagePanel />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to

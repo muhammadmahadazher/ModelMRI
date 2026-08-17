@@ -134,6 +134,11 @@ export default function ImagePanel() {
   // some are not, and the wire carries only the sentence — so this offers to
   // ask again with `confirm` rather than pretending to know which it was.
   const [refused, setRefused] = useState(false);
+  // WHICH checkpoint the in-flight load is for. Without it every row in the
+  // list reads "Loading…" at once, and the retry above has nothing to retry:
+  // a load from the list never touches the name box, so the box would send an
+  // empty string back to a route that refuses one.
+  const [tried, setTried] = useState("");
   const scanRef = useScanOnData(
     run ? `${run.model}:${run.seed}:${run.steps_measured}:${run.tokens.length}` : "",
   );
@@ -200,10 +205,10 @@ export default function ImagePanel() {
     setBusy("load");
     setErr("");
     setRefused(false);
+    setTried(which);
     try {
       const s = await loadImage(which, confirm);
       setStatus(s);
-      setRepo(which);
       // A new pipeline makes every reading on screen a claim about a model
       // that is no longer here.
       setRun(null);
@@ -297,7 +302,7 @@ export default function ImagePanel() {
                       onClick={() => void onLoad(m.path)}
                       disabled={busy !== ""}
                     >
-                      {busy === "load" ? "Loading…" : "Load"}
+                      {busy === "load" && tried === m.path ? "Loading…" : "Load"}
                     </button>
                   ) : (
                     <span className="meta">{m.reason}</span>
@@ -330,7 +335,7 @@ export default function ImagePanel() {
               onClick={() => void onLoad(repo)}
               disabled={busy !== "" || repo.trim() === ""}
             >
-              {busy === "load" ? "Loading pipeline…" : "Load it"}
+              {busy === "load" && tried === repo ? "Loading pipeline…" : "Load it"}
             </button>
           </div>
           <span className="meta">
@@ -352,10 +357,10 @@ export default function ImagePanel() {
           <div className="row">
             <button
               className="ghost sm"
-              onClick={() => void onLoad(repo.trim() || status?.repo || "", true)}
-              disabled={busy !== "" || (repo.trim() === "" && !status?.repo)}
+              onClick={() => void onLoad(tried, true)}
+              disabled={busy !== "" || tried.trim() === ""}
             >
-              ask again with confirm
+              ask again for {tried} with confirm
             </button>
             <span className="meta">
               Some of those refusals can be overridden — holding a pipeline
@@ -438,6 +443,22 @@ export default function ImagePanel() {
           This is an architecture the server could not name, so it offers no
           measurements at all rather than every measurement. Nothing below is
           shown because nothing below could be honest about this checkpoint.
+        </div>
+      )}
+
+      {/* A loaded model with capabilities, none of which this panel's controls
+          are for. Saying so is the difference between a panel that decided not
+          to draw and a panel that looks broken: a half-empty card with no
+          sentence in it is the second one. */}
+      {status.capabilities.length > 0 && !canCapture && !canKnock && (
+        <div className="hint">
+          What this checkpoint offers is{" "}
+          <b>{status.capabilities.join(", ")}</b>, and neither the map nor the
+          knockout below is among them — so both controls are absent rather
+          than present and unable to answer.{" "}
+          {dim === 0
+            ? "Nothing here attends to a prompt, so there is nothing for a word-to-pixel map to be about."
+            : "This panel reads words against pixels; measurements over image patches belong to a different one."}
         </div>
       )}
 
@@ -539,8 +560,12 @@ export default function ImagePanel() {
                 </tr>
               </thead>
               <tbody className="stagger">
+                {/* Keyed on the row's ORDER as well as its step index. A
+                    scheduler that reports the same index twice is a real
+                    thing, and React would silently drop the second row for a
+                    duplicate key — a step measured and not shown. */}
                 {run.steps.map((s, ri) => (
-                  <tr key={s.step} style={{ "--i": ri } as CSSProperties}>
+                  <tr key={`${ri}:${s.step}`} style={{ "--i": ri } as CSSProperties}>
                     <th className="mid" title={`scheduler timestep ${s.timestep}`}>
                       {s.step}
                     </th>
@@ -610,8 +635,12 @@ export default function ImagePanel() {
         </>
       )}
 
-      {/* ─── the interventional half ──────────────────────────────────── */}
-      {run && canKnock && (
+      {/* ─── the interventional half ────────────────────────────────────
+          Gated on the CAPABILITY alone, not on a map having been drawn first.
+          A knockout needs no capture — it removes a word and regenerates — so
+          requiring one would be a dependency this panel invented rather than
+          one the measurement has. */}
+      {canKnock && (
         <div className="image-knock">
           {/* A sub-heading, not a second `.sect`: SectionNav treats every
               `.sect` with an h2 as a place to jump to, and this is half of one
@@ -623,10 +652,10 @@ export default function ImagePanel() {
           <p className="meta">
             Pick the words you want the answer for. The arms are the prompt's
             whitespace-separated words, which is a different vocabulary from
-            the map's columns above — one word can be several tokens — and the
-            run removes <b>every</b> word in turn rather than only the ones
-            picked, so your picks are marked in the result rather than
-            narrowing the work.
+            the tokenizer's tokens the map is drawn in — one word can be
+            several tokens — and the run removes <b>every</b> word in turn
+            rather than only the ones picked, so your picks are marked in the
+            result rather than narrowing the work.
           </p>
 
           <div className="image-words">
