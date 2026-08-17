@@ -41,7 +41,7 @@ jobs:
           # rather than re-resolving them, which also avoids pip choking on
           # local build tags like torch==2.11.0+cu128 that PyPI never saw.
           #
-          # `--no-emit-workspace` drops the `-e .` line for our own packages.
+          # Our own three packages are dropped, and each needs its own flag.
           # Auditing ourselves against PyPI is meaningless, and worse than
           # meaningless: under --strict, pip-audit fails when it cannot find a
           # package, so the moment __version__ was bumped to an unpublished
@@ -50,7 +50,25 @@ jobs:
           # already released — meaning the check was quietly coupled to "the
           # dev version is already on PyPI" and would break during every
           # release, which is the one time it must not.
+          #
+          # `--no-emit-workspace` covers only the ROOT. The two packages in
+          # `packages/` are path sources, which export as `-e ./packages/…`
+          # lines that pip-audit follows, reads a name and version out of, and
+          # looks up on PyPI. `modelmri-record` hid that for a year by being
+          # published; `modelmri-policy` is not, and the same coupling came
+          # straight back as "Dependency not found on PyPI: modelmri-policy
+          # (0.1.0)". Hence a flag per package rather than one more sweeping
+          # one — a new package under `packages/` should fail here loudly and
+          # be added deliberately, not disappear into a wildcard.
+          #
+          # Making them `[tool.uv.workspace]` members would also have dropped
+          # them, and was measured and rejected: uv resolves a workspace
+          # universally across every member's extras, so lerobot's constraints
+          # reached ModelMRI's own tree and downgraded transformers
+          # 5.13.0 → 5.5.4. The sidecar exists to keep lerobot out of this
+          # environment; a shared lockfile put it back in.
           uv export --format requirements-txt --no-hashes --no-emit-workspace \
+            --no-emit-package modelmri-record --no-emit-package modelmri-policy \
             | sed -E 's/\+[A-Za-z0-9.]+//' > /tmp/audit.txt
           uvx pip-audit --requirement /tmp/audit.txt --no-deps --strict \
             $(cat .github/pip-audit-ignore.txt | grep -v '^#' | grep . \

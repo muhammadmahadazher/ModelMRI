@@ -17,6 +17,7 @@ import {
   VLAStatus,
 } from "./api";
 import FrameCanvas from "./FrameCanvas";
+import PolicyStrip from "./PolicyStrip";
 
 /** Shown as the placeholder, and used when the box is left blank. */
 const DEFAULT_POLICY = "lerobot/smolvla_base";
@@ -271,6 +272,8 @@ export default function VLAPanel() {
         )}
         <span className="meta">{note}</span>
       </div>
+
+      <PolicyStrip vla={vla} />
 
       <div className="vla-grid">
         <div>

@@ -1,0 +1,83 @@
+[project]
+name = "modelmri-policy"
+version = "0.1.0"
+description = "Hold a robot policy — vision tower and action expert — in its own process, so ModelMRI can ask it what it would DO. Speaks one small HTTP contract on loopback."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Mahad Azher" }]
+keywords = ["robotics", "vla", "lerobot", "interpretability", "policy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# EMPTY on purpose, exactly like `modelmri-record`'s -- but for the opposite
+# reason. That package stays dependency-free so instrumenting an agent does
+# not pull a deep-learning stack. This one stays dependency-free so that
+# `pip install modelmri-policy` never silently drags lerobot and a pinned
+# torch into somebody's environment as a side effect.
+#
+# The heavy half is the `policy` extra, and `modelmri policy install` builds a
+# SEPARATE venv for it. That separation is the whole reason this package
+# exists: lerobot pins torch and numpy hard enough that sharing an environment
+# with ModelMRI is what left physical-AI-interpretability stale on a fork.
+dependencies = []
+
+[project.optional-dependencies]
+# Pinned, not floated. A policy served from a different lerobot than the one
+# this contract was written against is the failure mode the version handshake
+# exists to catch -- but catching it at runtime is worse than not causing it.
+#
+# The minor is the one this was actually built and measured against. NOTE that
+# lerobot declares `requires-python >=3.12` while ModelMRI supports 3.10 --
+# which is why `modelmri policy install` picks the interpreter for this venv
+# rather than reusing ModelMRI's, and refuses by name when the machine has
+# nothing new enough.
+policy = [
+  # `lerobot` ALONE is not enough, and finding that out is what this line is.
+  # A bare install resolves, the sidecar starts, the contract handshake passes
+  # -- and then `SmolVLAPolicy.__init__` calls `require_package("transformers",
+  # extra="smolvla")` and every policy load fails. An install that succeeds and
+  # cannot do the job is worse than one that refuses, because the refusal
+  # arrives at the point where somebody is looking at a panel instead of at a
+  # terminal.
+  #
+  # Each policy FAMILY has its own extra in lerobot. These are the ones this
+  # adapter is written against; a family outside them will refuse at load with
+  # lerobot's own message naming the extra, which is the correct place for
+  # that to happen.
+  #
+  # The marker is not caution, it is arithmetic. lerobot declares
+  # `requires-python >=3.12`; this package supports 3.10 because its BASE half
+  # -- the contract and the input rules -- is stdlib-only and is imported by
+  # ModelMRI's tests on the 3.10 CI cell. Without the marker the two facts
+  # collide and resolution fails outright: "the requested Python version
+  # (>=3.10) does not satisfy Python>=3.12".
+  #
+  # On a <3.12 interpreter this extra therefore installs no lerobot, which is
+  # the only honest outcome — it cannot be installed there. Nothing reaches
+  # that state through `modelmri policy install`, which picks a 3.12+
+  # interpreter for the venv or refuses by name; and a hand-built one still
+  # gets `adapter._need`'s refusal rather than a wrong answer.
+  "lerobot[smolvla,pi,diffusion]>=0.6,<0.7; python_version >= '3.12'",
+  "torch>=2.2",
+  "safetensors>=0.4",
+]
+
+[project.scripts]
+modelmri-policy = "modelmri_policy.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/muhammadmahadazher/ModelMRI"
+Source = "https://github.com/muhammadmahadazher/ModelMRI"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["modelmri_policy"]
