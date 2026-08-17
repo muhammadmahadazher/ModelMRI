@@ -16,7 +16,44 @@ import { useEffect, useState } from "react";
 export type ThemeChoice = "light" | "dark" | "system";
 export type Resolved = "light" | "dark";
 
+/** A PALETTE is which hues; a MODE is light or dark. They are orthogonal on
+ *  purpose, and getting that right is the difference between six themes and
+ *  three-plus-three-that-do-not-compose.
+ *
+ *  Somebody who wants high contrast wants it in the dark too. Somebody who
+ *  likes the amber terminal look still switches to light at midday. Folding
+ *  them into one list would mean "Amber" silently meant "Amber, dark", and
+ *  the first person who asked for amber-light would have nowhere to go.
+ *
+ *  So the document carries BOTH: `data-theme` for the mode (which every
+ *  existing rule already keys off, so none of them had to change) and
+ *  `data-palette` for the hues. */
+export type Palette = "paper" | "slate" | "amber" | "forest" | "contrast";
+
+export const PALETTES: { key: Palette; label: string; why: string }[] = [
+  { key: "paper", label: "Paper", why: "Warm neutral. The original." },
+  { key: "slate", label: "Slate", why: "Cool blue-grey, lower colour temperature." },
+  { key: "amber", label: "Amber", why: "Warm terminal. Easier late at night." },
+  { key: "forest", label: "Forest", why: "Green-leaning neutral, softer accents." },
+  {
+    key: "contrast",
+    label: "High contrast",
+    why: "Maximum separation between ink and ground, for low vision or bright sun.",
+  },
+];
+
 const KEY = "modelmri:theme";
+const PALETTE_KEY = "modelmri:palette";
+
+export function storedPalette(): Palette {
+  try {
+    const v = localStorage.getItem(PALETTE_KEY);
+    if (PALETTES.some((p) => p.key === v)) return v as Palette;
+  } catch {
+    /* private mode, or storage disabled — fall through to the default */
+  }
+  return "paper";
+}
 
 export function storedChoice(): ThemeChoice {
   try {
@@ -38,27 +75,38 @@ export function resolve(choice: ThemeChoice): Resolved {
 
 /** Write the theme to the document. `color-scheme` is not decoration: it is
  *  what makes form controls, scrollbars and the canvas backdrop follow. */
-export function apply(choice: ThemeChoice): Resolved {
+export function apply(choice: ThemeChoice, palette?: Palette): Resolved {
   const mode = resolve(choice);
   const root = document.documentElement;
   root.dataset.theme = mode;
+  // Always stamped, including for "paper" — a rule can then be written
+  // against `[data-palette="paper"]` without having to also handle the
+  // attribute being absent, which is the kind of asymmetry that produces one
+  // theme with a subtly different rule set.
+  root.dataset.palette = palette ?? storedPalette();
   root.style.colorScheme = mode;
   try {
     localStorage.setItem(KEY, choice);
+    if (palette) localStorage.setItem(PALETTE_KEY, palette);
   } catch {
     /* not worth failing a theme switch over */
   }
+  // Canvases read CSS variables at DRAW time and their pixels are already
+  // rasterised, so a palette change has to bump this exactly as a mode change
+  // does — otherwise three panels stay painted in the previous palette until
+  // something unrelated triggers a redraw.
   window.dispatchEvent(new CustomEvent("modelmri:theme", { detail: mode }));
   return mode;
 }
 
 export function useTheme() {
   const [choice, setChoice] = useState<ThemeChoice>(storedChoice);
+  const [palette, setPalette] = useState<Palette>(storedPalette);
   const [mode, setMode] = useState<Resolved>(() => resolve(storedChoice()));
 
   useEffect(() => {
-    setMode(apply(choice));
-  }, [choice]);
+    setMode(apply(choice, palette));
+  }, [choice, palette]);
 
   // Following the OS live is the whole point of "system"; without this the
   // page only tracks it on reload.
@@ -70,7 +118,7 @@ export function useTheme() {
     return () => mq.removeEventListener("change", onChange);
   }, [choice]);
 
-  return { choice, setChoice, mode };
+  return { choice, setChoice, mode, palette, setPalette };
 }
 
 /** A counter that bumps whenever the theme changes. Canvases depend on it. */

@@ -21,6 +21,7 @@ import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
+import PalettePicker from "./PalettePicker";
 import ThemeToggle from "./ThemeToggle";
 import { VIEWER } from "./viewer";
 import VLAPanel from "./VLAPanel";
@@ -151,6 +152,10 @@ export default function App() {
         </span>
         <span className="spacer" />
         <ThemeToggle />
+        {/* Beside the mode toggle, not inside it. Hues and light/dark are
+            orthogonal — see PalettePicker for why folding them into one list
+            would make "Amber" quietly mean "Amber, dark". */}
+        <PalettePicker />
         {accel && (
           <span
             className={`pill accel ${accel.kind !== "cpu" && accel.kind !== "recorded" ? "gpu" : ""}`}

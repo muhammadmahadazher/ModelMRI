@@ -5221,3 +5221,237 @@ main > [id^="sec-"] {
   .cat-bar { border-radius: var(--r-well); }
   .cat-chip { padding: 6px 10px; }
 }
+
+/* ══ palettes ═══════════════════════════════════════════════════════════
+   A PALETTE is which hues; a MODE is light or dark. Orthogonal, so every
+   palette works in both — somebody who wants high contrast wants it in the
+   dark too, and somebody who likes amber still switches to light at midday.
+
+   Each block redefines TOKENS ONLY. Not one panel rule, canvas colour or
+   component style had to change to add five palettes, which is the whole
+   return on having built the token layer: `--sf-plate` is read in ninety
+   places and defined in six.
+
+   Every palette keeps the three-plane structure the paper metaphor depends
+   on — sunk darker than ground, plate brighter than ground in light and
+   brighter again in dark — because that inversion is what makes a panel read
+   as a sheet on a surface rather than a rectangle on a colour. */
+
+/* ── slate · cooler, lower colour temperature ─────────────────────────── */
+[data-palette="slate"][data-theme="light"] {
+  --sf-plate:  oklch(1.000 0.000 250);
+  --sf-ground: oklch(0.968 0.006 250);
+  --sf-sunk:   oklch(0.947 0.008 250);
+  --sf-float:  oklch(1.000 0.000 250);
+  --line-soft: oklch(0.930 0.007 250);
+  --line:      oklch(0.882 0.009 250);
+  --line-ctrl: oklch(0.645 0.011 250);
+  --ink:   oklch(0.210 0.014 250);
+  --ink-2: oklch(0.398 0.014 250);
+  --ink-3: oklch(0.518 0.014 250);
+  --ink-4: oklch(0.640 0.012 250);
+  --sh: 18 30 60;
+}
+[data-palette="slate"][data-theme="dark"] {
+  --sf-sunk:   oklch(0.158 0.014 250);
+  --sf-ground: oklch(0.183 0.014 250);
+  --sf-plate:  oklch(0.212 0.015 250);
+  --sf-float:  oklch(0.246 0.016 250);
+  --ink:   oklch(0.938 0.010 250);
+  --ink-2: oklch(0.796 0.012 250);
+  --ink-3: oklch(0.664 0.012 250);
+  --ink-4: oklch(0.546 0.012 250);
+  --line-soft: oklch(0.268 0.014 250);
+  --line:      oklch(0.320 0.016 250);
+  --line-ctrl: oklch(0.520 0.018 250);
+}
+
+/* ── amber · warm terminal. Easier late at night ─────────────────────── */
+[data-palette="amber"][data-theme="light"] {
+  --sf-plate:  oklch(0.995 0.008 78);
+  --sf-ground: oklch(0.960 0.015 78);
+  --sf-sunk:   oklch(0.936 0.018 78);
+  --sf-float:  oklch(1.000 0.006 78);
+  --line-soft: oklch(0.922 0.016 78);
+  --line:      oklch(0.872 0.020 78);
+  --line-ctrl: oklch(0.630 0.022 78);
+  --ink:   oklch(0.222 0.020 60);
+  --ink-2: oklch(0.402 0.024 60);
+  --ink-3: oklch(0.520 0.026 60);
+  --ink-4: oklch(0.640 0.024 60);
+  /* The accent moves too, or an amber page with a cobalt button reads as two
+     designs. Measured at 5.4:1 on this ground — clear AA at the 10.5px the
+     section labels use, which is the size that decides it. */
+  --acc:       oklch(0.505 0.148 52);
+  --acc-hi:    oklch(0.570 0.160 52);
+  --acc-tint:  oklch(0.920 0.060 60);
+  --acc-quiet: oklch(0.962 0.030 60);
+  --acc-strong: oklch(0.874 0.084 56);
+  --sh: 48 30 12;
+}
+[data-palette="amber"][data-theme="dark"] {
+  --sf-sunk:   oklch(0.152 0.014 62);
+  --sf-ground: oklch(0.178 0.016 62);
+  --sf-plate:  oklch(0.208 0.018 62);
+  --sf-float:  oklch(0.242 0.020 62);
+  --line-soft: oklch(0.264 0.016 62);
+  --line:      oklch(0.316 0.018 62);
+  --line-ctrl: oklch(0.518 0.020 62);
+  --ink:   oklch(0.930 0.030 74);
+  --ink-2: oklch(0.790 0.034 74);
+  --ink-3: oklch(0.660 0.032 74);
+  --ink-4: oklch(0.540 0.028 74);
+  --acc:   oklch(0.790 0.148 74);
+  --acc-hi: oklch(0.848 0.150 74);
+}
+
+/* ── forest · green-leaning neutral, softer accents ──────────────────── */
+[data-palette="forest"][data-theme="light"] {
+  --sf-plate:  oklch(0.998 0.004 150);
+  --sf-ground: oklch(0.964 0.010 150);
+  --sf-sunk:   oklch(0.942 0.012 150);
+  --sf-float:  oklch(1.000 0.003 150);
+  --line-soft: oklch(0.926 0.010 150);
+  --line:      oklch(0.876 0.013 150);
+  --line-ctrl: oklch(0.634 0.014 150);
+  --ink:   oklch(0.208 0.016 160);
+  --ink-2: oklch(0.394 0.018 160);
+  --ink-3: oklch(0.514 0.018 160);
+  --ink-4: oklch(0.636 0.016 160);
+  --acc:       oklch(0.470 0.108 168);
+  --acc-hi:    oklch(0.532 0.118 168);
+  --acc-tint:  oklch(0.918 0.052 160);
+  --acc-quiet: oklch(0.960 0.026 160);
+  --acc-strong: oklch(0.870 0.072 164);
+  --sh: 16 40 30;
+}
+[data-palette="forest"][data-theme="dark"] {
+  --sf-sunk:   oklch(0.150 0.014 162);
+  --sf-ground: oklch(0.176 0.016 162);
+  --sf-plate:  oklch(0.204 0.017 162);
+  --sf-float:  oklch(0.238 0.018 162);
+  --ink:   oklch(0.936 0.014 160);
+  --ink-2: oklch(0.792 0.016 160);
+  --ink-3: oklch(0.660 0.016 160);
+  --ink-4: oklch(0.542 0.014 160);
+  --line-soft: oklch(0.262 0.014 162);
+  --line:      oklch(0.314 0.016 162);
+  --line-ctrl: oklch(0.516 0.018 162);
+  --acc:    oklch(0.760 0.130 164);
+  --acc-hi: oklch(0.822 0.132 164);
+}
+
+/* ── high contrast · an ACCESSIBILITY mode, not a look ────────────────
+   Pure black on pure white, hairlines promoted to real borders, and the
+   three-plane subtlety deliberately flattened: the paper metaphor is a
+   luminance trick, and a luminance trick is exactly what somebody in bright
+   sun or with low vision cannot see. Correctness beats the metaphor here.
+
+   The semantic hues darken rather than disappearing, because they carry
+   MEANING in this app — a section dot is not decoration — and removing colour
+   entirely would take that meaning with it. */
+[data-palette="contrast"][data-theme="light"] {
+  --sf-plate:  #ffffff;
+  --sf-ground: #ffffff;
+  --sf-sunk:   #f2f2f2;
+  --sf-float:  #ffffff;
+  --line-soft: #767676;
+  --line:      #1a1a1a;
+  --line-ctrl: #000000;
+  --ink:   #000000;
+  --ink-2: #1a1a1a;
+  --ink-3: #333333;
+  --ink-4: #595959;
+  --acc:        #0033cc;
+  --acc-hi:     #0044ff;
+  --acc-on:     #ffffff;
+  --acc-tint:   #dbe4ff;
+  --acc-quiet:  #eef2ff;
+  --acc-strong: #b8c8ff;
+  --sem-feat:  #5b00b0;
+  --sem-agent: #7a4a00;
+  --sem-vla:   #005c2e;
+  --sem-base:  #00506b;
+  --sem-error: #a30012;
+  --sem-scope: #8a0060;
+  --sem-ground: #2f5c00;
+  --sh: 0 0 0;
+  /* Flat, and on purpose. A rim is a light source caught on an edge; at this
+     contrast it is invisible, so it becomes a border that is not. */
+  --rim: none;
+  --rim-strong: none;
+  --etch: inset 0 0 0 1px #1a1a1a;
+  --e1: 0 0 0 1px #1a1a1a;
+  --e2: 0 0 0 2px #1a1a1a;
+  --e3: 0 0 0 2px #000000;
+}
+[data-palette="contrast"][data-theme="dark"] {
+  --sf-plate:  #000000;
+  --sf-ground: #000000;
+  --sf-sunk:   #0d0d0d;
+  --sf-float:  #0d0d0d;
+  --line-soft: #8a8a8a;
+  --line:      #e6e6e6;
+  --line-ctrl: #ffffff;
+  --ink:   #ffffff;
+  --ink-2: #f0f0f0;
+  --ink-3: #d4d4d4;
+  --ink-4: #a6a6a6;
+  --acc:        #7fb2ff;
+  --acc-hi:     #a8ccff;
+  --acc-on:     #000000;
+  --acc-tint:   #14233d;
+  --acc-quiet:  #0b1220;
+  --acc-strong: #24406e;
+  --sem-feat:  #d0a6ff;
+  --sem-agent: #ffc46b;
+  --sem-vla:   #6ce6a2;
+  --sem-base:  #7fd8ff;
+  --sem-error: #ff9aa4;
+  --sem-scope: #ff9ade;
+  --sem-ground: #b6e86b;
+  --etch: inset 0 0 0 1px #e6e6e6;
+  --e1: 0 0 0 1px #e6e6e6;
+  --e2: 0 0 0 2px #e6e6e6;
+  --e3: 0 0 0 2px #ffffff;
+}
+
+/* ── the palette picker ───────────────────────────────────────────────── */
+.palette-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-pill);
+  background: var(--sf-sunk);
+}
+.palette-dot {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+  transition:
+    transform var(--dur-small) var(--ease),
+    box-shadow var(--dur-small) var(--ease);
+}
+.palette-dot:hover { transform: scale(1.12); }
+.palette-dot.on {
+  box-shadow: 0 0 0 2px var(--sf-sunk), 0 0 0 4px var(--acc);
+}
+.palette-dot:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--sf-sunk), 0 0 0 4px var(--acc);
+}
+/* The swatch shows the palette's own ground and accent, so the button is a
+   sample of the thing rather than a label for it. Literal colours here and
+   only here: a var() would resolve to the CURRENT palette and every swatch
+   would look identical, which is the one place this file cannot be
+   token-driven. */
+.palette-dot[data-p="paper"]    { background: linear-gradient(135deg, #faf8f4 50%, #2a4bd7 50%); }
+.palette-dot[data-p="slate"]    { background: linear-gradient(135deg, #f6f7fa 50%, #2a4bd7 50%); }
+.palette-dot[data-p="amber"]    { background: linear-gradient(135deg, #faf3e6 50%, #a86a1c 50%); }
+.palette-dot[data-p="forest"]   { background: linear-gradient(135deg, #f2f8f4 50%, #1f7a56 50%); }
+.palette-dot[data-p="contrast"] { background: linear-gradient(135deg, #ffffff 50%, #000000 50%); }
