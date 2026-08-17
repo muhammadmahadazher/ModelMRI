@@ -1,0 +1,52 @@
+[project]
+name = "modelmri-policy"
+version = "0.1.0"
+description = "Hold a robot policy — vision tower and action expert — in its own process, so ModelMRI can ask it what it would DO. Speaks one small HTTP contract on loopback."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Muhammad Mahad Azher" }]
+keywords = ["robotics", "vla", "lerobot", "interpretability", "policy"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# EMPTY on purpose, exactly like `modelmri-record`'s -- but for the opposite
+# reason. That package stays dependency-free so instrumenting an agent does
+# not pull a deep-learning stack. This one stays dependency-free so that
+# `pip install modelmri-policy` never silently drags lerobot and a pinned
+# torch into somebody's environment as a side effect.
+#
+# The heavy half is the `policy` extra, and `modelmri policy install` builds a
+# SEPARATE venv for it. That separation is the whole reason this package
+# exists: lerobot pins torch and numpy hard enough that sharing an environment
+# with ModelMRI is what left physical-AI-interpretability stale on a fork.
+dependencies = []
+
+[project.optional-dependencies]
+# Pinned, not floated. A policy served from a different lerobot than the one
+# this contract was written against is the failure mode the version handshake
+# exists to catch -- but catching it at runtime is worse than not causing it.
+policy = [
+  "lerobot>=0.4,<0.5",
+  "torch>=2.2",
+  "safetensors>=0.4",
+]
+
+[project.scripts]
+modelmri-policy = "modelmri_policy.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/muhammadmahadazher/ModelMRI"
+Source = "https://github.com/muhammadmahadazher/ModelMRI"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["modelmri_policy"]
