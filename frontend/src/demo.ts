@@ -541,6 +541,54 @@ export async function demoFetch(
       policy_repo: v.status.policy_repo ?? v.status.repo ?? "lerobot/smolvla_base",
     });
   }
+  if (p === "/api/policy") {
+    // The ACTION half, answered from here rather than fetched. A recording has
+    // no process that could hold a policy, and "not installed" is the true
+    // state of this page — so this is the honest answer rather than a stub.
+    //
+    // It lives in the shim rather than in `api.ts` so the coverage check in
+    // `demo_check.py` sees it. That check exists because an endpoint the demo
+    // cannot answer is a panel that 404s on Pages, and it caught exactly that
+    // here: the first version of this branch was a `DEMO || VIEWER` ternary in
+    // `api.ts`, invisible to the check and reported as "unhandled".
+    return ok({
+      running: false,
+      contract: null,
+      policy_repo: "",
+      revision: "",
+      device: "",
+      dtype: "",
+      normalisation: {},
+      port: 0,
+      reachable: false,
+      reason:
+        "This page is a recording, so there is no process here that could " +
+        "hold a policy. Install ModelMRI (`pip install modelmri`) and run " +
+        "`modelmri policy install` to ask a real one what it would do.",
+      means:
+        "No policy sidecar is running, so nothing here can say what the " +
+        "robot would DO — only where it looked.",
+      family: "",
+      cameras: [],
+      camera_shapes: {},
+      state_width: null,
+      action_width: null,
+      chunk_size: null,
+      samples: false,
+      lerobot_version: "",
+      torch_version: "",
+      accelerated: null,
+      installed: false,
+      venv: "",
+      contract_here: 1,
+      install_hint:
+        "Run `modelmri policy install` — it builds a separate virtual " +
+        "environment for the policy and its pinned lerobot, because " +
+        "installing lerobot beside ModelMRI breaks both.",
+      venv_disk_bytes: 6_000_000_000,
+      assumed_policy_bytes: 3_500_000_000,
+    });
+  }
   if (p === "/api/vla/episodes") {
     const v = await bundle<any>("vla");
     const frames = Object.keys(v.frames).map(Number).sort((a, b) => a - b);
