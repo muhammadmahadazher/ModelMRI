@@ -421,3 +421,64 @@ def test_a_rule_with_no_threshold_to_compare_still_parses():
         ).value
         == 0.0
     )
+
+
+# ------------------------------------------------- a row has to BE one run
+
+
+def test_a_row_carries_what_tells_one_run_from_another():
+    """The defect a reader reported as "random data".
+
+    Runs share names — every playground generation is called after the model,
+    and one attempted with nothing loaded is called "generation" — so a
+    hundred rows carrying only a name and a matched rule are a hundred rows
+    nobody can order, date or choose between. The store already answers all
+    of this in `list_traces`; the row was throwing it away.
+    """
+    summary = {
+        "id": "abc123",
+        "name": "generation",
+        "started_at": "2026-08-17T17:31:18.088339+00:00",
+        "total_ms": 2,
+        "n_steps": 1,
+        "n_errors": 1,
+        "source": "app",
+        "demo": False,
+    }
+    rules = [rubric.parse_rule({"name": "bad", "kind": "has_error"})]
+    row = rubric.score([(summary, [_step("s", error=True)])], rules).rows[0].to_dict()
+
+    assert row["started_at"] == summary["started_at"]
+    assert row["total_ms"] == 2
+    assert row["n_steps"] == 1
+    assert row["n_errors"] == 1
+    assert row["source"] == "app"
+    assert row["demo"] is False
+    assert row["matched"] == ["bad"]
+
+
+def test_a_run_with_no_recorded_duration_reports_none_rather_than_zero():
+    """`None` is "nobody recorded how long this took". `0` is "it finished
+    inside a millisecond". Collapsing them invents the fastest run in the
+    list, and the panel sorts and reads against exactly that number."""
+    rules = [rubric.parse_rule({"name": "bad", "kind": "has_error"})]
+    unknown = {"id": "a", "name": "x"}
+    instant = {"id": "b", "name": "x", "total_ms": 0}
+
+    rows = rubric.score([(unknown, [_step("s")]), (instant, [_step("s")])], rules).rows
+    assert rows[0].total_ms is None
+    assert rows[1].total_ms == 0
+
+
+def test_the_kind_of_run_survives_to_the_row():
+    """`demo` and `source` are distinctions the trace store keeps on purpose:
+    scripted sample data, a playground generation and a run of the reader's
+    own agent code are three different things. A row that dropped them is a
+    row where somebody debugs a demo."""
+    rules = [rubric.parse_rule({"name": "bad", "kind": "has_error"})]
+    scripted = {"id": "a", "name": "demo-run", "demo": True, "source": ""}
+    mine = {"id": "b", "name": "my-agent", "demo": False, "source": ""}
+
+    rows = rubric.score([(scripted, [_step("s")]), (mine, [_step("s")])], rules).rows
+    assert rows[0].demo is True
+    assert rows[1].demo is False

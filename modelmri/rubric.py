@@ -286,11 +286,40 @@ class Hit:
 
 @dataclass
 class Scored:
-    """One run, and every rule's answer for it."""
+    """One run, every rule's answer for it, and enough to tell it apart.
+
+    The name alone does not identify a run. A hundred rows reading
+    "generation", "gpt2", "generation" are a hundred rows a reader cannot
+    order, date, or choose between — the list becomes a wall rather than a
+    result, and the rule that matched is attached to something anonymous.
+
+    So the summary's own identifying fields ride along. Not derived here and
+    not recomputed: `traces.list_traces` already answers all of them, and a
+    second implementation of "how long did this take" is a second number to
+    disagree with the first.
+
+    `source` and `demo` matter most of the three. The store draws those
+    distinctions deliberately — a playground generation is not a run of your
+    own agent code, and scripted sample data is not either — and a rubric row
+    that dropped them would put all three kinds in one undifferentiated list,
+    which is exactly the distinction the store keeps them for.
+    """
 
     trace_id: str
     name: str = ""
     hits: list = field(default_factory=list)
+    # ISO 8601 from the store, passed through verbatim. Formatting is the
+    # reader's timezone's business and this has no idea what that is.
+    started_at: str = ""
+    # `None`, not 0, when the store has no duration for this run. A run whose
+    # length was never recorded did not take no time.
+    total_ms: int | None = None
+    n_steps: int = 0
+    n_errors: int = 0
+    # "app" for a generation made in the playground, "" for a trace written
+    # before the key existed. Never guessed from the name.
+    source: str = ""
+    demo: bool = False
 
     @property
     def matched(self) -> list:
@@ -302,6 +331,12 @@ class Scored:
             "name": self.name,
             "hits": [h.to_dict() for h in self.hits],
             "matched": self.matched,
+            "started_at": self.started_at,
+            "total_ms": self.total_ms,
+            "n_steps": self.n_steps,
+            "n_errors": self.n_errors,
+            "source": self.source,
+            "demo": self.demo,
         }
 
 
@@ -418,9 +453,22 @@ def score(traces_and_steps, rules) -> Report:
         slow_cut[rule.name] = ordered[index]
 
     for (summary, steps), total in zip(runs, durations, strict=True):
+        # `total_ms` comes from the summary rather than from `total`: the
+        # latter is this scorer's own duration, already clamped to >= 0 for
+        # the percentile maths, and a row that showed 0 for a run the store
+        # has no duration for would be reporting a measurement it does not
+        # have. `is None` rather than `or None` — 0 is a real duration for a
+        # run that finished inside a millisecond.
+        recorded = summary.get("total_ms")
         row = Scored(
             trace_id=str(summary.get("id") or ""),
             name=str(summary.get("name") or ""),
+            started_at=str(summary.get("started_at") or ""),
+            total_ms=None if recorded is None else int(recorded),
+            n_steps=int(summary.get("n_steps") or 0),
+            n_errors=int(summary.get("n_errors") or 0),
+            source=str(summary.get("source") or ""),
+            demo=bool(summary.get("demo")),
         )
         for rule in rules:
             if rule.name in report.skipped:

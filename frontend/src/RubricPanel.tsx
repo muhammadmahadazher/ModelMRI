@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { errorText, RubricReport, RubricRule, scoreRubric } from "./api";
+import { errorText, RubricReport, RubricRow, RubricRule, scoreRubric } from "./api";
 
 /**
  * Score every recorded run against exact predicates.
@@ -35,6 +35,55 @@ const STARTERS: RubricRule[] = [
     value: 10,
   },
 ];
+
+/** When it ran, in the READER'S timezone.
+ *
+ *  The store writes UTC and the reader is not in UTC. Rendering the ISO
+ *  string raw puts a hundred rows an hour off from the clock the reader is
+ *  comparing them against, which is worse than no time at all — it looks
+ *  precise. `Intl` is the browser's own answer and needs no table here.
+ *
+ *  Empty for a trace with no `started_at`, and the row draws nothing rather
+ *  than "Invalid Date".
+ */
+function when(iso: string): string {
+  if (!iso) return "";
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return "";
+  return t.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** A duration a reader can compare at a glance, or "" for one nobody has.
+ *
+ *  `null` is not zero. A run whose length the store never recorded did not
+ *  finish instantly, and printing "0ms" for it would invent the fastest run
+ *  in the list. */
+function howLong(ms: number | null): string {
+  if (ms === null) return "";
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  return `${m}m ${Math.round((ms % 60_000) / 1000)}s`;
+}
+
+/** What KIND of thing this run is, in the store's own terms.
+ *
+ *  The trace store keeps `demo` and `source` apart on purpose: scripted
+ *  sample data, a generation made in the playground, and a run of the
+ *  reader's own agent code are three different things that were landing in
+ *  one undifferentiated list here. Empty for the third — the ordinary case
+ *  needs no badge, and badging everything is the same as badging nothing.
+ */
+function kindOf(row: RubricRow): string {
+  if (row.demo) return "sample";
+  if (row.source === "app") return "playground";
+  return "";
+}
 
 const KIND_LABEL: Record<string, string> = {
   has_error: "has an error step",
@@ -218,19 +267,47 @@ export default function RubricPanel({
               ))}
           </div>
 
+          {/* Each row has to be one RUN, not one name. Runs share names — a
+              hundred playground generations are all called after the model,
+              and a failed one with no model loaded is called "generation" —
+              so without the time, the length and what kind of run it was, a
+              long list is a wall of identical rows with a rule stuck to it.
+              Every field here is the store's own; none is computed twice. */}
           <ol className="rub-rows">
-            {shown.map((row) => (
-              <li key={row.trace_id}>
-                <button className="rub-row" onClick={() => onPick(row.trace_id)}>
-                  <span className="mid">{row.name}</span>
-                  <span className="meta">
-                    {row.matched.length
-                      ? row.matched.join(" · ")
-                      : "no rule matched"}
-                  </span>
-                </button>
-              </li>
-            ))}
+            {shown.map((row) => {
+              const kind = kindOf(row);
+              const at = when(row.started_at);
+              const took = howLong(row.total_ms);
+              return (
+                <li key={row.trace_id}>
+                  <button className="rub-row" onClick={() => onPick(row.trace_id)}>
+                    <span className="rub-row-head">
+                      <span className="mid rub-row-name">{row.name}</span>
+                      {kind && <span className="rub-kind">{kind}</span>}
+                    </span>
+                    <span className="meta rub-row-facts">
+                      {at && <span>{at}</span>}
+                      {/* Absent rather than "0ms" when the store has no
+                          duration — see `howLong`. */}
+                      {took && <span>{took}</span>}
+                      <span>
+                        {row.n_steps} step{row.n_steps === 1 ? "" : "s"}
+                      </span>
+                      {row.n_errors > 0 && (
+                        <span className="rub-row-err">
+                          {row.n_errors} error{row.n_errors === 1 ? "" : "s"}
+                        </span>
+                      )}
+                    </span>
+                    <span className="meta rub-row-hits">
+                      {row.matched.length
+                        ? row.matched.join(" · ")
+                        : "no rule matched"}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
           </ol>
           {!shown.length && (
             <p className="meta">No run matched {only ? `“${only}”` : "any rule"}.</p>

@@ -3034,6 +3034,30 @@ input[type="range"]:focus-visible { outline: none; }
    above -- which is exactly what they have today, so the fallback is the
    current behaviour rather than a broken one. Elements already on screen at
    load compute their progress as complete, so nothing above the fold hides.
+
+   ## THE RANGE IS IN PIXELS, AND THAT IS THE WHOLE POINT
+
+   It used to be `entry 2% cover 22%`, and both of those endpoints scale with
+   the SUBJECT'S OWN HEIGHT. A view() timeline is a function of scroll
+   position, so when a panel GROWS the function is re-evaluated against a
+   longer range and the reveal runs BACKWARDS -- the panel un-arrives under a
+   reader who has not moved.
+
+   That is not hypothetical. Scoring 101 recorded runs takes the agents panel
+   from ~1,000px to 5,544px in one click. `cover 22%` of the old height was
+   ~360px of scroll; of the new height it is 1,357px. The reader was at 614px
+   -- past the finish line before the click, half way to it after -- so the
+   panel they were reading dropped to `opacity: 0.5` and `blur(1.5px)` and
+   stayed there. Every panel whose height a user controls had this: score a
+   rubric, expand a trace, load a long weight table.
+
+   Lengths fix it because the only geometry they depend on is where the
+   subject's TOP edge crosses the viewport, and a panel growing downward does
+   not move its own top edge. 260px of scroll, whatever the panel is, and it
+   cannot rewind because nothing a click does can change the number.
+
+   Percentages would still be wrong even at a value tuned to look fine today;
+   this is a correctness fix, not a tuning one.
    ──────────────────────────────────────────────────────────────────────── */
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {
@@ -3042,17 +3066,24 @@ input[type="range"]:focus-visible { outline: none; }
       animation: panelRise linear both;
       animation-timeline: view();
       /* Finishes well before the panel is centred, so a reader is never
-         reading text that is still moving. */
-      animation-range: entry 2% cover 22%;
+         reading text that is still moving -- and finishes at the same place
+         for a 350px panel and a 5,500px one. */
+      animation-range: entry 0px entry 260px;
     }
+    /* Travel with something in it: 30px and a 1.2% scale was a polite nudge.
+       The blur is what makes it read as arriving rather than sliding, and it
+       is the reason the range above has to be correct -- a stuck progress
+       value shows as an unreadable panel, not as a slightly low one. */
     @keyframes panelRise {
       from {
         opacity: 0;
-        transform: translateY(30px) scale(0.988);
+        transform: translateY(64px) scale(0.965);
+        filter: blur(3px);
       }
       to {
         opacity: 1;
         transform: none;
+        filter: none;
       }
     }
 
@@ -3062,7 +3093,7 @@ input[type="range"]:focus-visible { outline: none; }
     .sect .rule {
       animation: ruleDraw linear both;
       animation-timeline: view();
-      animation-range: entry 4% cover 26%;
+      animation-range: entry 40px entry 300px;
       transform-origin: 0 50%;
     }
     @keyframes ruleDraw {
@@ -3219,27 +3250,21 @@ body {
 /* A white plate on cream needs the cream to be cream. */
 .panel { border-color: color-mix(in oklab, var(--panel-accent, var(--hair)) 22%, var(--hair)); }
 
-/* MOTION WITH TRAVEL IN IT. 30px and a 1.2% scale was a polite nudge. */
+/* MOTION WITH TRAVEL IN IT. 30px and a 1.2% scale was a polite nudge.
+   `panelRise` is defined ONCE, above, where the rule that uses it lives.
+   There were two `@keyframes panelRise` blocks for a while and the later one
+   silently won, so editing the first changed nothing -- and the travel and
+   the blur that a reader actually saw were three hundred lines away from the
+   only `animation-range` that controlled them. */
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {
-    @keyframes panelRise {
-      from {
-        opacity: 0;
-        transform: translateY(64px) scale(0.965);
-        filter: blur(3px);
-      }
-      to {
-        opacity: 1;
-        transform: none;
-        filter: none;
-      }
-    }
     /* The band wipes in after its panel has landed -- the instrument
-       switching on. */
+       switching on. Pixels, not percentages, for the reason spelled out at
+       `panelRise`: a panel that grows must not un-wipe. */
     .panel::before {
       animation: bandWipe linear both;
       animation-timeline: view();
-      animation-range: entry 8% cover 30%;
+      animation-range: entry 80px entry 340px;
       transform-origin: 0 50%;
     }
     @keyframes bandWipe {
@@ -5070,16 +5095,50 @@ main > [id^="sec-"] {
   background: color-mix(in oklab, var(--color-feat) 13%, transparent);
 }
 .rub-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+/* Three columns, because a row is one RUN and a name does not identify one.
+   What it is, when and how long it took, and which rules matched. */
 .rub-row {
   width: 100%; text-align: left; padding: 6px 10px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); cursor: pointer;
-  display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+  display: grid;
+  grid-template-columns: minmax(0, 14rem) minmax(0, 21rem) minmax(0, 1fr);
   gap: 10px; align-items: baseline;
 }
 .rub-row:hover { border-color: color-mix(in oklab, var(--color-feat) 45%, transparent); }
+@media (max-width: 1100px) {
+  .rub-row { grid-template-columns: minmax(0, 14rem) minmax(0, 1fr); }
+}
 @media (max-width: 720px) {
   .rub-row { grid-template-columns: 1fr; gap: 2px; }
+}
+.rub-row-head { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.rub-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The facts a reader scans down the column, so they are separated rather
+   than run together — a middle dot between a date and a duration reads as
+   one value with a decimal in it. Each fact is atomic: wrapping INSIDE
+   "Aug 17, 10:31 PM" would break a single value across two lines. */
+.rub-row-facts { display: flex; flex-wrap: wrap; gap: 4px 9px; }
+.rub-row-facts > span { white-space: nowrap; }
+.rub-row-hits { min-width: 0; }
+/* The error count is the one fact in the row that is about the run going
+   wrong, so it is the one that is coloured. The rest stay meta. */
+.rub-row-err { color: var(--sem-error); }
+/* WHAT KIND OF RUN, not a severity. Outlined and quiet: the store keeps
+   scripted sample data and playground generations apart from a run of the
+   reader's own agent code, and a list that lost the distinction is a list
+   where somebody debugs a demo. */
+.rub-kind {
+  flex: none;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-size: var(--t-3xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, var(--color-feat) 32%, transparent);
+  color: var(--ink-3);
 }
 
 /* ── patching graph ─────────────────────────────────────────────────────────

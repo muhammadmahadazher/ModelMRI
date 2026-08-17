@@ -1578,13 +1578,31 @@ export interface RubricRule {
   means?: string;
 }
 
+export interface RubricRow {
+  trace_id: string;
+  name: string;
+  matched: string[];
+  hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
+  /** ISO 8601, formatted in the reader's own timezone rather than the
+   *  server's — the server has no idea what that is. */
+  started_at: string;
+  /** `null` when the store has no duration for this run, which is not the
+   *  same as a run that took no time. */
+  total_ms: number | null;
+  n_steps: number;
+  n_errors: number;
+  /** "app" for a generation made in the playground, "" for a trace written
+   *  before the store carried the key. A playground generation and a run of
+   *  your own agent code both belong in this list and are not the same
+   *  thing, so the row says which. */
+  source: string;
+  /** Scripted sample data. It must never be indistinguishable from a run you
+   *  actually recorded. */
+  demo: boolean;
+}
+
 export interface RubricReport {
-  rows: {
-    trace_id: string;
-    name: string;
-    matched: string[];
-    hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
-  }[];
+  rows: RubricRow[];
   n_traces: number;
   n_traces_available: number;
   truncated: number;
