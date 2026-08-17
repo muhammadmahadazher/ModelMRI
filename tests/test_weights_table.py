@@ -629,14 +629,19 @@ def test_pricing_needs_no_torch_and_no_model():
     import subprocess
     import sys
 
+    # Named rather than written as three adjacent literals inside the list.
+    # The concatenation was deliberate — this is ONE `-c` source string, and a
+    # comma between the parts would pass three separate argv entries — but
+    # inside a list literal that is exactly what a missing comma looks like,
+    # which is what CodeQL flagged. A reader should not have to work out which
+    # one it is.
+    source = (
+        "import sys; from modelmri import weights_table as w; "
+        "print(w.scan_cost([10, 20, 30])['scanned']); "
+        "print('torch' in sys.modules)"
+    )
     done = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; from modelmri import weights_table as w; "
-            "print(w.scan_cost([10, 20, 30])['scanned']); "
-            "print('torch' in sys.modules)",
-        ],
+        [sys.executable, "-c", source],
         capture_output=True,
         text=True,
         timeout=180,
