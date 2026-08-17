@@ -12,9 +12,28 @@
   font-display: swap;
 }
 
+/* THE NUMERALS ARE THE BRAND, so they are no longer whatever the OS supplies.
+   `--font-mono` was `ui-monospace, Cascadia Code, SF Mono, Consolas` — four
+   different typefaces depending on who opened the page, with four different
+   figure widths, four different zeroes and four different ideas of how wide a
+   column is. Every measurement this tool prints is mono. A grid of recovery
+   values that lines up on a Mac and shimmers on Windows is not an instrument.
+
+   JetBrains Mono, variable, subset to Latin plus the box-drawing and maths
+   glyphs the panels actually use: 43 KB for the whole 100–800 range, which is
+   less than the three static weights it replaces and the same size as the
+   Switzer already shipping. SIL Open Font License, vendored beside it. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Variable.woff2") format("woff2");
+  font-weight: 100 800;
+  font-display: swap;
+}
+
 @theme {
   --font-sans: "Switzer", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "Cascadia Code", "SF Mono", Consolas, monospace;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "SF Mono",
+    Consolas, monospace;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -305,6 +324,45 @@ body {
   color: var(--color-ink);
   font: 15px/1.65 var(--font-sans);
   min-height: 100vh;
+  /* Kerning and contextual alternates on for prose; both are what a variable
+     grotesque is drawn assuming. */
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── how the numbers behave ─────────────────────────────────────────────────
+   Set once, on the face itself, rather than per-panel. There were eight
+   `tabular-nums` declarations in this file and roughly a hundred places that
+   print a number, so most figures were proportional: a column of recoveries
+   changed WIDTH as it updated, and a value ticking from 0.109 to 0.111 moved
+   its own decimal point. In a tool whose whole output is numbers that reads
+   as instability in the measurement rather than in the typography.
+
+   `tnum` — every digit one width, so columns line up and nothing shifts.
+   `zero` — slashed zero. This page prints revision SHAs, GGUF tensor names
+            and hex; `0` and `O` being distinguishable is not decoration.
+   `liga`/`calt` OFF — JetBrains Mono ligates `->`, `!=`, `=>` into single
+            glyphs. Lovely in an editor, wrong here: `!=` in a refusal message
+            is the literal operator somebody has to type back, and an edge
+            label reading `L9H6 -> L10` should show the characters that are
+            there. A measurement tool does not get to redraw its own output.
+
+   `--num` and `--num-prop` exist so the rare place that WANTS proportional
+   figures (running prose with a number in it) can say so, rather than
+   fighting the default with a literal. */
+:root {
+  --num: "tnum" 1, "zero" 1, "liga" 0, "calt" 0;
+  --num-prop: "tnum" 0, "zero" 1, "liga" 0, "calt" 0;
+}
+
+code,
+kbd,
+pre,
+samp,
+.mid,
+[class*="mono"] {
+  font-feature-settings: var(--num);
+  font-variant-numeric: tabular-nums slashed-zero;
 }
 ::selection { background: color-mix(in oklab, var(--acc) 18%, transparent); }
 
@@ -375,6 +433,7 @@ main > * {
 
 .pill {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11px;
   letter-spacing: 0.04em;
   padding: 5px 12px;
@@ -658,6 +717,7 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
   border-radius: var(--r-min);
   cursor: pointer;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12.5px;
   border: 1px solid transparent;
   transition: background-color var(--dur-micro) var(--ease-hover),
@@ -682,6 +742,7 @@ button.ghost.sm { padding: 6px 12px; font-size: 12.5px; }
    about to click. */
 .why {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   color: var(--color-agent);
   border: 1px solid color-mix(in oklab, var(--sem-agent) 35%, transparent);
@@ -764,6 +825,7 @@ button.model-btn:hover:not(:disabled) {
 }
 .model-btn-label {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10px;
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -771,7 +833,8 @@ button.model-btn:hover:not(:disabled) {
 }
 /* Same weight as .model-row .mid, so the id you picked in the sheet is
    rendered identically on the button it lands on. */
-.model-btn-id { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; }
+.model-btn-id { font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 12.5px; font-weight: 600; }
 .model-btn-caret { color: var(--color-mute); font-size: 12px; }
 
 /* accelerator badge: green + pulsing when a GPU is actually in use */
@@ -809,6 +872,7 @@ button.model-btn:hover:not(:disabled) {
 }
 .demo-banner code {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12.5px;
   color: var(--color-cobalt);
   background: var(--color-paper);
@@ -823,6 +887,7 @@ button.model-btn:hover:not(:disabled) {
   flex-wrap: wrap;
   margin-top: 16px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
@@ -933,6 +998,7 @@ html[data-theme="dark"] .panel {
 .sect .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
 .sect h2 {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   margin: 0;
   letter-spacing: 0.2em;
@@ -1207,12 +1273,14 @@ input[type="range"]:focus-visible { outline: none; }
   min-height: 96px;
   white-space: pre-wrap;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 13.5px;
 }
 .cursor { color: var(--color-cobalt); animation: blink 1s step-end infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .meta {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   color: var(--color-mute);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
@@ -1226,6 +1294,7 @@ input[type="range"]:focus-visible { outline: none; }
 .tokens { display: flex; gap: 3px; white-space: pre; padding: 2px 0; }
 .tok {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   letter-spacing: 0;
   font-size: 12px;
   padding: 3px 6px;
@@ -1258,6 +1327,7 @@ input[type="range"]:focus-visible { outline: none; }
   border-radius: 8px;
   cursor: pointer;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   letter-spacing: 0;
   font-size: 12px;
   transition: background-color var(--dur-micro) var(--ease-hover),
@@ -1348,6 +1418,7 @@ input[type="range"]:focus-visible { outline: none; }
   border-radius: var(--r-min);
   padding: 14px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12.5px;
   white-space: pre-wrap;
   animation: rise 0.4s var(--ease) both;
@@ -1372,6 +1443,7 @@ input[type="range"]:focus-visible { outline: none; }
   font-size: 11.5px;
   margin-top: 10px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
 }
 
 /* ---------- resting state ----------
@@ -1425,6 +1497,7 @@ input[type="range"]:focus-visible { outline: none; }
 .sketch svg { width: 100%; height: auto; overflow: visible; }
 .sketch-cap {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 9.5px;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -1495,6 +1568,7 @@ input[type="range"]:focus-visible { outline: none; }
   border: 1px solid transparent;
   border-radius: 8px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   letter-spacing: 0;
   font-size: 12px;
   transition: background-color var(--dur-micro) var(--ease-hover),
@@ -1551,6 +1625,7 @@ input[type="range"]:focus-visible { outline: none; }
 .inspector.err { border-color: color-mix(in oklab, var(--sem-error) 50%, transparent); }
 .lbl-chip {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 9.5px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -1585,6 +1660,7 @@ footer {
   color: var(--color-mute);
   font-size: 11.5px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   letter-spacing: 0.05em;
   display: flex;
   gap: 14px;
@@ -1726,6 +1802,7 @@ footer .spacer { flex: 1; }
   border: 1px solid transparent;
   border-radius: 8px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12px;
   min-width: 0;
   transition: background-color var(--dur-micro) var(--ease-hover),
@@ -1762,6 +1839,7 @@ footer .spacer { flex: 1; }
   display: grid;
   gap: 1px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
   overflow-x: auto;
 }
@@ -1916,6 +1994,7 @@ footer .spacer { flex: 1; }
   padding: 3px 8px;
   border-radius: var(--r-chip);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   color: var(--color-mute);
@@ -1965,6 +2044,7 @@ code {
   flex-wrap: wrap;
   align-items: center;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   letter-spacing: 0.06em;
   color: var(--color-mute);
@@ -1991,6 +2071,7 @@ code {
   gap: 4px 16px;
   align-items: baseline;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -2016,6 +2097,7 @@ code {
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10px;
   color: var(--color-mute);
   letter-spacing: 0.05em;
@@ -2037,6 +2119,7 @@ code {
   display: grid;
   gap: 1px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -2120,6 +2203,7 @@ code {
   margin: 0;
   color: var(--color-ink);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
   min-width: 0;
   overflow-x: auto;
@@ -2359,6 +2443,7 @@ code {
    template" every time and the user's own words fall off the bottom. */
 .attr-head {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -2367,6 +2452,7 @@ code {
 }
 .attr-tok {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12px;
   font-weight: 600;
   color: var(--color-attn);
@@ -2448,6 +2534,7 @@ button.ghost.sm.stop:hover:not(:disabled) {
 .replay-text p {
   margin: 2px 0 10px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12px;
   line-height: 1.55;
   color: var(--color-ink);
@@ -2618,10 +2705,12 @@ input[type="range"]:focus-visible { outline: none; }
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
 }
 .patch-answers { display: flex; gap: 14px; align-items: baseline; margin: 8px 0; }
 .patch-grid-wrap { overflow-x: auto; }
-.patch-grid { border-collapse: collapse; font-size: 11px; font-family: var(--font-mono); }
+.patch-grid { border-collapse: collapse; font-size: 11px; font-family: var(--font-mono);
+  font-feature-settings: var(--num); }
 .patch-grid th { font-weight: 500; padding: 3px 5px; white-space: nowrap; opacity: 0.75; }
 .patch-grid thead th { writing-mode: vertical-rl; transform: rotate(180deg); }
 .patch-grid td {
@@ -2673,6 +2762,7 @@ input[type="range"]:focus-visible { outline: none; }
 .pill.act {
   cursor: pointer;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   border-color: var(--line-ctrl);
   transition:
     color var(--dur-micro) var(--ease-hover),
@@ -2690,6 +2780,7 @@ input[type="range"]:focus-visible { outline: none; }
 .pill.freed {
   color: var(--color-cobalt);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   animation: staggerIn var(--dur-small) var(--ease-out) both;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -2708,6 +2799,7 @@ input[type="range"]:focus-visible { outline: none; }
   color: var(--color-ink);
   font: inherit;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12px;
 }
 
@@ -2849,6 +2941,7 @@ footer {
    the sign-out button read as broken in the first place. */
 .hub-source {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   opacity: 0.72;
@@ -3012,6 +3105,7 @@ body {
   border-radius: var(--r-well);
   background: color-mix(in oklab, var(--ink) 3%, transparent);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12px;
   line-height: 1.6;
   overflow-x: auto;
@@ -3035,6 +3129,7 @@ body {
 }
 .base-warn code {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 12.5px;
   padding: 1px 5px;
   border-radius: var(--r-chip);
@@ -3114,6 +3209,7 @@ button.model-btn:hover:not(:disabled) {
   padding: 0 5px;
   border-radius: var(--r-chip);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 9.5px;
   color: var(--color-mute);
   background: color-mix(in oklab, var(--ink) 7%, transparent);
@@ -3131,6 +3227,7 @@ button.model-btn:hover:not(:disabled) {
   align-items: center;
   gap: 18px;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
   color: var(--color-mute);
   padding: 9px 14px;
@@ -3172,6 +3269,7 @@ button.model-btn:hover:not(:disabled) {
 .gguf-stat { display: flex; flex-direction: column; gap: 2px; }
 .gguf-stat b {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 15px;
   color: var(--color-ink);
 }
@@ -3206,6 +3304,7 @@ button.model-btn:hover:not(:disabled) {
   gap: 8px;
   padding: 2px 0;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
 }
 .graph-node { color: var(--color-mute); text-align: right; }
@@ -3310,6 +3409,7 @@ button.model-btn:hover:not(:disabled) {
 .gguf-plan-bars .gguf-stat b { font-size: 17px; }
 .gguf-arrow {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 19px;
   color: var(--color-mute);
   /* Nudged up so it sits on the numbers' baseline rather than the labels'. */
@@ -3327,6 +3427,7 @@ button.model-btn:hover:not(:disabled) {
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
 }
 .gguf-table th {
@@ -3375,6 +3476,7 @@ button.model-btn:hover:not(:disabled) {
   width: 170px;
   z-index: 40;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3552,6 +3654,7 @@ main > [id^="sec-"] {
   border-radius: 8px;
   color: var(--color-ink);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -3576,6 +3679,7 @@ main > [id^="sec-"] {
   padding: var(--sp-4);
   color: var(--color-mute);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11px;
 }
 
@@ -3610,6 +3714,7 @@ main > [id^="sec-"] {
   border: 0;
   color: var(--color-mute);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   letter-spacing: 0.04em;
   text-align: left;
@@ -3646,6 +3751,7 @@ main > [id^="sec-"] {
   display: grid;
   gap: 2px 0;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   animation: receipt-open var(--dur-small) var(--ease-out);
 }
@@ -3703,6 +3809,7 @@ main > [id^="sec-"] {
 }
 .lens-gain {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10px;
   padding: 0 5px;
   border-radius: 4px;
@@ -3723,6 +3830,7 @@ main > [id^="sec-"] {
 .tune > summary {
   cursor: pointer;
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--color-mute);
@@ -3750,7 +3858,8 @@ main > [id^="sec-"] {
    chosen token is half the mechanism and a magnitude would hide it. */
 
 .direct { margin-top: var(--sp-4); border-top: 1px solid var(--hair-soft); padding-top: var(--sp-3); }
-.direct-head { font-family: var(--font-mono); font-size: 12px; margin-bottom: var(--sp-2); }
+.direct-head { font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 12px; margin-bottom: var(--sp-2); }
 .dla-bars { display: grid; gap: 1px; }
 .dla-row {
   display: grid;
@@ -3758,6 +3867,7 @@ main > [id^="sec-"] {
   align-items: center;
   gap: var(--sp-2);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
 }
 /* Under the reconstruction residual. Dimmed rather than hidden: the reader
@@ -3791,6 +3901,7 @@ main > [id^="sec-"] {
   padding: var(--sp-2) 0;
   color: var(--color-mute);
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 10.5px;
   text-decoration: underline;
   cursor: pointer;
@@ -3804,6 +3915,7 @@ main > [id^="sec-"] {
 
 .headtype {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 9.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -3839,6 +3951,7 @@ main > [id^="sec-"] {
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px; line-height: 1.55; resize: vertical;
 }
 .probe-name { max-width: 230px; }
@@ -3950,6 +4063,7 @@ main > [id^="sec-"] {
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px; line-height: 1.55;
 }
 .scope-target { margin-top: 4px; }
@@ -3959,6 +4073,7 @@ main > [id^="sec-"] {
   width: 4.6rem; padding: 5px 7px; border-radius: 6px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
 }
 
@@ -3991,7 +4106,8 @@ main > [id^="sec-"] {
   border-color: color-mix(in oklab, var(--color-scope) 45%, transparent);
 }
 .scope-decode p {
-  margin: 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
+  margin: 0; font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 11.5px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word;
 }
 .scope-ov { opacity: 0.85; }
@@ -4063,6 +4179,7 @@ main > [id^="sec-"] {
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px; line-height: 1.55; resize: vertical;
 }
 .fe-corpus { margin: 10px 0 6px; }
@@ -4080,7 +4197,8 @@ main > [id^="sec-"] {
 }
 .fe-act { text-align: right; opacity: 0.8; font-size: 11px; }
 .fe-text {
-  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 11.5px; line-height: 1.6;
   word-break: break-word;
 }
 .fe-tok {
@@ -4115,6 +4233,7 @@ main > [id^="sec-"] {
 }
 .fe-logits .fe-col code {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   background: color-mix(in oklab, var(--ink-4) 10%, transparent);
   border-radius: 3px; padding: 0 4px;
 }
@@ -4140,6 +4259,7 @@ main > [id^="sec-"] {
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px; line-height: 1.55; resize: vertical;
 }
 
@@ -4221,7 +4341,8 @@ main > [id^="sec-"] {
 
 .ground-body { display: grid; gap: 1px; min-width: 0; }
 .ground-preview {
-  font-family: var(--font-mono); font-size: 11px; line-height: 1.5;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 11px; line-height: 1.5;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   opacity: 0.9;
 }
@@ -4283,6 +4404,7 @@ main > [id^="sec-"] {
 }
 .custom-ablate code {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   background: color-mix(in oklab, var(--ink-4) 12%, transparent);
   border-radius: 3px; padding: 0 4px;
 }
@@ -4378,6 +4500,7 @@ main > [id^="sec-"] {
   width: 100%; padding: 7px 9px; border-radius: 7px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px; line-height: 1.55; resize: vertical;
 }
 .mdiff-opts { flex-wrap: wrap; gap: 16px; margin: 10px 0 0; }
@@ -4474,6 +4597,7 @@ main > [id^="sec-"] {
 .mdiff-shift.down { color: var(--color-pop); }
 .mdiff-tokens code {
   font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   background: color-mix(in oklab, var(--ink-4) 12%, transparent);
   border-radius: 3px; padding: 0 4px;
 }
@@ -4499,6 +4623,7 @@ main > [id^="sec-"] {
   width: 4.4rem; padding: 4px 7px; border-radius: 6px;
   border: 1px solid var(--hair); background: var(--color-card);
   color: var(--color-ink); font: inherit; font-family: var(--font-mono);
+  font-feature-settings: var(--num);
   font-size: 11.5px;
 }
 
@@ -4734,8 +4859,10 @@ main > [id^="sec-"] {
   color: var(--color-ink); font: inherit; font-size: 12px;
 }
 .rub-name { width: 12rem; font-weight: 500; }
-.rub-pattern { width: 11rem; font-family: var(--font-mono); font-size: 11.5px; }
-.rub-value { width: 5rem; font-family: var(--font-mono); font-size: 11.5px; }
+.rub-pattern { width: 11rem; font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 11.5px; }
+.rub-value { width: 5rem; font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 11.5px; }
 .rub-out { margin-top: 10px; display: grid; gap: 8px; }
 .rub-cap { margin: 0; }
 /* NOT ANSWERED sits apart from the counts, and reads as a refusal rather
@@ -4797,7 +4924,8 @@ main > [id^="sec-"] {
 .pgraph-node {
   position: absolute; transform: translate(-50%, -50%);
   padding: 3px 7px; border-radius: 6px; white-space: nowrap;
-  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.02em;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num); font-size: 10.5px; letter-spacing: 0.02em;
   /* The tokens `.tok` uses, not the ones I first reached for: `--ink-1`,
      `--paper-0`, `--paper-1` and `--dur-fast` are not defined in this
      stylesheet, and a declaration reading an undefined var is dropped
