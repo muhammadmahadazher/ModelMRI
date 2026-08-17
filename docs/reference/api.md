@@ -155,7 +155,11 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/image` | Image Status |
 | `GET` | `/api/image/attention/cost` | Image Attention Cost |
 | `GET` | `/api/image/available` | Image Available |
+| `GET` | `/api/image/local` | Image Local |
+| `GET` | `/api/image/search` | Image Search |
+| `GET` | `/api/image/size` | Image Size |
 | `GET` | `/api/image/steps/cost` | Image Steps Cost |
+| `GET` | `/api/image/tasks` | Image Tasks |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/lens/tuned` | Tuned Lens Status |
 | `GET` | `/api/paths` | Where |

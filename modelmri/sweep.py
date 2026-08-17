@@ -460,7 +460,7 @@ def load_prompts(path: str | Path) -> list[str]:
         text = target.read_text(encoding="utf-8")
     except OSError as err:
         raise BadRequest(
-            f"{target.name} could not be read ({err.strerror or err})"
+            f"{target.name} could not be read ({err.strerror or type(err).__name__})"
         ) from None
 
     prompts: list[str] = []

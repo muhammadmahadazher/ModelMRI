@@ -726,7 +726,7 @@ def diff(path_a: str | Path, path_b: str | Path) -> DiffReport:
             data = target.read_bytes()
         except OSError as err:
             raise BadRequest(
-                f"{target.name} could not be read ({err.strerror or err})"
+                f"{target.name} could not be read ({err.strerror or type(err).__name__})"
             ) from None
         parsed.append(session_mod.parse(data))
     a, b = parsed

@@ -1314,6 +1314,156 @@ export const imageKnockout = (
     body: JSON.stringify({ prompt, words, seed, steps }),
   }).then((r) => json<ImageKnockout>(r));
 
+// ------------------------------------------------- finding an image model
+//
+// The four routes over `image_catalog`, and they exist because the image side
+// had a cache scan and nothing else: the only way to open a diffusion model
+// was to already know its name. The text side has had `hub.search` and
+// `discover.scan` for a long time; this is the same pair for pictures.
+//
+// ## A row here never claims a family
+//
+// A Hub pipeline tag is a TASK, not an architecture: `text-to-image` covers a
+// UNet and a DiT, and those two keep their cross-attention in different
+// places. So a row says what the model DOES, names the families that tag is
+// CONSISTENT with, and leaves the architecture to `imaging.detect`, which
+// reads the checkpoint's own config at load. A confident wrong family word in
+// a list is exactly what `ImageStatus.capabilities` exists to prevent.
+//
+// ## `size_bytes` is `null` for unknown, and it is never 0
+//
+// `hub.weight_bytes` does arithmetic on the per-dtype parameter counts the
+// Hub publishes, and most GGUF and pickle repos publish none. The server
+// passes that through as `null` rather than 0 because a picker rendering
+// "0.0 GB" for an unknown invites the exact click a size column exists to
+// prevent. Every reader of these fields must branch on `null` before it
+// formats.
+
+/** One task the Hub publishes that this tool can open. */
+export interface ImageTask {
+  /** The Hub's own pipeline tag: `text-to-image`, `image-segmentation`, … */
+  task: string;
+  label: string;
+  /** The families `imaging.detect` MIGHT name once a checkpoint of this task
+   *  is read. Not a property of any one model — see the note above. */
+  families: string[];
+  means: string;
+}
+
+export interface ImageTasks {
+  tasks: ImageTask[];
+  /** Which task a search runs when none is chosen. Every tag at once is not a
+   *  valid Hub filter, so one is named rather than silently picked. */
+  default: string;
+  means: string;
+}
+
+/** One row of a Hub search: what it does, what it weighs, whether it is here. */
+export interface ImageHubModel {
+  id: string;
+  task: string;
+  task_label: string;
+  /** What the TASK is consistent with. Never this checkpoint's family. */
+  families_possible: string[];
+  downloads: number;
+  likes: number;
+  /** Its licence has to be accepted, and a token has to be on this machine,
+   *  before the weights will move. */
+  gated: boolean;
+  /** `YYYY-MM-DD`, or empty when the listing carried no date. */
+  updated: string;
+  /** `null` is UNKNOWN and must never render as a size. */
+  size_bytes: number | null;
+  /** Answered by looking at this machine's cache, not guessed from the
+   *  listing. */
+  cached: boolean;
+}
+
+export interface ImageSearch {
+  models: ImageHubModel[];
+  /** The task actually searched, which is the default when none was sent. */
+  task: string;
+  means: string;
+}
+
+/** One image model on this disk, with what it actually weighs.
+ *
+ *  `ImageModelInfo` answers what a cached model IS. This answers what it
+ *  COSTS, read off the files rather than the Hub — including the state a
+ *  browse list cannot show, which is `complete: false`.
+ */
+export interface ImageLocalModel {
+  /** The repo id, and the string `loadImage` takes. */
+  path: string;
+  family: string;
+  label: string;
+  known: boolean;
+  architecture: string;
+  capabilities: string[];
+  reason: string;
+  /** `null` is UNKNOWN. A cache entry that could not be sized is still worth
+   *  listing, and it is not a model that weighs nothing. */
+  size_bytes: number | null;
+  /** **`false` is an interrupted download** — a cache entry holding configs
+   *  and no weights. It is not a model that is ready, and offering a Load
+   *  button on one is offering a click that cannot work. */
+  complete: boolean;
+}
+
+export interface ImageLocal {
+  models: ImageLocalModel[];
+  /** Summed over the COMPLETE rows only: an interrupted download's bytes are
+   *  not a model on this disk. */
+  bytes_on_disk: number;
+  means: string;
+}
+
+/** What downloading one model would cost, before any of it moves. */
+export interface ImageSize {
+  id: string;
+  size_bytes: number | null;
+  gated: boolean;
+  cached: boolean;
+  means: string;
+}
+
+/** Which kinds of image model can be searched for. Reads no disk and makes no
+ *  Hub call — it is `image_catalog.TASKS`, so a task added there appears here
+ *  without a second edit. */
+export const getImageTasks = () =>
+  fetch("/api/image/tasks").then((r) => json<ImageTasks>(r));
+
+/** Image models on the Hub, annotated with size and whether they are here.
+ *
+ *  Downloads nothing. Refuses 422 for a task outside `image_catalog.TASKS` —
+ *  which would return checkpoints nothing here can load — and 503 when the
+ *  Hub cannot be reached, with the sentence that says the models already on
+ *  this machine still open. Both arrive as `ApiError`, so both go through
+ *  `errorText` and reach the reader in the server's own words.
+ */
+export const searchImageModels = (q: string, task: string, limit = 24) =>
+  fetch(
+    `/api/image/search?q=${encodeURIComponent(q)}&task=${encodeURIComponent(
+      task,
+    )}&limit=${limit}`,
+  ).then((r) => json<ImageSearch>(r));
+
+/** Every image model on this disk, with what it weighs and whether it
+ *  finished downloading. Reads files; asks the Hub nothing. */
+export const getImageLocal = () =>
+  fetch("/api/image/local").then((r) => json<ImageLocal>(r));
+
+/** How big one named repo is, before a byte of it moves.
+ *
+ *  The question a reader asks first, and the one the name box could not
+ *  answer: whether it FITS is separate, and is answered against this
+ *  machine's free memory when you load it.
+ */
+export const imageSize = (repo: string) =>
+  fetch(`/api/image/size?repo=${encodeURIComponent(repo)}`).then((r) =>
+    json<ImageSize>(r),
+  );
+
 export interface HubAuth {
   signed_in: boolean;
   user: string | null;

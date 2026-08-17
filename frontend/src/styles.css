@@ -5301,10 +5301,37 @@ main > [id^="sec-"] {
    against transparent, so it carries the panel's own accent in all six
    palettes and both modes without a second definition. */
 
-.image-models { display: grid; gap: 4px; width: 100%; max-width: 64ch; }
+/* ── finding one ────────────────────────────────────────────────────────
+   The resting panel is a browser with two tabs, and they are two tabs rather
+   than one list because they fail for unrelated reasons: reading a disk
+   cannot fail for want of a network, and a Hub search has nothing to say
+   about what is already here. A single list would have to pick one of those
+   explanations for an empty result. */
+.image-tabs { margin: 10px 0 8px; }
+.image-browse { display: grid; gap: 8px; width: 100%; max-width: 76ch; }
+.image-find { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.image-find .combo { font-size: var(--t-sm); padding: 6px 9px; min-width: 0; }
+.image-find select.combo { min-width: 13rem; }
+.image-find input.combo { flex: 1 1 16rem; }
+/* What the TASK is, and what it is consistent with — never what a listed
+   checkpoint is. Sunken, because it is the panel telling you something rather
+   than offering you something, the same distinction `.image-cost` draws. */
+.image-task-note {
+  padding: 8px 11px; border-radius: 9px;
+  background: var(--sf-sunk); box-shadow: var(--etch);
+  display: grid; gap: 5px; max-width: 74ch;
+}
+.image-task-note p { margin: 0; }
+.image-sized { max-width: 74ch; margin: 2px 0 0; }
+
+.image-models { display: grid; gap: 4px; width: 100%; max-width: 76ch; }
 .image-model {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) auto;
+  /* Four: what it is called, what it is, WHAT IT WEIGHS, and what you can do
+     about it. The size is its own column rather than a clause in the middle
+     one so that a list of them reads down as a column of sizes — which is the
+     comparison the column exists to make possible. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 6.5rem auto;
   gap: 10px; align-items: center;
   padding: 5px 8px; border-radius: 7px;
   border: 1px solid var(--hair-soft);
@@ -5319,6 +5346,38 @@ main > [id^="sec-"] {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .image-model-family { min-width: 0; }
+/* Tabular, because the point of a column of sizes is that they line up. */
+.image-size {
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+/* An unknown size is NOT a small one, and it must not read as a quantity.
+   Dimmed and not tabular: it is a sentence sitting in a number's column,
+   which is exactly what it is. */
+.image-size.unknown {
+  font-family: inherit;
+  font-variant-numeric: normal;
+  color: var(--ink-4);
+  font-style: italic;
+}
+/* A download that stopped halfway, and a licence that has not been accepted.
+   Both take the place of the button rather than sitting beside it: a control
+   that can only fail teaches a reader that the tool is broken.
+
+   On their OWN line, spanning the row, at every width. Measured: this panel's
+   column is ~515px on a 1006px viewport, so a sentence squeezed into the
+   button's slot crushed the id and family columns to about 150px each and
+   wrapped every one of them — the row that had the most to explain became
+   the least legible one on the list. Identity and size stay on the first
+   line; the reason gets the second. */
+.image-partial, .image-gated {
+  grid-column: 1 / -1;
+  padding-top: 1px;
+  border-top: 1px solid var(--hair-soft);
+}
 
 .image-prompt { width: 100%; margin-bottom: 8px; }
 .image-controls { flex-wrap: wrap; gap: 12px; align-items: center; }

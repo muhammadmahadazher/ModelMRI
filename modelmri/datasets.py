@@ -671,7 +671,7 @@ def read_dataset(path: str | Path) -> Dataset:
                 cases.append(_case_from(obj, p.name, number))
     except OSError as err:
         raise BadRequest(
-            f"{p.name} could not be read ({err.strerror or err})"
+            f"{p.name} could not be read ({err.strerror or type(err).__name__})"
         ) from None
 
     dataset = Dataset(
@@ -739,7 +739,7 @@ def read_experiment(path: str | Path) -> Experiment:
                 rows.append(_result_from(obj, p.name, number))
     except OSError as err:
         raise BadRequest(
-            f"{p.name} could not be read ({err.strerror or err})"
+            f"{p.name} could not be read ({err.strerror or type(err).__name__})"
         ) from None
 
     floors = header.get("metric_floors")

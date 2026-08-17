@@ -146,7 +146,10 @@ def revision_of(hf_id: str | None) -> tuple[str | None, str]:
         # reported rather than swallowed into a bare None, because "the cache
         # could not be read" and "this model has no commit" are different
         # facts and a reader acts differently on each.
-        return None, f"the local model cache could not be read ({err.strerror or err})"
+        return (
+            None,
+            f"the local model cache could not be read ({err.strerror or type(err).__name__})",
+        )
 
     if len(snaps) == 1:
         # Unambiguous even without a ref file: there is only one thing it

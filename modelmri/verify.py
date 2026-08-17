@@ -886,7 +886,7 @@ def verify(path: str | Path, runtime) -> Report:
         data = target.read_bytes()
     except OSError as err:
         raise BadRequest(
-            f"{target.name} could not be read ({err.strerror or err})"
+            f"{target.name} could not be read ({err.strerror or type(err).__name__})"
         ) from None
 
     parsed = session_mod.parse(data)

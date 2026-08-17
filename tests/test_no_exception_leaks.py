@@ -288,8 +288,34 @@ def test_no_sink_interpolates_a_caught_exceptions_text():
     # `.args`, `.strerror`, `.filename` and `.reason` are the four that carry
     # host text; `type(err).__name__` and `err.name` stay allowed, the latter
     # being a module name and bounded.
+    # And the FALLBACK form, which this missed until an audit went looking.
+    #
+    # Six sites wrote `{err.strerror or err}`. The bare `err` after the `or`
+    # publishes `str(err)` — the exact thing this test exists to forbid — and
+    # the old pattern did not match, because ` or err` sits inside the braces
+    # and the regex only allowed an optional attribute there.
+    #
+    # It was not theoretical. A single-argument `OSError` has `strerror =
+    # None`, so the fallback is what runs, and pyarrow raises exactly that:
+    #
+    #   pq.read_table("/definitely/not/here.parquet")
+    #   -> FileNotFoundError, strerror None,
+    #      fallback publishes "/definitely/not/here.parquet"
+    #
+    # `datasets.py` reads parquet, so two of the six were one bad path away
+    # from putting an absolute path in a 422. The fix is
+    # `err.strerror or type(err).__name__`, and the pattern now covers the
+    # shape so the next one fails here instead of shipping.
+    #
+    # `{name}`, `{p.name}` and `{type(err).__name__}` still do not match: the
+    # alternation is anchored to the exception NAMES, and `err.name` on an
+    # ImportError is a module name and bounded.
     suspect = re.compile(
-        r"\{(?:err|exc|error|cpu_err)(?:\.(?:reason|args|strerror|filename))?\}"
+        r"\{(?:err|exc|error|cpu_err)"
+        r"(?:\.(?:reason|args|strerror|filename))?"
+        # an `or` fallback to the raw exception, with or without an attribute
+        r"(?:\s+or\s+(?:err|exc|error|cpu_err)\b(?!\.))?"
+        r"\}"
     )
     offenders = []
     for path in sorted(root.rglob("*.py")):
@@ -403,3 +429,38 @@ def test_a_hub_failure_names_the_class_and_not_the_url(tmp_path, monkeypatch):
     said = str(caught.value)
     assert not leaked(said), f"the hub refusal leaked {leaked(said)}"
     assert "owner/name" in said
+
+
+def test_a_falsy_strerror_falls_back_to_the_class_and_not_the_path(monkeypatch):
+    """The leak the static check could not see, measured rather than argued.
+
+    Six sites wrote `{err.strerror or err}`. A single-argument `OSError` has
+    `strerror = None`, so the fallback is what actually runs — and pyarrow
+    raises exactly that shape:
+
+        pq.read_table("/definitely/not/here.parquet")
+        -> FileNotFoundError, strerror None, str(err) == the path
+
+    `datasets.py` reads parquet, so two of the six were one bad path away from
+    putting an absolute path into a 422. The regex above missed all six
+    because ` or err` sits inside the braces.
+    """
+    from modelmri import datasets
+    from modelmri.errors import BadRequest
+
+    # Fails the way pyarrow's reader does: a SINGLE-ARGUMENT OSError, so
+    # `strerror` is None and the `or` fallback is what actually runs. The
+    # three-argument form stdlib `open` raises has a real `strerror` and
+    # never reached the fallback, which is why this went unnoticed.
+    def _single_arg(*_a, **_k):
+        raise FileNotFoundError(f"Failed to open local file: {WEIGHTS}")
+
+    monkeypatch.setattr(Path, "open", _single_arg)
+
+    with pytest.raises(BadRequest) as caught:
+        datasets.read_dataset(Path("cases.jsonl"))
+    said = str(caught.value)
+    assert not leaked(said), f"a dataset read leaked {leaked(said)}"
+    # The class survives, because which KIND of failure it was is the
+    # actionable half and a class name cannot carry a path.
+    assert "FileNotFoundError" in said

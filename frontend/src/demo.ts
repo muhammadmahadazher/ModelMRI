@@ -717,6 +717,73 @@ export async function demoFetch(
         "pipeline already on your disk and downloads nothing to do it.",
     });
   }
+  // ---- finding one, which needs a disk and a network this page has neither of
+  //
+  // Split deliberately three ways rather than answered with one refusal. The
+  // "on this machine" tab fails for a different reason from the "find one"
+  // tab, and a visitor who cannot tell them apart learns that model discovery
+  // is broken rather than that a static page has nothing to discover with.
+  if (p === "/api/image/local") {
+    // The same rule `/api/image/available` above is written for, and the same
+    // scar behind it: `/api/models/discovered` once shipped one person's 17
+    // repositories to every visitor. This page may offer only what it can
+    // replay, and it can replay no pipeline.
+    return ok({
+      models: [],
+      bytes_on_disk: 0,
+      means:
+        "This page is a static recording and cannot read a disk, so it lists " +
+        "no image models and no bytes — not because none are here, but " +
+        "because there is no machine here to ask. Installed, this names " +
+        "every diffusion pipeline on your disk with what each one weighs, " +
+        "and marks the ones holding configs and no weights as the " +
+        "interrupted downloads they are rather than as models ready to load.",
+    });
+  }
+  if (p === "/api/image/tasks") {
+    // Empty rather than a copy. The table lives in `image_catalog.TASKS`, and
+    // re-typing it here would be a second source of truth for what this tool
+    // can open — one that drifts the day a tag is added on the server and
+    // offers a visitor a task no checkpoint here could ever load.
+    return ok({
+      tasks: [],
+      default: "",
+      means:
+        "Choosing what to search for is the first half of a Hub call this " +
+        "page cannot make, so no tasks are offered here rather than a copy " +
+        "of the list that would drift from the one the tool actually reads. " +
+        "Installed, this names every kind of image model ModelMRI can open — " +
+        "and what each one offers is settled by the checkpoint's own config " +
+        "when it loads, never by the task it was listed under.",
+    });
+  }
+  if (p === "/api/image/search") {
+    // An empty list with the reason attached, not a red error: the tab is
+    // working correctly and has nothing to show, which is the distinction
+    // `/api/image` above is written for.
+    return ok({
+      models: [],
+      task: q.get("task") ?? "",
+      means:
+        "Searching for a model to download is a live call to the " +
+        "HuggingFace Hub, and this page is a static recording with nothing " +
+        "behind it to make one — so no results are listed. A baked list " +
+        "would be a snapshot of a download count that has moved since, " +
+        "offered under a Load button with no process to load into. " +
+        "Installed, this searches the Hub by task, says what each result " +
+        "weighs before you click, and marks the ones already on your disk.",
+    });
+  }
+  if (p === "/api/image/size") {
+    return refuse(
+      501,
+      `Pricing a download means asking the Hub what \`${
+        q.get("repo") || "that model"
+      }\` publishes, which is a live call this static page has no process to ` +
+        `make. Nothing here will guess a size instead: a number invented for ` +
+        `a picker is the one thing a size column exists to prevent.`,
+    );
+  }
   if (p === "/api/image/load") {
     return refuse(
       501,

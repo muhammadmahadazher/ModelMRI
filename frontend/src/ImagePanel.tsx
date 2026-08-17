@@ -5,17 +5,23 @@ import {
   captureImageAttention,
   errorText,
   getImage,
-  getImageAvailable,
+  getImageLocal,
+  getImageTasks,
   imageAttentionCost,
   imageKnockout,
+  imageSize,
   imageStepsCost,
   ImageAttentionCost,
   ImageAttentionRun,
-  ImageAvailable,
   ImageKnockout,
+  ImageLocal,
+  ImageSearch,
+  ImageSize,
   ImageStatus,
+  ImageTasks,
   ImageTraceCost,
   loadImage,
+  searchImageModels,
   unloadImage,
 } from "./api";
 
@@ -106,11 +112,62 @@ function promptWords(prompt: string): string[] {
   return prompt.split(/\s+/).filter((w) => w.length > 0);
 }
 
+/** A size, or the admission that nobody here knows one.
+ *
+ *  **`null` is UNKNOWN and must never come out as "0.0 GB".** The Hub
+ *  publishes no per-dtype parameter counts for most GGUF and pickle repos,
+ *  and `image_catalog` deliberately passes that through as `null` rather than
+ *  as a number — so the one thing this function may not do is turn the
+ *  absence of a measurement into the smallest possible one. A row reading
+ *  "0.0 GB" invites exactly the click a size column exists to prevent, and it
+ *  invites it hardest on the repos whose real weight is largest.
+ *
+ *  0 is folded in with `null` for the same reason: it can only arrive from a
+ *  server that has not been taught the rule, and rendering it as a size would
+ *  be this panel making the claim on its behalf.
+ */
+function sizeText(bytes: number | null): string {
+  if (bytes === null || bytes <= 0) return "size unknown";
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(2)} TB`;
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(bytes >= 1e10 ? 0 : 1)} GB`;
+  return `${Math.round(bytes / 1e6)} MB`;
+}
+
+/** Download counts, shortened. Six significant digits of popularity is noise
+ *  in a column whose job is to say "lots of people use this one". */
+function downloads(n: number): string {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)}k`;
+  return String(n);
+}
+
 export default function ImagePanel() {
   const [status, setStatus] = useState<ImageStatus | null>(null);
-  const [available, setAvailable] = useState<ImageAvailable | null>(null);
-  // Typed rather than picked: the list is what is cached, and somebody with
-  // nothing cached still has a Hub id in their head.
+  // What is on this disk, sized. `null` is "the scan has not answered yet",
+  // which is a different thing from an empty list — the second is a real
+  // finding and gets the server's own sentence under it.
+  const [local, setLocal] = useState<ImageLocal | null>(null);
+  // Which half of the browser is open. Two tabs rather than one long list
+  // because they answer different questions: what can I open right now, and
+  // what could I go and get.
+  const [tab, setTab] = useState<"here" | "find">("here");
+  // The Hub half, all of it fetched only once that tab is opened. A task list
+  // and a search are two network calls to pay for a tab most sessions never
+  // visit — and the resting panel's whole claim is that it costs nothing.
+  const [tasks, setTasks] = useState<ImageTasks | null>(null);
+  const [task, setTask] = useState("");
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState<ImageSearch | null>(null);
+  const [searching, setSearching] = useState(false);
+  // The find tab's own error line. Separate from `err` because the two tabs
+  // fail for unrelated reasons — an unreachable Hub is not a refused load —
+  // and one shared string leaves the message from the tab you just left
+  // sitting under the tab you just opened.
+  const [findErr, setFindErr] = useState("");
+  // What one named repo weighs, asked before anything moves.
+  const [sized, setSized] = useState<ImageSize | null>(null);
+  // Typed rather than picked: the lists are what is cached and what the Hub
+  // returned, and somebody with neither still has an id in their head.
   const [repo, setRepo] = useState("");
   const [prompt, setPrompt] = useState("a photograph of an astronaut riding a horse");
   const [steps, setSteps] = useState(20);
@@ -143,22 +200,80 @@ export default function ImagePanel() {
     run ? `${run.model}:${run.seed}:${run.steps_measured}:${run.tokens.length}` : "",
   );
 
-  // Status and the cached list only. Neither reads a weight: `/api/image`
-  // reports what this process is holding, and `/api/image/available` reads
-  // `model_index.json` and `config.json` off the disk. Nothing on this panel
-  // opens a pipeline before you click.
+  // Status and the local list only. Neither opens a pipeline: `/api/image`
+  // reports what this process is holding, and `/api/image/local` reads
+  // `model_index.json` and `config.json` off the disk and sizes the weight
+  // files beside them without reading one. Nothing on this panel loads
+  // anything before you click, and nothing here touches the network.
   useEffect(() => {
     let live = true;
     void getImage()
       .then((s) => live && setStatus(s))
       .catch(() => undefined);
-    void getImageAvailable()
-      .then((a) => live && setAvailable(a))
+    void getImageLocal()
+      .then((l) => live && setLocal(l))
       .catch(() => undefined);
     return () => {
       live = false;
     };
   }, []);
+
+  // Read once, here, because three effects below branch on it and each of them
+  // is the resting panel deciding whether it is the thing on screen at all.
+  const loaded = status?.loaded ?? false;
+
+  // The task list, the moment the find tab is opened and never before.
+  useEffect(() => {
+    if (loaded || tab !== "find" || tasks !== null) return;
+    let live = true;
+    void getImageTasks()
+      .then((t) => {
+        if (!live) return;
+        setTasks(t);
+        // The server names its own default rather than this picking one. Every
+        // tag at once is not a valid Hub filter — the API ANDs repeated
+        // `filter` values — so somebody has to choose, and it is not the
+        // panel's choice to make silently.
+        setTask((cur) => cur || t.default);
+      })
+      .catch((e) => live && setFindErr(errorText(e)));
+    return () => {
+      live = false;
+    };
+  }, [loaded, tab, tasks]);
+
+  // The search itself, debounced, re-run when the task or the query changes.
+  // Gated on a task being known: an empty one would be the server's default
+  // under a dropdown showing something else.
+  useEffect(() => {
+    if (loaded || tab !== "find" || task === "") return;
+    let live = true;
+    setSearching(true);
+    setFindErr("");
+    const timer = window.setTimeout(() => {
+      void searchImageModels(q, task)
+        .then((s) => {
+          if (!live) return;
+          setFound(s);
+          setSearching(false);
+        })
+        .catch((e) => {
+          if (!live) return;
+          // Verbatim, both of them. 422 names the tasks this can open and 503
+          // says the models already downloaded still load — a rewrite here
+          // would lose whichever half the reader needed.
+          setFindErr(errorText(e));
+          // `null` is the honest terminal state. Leaving the previous results
+          // up would attribute them to the search that just failed.
+          setFound(null);
+          setSearching(false);
+        });
+    }, 280);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [loaded, tab, task, q]);
 
   const caps = new Set(status?.capabilities ?? []);
   const words = promptWords(prompt);
@@ -174,7 +289,6 @@ export default function ImagePanel() {
   // one is. Each line is a different question about the same `steps`, and each
   // is asked only when the capability behind it is present — a cost quoted for
   // a measurement this architecture cannot make is a number about nothing.
-  const loaded = status?.loaded ?? false;
   const nWords = words.length;
   useEffect(() => {
     if (!loaded) return;
@@ -223,6 +337,38 @@ export default function ImagePanel() {
     } finally {
       setBusy("");
     }
+  }
+
+  /** How big one named repo is, before anything moves.
+   *
+   *  The name box could always start a load; it could never say what the load
+   *  was about to cost. This is the question a reader asks first, and asking
+   *  it downloads nothing. */
+  async function onSize() {
+    setBusy("size");
+    setErr("");
+    setSized(null);
+    try {
+      setSized(await imageSize(repo));
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** Switching tabs clears the messages the other tab left behind.
+   *
+   *  One error line per tab is not enough on its own: `err` belongs to a
+   *  refused LOAD, which either tab can cause, so it survives — but a size
+   *  lookup for a name you have moved on from does not, and neither does a
+   *  Hub failure under a list of what is on your own disk. That last one was
+   *  the bug ModelPicker records: "searching HuggingFace is a live call" sat
+   *  under the Ollama tab as if it were Ollama's explanation. */
+  function openTab(next: "here" | "find") {
+    setFindErr("");
+    setSized(null);
+    setTab(next);
   }
 
   async function onUnload() {
@@ -283,39 +429,238 @@ export default function ImagePanel() {
             loaded yet.
           </p>
 
-          {available && available.models.length > 0 && (
-            <div className="image-models">
-              {available.models.map((m) => (
-                <div className="image-model" key={m.path}>
-                  <span className="mid image-model-id">{m.path}</span>
-                  {/* The family in the server's own words. The identifier is
-                      kept beside it because that is what `capabilities` is
-                      keyed on, and an unknown family carries its reason
-                      instead of a bare row. */}
-                  <span className="meta image-model-family">
-                    {m.label}
-                    {m.known ? ` · ${m.family}` : ""}
-                  </span>
-                  {m.known ? (
-                    <button
-                      className="green"
-                      onClick={() => void onLoad(m.path)}
-                      disabled={busy !== ""}
-                    >
-                      {busy === "load" && tried === m.path ? "Loading…" : "Load"}
-                    </button>
-                  ) : (
-                    <span className="meta">{m.reason}</span>
-                  )}
+          {/* ─── the browser: what is here, and what could be ───────────
+              Two tabs rather than one list, because they answer different
+              questions and fail for unrelated reasons. "On this machine"
+              reads files and cannot fail for want of a network; "Find one"
+              is a live Hub call and has nothing to say about your disk. A
+              single list would have to pick one of those two explanations
+              for an empty result. */}
+          <div className="seg image-tabs" role="tablist" aria-label="find an image model">
+            <button
+              role="tab"
+              aria-selected={tab === "here"}
+              className={tab === "here" ? "on" : ""}
+              onClick={() => openTab("here")}
+            >
+              On this machine
+            </button>
+            <button
+              role="tab"
+              aria-selected={tab === "find"}
+              className={tab === "find" ? "on" : ""}
+              onClick={() => openTab("find")}
+            >
+              Find one
+            </button>
+          </div>
+
+          {tab === "here" ? (
+            <div className="image-browse">
+              {local === null && (
+                <span className="meta">
+                  reading this machine's cache and sizing what is in it…
+                </span>
+              )}
+
+              {local && local.models.length > 0 && (
+                <div className="image-models">
+                  {local.models.map((m) => (
+                    <div className="image-model" key={m.path}>
+                      <span className="mid image-model-id" title={m.path}>
+                        {m.path}
+                      </span>
+                      {/* The family in the server's own words. The identifier
+                          is kept beside it because that is what `capabilities`
+                          is keyed on, and an unknown family carries its reason
+                          instead of a bare row. */}
+                      <span className="meta image-model-family">
+                        {m.label}
+                        {m.known ? ` · ${m.family}` : ""}
+                      </span>
+                      {/* Never "0.0 GB" for something nobody sized. */}
+                      <span
+                        className={`meta image-size${
+                          m.size_bytes === null ? " unknown" : ""
+                        }`}
+                      >
+                        {sizeText(m.size_bytes)}
+                      </span>
+                      {/* An interrupted download is the state a browse list
+                          cannot show and this one must: configs arrived, the
+                          weights did not. It looks exactly like a model that
+                          is ready, right up until the load fails minutes
+                          later, so the row says so INSTEAD of offering a
+                          button that cannot work. */}
+                      {!m.complete ? (
+                        <span className="meta image-partial">
+                          configs but no weights — an interrupted download
+                          rather than a model that is ready. Fetch it again
+                          before it can be opened.
+                        </span>
+                      ) : m.known ? (
+                        <button
+                          className="green"
+                          onClick={() => void onLoad(m.path)}
+                          disabled={busy !== ""}
+                        >
+                          {busy === "load" && tried === m.path ? "Loading…" : "Load"}
+                        </button>
+                      ) : (
+                        <span className="meta">{m.reason}</span>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
+
+              {/* Rendered as the server wrote it: how many are here, how many
+                  have weights actually present, and what the whole lot
+                  weighs. A count re-typed here could drift from the list
+                  above it. */}
+              {local && <span className="meta">{local.means}</span>}
+            </div>
+          ) : (
+            <div className="image-browse">
+              <div className="image-find">
+                <label className="meta" htmlFor="image-task">
+                  what it should do
+                </label>
+                <select
+                  id="image-task"
+                  className="combo"
+                  value={task}
+                  onChange={(e) => setTask(e.target.value)}
+                  disabled={!tasks || tasks.tasks.length === 0}
+                >
+                  {tasks?.tasks.map((t) => (
+                    <option key={t.task} value={t.task}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                {/* Both controls die together, because a search is only ever
+                    run against a task. Where no task list could be fetched —
+                    the static demo, which has no Hub to ask — a live-looking
+                    box that silently does nothing is worse than a dead one:
+                    the sentence under it is the answer, and a reader who is
+                    still typing has not read it. */}
+                <input
+                  id="image-q"
+                  className="combo grow"
+                  placeholder="search the Hub — a name, an author, a word"
+                  aria-label="search the Hub for an image model"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  disabled={!tasks || tasks.tasks.length === 0}
+                  spellCheck={false}
+                />
+              </div>
+
+              {/* What the chosen task IS, in the catalogue's own words, and
+                  what it is CONSISTENT with. Never what the model is: a tag
+                  covers a UNet and a DiT, which keep their cross-attention in
+                  different places, so the architecture stays an open question
+                  until the checkpoint's own config is read at load. */}
+              {tasks?.tasks
+                .filter((t) => t.task === task)
+                .map((t) => (
+                  <div key={t.task} className="image-task-note">
+                    <p className="meta">{t.means}</p>
+                    <p className="meta">
+                      Checkpoints listed under this task are usually{" "}
+                      <b>{t.families.join(" or ")}</b> — but a task says what a
+                      model does, not what it is built from, and which of those
+                      any one of them turns out to be is settled by reading its
+                      own config when it loads. Nothing on this row claims to
+                      know yet.
+                    </p>
+                  </div>
+                ))}
+
+              {searching && <span className="meta">asking the Hub…</span>}
+
+              {!searching && found && found.models.length > 0 && (
+                <div className="image-models">
+                  {found.models.map((m) => (
+                    <div className="image-model" key={m.id}>
+                      <span className="mid image-model-id" title={m.id}>
+                        {m.id}
+                      </span>
+                      <span className="meta image-model-family">
+                        {m.task_label}
+                        {m.downloads > 0 ? ` · ${downloads(m.downloads)} downloads` : ""}
+                        {/* Answered by looking at this disk, not guessed from
+                            the listing — so it is worth saying. */}
+                        {m.cached ? " · already on this machine" : ""}
+                      </span>
+                      <span
+                        className={`meta image-size${
+                          m.size_bytes === null ? " unknown" : ""
+                        }`}
+                      >
+                        {sizeText(m.size_bytes)}
+                      </span>
+                      {/* A gated repo will not hand over its weights until its
+                          licence is accepted and a token is on this machine.
+                          Saying so is the difference between a row that
+                          explains itself and a Load button that fails on the
+                          first byte.
+
+                          `&& !m.cached` is load-bearing, and this machine has
+                          the case that proves it: `facebook/sam3` comes back
+                          from the Hub gated AND already downloaded. Gating is
+                          about the TRANSFER, and for a repo whose weights are
+                          already sitting in the cache there is no transfer
+                          left to authorise — so sending that reader off to
+                          accept a licence would be withholding a button that
+                          works, over a credential they do not need. */}
+                      {m.gated && !m.cached ? (
+                        <span className="meta image-gated">
+                          needs credentials — accept its licence on the Hub and
+                          sign in, then search again
+                        </span>
+                      ) : (
+                        <button
+                          className="green"
+                          onClick={() => void onLoad(m.id)}
+                          disabled={busy !== ""}
+                        >
+                          {busy === "load" && tried === m.id
+                            ? "Loading…"
+                            : m.cached
+                              ? "Load"
+                              : "Get it"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* How many came back, how many are already here, and how many
+                  publish no size at all — the server's sentence, because that
+                  last count is the one a reader most needs and the one this
+                  panel would be guessing at. */}
+              {!searching && found && <span className="meta">{found.means}</span>}
+
+              {tasks && <span className="meta">{tasks.means}</span>}
+
+              {found && found.models.some((m) => m.gated && !m.cached) && (
+                <span className="meta">
+                  A gated model still opens once you have accepted its licence
+                  and signed in — the model picker's HuggingFace tab is where
+                  the token goes — or you can name it in the box below and let
+                  the load answer for itself.
+                </span>
+              )}
+
+              {/* Verbatim: 422 names every task this can open, 503 says the
+                  models already downloaded still load. Both are the server's
+                  own sentences and neither survives a rewrite. */}
+              {findErr && <div className="hint err">{findErr}</div>}
             </div>
           )}
-
-          {/* Rendered as the server wrote it: how many are cached, how many
-              of them this can open, and that nothing was downloaded to find
-              out. A count re-typed here could drift from the list above it. */}
-          {available && <span className="meta">{available.means}</span>}
 
           <div className="row">
             <label className="meta" htmlFor="image-repo">
@@ -326,10 +671,27 @@ export default function ImagePanel() {
               className="share-note"
               placeholder="stabilityai/sd-turbo, or a directory on this machine"
               value={repo}
-              onChange={(e) => setRepo(e.target.value)}
+              onChange={(e) => {
+                setRepo(e.target.value);
+                // A size belongs to the name it was asked about. Leaving the
+                // last answer up while the box says something else is how a
+                // reader prices one checkpoint and loads another.
+                setSized(null);
+              }}
               onKeyDown={(e) => e.key === "Enter" && repo.trim() && void onLoad(repo)}
               spellCheck={false}
             />
+            {/* Asked before the click, not discovered during it. The name box
+                could always start a load and could never say what it was
+                about to cost — which is the one thing a reader wants from it
+                and the one thing a typed id does not carry. */}
+            <button
+              className="ghost sm"
+              onClick={() => void onSize()}
+              disabled={busy !== "" || repo.trim() === ""}
+            >
+              {busy === "size" ? "asking…" : "How big is it?"}
+            </button>
             <button
               className="green"
               onClick={() => void onLoad(repo)}
@@ -338,6 +700,14 @@ export default function ImagePanel() {
               {busy === "load" && tried === repo ? "Loading pipeline…" : "Load it"}
             </button>
           </div>
+
+          {/* The server's own sentence, which is the only one that can tell
+              "already here, nothing would move" from "publishes no size
+              metadata, so this is UNKNOWN rather than small". Re-deriving
+              either from `size_bytes` here would be this panel making the
+              claim instead of reporting it. */}
+          {sized && <p className="meta image-sized">{sized.means}</p>}
+
           <span className="meta">
             There is no default worth guessing: the checkpoint decides which
             controls apply, so nothing is loaded until you name one. What is
@@ -375,11 +745,11 @@ export default function ImagePanel() {
 
   // ──────────────────────────────────────────────────────────────── loaded
 
-  // The family's own words, when the cached list carried them for this repo.
-  // Not derived here: `ImageStatus` sends the identifier and `ImageModelInfo`
+  // The family's own words, when the local list carried them for this repo.
+  // Not derived here: `ImageStatus` sends the identifier and `ImageLocalModel`
   // sends the prose, so this reads the prose across rather than inventing a
   // mapping that would be a second place for family names to live.
-  const label = available?.models.find((m) => m.path === status.repo)?.label ?? "";
+  const label = local?.models.find((m) => m.path === status.repo)?.label ?? "";
   const dim = status.cross_attention_dim;
 
   // Columns are the REAL prompt tokens. CLIP pads to 77 and the padding
