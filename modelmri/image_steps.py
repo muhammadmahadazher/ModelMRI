@@ -91,10 +91,11 @@ One latent per step, on the CPU, in float32. An SD 512x512 latent is
 point rather than the limit.
 
 The limit is `MAX_TRACE_BYTES` and it exists for the shape this was not written
-for: a latent with a time axis, say (16, 13, 60, 104), is 5.2 MiB a step and
-260 MiB over 50 steps. Past the limit this refuses BEFORE the second step, with
-the arithmetic and the two parameters that would fix it, and `plan()` prices the
-same thing without running anything at all.
+for: a latent with a time axis, say (16, 13, 60, 104), is 4.95 MiB a step and
+248 MiB over 50 steps, which all but fills the budget — a longer clip or a
+higher resolution does not fit. Past the limit this refuses BEFORE the second
+step, with the arithmetic and the two parameters that would fix it, and `plan()`
+prices the same thing without running anything at all.
 """
 
 from __future__ import annotations
@@ -652,7 +653,11 @@ def _call_parameters(pipe) -> set[str]:
         name
         for name, parameter in signature.parameters.items()
         if parameter.kind
-        not in (parameter.VAR_KEYWORD, parameter.VAR_POSITIONAL, parameter.POSITIONAL_ONLY)
+        not in (
+            parameter.VAR_KEYWORD,
+            parameter.VAR_POSITIONAL,
+            parameter.POSITIONAL_ONLY,
+        )
     }
 
 
@@ -876,8 +881,13 @@ def _rows(store: _Trace, *, threshold: float) -> tuple[list[StepChange], float]:
     # function still holds the list would release nothing at all. The
     # arithmetic below needs floats, not latents, and the caller is holding a
     # model on a machine that may be about to want this memory back.
-    latents = []
-    final = None
+    #
+    # `del` rather than rebinding to `[]` and `None`. The old form read as two
+    # dead assignments — CodeQL called them exactly that — because nothing
+    # downstream reads either name. Dropping a reference IS the intent, and
+    # `del` is the statement that says so; the rebinding also allocated a fresh
+    # list on the way to freeing memory.
+    del latents, final
     store.release()
 
     fractions, total = cumulative_fractions(changes)

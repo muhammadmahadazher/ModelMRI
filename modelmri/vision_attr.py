@@ -615,7 +615,7 @@ class Attribution:
             "classes": self.classes,
             "base_logit": self.base_logit,
             "base_prob": self.base_prob,
-            "spread": round(self.spread, 6),
+            "spread": round(self.spread, SCORE_DECIMALS),
             "strongest": self.strongest.to_dict() if self.strongest else None,
             "most_negative": (
                 self.most_negative.to_dict() if self.most_negative else None
@@ -676,20 +676,35 @@ class Attribution:
                 f"The strongest window is row {peak.row}, column {peak.col} "
                 f"(pixels {peak.top}-{peak.top + peak.height} by "
                 f"{peak.left}-{peak.left + peak.width}), where covering it "
-                f"moved the {who} logit by {peak.logit_drop:+,.4f}. That is "
-                f"only a peak relative to the other {self.grid.n_windows - 1} "
-                f"windows OF THIS IMAGE: the whole map spans "
-                f"{self.spread:,.6f} logits, and if that span is small then "
-                f"nothing here is distinguished from anything else."
+                f"moved the {who} logit by "
+                f"{peak.logit_drop:+,.{SCORE_DECIMALS}f}. That is only a peak "
+                f"relative to the other {self.grid.n_windows - 1} windows OF "
+                f"THIS IMAGE: the whole map spans "
+                f"{self.spread:,.{SCORE_DECIMALS}f} logits, and if that span "
+                f"is small then nothing here is distinguished from anything "
+                f"else."
             )
+            if self.below_precision:
+                # Not a chosen threshold: `SCORE_DECIMALS` is the precision
+                # these numbers are printed at, and the measured batch-to-batch
+                # discrepancy through a real convolution is one unit of it. A
+                # map narrower than that is being ranked by its own rounding.
+                parts.append(
+                    f"AND THAT SPAN IS SMALLER THAN THE PRECISION THIS IS "
+                    f"REPORTED AT. The whole map fits inside one unit of the "
+                    f"{SCORE_DECIMALS}th decimal, which is also how much the "
+                    f"same sweep moves between batch sizes on a convolution — "
+                    f"so the ranking above is a ranking of rounding, and no "
+                    f"window here is distinguishable from any other."
+                )
             low = self.most_negative
             if low is not None:
                 parts.append(
                     f"Scores are signed, and row {low.row} column {low.col} is "
-                    f"NEGATIVE at {low.logit_drop:+,.4f}: covering it RAISED "
-                    f"the {who} logit, so that region was arguing against the "
-                    f"class. An absolute value would have drawn it as evidence "
-                    f"for."
+                    f"NEGATIVE at {low.logit_drop:+,.{SCORE_DECIMALS}f}: "
+                    f"covering it RAISED the {who} logit, so that region was "
+                    f"arguing against the class. An absolute value would have "
+                    f"drawn it as evidence for."
                 )
 
         fill_note = (
@@ -1056,7 +1071,9 @@ def sweep(
                     left=left,
                     height=grid.patch,
                     width=grid.patch,
-                    logit_drop=round(base_logit - float(moved[i, target]), 6),
+                    logit_drop=round(
+                        base_logit - float(moved[i, target]), SCORE_DECIMALS
+                    ),
                     prob_drop=(
                         None
                         if probs is None or base_prob is None
@@ -1070,14 +1087,16 @@ def sweep(
         grid=grid,
         windows=rows,
         fill=fill,
-        fill_value=[round(float(v), 6) for v in fill_value.reshape(-1).tolist()],
-        value_range=(round(lo, 6), round(hi, 6)),
+        fill_value=[
+            round(float(v), SCORE_DECIMALS) for v in fill_value.reshape(-1).tolist()
+        ],
+        value_range=(round(lo, SCORE_DECIMALS), round(hi, SCORE_DECIMALS)),
         value_range_inferred=inferred,
         target=target,
         target_label=label,
         target_chosen_by_model=chosen_by_model,
         classes=classes,
-        base_logit=round(base_logit, 6),
+        base_logit=round(base_logit, SCORE_DECIMALS),
         base_prob=None if base_prob is None else round(base_prob, 8),
         passes=grid.passes,
         forward_calls=calls,

@@ -184,9 +184,7 @@ def _whole(name: str, value, *, minimum: int) -> int:
             f"int: `{name}=True` would quietly mean `{name}=1`."
         )
     if value < minimum:
-        raise BadRequest(
-            f"`{name}` must be at least {minimum:,} and got {value:,}."
-        )
+        raise BadRequest(f"`{name}` must be at least {minimum:,} and got {value:,}.")
     return value
 
 
@@ -275,7 +273,7 @@ def scan_cost(
     `exhaustive=True` prices reading every element of every tensor, which is
     the only way `all_finite` comes back `True` for a large tensor.
     """
-    counts = [_whole("element count", int(c), minimum=0) for c in element_counts]
+    counts = [_whole("element count", c, minimum=0) for c in element_counts]
     total = sum(counts)
     if exhaustive:
         allowance = max(counts) if counts else 0
@@ -310,8 +308,8 @@ def scan_cost(
             f"A health scan of these {len(counts):,} tensors would read "
             f"{scanned:,} of their {total:,} elements"
             + (
-                f" — every one of them, so a 'no NaN' answer would cover the "
-                f"whole model."
+                " — every one of them, so a 'no NaN' answer would cover the "
+                "whole model."
                 if scanned >= total
                 else f", {scanned / total * 100:,.1f}% of the model, with "
                 f"{sampled:,} tensor(s) read at a stride. A 'no NaN' answer "
@@ -590,6 +588,16 @@ class WeightTable:
     bytes_total: int = 0
     trainable_elements: int = 0
     frozen_elements: int = 0
+    # The third category, and it exists because the other two do not add up
+    # without it. A buffer is not a parameter with `requires_grad=False` -- it
+    # is not a parameter at all -- so `rows_from_module` records `trainable`
+    # as None for one, deliberately.
+    #
+    # Without this field a reader summing trainable + frozen gets a number
+    # SHORT of `elements_total` with nothing on the page saying why, and a
+    # BatchNorm-heavy model can hide a real share of its weights in that gap.
+    # `test_the_three_categories_account_for_every_element` holds the identity.
+    buffer_elements: int = 0
     by_dtype: dict = field(default_factory=dict)
 
     # Health. `health_checked` False means every row's `health` is None for one
@@ -632,6 +640,7 @@ class WeightTable:
             "bytes_total": self.bytes_total,
             "trainable_elements": self.trainable_elements,
             "frozen_elements": self.frozen_elements,
+            "buffer_elements": self.buffer_elements,
             "by_dtype": {k: dict(v) for k, v in self.by_dtype.items()},
             "health_checked": self.health_checked,
             "health_mode": self.health_mode,
@@ -685,9 +694,7 @@ class WeightTable:
                 f"table is over all of them; only the rows were cut."
             )
         if self.by_dtype:
-            widest = sorted(
-                self.by_dtype.items(), key=lambda kv: -kv[1]["elements"]
-            )[0]
+            widest = sorted(self.by_dtype.items(), key=lambda kv: -kv[1]["elements"])[0]
             parts.append(
                 f"{len(self.by_dtype)} dtype(s) present, written in the "
                 f"{self.dtype_naming} vocabulary; most of the model is "
@@ -790,7 +797,9 @@ def split_name(name: str) -> tuple[str, str]:
 # --------------------------------------------------------------- the scanner
 
 
-def scan_tensor(tensor, *, allowance: int = SAMPLE_ELEMENTS) -> tuple[Health | None, str]:
+def scan_tensor(
+    tensor, *, allowance: int = SAMPLE_ELEMENTS
+) -> tuple[Health | None, str]:
     """Count what is in one tensor. Returns `(health, reason_it_was_not)`.
 
     Exactly one of the two is meaningful: a `Health` with real counts, or
@@ -939,9 +948,7 @@ def rows_from_module(model, *, include_buffers: bool = True) -> list[tuple]:
             pointer = int(tensor.data_ptr())
         except (RuntimeError, AttributeError):
             pointer = 0
-        key = (
-            ("ptr", tensor.device.type, pointer) if pointer else ("id", id(tensor))
-        )
+        key = ("ptr", tensor.device.type, pointer) if pointer else ("id", id(tensor))
         out.append(
             (
                 TensorRow(
@@ -1068,9 +1075,12 @@ def _scan_all(
             # Not re-read: it is the same storage, so the counts would be
             # identical by construction. Pointed at rather than copied, so no
             # reader can conclude two tensors were independently checked.
-            row.health, row.health_reason = None, (
-                f"it is the same storage as `{row.shared_with}`, which was "
-                f"read; its counts are on that row and were not taken twice."
+            row.health, row.health_reason = (
+                None,
+                (
+                    f"it is the same storage as `{row.shared_with}`, which was "
+                    f"read; its counts are on that row and were not taken twice."
+                ),
             )
             continue
         row.health, row.health_reason = scan_tensor(tensor, allowance=allowance)
@@ -1109,9 +1119,7 @@ def rows_from_safetensors(path: str | Path) -> tuple[list[TensorRow], list[str]]
     elif p.is_file():
         shards = [p]
     else:
-        raise NotMeasured(
-            f"there is nothing at {p.name} to read a tensor table from."
-        )
+        raise NotMeasured(f"there is nothing at {p.name} to read a tensor table from.")
 
     rows: list[TensorRow] = []
     notes: list[str] = []
@@ -1179,9 +1187,7 @@ def rows_from_safetensors(path: str | Path) -> tuple[list[TensorRow], list[str]]
     return rows, notes
 
 
-def table_from_safetensors(
-    path: str | Path, *, limit: int = MAX_ROWS
-) -> WeightTable:
+def table_from_safetensors(path: str | Path, *, limit: int = MAX_ROWS) -> WeightTable:
     """The table for a checkpoint too big to load. No health, and it says so.
 
     Everything here is exact — the file declares every shape, dtype and byte
@@ -1252,6 +1258,10 @@ def _assemble(
             out.trainable_elements += row.elements
         elif row.trainable is False:
             out.frozen_elements += row.elements
+        else:
+            # `None` -- a buffer. Counted rather than dropped, so the three
+            # categories sum to `elements_total` exactly.
+            out.buffer_elements += row.elements
         bucket = out.by_dtype.setdefault(
             row.dtype, {"tensors": 0, "elements": 0, "bytes": 0}
         )
@@ -1311,9 +1321,7 @@ def _assemble(
     out.tensors_shown = len(out.rows)
     out.tensors_dropped = len(dropped)
     out.dropped_elements = sum(r.elements for r in dropped if not r.shared_with)
-    out.dropped_bytes = sum(
-        r.bytes or 0 for r in dropped if not r.shared_with
-    )
+    out.dropped_bytes = sum(r.bytes or 0 for r in dropped if not r.shared_with)
     if len(flagged) > limit:
         out.notes.append(
             f"{len(flagged) - limit:,} tensor(s) holding non-finite values did "

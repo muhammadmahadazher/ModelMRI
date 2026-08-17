@@ -214,9 +214,7 @@ class Normalisation:
 AS_IS = Normalisation("as_is")
 TRIMMED = Normalisation("trimmed", strip=True)
 COLLAPSED = Normalisation("collapsed", collapse_whitespace=True, strip=True)
-LENIENT = Normalisation(
-    "lenient", fold_case=True, collapse_whitespace=True, strip=True
-)
+LENIENT = Normalisation("lenient", fold_case=True, collapse_whitespace=True, strip=True)
 UNICODE_LENIENT = Normalisation(
     "unicode_lenient",
     unicode_form="NFKC",
@@ -226,8 +224,7 @@ UNICODE_LENIENT = Normalisation(
 )
 
 NORMALISATIONS = {
-    n.name: n
-    for n in (AS_IS, TRIMMED, COLLAPSED, LENIENT, UNICODE_LENIENT)
+    n.name: n for n in (AS_IS, TRIMMED, COLLAPSED, LENIENT, UNICODE_LENIENT)
 }
 
 
@@ -657,7 +654,7 @@ def _as_text(value, *, metric: str) -> tuple[str, str]:
     return "", (
         f"the output is a {type(value).__name__} rather than text, and "
         f"`{metric}` compares text. Converting it here would make the integer "
-        f"1 and the string \"1\" the same answer; convert it deliberately at "
+        f'1 and the string "1" the same answer; convert it deliberately at '
         f"the call site instead."
     )
 
@@ -681,7 +678,7 @@ def _reference_text(value, *, metric: str) -> str:
     raise BadRequest(
         f"`{metric}` needs expected text and was given a "
         f"{type(value).__name__}. Convert the fixture at the call site — doing "
-        f"it here would make the integer 1 and the string \"1\" the same "
+        f'it here would make the integer 1 and the string "1" the same '
         f"expected answer."
     )
 
@@ -930,10 +927,15 @@ def _parse_json(text: str) -> tuple[object, str, list[str], tuple]:
     except RecursionError:
         # A document nested deeper than the interpreter's stack. Not a syntax
         # error and not a pass: the parser gave up, which is unmeasurable.
-        return None, (
-            "the document is nested too deeply for the parser to walk, so "
-            "nothing here read it."
-        ), duplicates, ()
+        return (
+            None,
+            (
+                "the document is nested too deeply for the parser to walk, so "
+                "nothing here read it."
+            ),
+            duplicates,
+            (),
+        )
     except json.JSONDecodeError as err:
         return (
             None,
@@ -1276,9 +1278,9 @@ def edit_similarity(
         ""
         if min_similarity is not None
         else (
-            "No min_similarity was given, so this row carries a score and no "
-            "verdict, and it is counted in the mean score but not in any pass "
-            "rate."
+            "It counts in the mean score of a suite and in no pass rate, "
+            "which is the difference between a row nobody judged and a row "
+            "that failed."
         )
     )
     return _measured(
@@ -1442,6 +1444,20 @@ _SCHEMA_TYPES = frozenset(
     {"object", "array", "string", "number", "integer", "boolean", "null"}
 )
 
+# Keywords whose value must be a number for the comparison to mean anything.
+_NUMERIC_KEYWORDS = frozenset(
+    {
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+    }
+)
+
 
 def check_schema(schema) -> None:
     """Refuse a schema this cannot fully enforce, naming the keyword.
@@ -1498,6 +1514,28 @@ def check_schema(schema) -> None:
                         f"is not a JSON type. The types are: "
                         f"{', '.join(sorted(_SCHEMA_TYPES))}."
                     )
+            elif key == "pattern":
+                # Compiled HERE rather than where it is applied. A pattern that
+                # will not compile is a fault in the schema, and discovering it
+                # halfway through a suite would mark some rows measured and the
+                # rest not, for a reason that has nothing to do with any model.
+                try:
+                    re.compile(str(value))
+                except re.error:
+                    raise BadRequest(
+                        f"the `pattern` at {path} is not a valid regular "
+                        f"expression, so nothing here can enforce it."
+                    ) from None
+            elif key in _NUMERIC_KEYWORDS and (
+                isinstance(value, bool) or not isinstance(value, (int, float))
+            ):
+                # isinstance(True, int) is True, so `{"minimum": true}` would
+                # otherwise become a bound of 1 that no reader of the schema
+                # intended and no error would mention.
+                raise BadRequest(
+                    f"`{key}` at {path} must be a number; it is a "
+                    f"{type(value).__name__}."
+                )
 
 
 def _type_matches(value, want: str) -> bool:
@@ -1591,48 +1629,44 @@ def _string_violations(node: dict, value: str, where: str) -> list[dict]:
                 "detail": f"{len(value)} characters, maximum {node['maxLength']}",
             }
         )
-    if "pattern" in node:
-        try:
-            hit = re.search(str(node["pattern"]), value)
-        except re.error:
-            raise BadRequest(
-                f"the `pattern` at {where} is not a valid regular expression, "
-                f"so nothing here can enforce it."
-            ) from None
-        if hit is None:
-            out.append(
-                {
-                    "path": where,
-                    "keyword": "pattern",
-                    "detail": f"{_brief(value)} does not match /{node['pattern']}/",
-                }
-            )
+    # `check_schema` compiled this already, so it cannot raise here. `search`
+    # rather than `fullmatch` because that is what JSON Schema specifies, and
+    # it is the surprising half: `"pattern": "a"` accepts "banana".
+    if "pattern" in node and re.search(str(node["pattern"]), value) is None:
+        out.append(
+            {
+                "path": where,
+                "keyword": "pattern",
+                "detail": f"{_brief(value)} does not match /{node['pattern']}/",
+            }
+        )
     return out
 
 
 def _number_violations(node: dict, value, where: str) -> list[dict]:
-    checks = (
-        ("minimum", value < node.get("minimum", value), "below the minimum"),
-        ("maximum", value > node.get("maximum", value), "above the maximum"),
-        (
-            "exclusiveMinimum",
-            value <= node.get("exclusiveMinimum", value - 1),
-            "not above the exclusive minimum",
-        ),
-        (
-            "exclusiveMaximum",
-            value >= node.get("exclusiveMaximum", value + 1),
-            "not below the exclusive maximum",
-        ),
-    )
+    """The four bounds, written out. `check_schema` has already proved each
+    bound present here is a real number, so nothing below can raise."""
+    out = []
+    if "minimum" in node and value < node["minimum"]:
+        out.append(("minimum", f"{value} is below the minimum {node['minimum']}"))
+    if "maximum" in node and value > node["maximum"]:
+        out.append(("maximum", f"{value} is above the maximum {node['maximum']}"))
+    if "exclusiveMinimum" in node and value <= node["exclusiveMinimum"]:
+        out.append(
+            (
+                "exclusiveMinimum",
+                f"{value} is not above {node['exclusiveMinimum']}",
+            )
+        )
+    if "exclusiveMaximum" in node and value >= node["exclusiveMaximum"]:
+        out.append(
+            (
+                "exclusiveMaximum",
+                f"{value} is not below {node['exclusiveMaximum']}",
+            )
+        )
     return [
-        {
-            "path": where,
-            "keyword": keyword,
-            "detail": f"{value} is {why} {node[keyword]}",
-        }
-        for keyword, failed, why in checks
-        if keyword in node and failed
+        {"path": where, "keyword": keyword, "detail": detail} for keyword, detail in out
     ]
 
 
@@ -1702,8 +1736,7 @@ def schema_conformance(output, schema) -> Result:
     """The output parses as JSON and satisfies a schema this fully enforces."""
     if not isinstance(schema, dict):
         raise BadRequest(
-            f"a schema must be an object; this one is a "
-            f"{type(schema).__name__}."
+            f"a schema must be an object; this one is a {type(schema).__name__}."
         )
     check_schema(schema)
 
@@ -1733,7 +1766,7 @@ def _needles(values, *, metric: str) -> list[str]:
     if isinstance(values, str):
         raise BadRequest(
             f"`{metric}` takes a list of substrings, and a bare string would "
-            f"be read as a list of its characters. Pass [\"{values[:40]}\"] if "
+            f'be read as a list of its characters. Pass ["{values[:40]}"] if '
             f"one substring is what you meant."
         )
     try:
@@ -1756,15 +1789,20 @@ def _needles(values, *, metric: str) -> list[str]:
             f"turn a failing check into a passing one."
         )
     for item in items:
-        if not isinstance(item, str) or not item:
+        if not isinstance(item, str):
             raise BadRequest(
-                f"every substring must be non-empty text; this list contains a "
-                f"{type(item).__name__}"
-                + ("" if not isinstance(item, str) else " that is empty")
-                + ". An empty substring is inside every string there is, so it "
-                "would pass — or fail — everything."
+                f"every substring must be text; this list contains a "
+                f"{type(item).__name__}. Converting it here would decide on "
+                f"your behalf how a number is spelled in the answer."
             )
-    return [str(i) for i in items]
+        if not item:
+            raise BadRequest(
+                "one of the substrings is empty. An empty substring is inside "
+                "every string there is, including an empty one, so a list "
+                "containing it can never fail — or, for contains_none, can "
+                "never pass."
+            )
+    return items
 
 
 def contains_all(output, needles, *, normalisation=AS_IS) -> Result:
@@ -1776,11 +1814,13 @@ def contains_all(output, needles, *, normalisation=AS_IS) -> Result:
         return _unmeasurable("contains_all", why, normalisation=norm.describe())
 
     haystack = norm.apply(text)
-    # The needles are normalised too. Not doing so is the bug that makes a
-    # case-insensitive check fail on a capitalised needle, and it fails
-    # silently, which is worse.
-    present = [n for n in wanted if norm.apply(n) in haystack]
-    missing = [n for n in wanted if norm.apply(n) not in haystack]
+    # The needles are normalised too, once each. Not normalising them is the
+    # bug that makes a case-insensitive check fail on a capitalised needle, and
+    # it fails silently, which is worse than failing loudly.
+    present: list[str] = []
+    missing: list[str] = []
+    for needle in wanted:
+        (present if norm.apply(needle) in haystack else missing).append(needle)
     return _measured(
         "contains_all",
         score=len(present) / len(wanted),
@@ -2082,7 +2122,6 @@ def score_rows(
 
     tally = _Tally()
     shown: list[dict] = []
-    index = 0
     for index, output in enumerate(outputs):
         if per_row is not None and index >= len(per_row):
             raise BadRequest(

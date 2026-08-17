@@ -475,13 +475,72 @@ def test_the_logit_is_the_primary_score_because_a_probability_is_shared(photo):
 # --------------------------------------------------------------- the batching
 
 
-def test_batching_changes_the_schedule_and_nothing_else(photo):
+def test_batching_does_not_move_the_windows(photo):
     """A batching bug that mixed windows up would draw a perfectly plausible
-    map of the wrong regions, and nothing on screen would say so."""
+    map of the wrong regions, and nothing on screen would say so.
+
+    MeanNet's arithmetic is exact per sample, so the two maps have to match
+    cell for cell — this is the assertion that catches a shuffle, and it is
+    separate from the float-level question below on purpose."""
     one = va.sweep(MeanNet().eval(), photo, patch=8, target=0, batch=1)
     many = va.sweep(MeanNet().eval(), photo, patch=8, target=0, batch=64)
     assert one.map_rows() == many.map_rows()
     assert one.forward_calls > many.forward_calls
+
+
+def test_a_batched_convolution_agrees_only_to_the_precision_it_is_printed_at(noise):
+    """Bit-identity across batch sizes is a claim this project cannot keep, so
+    the test asserts the measured fact instead of a weaker version of a false
+    one.
+
+    MEASURED on a 318,696-parameter CNN at 224x224: batch 1 against batch 32
+    and 64 differ by at most 1e-6 logits — exactly one unit of SCORE_DECIMALS
+    — because a convolution kernel blocks a batch of 32 differently from a
+    batch of one. The check below is that same comparison on this file's own
+    convolutional network, and the tolerance IS the reported precision rather
+    than a number chosen to make the test pass."""
+    one = va.sweep(CornerNet().eval(), noise, patch=8, batch=1)
+    many = va.sweep(CornerNet().eval(), noise, patch=8, batch=16)
+    unit = 10.0**-va.SCORE_DECIMALS
+    worst = max(
+        abs(a.logit_drop - b.logit_drop)
+        for a, b in zip(one.windows, many.windows, strict=True)
+    )
+    assert worst <= unit, f"batching moved a score by {worst}, more than rounding"
+    assert [(w.row, w.col) for w in one.windows] == [
+        (w.row, w.col) for w in many.windows
+    ]
+
+
+def test_a_map_narrower_than_its_own_last_digit_says_it_is_made_of_rounding():
+    """Not a chosen threshold: SCORE_DECIMALS is the precision these numbers
+    are printed at, and one unit of it is also how far the same sweep moves
+    between batch sizes on a convolution. Ranking windows inside that span is
+    ranking rounding, and a heatmap of it looks exactly like a real finding."""
+    grid = va.plan_windows(16, 32, patch=16, stride=16)
+    assert grid.n_windows == 2
+    made = va.Attribution(grid=grid, classes=2, base_prob=0.5)
+    made.windows = [
+        va.Window(row=0, col=0, top=0, left=0, height=16, width=16, logit_drop=0.0),
+        va.Window(row=0, col=1, top=0, left=16, height=16, width=16, logit_drop=1e-6),
+    ]
+    assert made.below_precision is True
+    assert "SMALLER THAN THE PRECISION THIS IS REPORTED AT" in made.means()
+    assert "ranking of rounding" in made.means()
+
+    made.windows[1].logit_drop = 0.5
+    assert made.below_precision is False
+    assert "SMALLER THAN THE PRECISION" not in made.means()
+
+
+def test_a_flat_map_is_not_reported_as_one_made_of_rounding(photo):
+    """Exactly zero spread and a spread of one last digit are different
+    findings: the first says the model ignored the image, the second says the
+    numbers are too small to rank."""
+    out = va.sweep(BlindNet().eval(), photo, patch=8)
+    assert out.spread == 0.0
+    assert out.below_precision is False
+    assert "SMALLER THAN THE PRECISION" not in out.means()
 
 
 def test_the_pass_count_is_every_window_plus_the_unoccluded_reference(photo):

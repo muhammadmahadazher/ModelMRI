@@ -1517,6 +1517,12 @@ def _distribution(deltas: list[float]) -> dict | None:
 # ---------------------------------------------------------------- the terminal
 
 
+# The widest a case id column gets before an id is shortened for display. A
+# content-addressed id is `receipts.DIGEST_CHARS` wide and fits comfortably;
+# an authored one can be a sentence, and a 200-column row is unreadable.
+MAX_ID_COLUMN = 40
+
+
 def render(comparison: Comparison, *, limit: int = 12) -> str:
     """The table a terminal reads. Worst first, refusals never off the end."""
     counts = comparison.counts
@@ -1529,6 +1535,15 @@ def render(comparison: Comparison, *, limit: int = 12) -> str:
         f"measured · {comparison.n_cases} cases",
         "",
     ]
+    # Sized to the ids actually present rather than to a fixed guess, so
+    # nothing is cut unless an id is genuinely enormous -- and when one is, it
+    # is cut VISIBLY and counted at the bottom. A silently shortened id is a
+    # row a reader cannot look up.
+    width = min(
+        MAX_ID_COLUMN, max((len(r.case_id) for r in comparison.rows), default=8)
+    )
+    shortened = 0
+
     # Worse first: a comparison is read to find what broke.
     rank = {WORSE: 0, BETTER: 1, UNCHANGED: 2, UNMEASURABLE: 3}
     ordered = sorted(
@@ -1537,12 +1552,30 @@ def render(comparison: Comparison, *, limit: int = 12) -> str:
     )
     for row in ordered[:limit]:
         shown = f"{row.delta:+,.6g}" if row.delta is not None else "unknown"
-        out.append(f"  {row.case_id[:16]:<16} {row.status:<13} {shown:>12}")
+        label = row.case_id
+        if len(label) > width:
+            label = label[: width - 1] + "…"
+            shortened += 1
+        out.append(f"  {label:<{width}} {row.status:<13} {shown:>12}")
+        if row.status == UNMEASURABLE:
+            # The sentence, in the terminal, not only in the JSON. `sweep`
+            # prints its refusals for the same reason: "unmeasurable" with no
+            # reason is the same non-answer as a gap, and the reason is
+            # already written.
+            out.append(f"      {row.detail}")
         for finding in row.internals:
             if finding.status == CHANGED:
                 out.append(f"      {finding.key}: {finding.detail}")
     if len(ordered) > limit:
-        out.append(f"  … {len(ordered) - limit} more rows in the comparison")
+        out.append(
+            f"  … {len(ordered) - limit} more rows, not shown here — the "
+            f"comparison itself carries all {comparison.n_cases}"
+        )
+    if shortened:
+        out.append(
+            f"  {shortened} case id(s) were shortened to fit this column; the "
+            f"full ids are in the comparison."
+        )
     out.append("")
     out.append("  " + comparison.means().replace("\n\n", "\n  "))
     return "\n".join(out)

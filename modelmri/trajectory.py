@@ -12,8 +12,12 @@ trip and a different answer next Tuesday. It does not need one. Two sequences
 of `(kind, name)` pairs have an edit distance, a longest common subsequence is
 exact, and the whole comparison is arithmetic over strings: offline,
 reproducible, and fast enough that nobody has to decide whether to run it.
-Measured on this machine, a 500-step plan against a 500-step run — the largest
-comparison this will do — aligned in 24 ms.
+
+Measured on this machine, best of five: a 500-step plan against a 500-step run
+— `MAX_ALIGN_CELLS`, the squarest comparison this will do — aligns in 45 ms
+with a peak of 1.3 MB of Python memory. The widest one it allows, 5,000
+planned steps against 50 recorded ones, takes 89 ms. Both of those are two
+orders of magnitude under one round trip to a judge, and neither needs a key.
 
 ## The alignment is the answer. There is no score.
 
@@ -1055,8 +1059,7 @@ def read_plan(raw) -> list:
             )
     if not isinstance(raw, list):
         raise TrajectoryError(
-            "a plan is a list of steps, in the order they were expected to "
-            "happen."
+            "a plan is a list of steps, in the order they were expected to happen."
         )
     # Normalised once here purely to raise the per-step refusals eagerly, so a
     # malformed plan is rejected when it is READ rather than halfway through a

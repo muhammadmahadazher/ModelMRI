@@ -876,3 +876,44 @@ def test_the_terminal_table_puts_the_worse_rows_first():
     text = ds.render(out)
     assert text.index("c1") < text.index("c0")
     assert "1 better · 1 worse · 1 unchanged" in text
+
+
+def test_the_terminal_table_prints_why_a_row_could_not_be_measured():
+    """ "unmeasurable" with no reason is the same non-answer as a gap, and the
+    reason is already written."""
+    data = _dataset(1)
+    before = _experiment("before", data, {"c0": {"f": 1.0}})
+    after = _experiment("after", data, {}, refused={"c0": "the GPU ran out of memory"})
+    text = ds.render(
+        ds.compare_experiments(before, after, metric="f", higher_is_better=True)
+    )
+    assert "the GPU ran out of memory" in text
+
+
+def test_a_case_id_too_long_for_the_column_is_cut_visibly_and_counted():
+    """A silently shortened id is a row a reader cannot look up."""
+    long_id = "an-authored-case-id-that-is-far-too-long-to-fit-in-a-column"
+    data = ds.Dataset(name="x", cases=[ds.Case(long_id, "prompt")]).validated()
+    before = _experiment("before", data, {long_id: {"f": 1.0}})
+    after = _experiment("after", data, {long_id: {"f": 2.0}})
+    text = ds.render(
+        ds.compare_experiments(before, after, metric="f", higher_is_better=True)
+    )
+    assert "…" in text
+    assert "1 case id(s) were shortened" in text
+    assert "full ids are in the comparison" in text
+
+
+def test_rows_past_the_terminal_limit_are_counted_rather_than_dropped_quietly():
+    """A table that stops at twelve rows and says nothing reads as a
+    twelve-case comparison."""
+    data = _dataset(20)
+    scores = {c.case_id: {"f": 1.0} for c in data.cases}
+    before = _experiment("before", data, scores)
+    after = _experiment("after", data, scores)
+    text = ds.render(
+        ds.compare_experiments(before, after, metric="f", higher_is_better=True),
+        limit=5,
+    )
+    assert "15 more rows" in text
+    assert "carries all 20" in text
