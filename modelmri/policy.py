@@ -207,6 +207,23 @@ class PolicyStatus:
         )
 
 
+def _status_phrase(code: object) -> str:
+    """ " Not Found" for 404, or "" for a code the stdlib does not know.
+
+    Looked up from the integer rather than read off the response, so the words
+    in a refusal are always this machine's own. `otel.py` needed the identical
+    thing for the identical reason and has its own copy: these two modules
+    share no import today, and a `utils` created to hold six lines is a
+    dependency edge bought for nothing.
+    """
+    import http
+
+    try:
+        return f" {http.HTTPStatus(int(code)).phrase}"
+    except (ValueError, TypeError):
+        return ""
+
+
 def venv_dir() -> Path:
     """Where the policy's own environment lives.
 
@@ -856,9 +873,21 @@ def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, b
             header_contract = resp.headers.get("X-ModelMRI-Contract")
             kind = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", "replace")[:400]
+        # The CODE and the standard phrase for it, never the response BODY.
+        #
+        # The body is written by whatever is listening on that port. Usually
+        # that is our own sidecar and the sentence is authored — but the
+        # contract has not been checked at this point (a 4xx never reaches
+        # `check_contract`), so "usually ours" is the whole problem. CodeQL
+        # traced it: body -> SidecarError -> `status().reason` -> `means()` ->
+        # five route bodies -> a browser.
+        #
+        # Nothing actionable is lost. 409 and 500 send you to different
+        # places, and the contract-drift sentence — the one worth reading —
+        # comes from `check_contract`, which this module writes itself.
         raise SidecarError(
-            f"The policy sidecar refused {route} ({err.code}): {detail}"
+            f"The policy sidecar refused {route} with "
+            f"{err.code}{_status_phrase(err.code)}."
         ) from None
     except urllib.error.URLError as err:
         raise SidecarGone(
@@ -927,9 +956,21 @@ def _get(port: int, route: str, *, timeout: float) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", "replace")[:400]
+        # The CODE and the standard phrase for it, never the response BODY.
+        #
+        # The body is written by whatever is listening on that port. Usually
+        # that is our own sidecar and the sentence is authored — but the
+        # contract has not been checked at this point (a 4xx never reaches
+        # `check_contract`), so "usually ours" is the whole problem. CodeQL
+        # traced it: body -> SidecarError -> `status().reason` -> `means()` ->
+        # five route bodies -> a browser.
+        #
+        # Nothing actionable is lost. 409 and 500 send you to different
+        # places, and the contract-drift sentence — the one worth reading —
+        # comes from `check_contract`, which this module writes itself.
         raise SidecarError(
-            f"The policy sidecar refused {route} ({err.code}): {detail}"
+            f"The policy sidecar refused {route} with "
+            f"{err.code}{_status_phrase(err.code)}."
         ) from None
     except urllib.error.URLError as err:
         # `SidecarGone`, and only here. Nothing accepted the connection, which

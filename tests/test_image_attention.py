@@ -71,12 +71,17 @@ def pipe():
             vocab_size=1000,
         )
     )
+    # `else`, not a bare fall-through. `pytest.skip` raises, so the name is
+    # never really unbound — but a reader cannot see that from the shape, and
+    # neither can a static analyser: CodeQL flagged the identical pattern in
+    # `test_policy_inputs.py` and it was worth fixing there too.
     try:
         tokenizer = CLIPTokenizer.from_pretrained(
             "hf-internal-testing/tiny-random-clip"
         )
     except Exception:
         pytest.skip("the tiny CLIP tokenizer is not cached and there is no network")
+        raise  # unreachable; makes the control flow explicit
 
     built = StableDiffusionPipeline(
         unet=unet,
