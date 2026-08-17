@@ -150,6 +150,18 @@ class ImageHandle:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self.pipe = None
+        # The checkpoint's OWN preprocessor, and `None` when it did not ship
+        # one. It is not a convenience: a ViT is trained on a specific size
+        # and a specific per-channel normalisation, and an image resized and
+        # scaled by anything else produces logits that are a fact about the
+        # wrong tensor. Every occlusion score would then be noise wearing the
+        # model's name, so the absence is reported and refused rather than
+        # papered over with a plausible default.
+        self.processor = None
+        # WHY there is no processor, in the project's own words. Empty when
+        # there is one. Kept because "there is none" and "it needs a package
+        # you do not have" send a reader to two different places.
+        self.processor_reason = ""
         self.status_ = ImageStatus(
             reason="Nothing has been loaded yet. Point it at a cached "
             "diffusers pipeline, or pull one."
@@ -168,6 +180,26 @@ class ImageHandle:
                 f"first — every measurement here runs the real pipeline."
             )
         return self.pipe
+
+    def require_processor(self):
+        """The checkpoint's preprocessor, or a refusal saying why there is none.
+
+        Separate from `require` because the two failures need different
+        actions. "Nothing is loaded" is fixed by loading something; "this
+        checkpoint published no preprocessor" is not fixed by loading it
+        again, and a measurement that guessed the normalisation would return
+        confident numbers about a tensor the model was never trained on.
+        """
+        self.require()
+        if self.processor is None:
+            raise NotLoaded(
+                f"`{self.status_.repo}` cannot be preprocessed here: "
+                f"{self.processor_reason or 'no preprocessor was found'}. "
+                f"Guessing a size and a normalisation produces logits about a "
+                f"tensor this model was never trained on — confident numbers "
+                f"that are not about your image — so it is refused instead."
+            )
+        return self.processor
 
     # ------------------------------------------------------------- loading
 
@@ -226,6 +258,11 @@ class ImageHandle:
                 local, family=found.family, device=device, dtype=dtype
             )
             self.pipe = pipe
+            # Best-effort and NEVER fatal: a diffusion pipeline has no image
+            # processor and does not want one, so its absence must not fail a
+            # load. What must not happen is a measurement that needs it
+            # proceeding without it — that is `require_processor`'s job.
+            self.processor, self.processor_reason = _load_processor(local)
             self.status_ = ImageStatus(
                 loaded=True,
                 repo=repo,
@@ -252,6 +289,13 @@ class ImageHandle:
         with self._lock:
             had = self.status_.repo
             self.pipe = None
+            # Dropped with the model it belongs to. A processor left behind
+            # would be the previous checkpoint's normalisation applied to the
+            # next one's input — the exact wrong-tensor failure
+            # `require_processor` exists to prevent, arriving through the back
+            # door and looking like a working measurement.
+            self.processor = None
+            self.processor_reason = ""
             _free()
             self.status_ = ImageStatus(
                 reason=(
@@ -483,6 +527,107 @@ def _load_pipeline(local: Path, *, family: str, device: str, dtype: str):
     if hasattr(model, "eval"):
         model.eval()
     return model, str(want_device), str(want_dtype), time.time() - t0
+
+
+# The classes that can carry an image preprocessor, most specific first.
+# `AutoProcessor` is here because a multimodal checkpoint publishes a
+# COMPOSITE processor — a tokenizer and an image processor in one object —
+# and `AutoImageProcessor` does not load it. Reaching only for the latter
+# read `facebook/sam3`, which ships `processor_config.json`, as having no
+# preprocessor at all.
+_PROCESSOR_CLASSES = ("AutoImageProcessor", "AutoProcessor")
+
+
+def _load_processor(local: Path) -> tuple:
+    """The checkpoint's own image preprocessor, and WHY there is none if so.
+
+    Returns `(processor, reason)`. Never raises. A diffusers pipeline ships
+    no preprocessor and does not want one, so a failure here is the ordinary
+    case for half the families this loads — making it fatal would refuse
+    every diffusion model over a file it was never supposed to have.
+
+    ## The reason is the whole point of the second return value
+
+    The first version returned a bare `None`, and the refusal built on it
+    said "`facebook/sam3` did not publish an image preprocessor". That was
+    FALSE. sam3 publishes one; loading it raised `ImportError` because
+    torchvision is not installed on this machine. A broad `except` had
+    collapsed a fact about the machine into a claim about the checkpoint,
+    and it sent a reader to look for a missing file that is right there.
+
+    A missing optional dependency is fixable in one command. A checkpoint
+    that genuinely has no preprocessor is not fixable at all. Reporting the
+    second when it is the first is the more expensive of the two mistakes.
+    """
+    try:
+        import transformers
+    except ImportError:
+        return None, (
+            "the `transformers` package is not installed, and it is what "
+            "reads a checkpoint's preprocessor"
+        )
+
+    missing_dependency = ""
+    last = None
+    for name in _PROCESSOR_CLASSES:
+        auto = getattr(transformers, name, None)
+        if auto is None:
+            continue
+        try:
+            found = auto.from_pretrained(
+                str(local),
+                # Same rule as every other loader here.
+                trust_remote_code=False,
+            )
+        except ImportError as err:
+            # A LIBRARY this machine does not have, not a checkpoint that
+            # lacks a file. transformers raises this for torchvision-backed
+            # fast processors, and the package name is the actionable half.
+            missing_dependency = _missing_package(err) or "a library"
+            continue
+        except Exception as err:
+            last = err
+            continue
+        # A composite processor holds the image half as an attribute. The
+        # image half is what turns a picture into the tensor the model was
+        # trained on, so that is what travels — not the tokenizer beside it.
+        inner = getattr(found, "image_processor", None)
+        return (inner if inner is not None else found), ""
+
+    if missing_dependency:
+        return None, (
+            f"reading its preprocessor needs `{missing_dependency}`, which is "
+            f"not installed here. The checkpoint published one — this is a "
+            f"missing package on this machine, not a missing file in the model"
+        )
+    if last is not None:
+        # The TYPE only. `from_pretrained` puts absolute paths from this
+        # machine into its messages.
+        return None, (
+            f"its preprocessor could not be read ({type(last).__name__}), so "
+            f"nothing here knows what size or normalisation it expects"
+        )
+    return None, "it did not publish an image preprocessor"
+
+
+def _missing_package(err: ImportError) -> str:
+    """Which package an ImportError is about, without relaying its message.
+
+    `err.name` is set when the import failed on a module rather than on a
+    name inside one, and a module name is bounded — it cannot carry a path.
+    transformers raises a plain `ImportError` with prose for its optional
+    backends, so the prose is SCANNED for a known package name rather than
+    relayed: the text says "requires the Torchvision library but it was not
+    found in your environment", and quoting that verbatim is how library
+    text reaches a browser.
+    """
+    if getattr(err, "name", None):
+        return str(err.name).split(".")[0]
+    said = str(err).lower()
+    for package in ("torchvision", "torchaudio", "pillow", "timm", "av"):
+        if package in said:
+            return package
+    return ""
 
 
 def _load_diffusion(local: Path, torch_dtype):

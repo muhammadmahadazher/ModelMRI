@@ -309,3 +309,113 @@ def test_the_weight_fetch_is_a_superset_of_the_config_fetch(monkeypatch):
     configs, weights = asked
     assert set(configs) <= set(weights)
     assert "*.safetensors" in weights
+
+
+# ------------------------------------------- the preprocessor, and why not
+
+
+def test_a_missing_package_is_not_reported_as_a_missing_file(monkeypatch):
+    """The refusal that lied.
+
+    `facebook/sam3` publishes a preprocessor. Loading it raised `ImportError`
+    because torchvision was not installed, a broad `except` swallowed that,
+    and the refusal said the checkpoint "did not publish an image
+    preprocessor" — a claim about the model, for a fact about the machine. It
+    sent a reader looking for a file that is right there.
+
+    One is fixable in a single command and the other is not fixable at all,
+    so they must not share a sentence.
+    """
+    import transformers
+
+    class _Boom:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            raise ImportError(
+                "Sam3VideoProcessor requires the Torchvision library but it "
+                "was not found in your environment."
+            )
+
+    for name in ir._PROCESSOR_CLASSES:
+        monkeypatch.setattr(transformers, name, _Boom, raising=False)
+
+    found, why = ir._load_processor(__import__("pathlib").Path("."))
+    assert found is None
+    assert "torchvision" in why
+    assert "not installed" in why
+    assert "published one" in why, "it must not read as the checkpoint's fault"
+
+
+def test_a_checkpoint_with_no_processor_says_that_instead(monkeypatch):
+    """The other branch, so the two never collapse into one another."""
+    import transformers
+
+    class _None:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            raise OSError("no preprocessor_config.json here")
+
+    for name in ir._PROCESSOR_CLASSES:
+        monkeypatch.setattr(transformers, name, _None, raising=False)
+
+    found, why = ir._load_processor(__import__("pathlib").Path("."))
+    assert found is None
+    assert "torchvision" not in why
+    assert "OSError" in why, "the class, so a reader knows what kind of failure"
+    # And never the library's own text, which carries paths from this machine.
+    assert "preprocessor_config.json here" not in why
+
+
+def test_a_composite_processor_yields_its_image_half(monkeypatch):
+    """A multimodal checkpoint publishes ONE object holding a tokenizer and an
+    image processor. `AutoImageProcessor` does not load it, which read
+    `facebook/sam3` as having no preprocessor at all — and handing the
+    composite through unchanged would give the sweep a tokenizer where it
+    expects something that turns a picture into a tensor."""
+    import transformers
+
+    class _Image:
+        pass
+
+    inner = _Image()
+
+    class _Composite:
+        image_processor = inner
+
+    class _Auto:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            return _Composite()
+
+    monkeypatch.setattr(transformers, "AutoImageProcessor", _Auto, raising=False)
+    found, why = ir._load_processor(__import__("pathlib").Path("."))
+    assert found is inner
+    assert why == ""
+
+
+def test_the_processor_is_dropped_with_the_model_it_belongs_to():
+    """A processor outliving its model is the previous checkpoint's
+    normalisation applied to the next one's input — the exact wrong-tensor
+    failure, arriving through the back door and looking like a real answer."""
+    handle = ir.ImageHandle()
+    handle.processor = object()
+    handle.processor_reason = "stale"
+    handle.unload()
+    assert handle.processor is None
+    assert handle.processor_reason == ""
+
+
+def test_a_measurement_needing_a_processor_refuses_with_the_reason(monkeypatch):
+    """Not "nothing is loaded" — something IS loaded. The two failures need
+    two different actions, so they get two different sentences."""
+    handle = ir.ImageHandle()
+    handle.pipe = object()
+    handle.status_ = ir.ImageStatus(loaded=True, repo="owner/name")
+    handle.processor_reason = "reading its preprocessor needs `torchvision`"
+
+    with pytest.raises(Refusal) as caught:
+        handle.require_processor()
+    said = str(caught.value)
+    assert "owner/name" in said
+    assert "torchvision" in said
+    assert "No image model is loaded" not in said

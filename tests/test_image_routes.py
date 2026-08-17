@@ -55,7 +55,11 @@ def test_every_measurement_refuses_with_the_same_sentence(client):
         assert r.status_code == 409, path
         said.add(r.json()["error"])
     assert len(said) == 1, "two routes gave two different not-loaded sentences"
-    assert "No image model is loaded" in said.pop()
+    # Unpacked rather than popped. `said.pop()` empties the set it is
+    # inspecting, so the check is not repeatable and anything added below it
+    # reads an empty set — a set of one is destroyed by looking at it.
+    (sentence,) = said
+    assert "No image model is loaded" in sentence
 
 
 # ------------------------------------------------------- cost before spending
