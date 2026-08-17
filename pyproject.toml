@@ -95,6 +95,25 @@ vla-lite = [
     "pillow>=10",
     "pyarrow>=15",
 ]
+# Running an image model, as opposed to READING one. `modelmri/imaging.py`
+# identifies a checkpoint from its JSON and its safetensors header with no
+# dependency at all — that is what lets the picker list your diffusion models
+# on a machine with none of this installed. Everything below is only needed to
+# take a forward pass through one.
+#
+# diffusers is not pinned tightly: unlike lerobot it shares torch's release
+# cadence rather than fighting it, so it can live in ModelMRI's own
+# environment instead of needing the sidecar treatment.
+image = [
+    "diffusers>=0.31",
+    "pillow>=10",
+    "safetensors>=0.4",
+    # Text encoders for every conditional pipeline are transformers models,
+    # and transformers is already a base dependency — named here anyway so
+    # `pip install modelmri[image]` states its whole requirement rather than
+    # relying on another extra's leftovers.
+    "transformers>=4.48",
+]
 # Only for measuring quantisation damage, which has to dequantise real weights.
 # `modelmri.gguf_read` reads a GGUF's header with the stdlib and needs none of
 # this — reading the table describing tensors and unpacking the tensors
@@ -155,6 +174,11 @@ dev = [
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".
     "tomli>=2; python_version < '3.11'",
+    # The image extra, for the same reason pillow and h5py are here: without
+    # it `tests/test_image_attention.py` sits behind an `importorskip` and
+    # goes dark on every runner, which is how three suites in this repo were
+    # already silently not running.
+    "diffusers>=0.31",
     # The sidecar's BASE package — stdlib-only, no lerobot. Its input rules
     # decide whether a frame reaching a policy is the frame the policy was
     # trained on, which is a question worth testing on every runner rather
