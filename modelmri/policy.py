@@ -1121,6 +1121,12 @@ def _kill(proc, tail: deque[str], pump=None) -> str:
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                # A process that ignored SIGKILL is stuck in the kernel --
+                # uninterruptible I/O, almost always a GPU driver call. There
+                # is no stronger signal to send and nothing here can free it,
+                # so waiting longer would only hold the caller hostage to a
+                # thing neither of them can fix. The caller's own message
+                # already names the sidecar and the port.
                 pass
     if pump is not None:
         pump.join(timeout=5)

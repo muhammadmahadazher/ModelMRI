@@ -124,7 +124,7 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             // Saying "not installed" here would be inventing a fact about
             // somebody's machine from a network error.
             "this server did not answer about the action expert, so nothing here knows whether one is installed"
-          ) : policy && !policy.installed ? (
+          ) : !policy.installed ? (
             <>
               a second process with its own environment — about {gb.toFixed(0)} GB,
               because lerobot pins torch hard enough that installing it beside
@@ -132,8 +132,7 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             </>
           ) : (
             <>
-              <code>modelmri policy start</code> brings it up.{" "}
-              {policy?.reason ?? ""}
+              <code>modelmri policy start</code> brings it up. {policy.reason}
             </>
           )}
         </div>
