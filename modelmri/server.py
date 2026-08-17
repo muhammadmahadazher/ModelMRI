@@ -1805,8 +1805,36 @@ def create_app(
         if refusal is not None:
             return refusal
 
+        # `.resolve()`, and the reason is the finding CodeQL raised: without it
+        # a path is used as written, so `../../..` walks wherever it likes and
+        # nothing downstream can tell that happened. Resolving normalises the
+        # traversal FIRST, so the path that gets scanned is the path that gets
+        # reported — which matters here more than usual, because every report
+        # in the response names the file it describes.
+        #
+        # It does not become a sandbox and is not meant to be one. Reading a
+        # local path IS the feature: this scans the weights on the disk the
+        # server is running on, and `_not_from_this_machine` above is what
+        # makes that safe by restricting WHO can ask. The same pairing runs on
+        # the four other file-path routes in this file.
         try:
-            target = Path(req.path).expanduser()
+            target = Path(req.path).expanduser().resolve()
+        except (OSError, ValueError, RuntimeError):
+            # A path the OS will not even normalise — a bad drive letter, a
+            # symlink loop, a name too long. A refusal rather than a 500,
+            # because this is a fact about the input, not a fault in here.
+            return JSONResponse(
+                {
+                    "error": (
+                        f"{req.path!r} is not a path this machine can resolve. "
+                        f"Check the drive and that no link in it points at "
+                        f"itself."
+                    )
+                },
+                status_code=422,
+            )
+
+        try:
             reports = await asyncio.to_thread(
                 (lambda: weights_scan.scan_dir(target, limit=req.limit))
                 if target.is_dir()

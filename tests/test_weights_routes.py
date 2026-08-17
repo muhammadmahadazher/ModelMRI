@@ -162,3 +162,37 @@ def test_an_empty_directory_is_not_reported_as_clean():
     from modelmri.server import _scan_summary
 
     assert "Nothing weight-shaped" in _scan_summary([], [], [])
+
+
+def test_a_traversal_is_normalised_before_anything_is_scanned(loaded, tmp_path):
+    """CodeQL's finding, and it is a fair one. Without `.resolve()` a path is
+    used as written, so `../../..` walks wherever it likes and every report in
+    the response names a path that is not the one that was read.
+
+    This is not a sandbox and is not meant to be one — reading a local path IS
+    the feature, and the not-from-this-machine guard is what makes that safe by
+    restricting WHO can ask. Resolving makes the path reported the path
+    scanned."""
+    from pathlib import Path
+
+    weird = tmp_path / "a" / ".." / "b"
+    (tmp_path / "b").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "a").mkdir(parents=True, exist_ok=True)
+    assert Path(str(weird)).resolve() == (tmp_path / "b").resolve()
+
+
+def test_an_unresolvable_path_is_a_refusal_not_a_500(client, monkeypatch):
+    """A symlink loop or a bad drive letter is a fact about the input, not a
+    fault in here — 422 with the reason rather than an internal error."""
+    import modelmri.server as srv
+
+    monkeypatch.setattr(srv, "_not_from_this_machine", lambda *a, **k: None)
+    from pathlib import Path as _P
+
+    def _explode(self):
+        raise OSError("symlink loop")
+
+    monkeypatch.setattr(_P, "resolve", _explode)
+    r = client.post("/api/weights/scan", json={"path": "whatever"})
+    assert r.status_code == 422
+    assert "not a path this machine can resolve" in r.json()["error"]
