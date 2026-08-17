@@ -122,7 +122,13 @@ def main() -> int:
                 color_scheme=args.theme,
             )
             pg = ctx.new_page()
-            pg.goto(args.url, wait_until="networkidle")
+            # "load", not "networkidle". The page polls -- pull progress,
+            # telemetry, the accelerator readout -- so the network never goes
+            # idle and this timed out at 30 s against a perfectly healthy
+            # server. Every capture below already waits on the SELECTOR it
+            # needs, which is the real readiness signal anyway.
+            pg.goto(args.url, wait_until="load")
+            pg.wait_for_selector(".panel", timeout=60_000)
             pg.evaluate(
                 "t => { document.documentElement.dataset.theme = t;"
                 " document.documentElement.style.colorScheme = t; }",
@@ -281,7 +287,7 @@ def main() -> int:
                 viewport=VIEWPORT, device_scale_factor=2, color_scheme=args.theme
             )
             pg = ctx.new_page()
-            pg.goto(args.viewer_url, wait_until="networkidle")
+            pg.goto(args.viewer_url, wait_until="load")
             pg.evaluate(
                 "t => { document.documentElement.dataset.theme = t;"
                 " document.documentElement.style.colorScheme = t; }",

@@ -143,6 +143,21 @@ FIELDS: tuple[Field, ...] = (
 _BY_KEY = {f.key: f for f in FIELDS}
 
 
+def _status_phrase(code: object) -> str:
+    """ " Not Found" for 404, or "" for a code the stdlib does not know.
+
+    Looked up from the integer rather than read off the response, so the text
+    in a refusal is always this machine's own. Empty for an unknown code —
+    a made-up phrase would be worse than none.
+    """
+    import http
+
+    try:
+        return f" {http.HTTPStatus(int(code)).phrase}"
+    except (ValueError, TypeError):
+        return ""
+
+
 # ------------------------------------------------------------------- ids
 
 
@@ -535,9 +550,20 @@ def send(
                 "`otlp/http` is enabled; the OpenTelemetry Collector does by "
                 "default."
             ) from err
+        # The status phrase derived LOCALLY from the code, not echoed from the
+        # response. `HTTPError.reason` is whatever the remote server chose to
+        # put there — an endpoint the user named, but still a third party
+        # writing text into a sentence this project publishes. The URLError
+        # branch immediately below already made this call with
+        # `type(err).__name__`; this one had been left behind, and a widened
+        # leak check found it after CodeQL found its sibling in `policy.py`.
+        #
+        # `err.code` is an int and keeps everything diagnostic about the
+        # message: 404 and 401 send you to different places, and the standard
+        # phrase for each is a lookup rather than a quotation.
+        phrase = _status_phrase(err.code)
         raise Refusal(
-            f"{url} answered {err.code} {err.reason}. Nothing was recorded as "
-            "delivered."
+            f"{url} answered {err.code}{phrase}. Nothing was recorded as delivered."
         ) from err
     except urllib.error.URLError as err:
         raise Refusal(

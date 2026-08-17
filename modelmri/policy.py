@@ -863,8 +863,8 @@ def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, b
     except urllib.error.URLError as err:
         raise SidecarGone(
             f"The policy sidecar is not answering on port {port} "
-            f"({err.reason}). It may have exited; `modelmri policy start` "
-            f"brings it back."
+            f"({type(err.reason).__name__ if err.reason else type(err).__name__})."
+            f" It may have exited; `modelmri policy start` brings it back."
         ) from None
     except (TimeoutError, OSError) as err:
         # Present here for the same reason it is in `_get`: without it a bare
@@ -934,8 +934,17 @@ def _get(port: int, route: str, *, timeout: float) -> dict:
     except urllib.error.URLError as err:
         # `SidecarGone`, and only here. Nothing accepted the connection, which
         # is the one condition that actually means the process is not there.
+        # The TYPE of the reason, not its text. `URLError.reason` is the
+        # underlying OSError, whose message is whatever the operating system
+        # put in it -- and this sentence reaches a browser through
+        # `status().reason`, `means()` and the /api/policy body. CodeQL found
+        # that path (py/stack-trace-exposure) on five routes at once; the
+        # project's own leak test missed it because its regex looks for
+        # `{err}` and this was `{err.reason}`, which is the same leak wearing
+        # an attribute.
         raise SidecarGone(
-            f"The policy sidecar is not answering on port {port} ({err.reason})."
+            f"The policy sidecar is not answering on port {port} "
+            f"({type(err.reason).__name__ if err.reason else type(err).__name__})."
         ) from None
     except (TimeoutError, OSError) as err:
         # A timeout is NOT a death. Something accepted the connection and then

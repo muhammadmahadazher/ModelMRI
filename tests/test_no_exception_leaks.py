@@ -273,7 +273,24 @@ def test_no_sink_interpolates_a_caught_exceptions_text():
 
     root = Path(__file__).resolve().parents[1] / "modelmri"
     # `{err}` / `{exc}` / `{e}` inside an f-string, but not `{type(err)...}`.
-    suspect = re.compile(r"\{(?:err|exc|error|cpu_err)\}")
+    #
+    # And the ATTRIBUTE forms, which this missed for a year. `{err.reason}` on
+    # a `URLError` is the underlying OSError, whose text is whatever the
+    # operating system wrote — the same leak as `{err}`, wearing an attribute
+    # and sailing straight past a pattern that only looked for the bare name.
+    #
+    # CodeQL found it first (py/stack-trace-exposure, five routes at once,
+    # tracing `URLError.reason` through `policy.status().reason` into the
+    # `/api/policy` body). A check that a scanner has to catch for you is a
+    # check that was not doing its job, so the pattern grew rather than the
+    # finding being dismissed as a duplicate.
+    #
+    # `.args`, `.strerror`, `.filename` and `.reason` are the four that carry
+    # host text; `type(err).__name__` and `err.name` stay allowed, the latter
+    # being a module name and bounded.
+    suspect = re.compile(
+        r"\{(?:err|exc|error|cpu_err)(?:\.(?:reason|args|strerror|filename))?\}"
+    )
     offenders = []
     for path in sorted(root.rglob("*.py")):
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
