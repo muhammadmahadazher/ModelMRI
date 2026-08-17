@@ -39,6 +39,13 @@ from .adapter import ShapeMoved
 from .contract import CONTRACT, HOST, READY_PREFIX, ContractError, check
 from .inputs import InputError
 
+# lerobot and torch versions, read ONCE before the ready line is printed.
+# Module state because it is a property of this process's environment that
+# cannot change while it runs, and because the alternative -- importing inside
+# a request handler -- put a twenty-second import in the path of the first
+# status call.
+_VERSIONS: tuple[str, str] = ("", "")
+
 # The biggest request body accepted. Frames arrive as base64 PNG; a handful of
 # camera views is well under this, and anything past it is not a frame.
 MAX_BODY = 64 * 1024 * 1024
@@ -75,17 +82,13 @@ class Policy:
         # reinterpret.
         if self.loaded is not None:
             return self.loaded.describe()
-        # With nothing loaded there is still an ENVIRONMENT to report, and
-        # "this torch will run the policy on the processor" is worth knowing
-        # before waiting for a two-gigabyte checkpoint to load rather than
-        # after. Both empty when the import itself fails, which is its own
-        # visible answer.
-        try:
-            from .adapter import versions
-
-            lerobot_version, torch_version = versions()
-        except Exception:
-            lerobot_version, torch_version = "", ""
+        # From the cache filled before the ready line, never imported here.
+        # Importing lerobot inside a request is a twenty-second stall on the
+        # FIRST /status, which is the one the parent makes immediately after
+        # starting the process -- measured as `modelmri policy start`
+        # reporting the sidecar it had just started as "did not answer in
+        # time. It is running and busy, or wedged."
+        lerobot_version, torch_version = _VERSIONS
         return {
             "policy_repo": self.repo,
             "revision": self.revision,
@@ -370,12 +373,37 @@ def make_handler(policy: Policy):
 def serve(port: int = 0) -> None:
     """Listen, and print the port so the parent knows we are up.
 
-    The ready line is printed AFTER the socket is listening, so the parent
-    waiting on it learns "ready to answer" rather than "the process exists".
+    The ready line is printed AFTER the socket is listening AND after the
+    heavy imports, so the parent waiting on it learns "ready to answer" rather
+    than "the process exists". Those are not the same thing and the difference
+    was measurable: with the import deferred, the first `/status` -- the one
+    the parent makes the instant it sees the port -- spent twenty seconds
+    inside `import lerobot`, and `modelmri policy start` reported the sidecar
+    it had just started as wedged.
+
+    Warming here rather than at module scope, for the reason `Policy.load`
+    records: a module-scope import means the process cannot start at all when
+    the venv is half-built, and the parent then sees a dead child with a
+    traceback about an import instead of a sentence about an install. Here it
+    is inside a running process that can still answer.
     """
+    global _VERSIONS
+
     policy = Policy()
     httpd = ThreadingHTTPServer((HOST, port), make_handler(policy))
     chosen = httpd.server_address[1]
+
+    try:
+        from .adapter import versions
+
+        _VERSIONS = versions()
+    except Exception:
+        # Both empty, which every reader already treats as "not reported".
+        # A sidecar that cannot import its own adapter still serves: `/load`
+        # will refuse with the sentence that names the rebuild command, and a
+        # refusal from a live process beats no process at all.
+        _VERSIONS = ("", "")
+
     print(f"{READY_PREFIX}{chosen}", flush=True)
     try:
         httpd.serve_forever()

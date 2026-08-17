@@ -130,6 +130,15 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
               because lerobot pins torch hard enough that installing it beside
               ModelMRI breaks ModelMRI. <code>modelmri policy install</code>
             </>
+          ) : policy.reachable ? (
+            // Up, with no policy in it. Telling somebody to START a sidecar
+            // that is answering on a port is the contradiction a review found
+            // in this cell: the header already said "running", and the body
+            // underneath prescribed the command for the opposite state.
+            <>
+              A sidecar is answering on port {policy.port} with no policy in
+              it. {policy.reason}
+            </>
           ) : (
             <>
               <code>modelmri policy start</code> brings it up. {policy.reason}
@@ -154,7 +163,9 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             ? "This can say where the policy LOOKED. Nothing here can say what it would DO — that needs the action expert."
             : action
               ? "The action expert is up, but no vision tower is loaded here, so there is nothing to show attention over yet."
-              : "Neither half is loaded, so nothing on this page is measuring a policy yet."}
+              : policy?.reachable
+                ? "A sidecar is waiting with no policy in it, and no vision tower is loaded here. Neither question can be answered until something is loaded into one of them."
+                : "Neither half is loaded, so nothing on this page is measuring a policy yet."}
       </div>
 
       {/* Units, and only when there is a policy to have units. Empty
