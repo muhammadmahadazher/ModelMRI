@@ -472,32 +472,15 @@ def _not_from_this_machine(
     return None
 
 
-def _looks_like_a_local_path(value: str) -> bool:
-    """Is this naming a directory on this machine, or a Hub id?
+def _from_this_machine(request) -> bool:
+    """The same question `_not_from_this_machine` answers, as a bool.
 
-    A Hub id is `owner/name` — no drive letter, no leading separator, no `..`,
-    and it does not exist on this disk. Anything that resolves to a real
-    directory here IS a local path whatever it is called, which is the test
-    that actually matters: `_resolve` uses an existing directory as-is.
-
-    Deliberately generous toward "local". A false positive asks a remote
-    caller for a guard they will pass anyway when they are on this machine; a
-    false negative lets a remote caller name a directory on somebody else's
-    disk.
+    Split out because two callers need the ANSWER rather than the response:
+    one to decide whether a local directory may be resolved at all, and the
+    refusal builder itself. Answering it twice in two places is how the two
+    drift apart.
     """
-    text = str(value or "").strip()
-    if not text:
-        return False
-    if text.startswith(("/", "\\", "~", ".")) or ".." in text:
-        return True
-    # A Windows drive letter, which `owner/name` can never be.
-    if len(text) > 1 and text[1] == ":":
-        return True
-    try:
-        return Path(text).expanduser().is_dir()
-    except (OSError, ValueError):
-        # A name the OS will not even look at is not a directory here.
-        return False
+    return _not_from_this_machine(request, "this") is None
 
 
 def _scan_summary(reports, dangerous, unscanned) -> str:
@@ -1834,7 +1817,24 @@ def create_app(
         # routes in this file have carried one for months. CodeQL found it as
         # an uncontrolled path expression; the real defect is that two routes
         # answered the same question about the same kind of input differently.
-        if _looks_like_a_local_path(req.repo):
+        # SHAPE, never the filesystem. The first version of this guard asked
+        # `Path(repo).is_dir()` to decide whether the guard applied — and
+        # asking that question about caller text ANSWERS it. Measured: a name
+        # that exists in the server's working directory took the guard and
+        # came back 403, one that does not fell through and came back 500. One
+        # bit per request, unauthenticated, to anyone who can reach a server
+        # started with `--host 0.0.0.0`.
+        #
+        # `behavdiff.is_hub_id` already states this rule for
+        # `/api/quantdiff/behaviour` — "that question cannot be asked about
+        # caller-supplied text without answering it" — so this uses it rather
+        # than keeping a second, weaker opinion about what a path looks like.
+        # Two code paths answering one question differently is the defect.
+        from . import behavdiff
+        from . import capacity as _capacity
+
+        here = _from_this_machine(request)
+        if not here and not behavdiff.is_hub_id(req.repo):
             refusal = _not_from_this_machine(
                 request,
                 "loading a model from a path on this machine",
@@ -1870,6 +1870,18 @@ def create_app(
                 dtype=req.dtype,
                 confirm=req.confirm,
                 already_held_bytes=already,
+                # The shape gate above is necessary and NOT sufficient.
+                # `is_hub_id("models")` is True — a bare name is a valid repo
+                # id — and `_snapshot` uses an existing directory as-is, so a
+                # remote caller naming `models` would have had the server's
+                # own `./models` loaded rather than a Hub repo. Worse than the
+                # oracle it replaced, because it does not merely reveal that
+                # the directory exists, it opens it.
+                #
+                # So the person at the keyboard keeps "point me at a directory
+                # on my disk", and a request from anywhere else gets the Hub
+                # branch and nothing else.
+                local_ok=here,
             )
             return status.to_dict()
         # No separate `except Unsafe`. It is a `Refusal`, so the clause below
@@ -1878,6 +1890,19 @@ def create_app(
         # allow-list, which is the check doing its job: every exception a
         # handler publishes has to be provably authored, and proving it by
         # naming subclasses one at a time is how that list stops being true.
+        except _capacity.TooBig as err:
+            # BEFORE the Refusal arm, and it has to be its own arm at all
+            # because `TooBig` subclasses plain `ValueError` rather than
+            # `BadRequest` — so `(Refusal, BadRequest)` below does not catch
+            # it and it fell through to `except Exception` and a 500.
+            #
+            # That turned the one refusal this route exists to deliver into
+            # "Something inside ModelMRI failed rather than refusing": the
+            # capacity guard's whole job is to say "this will not fit, here is
+            # what to do" BEFORE a twenty-minute download, and a reader was
+            # shown a crash instead. Four other capacity-gated routes have
+            # carried this arm since they were written; this one did not.
+            return JSONResponse({"error": str(err)}, status_code=422)
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": str(err)}, status_code=code)

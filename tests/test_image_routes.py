@@ -179,13 +179,57 @@ def test_a_knockout_seed_is_required_rather_than_optional():
     assert field.annotation is int, "an optional seed makes the comparison noise"
 
 
-def test_a_local_path_carries_the_same_guard_every_other_path_route_has(
-    client, tmp_path
+def test_a_remote_caller_cannot_probe_for_directories_on_the_server(
+    client, tmp_path, monkeypatch
 ):
-    """The real defect CodeQL surfaced. This route accepted a directory on the
-    server's disk while the four other path-accepting routes in the file had
-    carried a not-from-this-machine guard for months — two routes answering
-    the same question about the same kind of input differently."""
+    """The oracle CodeQL found, and it was in the guard rather than around it.
+
+    The first version of this guard asked `Path(repo).is_dir()` to decide
+    whether the guard applied — and asking that question about caller text
+    ANSWERS it. Measured before the fix, from a client the server treats as
+    remote, with a directory in the working directory:
+
+        POST {"repo": "there_is_a_dir_here"}   -> 403   (guard fired)
+        POST {"repo": "there_is_no_dir_here"}  -> 500   (fell through)
+
+    One bit per request, unauthenticated, on any server started with
+    `--host 0.0.0.0`. The two must now be indistinguishable.
+    """
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    os.mkdir("there_is_a_dir_here")
+
+    seen = []
+    for name in ("there_is_a_dir_here", "there_is_no_dir_here"):
+        r = client.post("/api/image/load", json={"repo": name})
+        seen.append((r.status_code, "not a repository on the Hub" in r.text))
+    assert seen[0] == seen[1], f"the two answers differ, which is the oracle: {seen}"
+
+
+def test_the_hub_branch_is_what_a_remote_caller_gets(client, tmp_path, monkeypatch):
+    """The shape gate alone is NOT sufficient, which is the half that is easy
+    to miss. `is_hub_id("models")` is True — a bare name is a valid repo id —
+    and `_snapshot` used an existing directory as-is, so a remote caller
+    naming `models` had the server's own `./models` opened for them. Worse
+    than the oracle it replaced: it does not reveal that the directory
+    exists, it reads it."""
+    import os
+
+    monkeypatch.chdir(tmp_path)
+    os.mkdir("models")
+    (tmp_path / "models" / "config.json").write_text(
+        '{"model_type": "vit"}', encoding="utf-8"
+    )
+    r = client.post("/api/image/load", json={"repo": "models"})
+    # It must NOT have read that directory and found a ViT in it.
+    assert "vision transformer" not in r.text
+    assert "not a repository on the Hub" in r.text
+
+
+def test_a_path_shaped_name_is_still_refused_by_the_machine_guard(client, tmp_path):
+    """The ordinary case the guard exists for. Anything not hub-SHAPED is a
+    path, decided without touching the disk."""
     r = client.post("/api/image/load", json={"repo": str(tmp_path)})
     assert r.status_code == 403
     assert "only possible from this machine" in r.json()["error"]
@@ -193,21 +237,64 @@ def test_a_local_path_carries_the_same_guard_every_other_path_route_has(
 
 def test_a_hub_id_is_not_treated_as_a_path(client):
     """`owner/name` is a public name, and refusing it from a remote caller
-    would be refusing the ordinary case. The guard applies to the second kind
-    of input, not to both."""
-    from modelmri.server import _looks_like_a_local_path
+    would be refusing the ordinary case."""
+    from modelmri.behavdiff import is_hub_id
 
-    assert _looks_like_a_local_path("stabilityai/stable-diffusion-x4-upscaler") is False
-    assert _looks_like_a_local_path("runwayml/stable-diffusion-v1-5") is False
+    assert is_hub_id("stabilityai/stable-diffusion-x4-upscaler") is True
+    assert is_hub_id("runwayml/stable-diffusion-v1-5") is True
 
 
-def test_anything_that_resolves_to_a_real_directory_here_counts_as_local():
-    """The test that actually matters: `_resolve` uses an existing directory
-    as-is, whatever it is called. Generous toward local on purpose — a false
-    positive asks a local caller for a guard they pass anyway, a false
-    negative lets a remote caller name somebody else's disk."""
-    from modelmri.server import _looks_like_a_local_path
+def test_the_shape_test_never_touches_the_filesystem(monkeypatch):
+    """The property the whole fix rests on. If `is_hub_id` ever grows a
+    filesystem check the oracle comes straight back, so this asserts it does
+    not — by making any stat explode."""
+    from pathlib import Path as _P
 
-    for value in ("/etc/passwd", "C:/models/x", "../../elsewhere", "~/models"):
-        assert _looks_like_a_local_path(value) is True, value
-    assert _looks_like_a_local_path("") is False
+    from modelmri.behavdiff import is_hub_id
+
+    def _explode(*_a, **_k):
+        raise AssertionError("the shape test touched the filesystem")
+
+    for name in ("is_dir", "exists", "stat", "expanduser", "resolve"):
+        monkeypatch.setattr(_P, name, _explode, raising=False)
+
+    for value in ("owner/name", "models", "/etc/passwd", "../x", "C:/m/x", "~/m", ""):
+        is_hub_id(value)
+
+
+def test_a_capacity_refusal_arrives_as_a_refusal_and_not_a_crash(
+    client, tmp_path, monkeypatch
+):
+    """`TooBig` subclasses plain `ValueError`, NOT `BadRequest`, so the
+    `(Refusal, BadRequest)` arm does not catch it and it fell through to
+    `except Exception` and a 500.
+
+    That turned the one refusal this route exists to deliver into "Something
+    inside ModelMRI failed rather than refusing" — the capacity guard's whole
+    job is to say "this will not fit, here is what to do" BEFORE a
+    twenty-minute download, and a reader was shown a crash instead. Four other
+    capacity-gated routes have carried the arm since they were written.
+
+    Writing this test is also what caught the `NameError` in the arm itself:
+    an `except` clause naming a module the handler had not imported, which
+    fails only when the arm is actually reached.
+    """
+    from modelmri import capacity
+
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+
+    checkpoint = tmp_path / "vit"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text('{"model_type": "vit"}', encoding="utf-8")
+
+    def too_big(*_a, **_k):
+        raise capacity.TooBig(
+            "that will not fit: 20.0 GB against 8.0 GB free", overridable=False
+        )
+
+    monkeypatch.setattr("modelmri.image_runtime._guard", too_big)
+
+    r = client.post("/api/image/load", json={"repo": str(checkpoint)})
+    assert r.status_code == 422, f"a capacity refusal came back as {r.status_code}"
+    assert "will not fit" in r.json()["error"]
+    assert "failed rather than refusing" not in r.text

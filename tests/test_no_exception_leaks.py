@@ -309,3 +309,97 @@ def test_no_sink_interpolates_a_caught_exceptions_text():
         "these interpolate a caught exception's own text, which reaches the "
         "browser wherever the value is published:\n  " + "\n  ".join(offenders)
     )
+
+
+# ------------------------------------------------------------------- image
+
+
+def test_the_image_load_route_names_the_class_only(client, monkeypatch, tmp_path):
+    """This file had ZERO image-route coverage while `image_runtime.py` grew
+    from 587 to 732 lines in one sitting.
+
+    The static grep below catches `{err}` on a line. It cannot catch a leak
+    laundered through a LOCAL VARIABLE — `why = str(err)` on one line and
+    `f"...{why}"` on the next — which is the exact shape the refusals in
+    `_load_processor` and `_load_transformers` are built in. So this asserts
+    at the SINK, on the bytes that come back.
+    """
+    checkpoint = tmp_path / "vit"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        '{"model_type": "vit", "architectures": ["ViTForImageClassification"]}',
+        encoding="utf-8",
+    )
+    (checkpoint / "model.safetensors").write_bytes(
+        b"\x08\x00\x00\x00\x00\x00\x00\x00{}"
+    )
+
+    def explode(*_a, **_k):
+        raise RuntimeError(f"boom {WEIGHTS} {CERT}")
+
+    for name in ("AutoModelForImageClassification", "AutoModel"):
+        # Dotted string, NOT `setattr(transformers, name, ...)`. transformers
+        # is a lazy module: until an attribute is first read it lives behind
+        # `__getattr__` rather than in `__dict__`, so setting it on the module
+        # object works only when some earlier import happened to materialise
+        # it. That makes the patch depend on test ORDER, which is how this
+        # very test first passed for the wrong reason.
+        monkeypatch.setattr(
+            f"transformers.{name}.from_pretrained", staticmethod(explode)
+        )
+
+    # A local path, so the machine guard fires first and correctly. Patched
+    # out to reach the layer beneath it — that refusal has its own tests.
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    resp = client.post("/api/image/load", json={"repo": str(checkpoint)})
+    assert not leaked(resp.text), f"the image load route leaked {leaked(resp.text)}"
+    # And it still says which KIND of failure, which is the actionable half.
+    assert "RuntimeError" in resp.text
+
+
+def test_a_preprocessor_that_will_not_import_names_the_package_not_the_message(
+    tmp_path, monkeypatch
+):
+    """`_load_processor` scans an ImportError's prose for a known package name
+    rather than relaying it. transformers writes "requires the Torchvision
+    library but it was not found in your environment" — quoting that verbatim
+    is how library text reaches a browser, and the package name alone is the
+    whole actionable part."""
+    from modelmri import image_runtime as ir
+
+    class _Boom:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            raise ImportError(
+                f"FastImageProcessor requires the Torchvision library but it "
+                f"was not found. Looked in {CERT} and {WEIGHTS}"
+            )
+
+    for name in ir._PROCESSOR_CLASSES:
+        monkeypatch.setattr(f"transformers.{name}", _Boom)
+
+    _, why = ir._load_processor(tmp_path)
+    assert not leaked(why), f"the preprocessor reason leaked {leaked(why)}"
+    assert "torchvision" in why
+
+
+def test_a_hub_failure_names_the_class_and_not_the_url(tmp_path, monkeypatch):
+    """`snapshot_download` puts the full URL, the cache directory and an
+    authentication paragraph into its message, and the cache directory is a
+    path on this machine."""
+    import huggingface_hub
+
+    from modelmri import image_runtime as ir
+
+    def explode(*_a, **_k):
+        raise OSError(
+            f"Repository Not Found for url https://huggingface.co/api/models/x. "
+            f"Cache at {WEIGHTS}, certs at {CERT}"
+        )
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", explode)
+    with pytest.raises(Exception) as caught:
+        ir._snapshot("owner/name", ["*.json"], local_ok=False)
+    said = str(caught.value)
+    assert not leaked(said), f"the hub refusal leaked {leaked(said)}"
+    assert "owner/name" in said

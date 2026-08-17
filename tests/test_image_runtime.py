@@ -280,7 +280,7 @@ def test_the_configs_come_down_before_any_weight_does(monkeypatch):
     """
     asked = []
 
-    def _spy(repo, allow):
+    def _spy(repo, allow, *, local_ok=True):
         asked.append(list(allow))
         return __import__("pathlib").Path(".")
 
@@ -299,7 +299,7 @@ def test_the_weight_fetch_is_a_superset_of_the_config_fetch(monkeypatch):
     monkeypatch.setattr(
         ir,
         "_snapshot",
-        lambda repo, allow: (
+        lambda repo, allow, *, local_ok=True: (
             asked.append(list(allow)),
             __import__("pathlib").Path("."),
         )[1],
@@ -326,7 +326,6 @@ def test_a_missing_package_is_not_reported_as_a_missing_file(monkeypatch):
     One is fixable in a single command and the other is not fixable at all,
     so they must not share a sentence.
     """
-    import transformers
 
     class _Boom:
         @staticmethod
@@ -336,8 +335,10 @@ def test_a_missing_package_is_not_reported_as_a_missing_file(monkeypatch):
                 "was not found in your environment."
             )
 
+    # Dotted string: transformers is a lazy module, so setting an attribute on
+    # the module object only lands once something else has materialised it.
     for name in ir._PROCESSOR_CLASSES:
-        monkeypatch.setattr(transformers, name, _Boom, raising=False)
+        monkeypatch.setattr(f"transformers.{name}", _Boom)
 
     found, why = ir._load_processor(__import__("pathlib").Path("."))
     assert found is None
@@ -348,7 +349,6 @@ def test_a_missing_package_is_not_reported_as_a_missing_file(monkeypatch):
 
 def test_a_checkpoint_with_no_processor_says_that_instead(monkeypatch):
     """The other branch, so the two never collapse into one another."""
-    import transformers
 
     class _None:
         @staticmethod
@@ -356,7 +356,7 @@ def test_a_checkpoint_with_no_processor_says_that_instead(monkeypatch):
             raise OSError("no preprocessor_config.json here")
 
     for name in ir._PROCESSOR_CLASSES:
-        monkeypatch.setattr(transformers, name, _None, raising=False)
+        monkeypatch.setattr(f"transformers.{name}", _None)
 
     found, why = ir._load_processor(__import__("pathlib").Path("."))
     assert found is None
@@ -372,7 +372,6 @@ def test_a_composite_processor_yields_its_image_half(monkeypatch):
     `facebook/sam3` as having no preprocessor at all — and handing the
     composite through unchanged would give the sweep a tokenizer where it
     expects something that turns a picture into a tensor."""
-    import transformers
 
     class _Image:
         pass
@@ -387,7 +386,7 @@ def test_a_composite_processor_yields_its_image_half(monkeypatch):
         def from_pretrained(*_a, **_k):
             return _Composite()
 
-    monkeypatch.setattr(transformers, "AutoImageProcessor", _Auto, raising=False)
+    monkeypatch.setattr("transformers.AutoImageProcessor", _Auto)
     found, why = ir._load_processor(__import__("pathlib").Path("."))
     assert found is inner
     assert why == ""

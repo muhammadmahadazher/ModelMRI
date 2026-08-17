@@ -211,6 +211,7 @@ class ImageHandle:
         dtype: str = "",
         confirm: bool = False,
         already_held_bytes: int = 0,
+        local_ok: bool = True,
     ) -> ImageStatus:
         """Bring a pipeline up. Blocking — the server runs this in a thread.
 
@@ -235,7 +236,7 @@ class ImageHandle:
             # Configs only. The family decides both whether this is loadable
             # at all and WHICH loader opens it, and both answers are in a few
             # kilobytes of JSON — so neither costs a download.
-            local = _resolve_configs(repo)
+            local = _resolve_configs(repo, local_ok=local_ok)
             found = imaging.detect(local)
             if not found.known:
                 # Refused before a weight is downloaded or scanned. A panel
@@ -244,7 +245,7 @@ class ImageHandle:
                 raise Refusal(found.means())
 
             # Only now do the weights move.
-            local = _resolve(repo)
+            local = _resolve(repo, local_ok=local_ok)
             self._scan(local)
             resident = _weights_bytes(local)
             _guard(
@@ -330,7 +331,7 @@ class ImageHandle:
 _CONFIG_PATTERNS = ["*.json", "*/*.json"]
 
 
-def _resolve_configs(repo: str) -> Path:
+def _resolve_configs(repo: str, *, local_ok: bool = True) -> Path:
     """Enough of `repo` to say WHAT it is, and nothing that weighs anything.
 
     The order in `load` claims that every step refuses before the next one
@@ -346,10 +347,10 @@ def _resolve_configs(repo: str) -> Path:
     serves both from the same cache entry, so the JSON is not fetched twice
     and the weights are not fetched at all if the family is refused.
     """
-    return _snapshot(repo, _CONFIG_PATTERNS)
+    return _snapshot(repo, _CONFIG_PATTERNS, local_ok=local_ok)
 
 
-def _resolve(repo: str) -> Path:
+def _resolve(repo: str, *, local_ok: bool = True) -> Path:
     """A local directory for `repo`, downloading only if it is not cached.
 
     A path that exists is used as-is, so somebody can point at a pipeline that
@@ -376,29 +377,86 @@ def _resolve(repo: str) -> Path:
             "*/*.safetensors",
             "*/*.bin",
         ],
+        local_ok=local_ok,
     )
 
 
-def _snapshot(repo: str, allow: list) -> Path:
+def _snapshot(repo: str, allow: list, *, local_ok: bool = True) -> Path:
     """One cache entry, fetched to whatever depth the caller asked for.
 
     A path that exists is used as-is, so somebody can point at a checkpoint
     that never came from the Hub — the same rule `custom.py` follows.
+
+    `local_ok=False` switches that off, and the server passes it for any
+    request that did not come from the person at the keyboard. The reason is
+    that a Hub id and a directory name overlap: `models` is a valid repo id
+    AND a directory that may sit in the server's working directory, so a shape
+    test alone cannot separate them. Without this a remote caller naming
+    `models` had the server's own `./models` opened for them.
+
+    `expanduser()` therefore only ever runs for a local caller, which is the
+    only context in which reading HOME/USERPROFILE is that caller's business.
     """
-    candidate = Path(repo).expanduser()
-    if candidate.is_dir():
-        return candidate
+    if local_ok:
+        candidate = Path(repo).expanduser()
+        if candidate.is_dir():
+            return candidate
 
     from huggingface_hub import snapshot_download
 
     from . import paths
 
-    return Path(
-        snapshot_download(
-            repo_id=repo,
-            cache_dir=str(paths.hf_hub_cache()),
-            allow_patterns=list(allow),
+    try:
+        return Path(
+            snapshot_download(
+                repo_id=repo,
+                cache_dir=str(paths.hf_hub_cache()),
+                allow_patterns=list(allow),
+            )
         )
+    except Exception as err:
+        # A name that is not on the Hub is a fact about the REQUEST, and the
+        # server was answering it with 500 "Something inside ModelMRI failed
+        # rather than refusing" — which is this project telling on itself: an
+        # unhandled exception where a refusal belonged.
+        #
+        # The class only, never the text. `snapshot_download` puts the full
+        # URL, the cache directory and an authentication paragraph into its
+        # message, and the cache directory is a path on this machine.
+        raise Refusal(_hub_refusal(repo, err)) from err
+
+
+def _hub_refusal(repo: str, err: Exception) -> str:
+    """Why a download did not happen, in this project's words rather than the
+    Hub client's.
+
+    The three cases a reader acts on differently: the name is wrong, the repo
+    needs credentials, or the network is not there. Anything else names the
+    exception class, which says what KIND of failure it was without quoting a
+    library.
+    """
+    name = type(err).__name__
+    if "RepositoryNotFound" in name or "EntryNotFound" in name:
+        return (
+            f"`{repo}` is not a repository on the Hub, and it is not a "
+            f"directory on this machine either. Nothing was downloaded."
+        )
+    if "GatedRepo" in name:
+        return (
+            f"`{repo}` is gated on the Hub — its owner requires you to accept "
+            f"terms and be authenticated before it can be downloaded. Nothing "
+            f"here holds credentials for you."
+        )
+    if "RevisionNotFound" in name:
+        return f"`{repo}` exists on the Hub but the revision asked for does not."
+    if "LocalEntryNotFound" in name or "ConnectionError" in name or "Offline" in name:
+        return (
+            f"`{repo}` is not in this machine's cache and the Hub could not be "
+            f"reached to fetch it ({name}). Nothing was downloaded, and this is "
+            f"about the network rather than about the model."
+        )
+    return (
+        f"`{repo}` could not be fetched from the Hub ({name}). Nothing was downloaded."
     )
 
 
