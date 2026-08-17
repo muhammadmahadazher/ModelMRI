@@ -395,6 +395,11 @@ def _drain(stream, sink: deque[str], echo) -> None:
         try:
             stream.close()
         except (ValueError, OSError):
+            # Closing a pipe the child already closed. There is nothing left
+            # to do about it and nothing to report: the caller is about to
+            # read the exit code, which is the answer it actually wants, and
+            # a failure to close a stream that is already gone would only
+            # obscure it.
             pass
 
 
@@ -907,6 +912,11 @@ def _forget_port() -> None:
     try:
         port_file().unlink()
     except OSError:
+        # Already gone, or held by something else. Either way the CLAIM is
+        # what matters, not the file: every reader calls `status`, which asks
+        # the recorded port whether it answers and treats silence as "not
+        # running". A file that outlives this call is at worst read once more
+        # and rejected the same way.
         pass
 
 
@@ -1075,6 +1085,12 @@ def start(
                             port = int(stated)
                             ready.set()
             except (ValueError, OSError):
+                # The child's stdout went away mid-read, which means the child
+                # went away. Not handled here on purpose: `ready.set()` in the
+                # finally below ends the wait immediately, and the caller then
+                # finds `port == 0` and raises the refusal that names the
+                # likely cause and the command that fixes it. Raising from
+                # this thread would lose that sentence.
                 pass
             finally:
                 # EOF means the child exited. Set it either way, so a sidecar

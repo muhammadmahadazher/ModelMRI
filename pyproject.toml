@@ -374,6 +374,15 @@ explicit = true
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
 # Develop against the copy in this repo, not the published one, so a recorder
 # change is testable here before it is released.
+#
+# PATH sources, deliberately NOT `[tool.uv.workspace]` members. Making them
+# members was tried and measured, and it broke the one thing this whole
+# feature exists to protect: uv resolves a workspace universally, across every
+# member's extras, so lerobot's constraints reached ModelMRI's own tree and
+# DOWNGRADED transformers 5.13.0 -> 5.5.4 in this environment. The process
+# boundary keeps lerobot out of ModelMRI's runtime; a shared lockfile put it
+# back in through the front door. The security job drops these two by name
+# instead — see `--no-emit-package` in security.yml.
 modelmri-record = { path = "packages/modelmri-record", editable = true }
 # Same reason, and it is not published yet either. Dev-only: nothing in
 # `[project.dependencies]` names it, so `pip install modelmri` does not pull

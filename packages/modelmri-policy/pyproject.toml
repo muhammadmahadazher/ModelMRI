@@ -50,7 +50,20 @@ policy = [
   # adapter is written against; a family outside them will refuse at load with
   # lerobot's own message naming the extra, which is the correct place for
   # that to happen.
-  "lerobot[smolvla,pi,diffusion]>=0.6,<0.7",
+  #
+  # The marker is not caution, it is arithmetic. lerobot declares
+  # `requires-python >=3.12`; this package supports 3.10 because its BASE half
+  # -- the contract and the input rules -- is stdlib-only and is imported by
+  # ModelMRI's tests on the 3.10 CI cell. Without the marker the two facts
+  # collide and resolution fails outright: "the requested Python version
+  # (>=3.10) does not satisfy Python>=3.12".
+  #
+  # On a <3.12 interpreter this extra therefore installs no lerobot, which is
+  # the only honest outcome — it cannot be installed there. Nothing reaches
+  # that state through `modelmri policy install`, which picks a 3.12+
+  # interpreter for the venv or refuses by name; and a hand-built one still
+  # gets `adapter._need`'s refusal rather than a wrong answer.
+  "lerobot[smolvla,pi,diffusion]>=0.6,<0.7; python_version >= '3.12'",
   "torch>=2.2",
   "safetensors>=0.4",
 ]

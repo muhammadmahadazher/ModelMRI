@@ -983,7 +983,7 @@ source = { editable = "packages/modelmri-policy" }
 
 [package.metadata]
 requires-dist = [
-    { name = "lerobot", marker = "extra == 'policy'", specifier = ">=0.6,<0.7" },
+    { name = "lerobot", extras = ["smolvla", "pi", "diffusion"], marker = "python_full_version >= '3.12' and extra == 'policy'", specifier = ">=0.6,<0.7" },
     { name = "safetensors", marker = "extra == 'policy'", specifier = ">=0.4" },
     { name = "torch", marker = "extra == 'policy'", specifier = ">=2.2" },
 ]

@@ -342,6 +342,11 @@ def serve(port: int = 0) -> None:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
+        # Ctrl-C is how somebody stops a sidecar they started in a terminal,
+        # so it is the NORMAL exit rather than a fault. Swallowed here so the
+        # `finally` below closes the socket and the process leaves with 0 --
+        # a traceback would make a deliberate stop look like a crash to the
+        # parent reading this child's output.
         pass
     finally:
         httpd.server_close()
