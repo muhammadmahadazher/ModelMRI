@@ -110,12 +110,16 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/vla` | Vla Status |
+| `GET` | `/api/vla/actions/cost` | Vla Actions Cost |
 | `GET` | `/api/vla/audit` | Vla Audit Dataset |
 | `GET` | `/api/vla/datasets` | Vla Datasets |
 | `GET` | `/api/vla/episodes` | Vla Episodes |
 | `GET` | `/api/vla/frame` | Vla Frame |
 | `GET` | `/api/vla/occlude/cost` | Vla Occlude Cost |
 | `GET` | `/api/vla/sweep/cost` | Vla Sweep Cost |
+| `POST` | `/api/vla/actions/compare` | Vla Actions Compare |
+| `POST` | `/api/vla/actions/knockout` | Vla Actions Knockout |
+| `POST` | `/api/vla/actions/swap` | Vla Actions Swap |
 | `POST` | `/api/vla/analyse` | Vla Analyse |
 | `POST` | `/api/vla/dataset` | Vla Set Dataset |
 | `POST` | `/api/vla/load` | Vla Load |

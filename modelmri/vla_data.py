@@ -288,6 +288,58 @@ class LeRobotV3Reader:
             self._frames = _read_all(files)
         return self._frames
 
+    def action_stats(self) -> dict:
+        """The statistics this dataset publishes about its recorded actions.
+
+        `{}` when it publishes none, and empty is load-bearing: `vla_actions`
+        treats it as "do not overlay" rather than as identity scaling. A
+        dataset's recorded actions and a policy's predicted ones are two lists
+        of floats of the same length, which is exactly what makes drawing them
+        on one axis look reasonable when their units differ.
+
+        `meta/stats.json` has been in this module's own layout docstring since
+        it was written and was never actually read — the file was described and
+        ignored, so every comparison downstream would have had to assume units
+        that were sitting on disk unread.
+        """
+        path = self.snapshot / "meta" / "stats.json"
+        try:
+            blob = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        action = blob.get("action")
+        if not isinstance(action, dict):
+            return {}
+        out: dict = {}
+        for key in ("mean", "std", "min", "max"):
+            value = action.get(key)
+            if isinstance(value, (list, tuple)) and value:
+                try:
+                    out[key] = [float(v) for v in value]
+                except (TypeError, ValueError):
+                    continue
+        return {"action": out} if out else {}
+
+    def action_names(self) -> list[str]:
+        """What this dataset calls each action dimension, or `[]`.
+
+        From `meta/info.json`'s `features["action"]["names"]`. Empty rather
+        than invented indices: a chart with six curves and five labels
+        mislabels at least one, and `vla_actions.compare` drops a name list
+        whose length disagrees for that reason.
+        """
+        feature = (self.info.get("features") or {}).get("action") or {}
+        names = feature.get("names")
+        # LeRobot writes this either as a flat list or as {"motors": [...]}.
+        if isinstance(names, dict):
+            for value in names.values():
+                if isinstance(value, (list, tuple)):
+                    names = value
+                    break
+        if not isinstance(names, (list, tuple)):
+            return []
+        return [str(n) for n in names]
+
     def summary(self) -> dict:
         eps = self.episodes()
         shape = (

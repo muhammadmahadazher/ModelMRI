@@ -211,6 +211,33 @@ class VLADatasetRequest(BaseModel):
     repo_id: str = Field(min_length=1, max_length=200)
 
 
+class VLAFrameRequest(BaseModel):
+    """One frame, plus the seed that makes the answer reproducible.
+
+    `seed` is optional and `None` is NOT 0. None means "do not fix the
+    sampler", which is a different request and a different claim about the
+    result — most of these policies sample, so an unseeded run is one draw
+    from a distribution rather than the policy's answer.
+    """
+
+    episode: int = Field(default=0, ge=0)
+    t: int = Field(default=0, ge=0)
+    seed: int | None = Field(default=None, ge=0, lt=2**31)
+
+
+class VLACompareRequest(BaseModel):
+    """A whole episode, strided.
+
+    `stride=0` means "choose one that fits the work budget" rather than
+    "measure every frame" — an unstrided 200-frame episode is 200 forward
+    passes, and `vla_actions.plan_frames` reports whatever it picks.
+    """
+
+    episode: int = Field(default=0, ge=0)
+    stride: int = Field(default=0, ge=0, le=1000)
+    seed: int | None = Field(default=None, ge=0, lt=2**31)
+
+
 class CustomLoadRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
@@ -1695,6 +1722,327 @@ def create_app(
             "datasets": await asyncio.to_thread(cached_datasets),
             "current": getattr(app.state, "vla_dataset", dataset_repo),
         }
+
+    # ---------------- what the policy would DO (ROADMAP #50) ----------------
+    #
+    # Every route here needs the ACTION sidecar, not just the vision tower, so
+    # every one of them can refuse with the command that fixes it. They are
+    # POST rather than GET because each spends real forward passes -- a GET
+    # that costs three minutes is a GET somebody's browser will retry.
+
+    def _policy_ready():
+        """The sidecar, or the refusal that names what to run.
+
+        Returns a `PolicyStatus`. Centralised so the routes below cannot
+        disagree with each other about what "ready" means.
+        """
+        from . import policy as _policy
+
+        state = _policy.status()
+        if not state.running:
+            raise Refusal(state.means())
+        return state
+
+    @app.get("/api/vla/actions/cost")
+    def vla_actions_cost(episode: int = 0, stride: int = 0):
+        """Forward passes before any are spent.
+
+        Frames and passes, never seconds. A duration guessed from somebody
+        else's hardware is the kind of number people plan around; the one
+        timing quoted below was measured on this project's own machine and
+        says so.
+        """
+        from . import vla_actions
+
+        try:
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        match = next((e for e in reader.episodes() if e.index == episode), None)
+        if match is None:
+            return JSONResponse(
+                {"error": f"episode {episode} is not in this dataset"},
+                status_code=422,
+            )
+        try:
+            frames, chosen = vla_actions.plan_frames(match.length, stride=stride)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+
+        return {
+            "episode": episode,
+            "frames_in_episode": match.length,
+            "frames_measured": len(frames),
+            "frames_skipped": match.length - len(frames),
+            "stride": chosen,
+            "passes": len(frames),
+            "means": (
+                f"{len(frames)} forward passes, one per sampled frame, "
+                f"covering {len(frames)} of {match.length} frames at a stride "
+                f"of {chosen}. No seconds are quoted because this machine has "
+                f"not been timed on this policy. For scale only: one SmolVLA "
+                f"pass took 49 s on a CPU build of torch during development, "
+                f"and far less on a GPU one."
+            ),
+        }
+
+    @app.post("/api/vla/actions/compare")
+    async def vla_actions_compare(req: VLACompareRequest):
+        """Predicted against recorded, per dimension, across an episode."""
+        from . import vla_actions
+
+        try:
+            state = _policy_ready()
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        # Units BEFORE any forward pass. Spending three minutes and then
+        # refusing to draw the result is a refusal that wasted three minutes,
+        # and the answer does not depend on the passes.
+        agree, why = vla_actions.units_agree(state.normalisation, reader.action_stats())
+        if not agree:
+            return JSONResponse({"error": why}, status_code=409)
+
+        try:
+            return await asyncio.to_thread(_run_compare, reader, state, req)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/actions/compare")
+
+    def _run_compare(reader, state, req):
+        from . import policy as _policy
+        from . import vla_actions
+
+        match = next((e for e in reader.episodes() if e.index == req.episode), None)
+        if match is None:
+            raise BadRequest(f"episode {req.episode} is not in this dataset")
+        wanted, stride = vla_actions.plan_frames(match.length, stride=req.stride)
+
+        rows = []
+        for t in wanted:
+            sample = reader.frame(req.episode, t)
+            answer = _policy.act(
+                frames={cam: sample.image for cam in state.cameras},
+                state=sample.state,
+                instruction=sample.task,
+                seed=req.seed,
+            )
+            chunk = answer.get("action_chunk") or []
+            if not chunk:
+                raise Refusal(
+                    f"the sidecar returned an empty action chunk at frame "
+                    f"{t}, so there is nothing to compare there."
+                )
+            # The FIRST step of the chunk, and only that one. Later steps are
+            # predictions about frames the demonstrator had not reached yet,
+            # so pairing step 5 with frame t would compare a claim about the
+            # future against the present and call the difference an error.
+            rows.append((t, chunk[0], sample.action))
+
+        return vla_actions.compare(
+            frames=rows,
+            joint_names=reader.action_names(),
+            stride=stride,
+            total_frames=match.length,
+            policy_repo=state.policy_repo,
+            revision=state.revision,
+            seed=req.seed,
+        )
+
+    @app.post("/api/vla/actions/swap")
+    async def vla_actions_swap(req: VLAFrameRequest):
+        """Does the instruction move the action more than the sampler does?"""
+        try:
+            state = _policy_ready()
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        if not state.samples:
+            # Refused here rather than after the passes, for the same reason
+            # the units check runs first: the answer does not depend on them.
+            return JSONResponse(
+                {
+                    "error": (
+                        f"the {state.family or 'loaded'} action head is "
+                        f"deterministic, so its own sampling spread is exactly "
+                        f"zero. This test measures the instruction effect "
+                        f"AGAINST that spread, and a ratio against zero is not "
+                        f"a number."
+                    )
+                },
+                status_code=409,
+            )
+
+        try:
+            return await asyncio.to_thread(_run_swap, reader, state, req)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/actions/swap")
+
+    def _run_swap(reader, state, req):
+        from . import policy as _policy
+        from . import vla_actions
+
+        sample = reader.frame(req.episode, req.t)
+        frames = {cam: sample.image for cam in state.cameras}
+
+        def first(instruction, seed):
+            chunk = _policy.act(
+                frames=frames,
+                state=sample.state,
+                instruction=instruction,
+                seed=seed,
+            ).get("action_chunk") or [[]]
+            return chunk[0]
+
+        # Every DISTINCT task string this dataset contains, read off the
+        # episodes. Never invented: a distractor instruction written here
+        # would measure a sentence somebody chose, not this policy.
+        tasks: list[str] = []
+        for ep in reader.episodes():
+            task = (ep.task or "").strip()
+            if task and task not in tasks:
+                tasks.append(task)
+        if sample.task and sample.task not in tasks:
+            tasks.insert(0, sample.task)
+        dropped = max(0, len(tasks) - vla_actions.MAX_INSTRUCTIONS)
+        tasks = tasks[: vla_actions.MAX_INSTRUCTIONS]
+
+        base = req.seed if req.seed is not None else 0
+        swapped = [(task, first(task, base)) for task in tasks]
+        # The reference: the SAME frame and the SAME instruction, re-rolled.
+        seeds = [
+            first(sample.task, base + i) for i in range(vla_actions.REFERENCE_SEEDS)
+        ]
+        return vla_actions.instruction_swap(
+            own_instruction=sample.task,
+            swapped=swapped,
+            seed_samples=seeds,
+            policy_repo=state.policy_repo,
+            dropped_instructions=dropped,
+        )
+
+    @app.post("/api/vla/actions/knockout")
+    async def vla_actions_knockout(req: VLAFrameRequest):
+        """One bar per input, each replaced alone by its episode mean."""
+        try:
+            state = _policy_ready()
+            reader = _reader()
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        try:
+            return await asyncio.to_thread(_run_knockout, reader, state, req)
+        except Refusal as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/actions/knockout")
+
+    def _run_knockout(reader, state, req):
+        import numpy as np
+
+        from . import policy as _policy
+        from . import vla_actions
+        from .vla_data import encode_png
+
+        sample = reader.frame(req.episode, req.t)
+        seed = req.seed if req.seed is not None else 0
+        frames = {cam: sample.image for cam in state.cameras}
+
+        def act(these_frames, this_state, this_instruction):
+            chunk = _policy.act(
+                frames=these_frames,
+                state=this_state,
+                instruction=this_instruction,
+                seed=seed,
+            ).get("action_chunk") or [[]]
+            return chunk[0]
+
+        baseline = act(frames, sample.state, sample.task)
+
+        # THIS episode's mean, computed from it. A grey rectangle would be a
+        # different baseline than the label claims, and the label is the part
+        # a reader trusts.
+        episode = next((e for e in reader.episodes() if e.index == req.episode), None)
+        length = episode.length if episode else 1
+        step = max(1, length // 8)
+        sampled = list(range(0, length, step))
+        mean_rgb = encode_png(
+            np.mean(
+                np.stack(
+                    [
+                        reader.raw_frame(req.episode, t).astype("float64")
+                        for t in sampled
+                    ]
+                ),
+                axis=0,
+            )
+            .round()
+            .astype("uint8")
+        )
+        mean_state = None
+        if sample.state:
+            rows = [reader.frame(req.episode, t).state for t in sampled]
+            mean_state = [sum(col) / len(col) for col in zip(*rows, strict=True)]
+
+        arms = []
+        for cam in state.cameras:
+            arms.append(
+                (
+                    cam,
+                    f"{cam.split('.')[-1]} \u2192 episode mean",
+                    act({**frames, cam: mean_rgb}, sample.state, sample.task),
+                )
+            )
+        # A CONDITION, labelled as one. Never "the instruction did not
+        # matter", which is a conclusion about a result nobody has read yet.
+        arms.append(("instruction", "no instruction", act(frames, sample.state, "")))
+        if mean_state is not None:
+            arms.append(
+                (
+                    "observation.state",
+                    "proprioceptive state \u2192 episode mean",
+                    act(frames, mean_state, sample.task),
+                )
+            )
+
+        # The policy's own sampling spread on THIS frame, so a bar can be told
+        # from noise. Measured, and when it cannot be measured every bar
+        # reports `above_noise: null` rather than a guess.
+        spread = None
+        if state.samples:
+            spread = (
+                vla_actions._spread(
+                    [act(frames, sample.state, sample.task) for _ in range(3)]
+                )
+                or None
+            )
+
+        return vla_actions.knockout(
+            baseline=baseline,
+            arms=arms,
+            policy_repo=state.policy_repo,
+            sampling_spread=spread,
+        )
 
     @app.get("/api/vla/sweep/cost")
     def vla_sweep_cost(
