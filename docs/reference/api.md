@@ -152,6 +152,10 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/gguf` | Read Gguf |
 | `GET` | `/api/gguf/plan` | Plan Gguf |
 | `GET` | `/api/graph` | Graph |
+| `GET` | `/api/image` | Image Status |
+| `GET` | `/api/image/attention/cost` | Image Attention Cost |
+| `GET` | `/api/image/available` | Image Available |
+| `GET` | `/api/image/steps/cost` | Image Steps Cost |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/lens/tuned` | Tuned Lens Status |
 | `GET` | `/api/paths` | Where |
@@ -167,6 +171,10 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/diff/models` | Diff Models |
 | `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/ground` | Ground Answer |
+| `POST` | `/api/image/attention` | Image Attention Capture |
+| `POST` | `/api/image/knockout` | Image Knockout |
+| `POST` | `/api/image/load` | Image Load |
+| `POST` | `/api/image/unload` | Image Unload |
 | `POST` | `/api/judge` | Judge Score |
 | `POST` | `/api/judge/plan` | Judge Plan |
 | `POST` | `/api/lens/tune` | Train Tuned Lens |

@@ -1057,6 +1057,263 @@ export const analyseVLA = (episode: number, t: number) =>
 export const getVLAAttention = (layer: number, head = -1) =>
   fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
 
+// ------------------------------------------------------------ image models
+//
+// Eight routes over one handle, and deliberately the same shape as the VLA
+// block above: a status that always answers, a load and an unload, two cost
+// routes that answer BEFORE anything is spent, and two measurements that
+// refuse by name when the architecture has no such thing to measure.
+//
+// The field a panel must read before drawing any control is `capabilities`.
+// It comes from `imaging.detect`, keyed on what the checkpoint IS rather than
+// on what it is called, and a family the server cannot name arrives with an
+// EMPTY list. So a control is offered because the server said the measurement
+// exists, never because a repo id looked like Stable Diffusion.
+
+/** One image model already on this disk, as `imaging.ImageModel` reports it.
+ *
+ *  `known: false` is a first-class answer rather than a gap: it arrives with
+ *  `reason`, and with an empty `capabilities`, because a family this cannot
+ *  identify must offer nothing rather than everything. The list is what is on
+ *  the disk, not what the server happens to understand.
+ */
+export interface ImageModelInfo {
+  /** The repo id, `owner/name`. */
+  path: string;
+  /** The identifier: `unet_diffusion`, `dit_diffusion`, `vit`, … */
+  family: string;
+  /** The same thing in words — "a UNet diffusion model". The server writes
+   *  it, so a panel never has to turn an identifier into prose itself. */
+  label: string;
+  architecture: string;
+  pipeline: string;
+  /** `{unet: "UNet2DConditionModel", vae: "AutoencoderKL", …}`. Empty for a
+   *  plain transformers model, which is a fact rather than a gap. */
+  components: Record<string, string>;
+  /** Three states and never two. A positive width means the denoiser attends
+   *  to prompt tokens; **0 means UNCONDITIONAL** — there are no word-to-pixel
+   *  maps to draw at all; `null` means the denoiser's config did not say, so
+   *  nothing here knows. Rendering `null` as 0 would turn "not stated" into
+   *  "this model ignores your prompt". */
+  cross_attention_dim: number | null;
+  image_size: number | null;
+  capabilities: string[];
+  known: boolean;
+  reason: string;
+  means: string;
+}
+
+export interface ImageAvailable {
+  models: ImageModelInfo[];
+  known: number;
+  means: string;
+}
+
+/** What `ImageHandle` is holding, or why it is holding nothing.
+ *
+ *  Never raises server-side: a resting panel asks this on every load and
+ *  `loaded: false` on its own is not an answer, so `reason` and `means` are
+ *  populated in that case rather than left blank.
+ */
+export interface ImageStatus {
+  loaded: boolean;
+  repo: string;
+  family: string;
+  architecture: string;
+  device: string;
+  dtype: string;
+  /** What may be measured on this pipeline: `cross_attention`,
+   *  `token_knockout`, `step_commit`, `latent_trace`, `patch_attention`, …
+   *  A capability that is absent is a control that is not shown. */
+  capabilities: string[];
+  /** The same tri-state as `ImageModelInfo.cross_attention_dim`. */
+  cross_attention_dim: number | null;
+  image_size: number | null;
+  components: Record<string, string>;
+  /** Read from the checkpoint's own safetensors headers rather than estimated
+   *  from a parameter count. 0 when nothing is held. */
+  bytes_resident: number;
+  /** `null` when nothing was loaded, which is not a load that took no time. */
+  load_seconds: number | null;
+  reason: string;
+  means: string;
+}
+
+/** One denoising step's cross-attention, already reduced by the server.
+ *
+ *  `per_token` is attention mass per prompt token, summed over pixels and
+ *  averaged over heads AND over the cross-attention blocks that contributed.
+ *  The mean over heads is a choice that hides head-level disagreement, and
+ *  `blocks` is how many maps went into this row — a step where fewer blocks
+ *  reported is a partial capture, visible in the data rather than silent.
+ */
+export interface ImageStepMap {
+  step: number;
+  /** The scheduler's own timestep. Carried because "step 12" means nothing
+   *  across two schedulers with different step counts. */
+  timestep: number;
+  per_token: number[];
+  blocks: number;
+}
+
+export interface ImageAttentionRun {
+  tokens: string[];
+  steps: ImageStepMap[];
+  /** `null` means no seed was fixed, which is NOT seed 0 — another run then
+   *  gives another trajectory and nothing downstream is comparable. */
+  seed: number | null;
+  model: string;
+  revision: string;
+  /** Where the padding starts. CLIP pads to 77 and the padded tail attracts
+   *  real attention mass, which is a genuine finding and a terrible chart, so
+   *  it travels as an index rather than as sixty blank columns. */
+  padding_from: number;
+  steps_requested: number;
+  steps_measured: number;
+  /** The attention resolutions the maps were averaged over. */
+  resolutions: number[];
+  means: string;
+}
+
+/** One arm of a knockout: the prompt with one word removed, and how far the
+ *  image moved. `distance` is RMS over pixels — arithmetic anybody can check,
+ *  rather than one model's opinion of how different two pictures look. */
+export interface ImageKnockoutArm {
+  word: string;
+  index: number;
+  prompt_without: string;
+  distance: number;
+}
+
+export interface ImageKnockout {
+  /** Already sorted by `distance`, furthest first. */
+  arms: ImageKnockoutArm[];
+  seed: number;
+  steps: number;
+  /** Echoed back: the words the caller asked about. The RUN measures every
+   *  word of the prompt in turn regardless — see `imageKnockout`. */
+  tokens: string[];
+  means: string;
+}
+
+/** Renders and passes, before any are spent. `arms` is `words + 1`: every
+ *  word plus the unmodified prompt each arm is compared against. */
+export interface ImageAttentionCost {
+  arms: number;
+  steps_each: number;
+  passes: number;
+  means: string;
+}
+
+/** What keeping a latent per step would hold.
+ *
+ *  Every byte figure is `null` — never 0 — when the latent shape could not be
+ *  read off the pipeline. A run whose memory could not be priced is not a run
+ *  that costs nothing, and `fits: null` is "unknown", not "no".
+ */
+export interface ImageTraceCost {
+  steps: number;
+  denoiser_passes: number;
+  vae_decodes: number;
+  latents_kept: number;
+  latent_bytes: number | null;
+  total_bytes: number | null;
+  fits: boolean | null;
+  threshold: number;
+  means: string;
+}
+
+/** Plain fetches, all eight of them, for the reason written over `getPolicy`:
+ *  the demo and the `.mri` viewer answer through `demo.ts`'s patched fetch, so
+ *  `tests/demo_check.py` can see the handler. An answer written here instead
+ *  is invisible to that check and is reported as an unhandled endpoint — and
+ *  the demo answers `/api/image` with a NOT-LOADED status rather than a
+ *  refusal, because a static page holding no pipeline is exactly what
+ *  "nothing is loaded" describes. */
+export const getImage = () => fetch("/api/image").then((r) => json<ImageStatus>(r));
+
+/** Every image model already on this disk. Downloads nothing. */
+export const getImageAvailable = () =>
+  fetch("/api/image/available").then((r) => json<ImageAvailable>(r));
+
+/** Hold one pipeline. No default repo: the checkpoint decides which controls
+ *  apply, so guessing one would silently decide what the reader is looking at.
+ *
+ *  `confirm` overrides the refusals that are overridable — a pipeline beside
+ *  a resident text model, mainly, which the server refuses first because both
+ *  are wanted resident at once and neither can be offloaded to rescue the
+ *  other. A refusal that is NOT overridable answers again with the same
+ *  sentence, which is the right outcome rather than a silent OOM.
+ */
+export const loadImage = (repo: string, confirm = false) =>
+  fetch("/api/image/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo: repo.trim(), device: "", dtype: "", confirm }),
+  }).then((r) => json<ImageStatus>(r));
+
+/** Drop it and hand the memory back, not merely forget it. */
+export const unloadImage = () =>
+  fetch("/api/image/unload", { method: "POST" }).then((r) => json<ImageStatus>(r));
+
+/** Price the renders before running any.
+ *
+ *  `words=0` prices ONE render — the capture. `words=n` prices a knockout of
+ *  an n-word prompt, which is n arms plus the unmodified one they are each
+ *  compared against. Same arithmetic, two questions.
+ */
+export const imageAttentionCost = (steps: number, words: number) =>
+  fetch(`/api/image/attention/cost?steps=${steps}&words=${words}`).then((r) =>
+    json<ImageAttentionCost>(r),
+  );
+
+/** What keeping a latent per step would hold, priced off the loaded
+ *  pipeline's own latent shape when there is one. */
+export const imageStepsCost = (steps: number) =>
+  fetch(`/api/image/steps/cost?steps=${steps}`).then((r) => json<ImageTraceCost>(r));
+
+/** Which prompt tokens the image attends to, per denoising step.
+ *
+ *  `seed` is optional and `null` is NOT 0: `null` means the sampler was not
+ *  fixed, so another run gives another trajectory. Refuses 409 when nothing is
+ *  loaded, and 409 again — with a different sentence — when the loaded family
+ *  has no cross-attention to capture.
+ */
+export const captureImageAttention = (
+  prompt: string,
+  steps: number,
+  seed: number | null,
+) =>
+  fetch("/api/image/attention", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, steps, seed }),
+  }).then((r) => json<ImageAttentionRun>(r));
+
+/** Remove one prompt word at a time and measure what actually moved.
+ *
+ *  The seed is required rather than optional here, and it is doing the work:
+ *  every arm runs at the identical seed, so the difference between two images
+ *  is the word rather than the sampler.
+ *
+ *  `words` is what the caller asks ABOUT and the route refuses an empty list —
+ *  which words matter is the question, not an implementation detail. It does
+ *  not narrow the run: `image_attention.knockout` splits the prompt itself and
+ *  measures every word in turn, and echoes `words` back as `tokens`. The panel
+ *  says so rather than implying the picks limited the work.
+ */
+export const imageKnockout = (
+  prompt: string,
+  words: string[],
+  seed: number,
+  steps: number,
+) =>
+  fetch("/api/image/knockout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, words, seed, steps }),
+  }).then((r) => json<ImageKnockout>(r));
+
 export interface HubAuth {
   signed_in: boolean;
   user: string | null;

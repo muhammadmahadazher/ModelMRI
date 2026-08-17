@@ -223,6 +223,44 @@ class ScanRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=5000)
 
 
+class ImageLoadRequest(BaseModel):
+    """A cached pipeline directory, or a Hub id.
+
+    No default. The checkpoint decides which panels apply, so guessing one
+    would silently decide what the user is looking at.
+    """
+
+    repo: str = Field(min_length=1, max_length=400)
+    device: str = Field(default="", max_length=32)
+    dtype: str = Field(default="", max_length=32)
+    confirm: bool = False
+
+
+class ImageRunRequest(BaseModel):
+    """One prompt through the pipeline, with the seed that makes it repeat.
+
+    `seed` is optional and `None` is NOT 0. A diffusion run without a fixed
+    seed is one draw from a distribution, and every comparison downstream —
+    knockout especially — is meaningless without the same seed on both arms.
+    """
+
+    prompt: str = Field(min_length=1, max_length=4000)
+    steps: int = Field(default=20, ge=1, le=200)
+    seed: int | None = Field(default=None, ge=0, lt=2**31)
+
+
+class ImageKnockoutRequest(ImageRunRequest):
+    """Which words to remove, one at a time.
+
+    `seed` is REQUIRED here rather than optional: every arm has to run at the
+    identical seed or the difference between two images is the sampler rather
+    than the word.
+    """
+
+    words: list[str] = Field(default_factory=list, max_length=24)
+    seed: int = Field(default=0, ge=0, lt=2**31)
+
+
 class VLAFrameRequest(BaseModel):
     """One frame, plus the seed that makes the answer reproducible.
 
@@ -503,6 +541,12 @@ def create_app(
     # that downloads, and it is the last moment before anything can.
     paths.ensure_models_home()
 
+    from .image_runtime import ImageHandle
+
+    # One pipeline per process, for the reason `ImageHandle` records:
+    # two resident on an 8 GB card is an OOM in the middle of somebody's
+    # measurement.
+    app.state.image = ImageHandle()
     app.state.vla = VLAHandle()
     # `.mri` files minted by `/v1` for `{"modelmri": {"mri": true}}`, held by
     # id so a client can fetch one it was handed. Bounded and in memory: see
@@ -1712,6 +1756,218 @@ def create_app(
     # neither does it on a model that is LIVE: Netron reads a file, the
     # Debugger needs a TensorFlow run instrumented in advance. These read the
     # module already sitting in this process's memory.
+
+    # ---------------- image models (ROADMAP v1.0, Theme A) ----------------
+    #
+    # Every route needs a pipeline held by `app.state.image`, so every one can
+    # refuse with the same sentence when nothing is loaded. What each of them
+    # is ALLOWED to answer comes from `imaging.detect` via the handle's
+    # `capabilities` — a panel asks rather than infers, and a family this does
+    # not know offers an empty list rather than everything.
+
+    @app.get("/api/image")
+    def image_status() -> dict:
+        """What is held, or why nothing is. Never raises."""
+        return app.state.image.status().to_dict()
+
+    @app.get("/api/image/available")
+    async def image_available() -> dict:
+        """Every image model already on this disk. Downloads nothing.
+
+        The same rule the model picker follows: say what is here before asking
+        anybody to type a name.
+        """
+        from . import imaging
+
+        found = await asyncio.to_thread(imaging.scan_cache)
+        return {
+            "models": [m.to_dict() for m in found],
+            "known": sum(1 for m in found if m.known),
+            "means": (
+                f"{len(found)} image model(s) cached on this machine, "
+                f"{sum(1 for m in found if m.known)} of which this can open. "
+                f"Nothing was downloaded to answer this."
+            ),
+        }
+
+    @app.post("/api/image/load")
+    async def image_load(req: ImageLoadRequest):
+        """Hold one pipeline, after three refusals that cost nothing.
+
+        Identify from JSON, scan the opcodes, price from real bytes — then
+        load. Off the event loop because a pipeline is gigabytes off disk.
+        """
+
+        already = 0
+        if runtime.loaded and runtime.model is not None:
+            # A text model resident in THIS process. Both are wanted resident
+            # at once, and unlike one oversized model neither can be offloaded
+            # to rescue the other.
+            #
+            # Measured off the module rather than from the checkpoint on disk:
+            # what matters is what is in memory NOW, which differs from the
+            # file whenever a dtype was cast at load.
+            from . import weights_table
+
+            already = sum(
+                row.bytes or 0
+                for row, _ in weights_table.rows_from_module(runtime.model)
+            )
+
+        try:
+            status = await asyncio.to_thread(
+                app.state.image.load,
+                req.repo,
+                device=req.device,
+                dtype=req.dtype,
+                confirm=req.confirm,
+                already_held_bytes=already,
+            )
+            return status.to_dict()
+        # No separate `except Unsafe`. It is a `Refusal`, so the clause below
+        # already answers 409 with its sentence intact — the extra arm added
+        # nothing and named a type the leak check does not have on its
+        # allow-list, which is the check doing its job: every exception a
+        # handler publishes has to be provably authored, and proving it by
+        # naming subclasses one at a time is how that list stops being true.
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": str(err)}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/load")
+
+    @app.post("/api/image/unload")
+    async def image_unload() -> dict:
+        """Drop it and hand the memory back, not merely forget it."""
+        status = await asyncio.to_thread(app.state.image.unload)
+        return status.to_dict()
+
+    def _image_can(what: str):
+        """The handle, or a refusal naming what this family cannot do.
+
+        Two different refusals, deliberately: "nothing is loaded" and "this
+        architecture has no such thing" are different problems with different
+        fixes, and collapsing them would send somebody to load a second model
+        that also cannot answer.
+        """
+        handle = app.state.image
+        handle.require()
+        status = handle.status()
+        if what not in status.capabilities:
+            raise Refusal(
+                f"{status.repo or 'this model'} is "
+                f"{status.family or 'an architecture'}, which has no "
+                f"{what.replace('_', ' ')} to measure. Drawing one anyway "
+                f"would be a picture of something that does not exist."
+            )
+        return handle
+
+    @app.get("/api/image/attention/cost")
+    def image_attention_cost(steps: int = 20, words: int = 0):
+        """Renders and passes, before any are spent."""
+        from . import image_attention
+
+        return image_attention.plan(int(steps), int(words))
+
+    @app.post("/api/image/attention")
+    async def image_attention_capture(req: ImageRunRequest):
+        """Which words the image attends to, per denoising step.
+
+        Early steps decide layout and late steps decide texture, so a single
+        averaged map hides the thing worth seeing.
+        """
+        from . import image_attention
+
+        try:
+            handle = _image_can("cross_attention")
+        except (Refusal, BadRequest) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+
+        try:
+            run = await asyncio.to_thread(
+                image_attention.capture,
+                handle.require(),
+                req.prompt,
+                steps=req.steps,
+                seed=req.seed,
+            )
+            return run.to_dict()
+        except (image_attention.NotSupported, Refusal) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/image/attention")
+
+    @app.post("/api/image/knockout")
+    async def image_knockout(req: ImageKnockoutRequest):
+        """Remove one prompt word at a time and measure what actually moved.
+
+        The interventional counterpart to the attention map, and the reason
+        this does not stop at a heatmap: a word can be attended to and change
+        nothing.
+        """
+        from . import image_attention
+
+        try:
+            handle = _image_can("token_knockout")
+        except (Refusal, BadRequest) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        if not req.words:
+            return JSONResponse(
+                {
+                    "error": (
+                        "no words were named, so there is nothing to knock "
+                        "out. Pick them from the attention map rather than "
+                        "having this choose — which words matter is the "
+                        "question, not an implementation detail."
+                    )
+                },
+                status_code=422,
+            )
+
+        try:
+            return await asyncio.to_thread(
+                image_attention.knockout,
+                handle.require(),
+                req.prompt,
+                tokens=[str(w) for w in req.words],
+                seed=req.seed,
+                steps=req.steps,
+            )
+        except (image_attention.NotSupported, Refusal) as err:
+            return JSONResponse({"error": str(err)}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/image/knockout")
+
+    @app.get("/api/image/steps/cost")
+    def image_steps_cost(steps: int = 20, threshold: float = 0.0):
+        """What a latent trace will hold, before it holds it.
+
+        The latent shape is read off the loaded pipeline when there is one, so
+        the memory figure is this pipeline's rather than a guess — and `None`
+        rather than 0 when there is not, because a run whose memory could not
+        be priced is not a run that costs nothing.
+        """
+        from . import image_steps
+
+        shape = None
+        if app.state.image.pipe is not None:
+            try:
+                shape = image_steps.latent_shape_of(app.state.image.pipe)
+            except Exception:
+                # Best-effort: an unpriceable trace still gets its pass count,
+                # and `latent_bytes: null` says the memory half is unknown.
+                shape = None
+        try:
+            kwargs = {"latent_shape": shape}
+            if threshold > 0:
+                kwargs["threshold"] = float(threshold)
+            return image_steps.plan(int(steps), **kwargs)
+        except (Refusal, BadRequest) as err:
+            return JSONResponse({"error": str(err)}, status_code=422)
 
     @app.get("/api/weights/cost")
     def weights_cost(exhaustive: bool = False):

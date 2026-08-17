@@ -365,6 +365,13 @@
   --color-probe: var(--sem-base);
   --color-scope: var(--sem-scope);
   --color-ground: var(--sem-ground);
+  /* Text → Image REUSES the magenta hue rather than taking a ninth, on the
+     same argument the finetune diff records for teal: every remaining arc of
+     the wheel sits within a dE nobody can tell apart on a 7px dot, and a hue
+     you cannot distinguish is worse than an honest reuse. The other panel
+     wearing it — patchscope — is in the text category, so the two are never
+     on screen together under a filter. */
+  --color-image: var(--sem-scope);
   --hair: var(--line);
   --hair-soft: var(--line-soft);
   --shadow: var(--e1);
@@ -1106,6 +1113,7 @@ html[data-theme="dark"] .panel {
 .h-probe { color: var(--color-probe); } .d-probe { background: var(--color-probe); }
 .h-scope { color: var(--color-scope); } .d-scope { background: var(--color-scope); }
 .h-ground { color: var(--color-ground); } .d-ground { background: var(--color-ground); }
+.h-image { color: var(--color-image); } .d-image { background: var(--color-image); }
 
 /* ---------- VLA ---------- */
 .pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
@@ -1676,6 +1684,7 @@ input[type="range"]:focus-visible { outline: none; }
 .sk-vla    { --sk-ink: var(--color-vla); }
 .sk-agent  { --sk-ink: var(--color-agent); }
 .sk-patch  { --sk-ink: var(--color-cobalt); }
+.sk-image  { --sk-ink: var(--color-image); }
 
 .sk-axis, .sk-tick { stroke: var(--line); stroke-width: 1; }
 .sk-frame {
@@ -3142,6 +3151,7 @@ footer {
 .panel:has(.d-probe)  { --panel-accent: var(--color-probe); }
 .panel:has(.d-scope)  { --panel-accent: var(--color-scope); }
 .panel:has(.d-ground) { --panel-accent: var(--color-ground); }
+.panel:has(.d-image)  { --panel-accent: var(--color-image); }
 
 /* THE BAND. A 4px edge of the panel's own colour across its top, inside the
    radius. One declaration, and the stack of identical white cards becomes a

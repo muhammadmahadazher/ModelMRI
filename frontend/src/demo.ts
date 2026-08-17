@@ -658,6 +658,95 @@ export async function demoFetch(
     }
     return ok(block);
   }
+
+  // ---------------------------------------------------------- image models
+  //
+  // NOT-LOADED, not refused. `/api/image` describes what this process is
+  // holding, and a static page holds no pipeline — which is precisely what
+  // "nothing is loaded" means, so the honest answer is the real resting
+  // status with the reason filled in. A 501 here would paint an error over a
+  // panel that is working correctly, which is the mistake `/api/pull/progress`
+  // above already records.
+  //
+  // `capabilities: []` matters more than it looks. It is the list every
+  // control on that panel is gated on, so an empty one is what keeps a demo
+  // with no pipeline behind it from offering a capture button.
+  const noPipeline = (reason: string) => ({
+    loaded: false,
+    repo: "",
+    family: "",
+    architecture: "",
+    device: "",
+    dtype: "",
+    capabilities: [],
+    // `null` is "nothing here knows", which is a different claim from 0 —
+    // 0 would say this page is holding an unconditional model.
+    cross_attention_dim: null,
+    image_size: null,
+    components: {},
+    bytes_resident: 0,
+    load_seconds: null,
+    reason,
+    means:
+      `No image model is held in this process, so nothing here can say what ` +
+      `one attends to or when it commits. ${reason}`,
+  });
+  if (p === "/api/image") {
+    return ok(
+      noPipeline(
+        "This page is a static recording with no process behind it, so there " +
+          "is nothing here that could hold a diffusion pipeline.",
+      ),
+    );
+  }
+  if (p === "/api/image/unload") {
+    return ok(noPipeline("There was nothing to unload — this page holds no pipeline."));
+  }
+  if (p === "/api/image/available") {
+    // An empty list with the reason attached, rather than somebody else's
+    // cache. `/api/models/discovered` shipped one person's 17 repositories to
+    // every visitor once; the rule that came out of it is that this page may
+    // only offer what it can actually replay, and it can replay no pipeline.
+    return ok({
+      models: [],
+      known: 0,
+      means:
+        "This page is a static recording and cannot read a disk, so it lists " +
+        "no image models — not because none are cached, but because there is " +
+        "no machine here to ask. Installed, this names every diffusion " +
+        "pipeline already on your disk and downloads nothing to do it.",
+    });
+  }
+  if (p === "/api/image/load") {
+    return refuse(
+      501,
+      `Loading a diffusion pipeline reads several gigabytes of weights into a ` +
+        `process, and this page is a static recording with no process to read ` +
+        `them into. Installed, ModelMRI identifies the checkpoint from JSON, ` +
+        `scans it for anything that executes on load, and prices it against ` +
+        `your card — three refusals that cost nothing — before a byte moves.`,
+    );
+  }
+  if (p === "/api/image/attention" || p === "/api/image/knockout") {
+    return refuse(
+      409,
+      "Both of these run the real pipeline: the map captures cross-attention " +
+        "where it is computed during a live denoising run, and the knockout " +
+        "regenerates the image once per word at the same seed. There is no " +
+        "pipeline behind this page, and a baked cross-attention map would be " +
+        "a picture of a run nobody made. `pip install modelmri` to point it " +
+        "at a pipeline of your own.",
+    );
+  }
+  if (p === "/api/image/attention/cost" || p === "/api/image/steps/cost") {
+    return refuse(
+      409,
+      "This prices a run this page cannot make, so the number would describe " +
+        "a wait nobody here is going to have — and the memory half of it is " +
+        "read off the loaded pipeline's own latent shape, which there is none " +
+        "of here.",
+    );
+  }
   return undefined;
 }
 
