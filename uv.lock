@@ -928,6 +928,7 @@ dev = [
     { name = "h5py" },
     { name = "httpx" },
     { name = "lm-format-enforcer" },
+    { name = "modelmri-policy" },
     { name = "pillow" },
     { name = "playwright" },
     { name = "pyarrow" },
@@ -965,6 +966,7 @@ dev = [
     { name = "h5py", specifier = ">=3.8" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "lm-format-enforcer", specifier = ">=0.10" },
+    { name = "modelmri-policy", editable = "packages/modelmri-policy" },
     { name = "pillow", specifier = ">=10" },
     { name = "playwright", specifier = ">=1.48" },
     { name = "pyarrow", specifier = ">=15" },
@@ -973,6 +975,19 @@ dev = [
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
 ]
+
+[[package]]
+name = "modelmri-policy"
+version = "0.1.0"
+source = { editable = "packages/modelmri-policy" }
+
+[package.metadata]
+requires-dist = [
+    { name = "lerobot", marker = "extra == 'policy'", specifier = ">=0.6,<0.7" },
+    { name = "safetensors", marker = "extra == 'policy'", specifier = ">=0.4" },
+    { name = "torch", marker = "extra == 'policy'", specifier = ">=2.2" },
+]
+provides-extras = ["policy"]
 
 [[package]]
 name = "modelmri-record"

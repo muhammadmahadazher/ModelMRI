@@ -35,7 +35,9 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .adapter import ShapeMoved
 from .contract import CONTRACT, HOST, READY_PREFIX, ContractError, check
+from .inputs import InputError
 
 # The biggest request body accepted. Frames arrive as base64 PNG; a handful of
 # camera views is well under this, and anything past it is not a frame.
@@ -54,6 +56,7 @@ class Policy:
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.model = None
+        self.loaded = None
         self.repo = ""
         self.revision = ""
         self.device = ""
@@ -65,12 +68,32 @@ class Policy:
         return self.model is not None
 
     def describe(self) -> dict:
+        # Everything the checkpoint said about itself, when one is loaded --
+        # cameras, state width, action width, whether it samples. A caller
+        # cannot assemble a valid request without those, and asking it to
+        # guess is asking it to send something the policy will silently
+        # reinterpret.
+        if self.loaded is not None:
+            return self.loaded.describe()
+        # With nothing loaded there is still an ENVIRONMENT to report, and
+        # "this torch will run the policy on the processor" is worth knowing
+        # before waiting for a two-gigabyte checkpoint to load rather than
+        # after. Both empty when the import itself fails, which is its own
+        # visible answer.
+        try:
+            from .adapter import versions
+
+            lerobot_version, torch_version = versions()
+        except Exception:
+            lerobot_version, torch_version = "", ""
         return {
             "policy_repo": self.repo,
             "revision": self.revision,
             "device": self.device,
             "dtype": self.dtype,
             "normalisation": dict(self.normalisation),
+            "lerobot_version": lerobot_version,
+            "torch_version": torch_version,
         }
 
     def load(self, repo: str, *, device: str = "") -> dict:
@@ -79,72 +102,78 @@ class Policy:
         A module-scope import would mean the process cannot start at all when
         the venv is half-built, and the parent would see a dead child with a
         traceback about an import rather than a sentence about an install.
+
+        Everything lerobot-shaped is behind `adapter`, so what this method
+        knows is "load, then describe" and what changes when lerobot moves is
+        one file.
         """
-        try:
-            from lerobot.common.policies.factory import make_policy  # type: ignore
-        except Exception as err:  # pragma: no cover - depends on the venv
+        if not repo:
             raise RuntimeError(
-                f"this sidecar's environment cannot import lerobot "
-                f"({type(err).__name__}: {err}). Rebuild it with "
-                f"`modelmri policy install --force`."
+                "no policy was named, and there is no default worth guessing: "
+                "a checkpoint is what decides which cameras, which state width "
+                "and which action space every later answer is about."
+            )
+        try:
+            from . import adapter
+        except ImportError as err:  # pragma: no cover - depends on the venv
+            raise RuntimeError(
+                f"this sidecar's environment is incomplete "
+                f"({type(err).__name__}). Rebuild it with `modelmri policy "
+                f"install --force`."
             ) from None
 
-        import torch  # type: ignore
-
-        want = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        model = make_policy(repo)
-        model.eval()
-        model.to(want)
-
-        self.model = model
-        self.repo = repo
-        self.device = str(want)
-        self.dtype = str(next(model.parameters()).dtype).removeprefix("torch.")
-        self.revision = _revision_of(repo)
-        # Read off the policy rather than assumed. A policy that does not
+        loaded = adapter.load(repo, device=device)
+        self.loaded = loaded
+        self.model = loaded.policy
+        self.repo = loaded.repo
+        self.device = loaded.device
+        self.dtype = loaded.dtype
+        self.revision = loaded.revision
+        # Read off the checkpoint rather than assumed. A policy that does not
         # publish its normalisation gets an EMPTY dict and the caller refuses
         # the overlay -- which is the right answer, and better than a default
         # that silently claims identity scaling.
-        self.normalisation = _normalisation_of(model)
+        self.normalisation = loaded.normalisation
         return self.describe()
 
 
-def _revision_of(repo: str) -> str:
-    """The exact snapshot this policy came from, or "" when unknowable.
+def _act(policy: Policy, body: dict) -> dict:
+    """Validate the request against THIS policy, then run one forward pass.
 
-    Empty rather than "unknown" or "main": a caller comparing two runs needs
-    to tell "these are the same weights" from "nobody recorded which weights",
-    and a placeholder string collapses those into one.
+    Validation first, and against the loaded checkpoint rather than against a
+    schema. A schema can say "state is a list of numbers"; only the checkpoint
+    knows that this policy's state is six wide and that a seven-wide vector
+    would shift every joint by one and return a plausible chunk for a robot
+    that does not exist.
+
+    The FORWARD PASS is under the lock, not the whole call.
+    `ThreadingHTTPServer` runs requests concurrently and two passes
+    interleaving through one torch module is how an activation from one
+    request ends up answering another — but decoding PNGs does not touch the
+    model, and holding the lock through it would serialise work that has no
+    reason to be serial.
+
+    The `loaded` reference is captured once, before the lock. That is what
+    makes the split safe: a concurrent `/load` builds a NEW `Loaded` and
+    rebinds the attribute, so this request keeps validating and acting against
+    one coherent checkpoint rather than half of each.
     """
-    try:
-        from huggingface_hub import HfApi  # type: ignore
+    from . import adapter, inputs
 
-        return str(HfApi().model_info(repo).sha or "")
-    except Exception:
-        return ""
+    loaded = policy.loaded
+    frames = inputs.read_frames(body, expected=list(loaded.cameras))
+    state = inputs.read_state(body, width=loaded.state_width)
+    instruction = inputs.read_instruction(body)
+    seed = inputs.read_seed(body)
 
-
-def _normalisation_of(model: object) -> dict:
-    """The action-space statistics the policy normalises against.
-
-    Empty when the policy does not publish them, and the caller must treat
-    empty as "do not overlay", never as "identity". See ROADMAP #50.
-    """
-    stats = getattr(model, "normalize_targets", None) or getattr(
-        model, "output_normalization", None
-    )
-    if stats is None:
-        return {}
-    out: dict = {}
-    for key in ("mean", "std", "min", "max"):
-        value = getattr(stats, key, None)
-        if value is None:
-            continue
-        try:
-            out[key] = [float(x) for x in value.flatten().tolist()]
-        except Exception:
-            continue
-    return out
+    with policy.lock:
+        return adapter.act(
+            loaded,
+            frames=frames,
+            state=state,
+            instruction=instruction,
+            seed=seed,
+        )
 
 
 def make_handler(policy: Policy):
@@ -232,7 +261,7 @@ def make_handler(policy: Policy):
                 self._send(200, {"ready": True, **described})
                 return
 
-            if self.path in ("/act", "/hidden"):
+            if self.path == "/act":
                 if not policy.ready:
                     self._send(
                         409,
@@ -245,13 +274,50 @@ def make_handler(policy: Policy):
                         },
                     )
                     return
+                try:
+                    answer = _act(policy, body)
+                except (InputError, ShapeMoved) as err:
+                    # A refusal, and the sentence is the whole point of it.
+                    # 409 rather than 400: the request is well-formed JSON, it
+                    # is the CONTENT that does not match what this policy
+                    # consumes, and a caller retrying the same bytes will get
+                    # the same answer.
+                    self._send(409, {"error": str(err), **policy.describe()})
+                    return
+                except Exception as err:  # pragma: no cover - depends on lerobot
+                    self._send(
+                        500,
+                        {
+                            "error": (
+                                f"the forward pass failed inside the policy "
+                                f"({type(err).__name__}). This is the policy's "
+                                f"own error, not a refusal from this sidecar."
+                            )
+                        },
+                    )
+                    return
+                self._send(200, answer)
+                return
+
+            if self.path == "/hidden":
+                if not policy.ready:
+                    self._send(
+                        409,
+                        {
+                            "error": (
+                                "no policy is loaded in this sidecar, so there "
+                                "are no activations to read. POST /load first."
+                            )
+                        },
+                    )
+                    return
                 self._send(
                     501,
                     {
                         "error": (
-                            f"{self.path} is not implemented in this build. The "
-                            f"contract and the process boundary are in place; "
-                            f"the forward pass is the next piece."
+                            "/hidden is not implemented in this build. /act "
+                            "runs the real forward pass; capturing activations "
+                            "out of it is the next piece."
                         ),
                         **policy.describe(),
                     },

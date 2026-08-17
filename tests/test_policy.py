@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -114,10 +115,32 @@ def test_the_client_declares_its_own_version_rather_than_importing_one():
     sidecar's constant — and that is the point. Two independent declarations
     compared on every exchange is what makes drift visible; one shared import
     would move both halves together and there would be nothing to check."""
-    src = __import__("pathlib").Path(policy.__file__).read_text("utf-8")
+    src = pathlib.Path(policy.__file__).read_text("utf-8")
     assert "CONTRACT = " in src
-    assert "from modelmri_policy" not in src, (
-        "the client imported the sidecar's package, which defeats the handshake"
+
+    # The whole package, not just this module. `modelmri-policy` IS installed
+    # in the dev environment — its input rules are tested here rather than
+    # behind an `importorskip` that would go dark — so "it does not import
+    # because it cannot" stopped being true and this became a real check
+    # rather than a restatement of the venv layout.
+    #
+    # IMPORTS, not mentions. The module docstrings name
+    # `modelmri_policy.contract` precisely to explain why the version is
+    # declared twice, and a check that banned the words would ban the
+    # explanation of itself.
+    root = pathlib.Path(policy.__file__).parent
+    offenders = [
+        f"{path.relative_to(root)}:{n}"
+        for path in sorted(root.rglob("*.py"))
+        for n, line in enumerate(path.read_text("utf-8").splitlines(), 1)
+        if re.match(r"\s*(?:from|import)\s+modelmri_policy\b", line)
+        or 'import_module("modelmri_policy' in line
+    ]
+    assert not offenders, (
+        f"these import or name the sidecar's package: {offenders}. Two "
+        f"independent declarations of the contract version, compared on every "
+        f"exchange, is what makes drift visible — a shared import would move "
+        f"both halves together and there would be nothing left to check."
     )
 
 
@@ -434,3 +457,60 @@ def test_the_child_runner_returns_output_as_well_as_a_code():
     )
     assert code == 0
     assert "hello from the child" in tail
+
+
+# ------------------------------------- which Python can hold the policy at all
+
+
+def test_the_venv_interpreter_is_asked_its_version_not_read_off_its_name():
+    """`python3.12` on PATH is a name somebody chose, and a symlink pointing
+    somewhere else is exactly how you end up with a venv one minor too old and
+    a pip error about `requires-python` that reads as a broken install."""
+    got = policy._version_of(pathlib.Path(sys.executable))
+    assert got == sys.version_info[:2]
+
+
+def test_something_that_is_not_an_interpreter_answers_none_rather_than_raising():
+    """`None` and not an exception: "this candidate cannot answer" is a step in
+    a search, not a failure of the search."""
+    assert policy._version_of(pathlib.Path("definitely-not-a-python-xyz")) is None
+
+
+def test_this_interpreter_is_preferred_when_it_is_new_enough():
+    """Borrowing a different Python builds a second CUDA wheel set against a
+    different ABI. It is a fallback, never a preference."""
+    if sys.version_info < policy.POLICY_PYTHON_MIN:
+        pytest.skip("this interpreter is below lerobot's floor, so the fallback runs")
+    assert policy.interpreter_for_venv() == pathlib.Path(sys.executable)
+
+
+def test_too_old_with_nothing_newer_refuses_naming_lerobots_floor(monkeypatch):
+    """lerobot declares `requires-python >=3.12`; ModelMRI supports 3.10. On
+    two of the four Pythons this project is tested against, the sidecar's venv
+    cannot be built from `sys.executable` at all — and the refusal has to say
+    that ModelMRI itself does not need to move, which is the entire point of
+    the two being separate."""
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    with pytest.raises(policy.SidecarError) as caught:
+        policy.interpreter_for_venv()
+    said = str(caught.value)
+    assert "3.12 or newer" in said
+    assert "lerobot's own floor" in said
+    assert "ModelMRI itself can stay where it is" in said
+
+
+def test_a_newer_interpreter_on_path_is_used_when_this_one_is_too_old(monkeypatch):
+    """The fallback has to actually work, not just refuse politely. This run's
+    own interpreter stands in for "the newer one found on PATH" — it is a real
+    Python of a real version, which is what the search is looking for."""
+    if sys.version_info < policy.POLICY_PYTHON_MIN:
+        pytest.skip("needs an interpreter at or above the floor to stand in")
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: sys.executable if name.startswith("python3.") else None,
+    )
+    assert policy.interpreter_for_venv() == pathlib.Path(sys.executable)

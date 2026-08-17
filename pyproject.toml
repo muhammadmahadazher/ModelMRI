@@ -155,6 +155,18 @@ dev = [
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".
     "tomli>=2; python_version < '3.11'",
+    # The sidecar's BASE package — stdlib-only, no lerobot. Its input rules
+    # decide whether a frame reaching a policy is the frame the policy was
+    # trained on, which is a question worth testing on every runner rather
+    # than behind an `importorskip` that would go dark exactly the way three
+    # other suites already did.
+    #
+    # This does NOT weaken the venv separation. What cannot share an
+    # environment with ModelMRI is lerobot, and lerobot lives in the `policy`
+    # EXTRA, which nothing here installs. A test asserts that no module under
+    # `modelmri/` ever imports this package, because the client declaring its
+    # own contract version is the whole handshake.
+    "modelmri-policy",
 ]
 
 # ------------------------------------------------------------------ the suite
@@ -363,3 +375,7 @@ torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32'" }]
 # Develop against the copy in this repo, not the published one, so a recorder
 # change is testable here before it is released.
 modelmri-record = { path = "packages/modelmri-record", editable = true }
+# Same reason, and it is not published yet either. Dev-only: nothing in
+# `[project.dependencies]` names it, so `pip install modelmri` does not pull
+# it and the two environments stay separate for users.
+modelmri-policy = { path = "packages/modelmri-policy", editable = true }

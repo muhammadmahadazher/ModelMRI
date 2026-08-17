@@ -31,8 +31,26 @@ dependencies = []
 # Pinned, not floated. A policy served from a different lerobot than the one
 # this contract was written against is the failure mode the version handshake
 # exists to catch -- but catching it at runtime is worse than not causing it.
+#
+# The minor is the one this was actually built and measured against. NOTE that
+# lerobot declares `requires-python >=3.12` while ModelMRI supports 3.10 --
+# which is why `modelmri policy install` picks the interpreter for this venv
+# rather than reusing ModelMRI's, and refuses by name when the machine has
+# nothing new enough.
 policy = [
-  "lerobot>=0.4,<0.5",
+  # `lerobot` ALONE is not enough, and finding that out is what this line is.
+  # A bare install resolves, the sidecar starts, the contract handshake passes
+  # -- and then `SmolVLAPolicy.__init__` calls `require_package("transformers",
+  # extra="smolvla")` and every policy load fails. An install that succeeds and
+  # cannot do the job is worse than one that refuses, because the refusal
+  # arrives at the point where somebody is looking at a panel instead of at a
+  # terminal.
+  #
+  # Each policy FAMILY has its own extra in lerobot. These are the ones this
+  # adapter is written against; a family outside them will refuse at load with
+  # lerobot's own message naming the extra, which is the correct place for
+  # that to happen.
+  "lerobot[smolvla,pi,diffusion]>=0.6,<0.7",
   "torch>=2.2",
   "safetensors>=0.4",
 ]

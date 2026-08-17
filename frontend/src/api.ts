@@ -976,10 +976,33 @@ export interface PolicyStatus {
   /** Empty means the policy did not publish its action statistics — which
    *  means an overlay against a dataset's recorded actions must be refused,
    *  never drawn on an assumed identity scale. */
-  normalisation: Record<string, number[]>;
+  normalisation: Record<string, Record<string, number[]>>;
   port: number;
   reason: string;
   means: string;
+  /** Which policy family the checkpoint declared: smolvla, pi0, act, … */
+  family: string;
+  /** The camera keys this policy consumes. A request missing one is refused
+   *  rather than blank-filled — a VLA given a subset of its views answers a
+   *  different question in the same shape. */
+  cameras: string[];
+  /** `null` means the policy consumes no state, which is NOT a width of 0. */
+  state_width: number | null;
+  action_width: number | null;
+  chunk_size: number | null;
+  /** Whether the action head samples. `false` means #50's instruction-swap
+   *  test has no reference to measure against — its denominator is the
+   *  policy's own sampling spread — so that test refuses rather than
+   *  reporting a spread of zero. */
+  samples: boolean;
+  /** The versions in the OTHER environment. The whole point of the separation
+   *  is that these differ from this server's. */
+  lerobot_version: string;
+  torch_version: string;
+  /** `null` when nothing has reported a torch build yet — distinct from
+   *  `false`, which means it really is a CPU build and the policy will run
+   *  forty times slower than the model in this process. */
+  accelerated: boolean | null;
   installed: boolean;
   venv: string;
   contract_here: number;

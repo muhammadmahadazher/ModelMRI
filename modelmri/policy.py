@@ -107,6 +107,26 @@ class PolicyStatus:
     # Present when `running` is False: the sentence explaining why.
     reason: str = ""
 
+    # --- what the loaded checkpoint says it consumes ----------------------
+    # Carried because a caller cannot assemble a valid request without them,
+    # and the alternative to stating them is letting the caller guess. A VLA
+    # given the wrong camera set or the wrong state width does not fail: it
+    # answers a different question in the same shape.
+    family: str = ""
+    cameras: list = field(default_factory=list)
+    state_width: int | None = None
+    action_width: int | None = None
+    chunk_size: int | None = None
+    # Whether the action head samples. False means #50's instruction-swap test
+    # has no reference to measure against -- its denominator is the policy's
+    # own sampling spread -- and that is a refusal rather than a result of 0.
+    samples: bool = False
+    # The two versions in the OTHER environment. The whole point of the
+    # separation is that these differ from this process's; printing them is
+    # what makes the difference visible instead of merely true.
+    lerobot_version: str = ""
+    torch_version: str = ""
+
     def to_dict(self) -> dict:
         return {
             "running": self.running,
@@ -118,8 +138,29 @@ class PolicyStatus:
             "normalisation": dict(self.normalisation),
             "port": self.port,
             "reason": self.reason,
+            "family": self.family,
+            "cameras": list(self.cameras),
+            "state_width": self.state_width,
+            "action_width": self.action_width,
+            "chunk_size": self.chunk_size,
+            "samples": self.samples,
+            "lerobot_version": self.lerobot_version,
+            "torch_version": self.torch_version,
+            "accelerated": self.accelerated(),
             "means": self.means(),
         }
+
+    def accelerated(self) -> bool | None:
+        """Is the sidecar's torch a GPU build? `None` when nothing has said.
+
+        A tri-state on purpose. "running on the processor" and "nobody has
+        reported a torch build" lead to different actions — reinstall versus
+        start the sidecar — and a bare False would tell somebody to fix a
+        machine that is fine.
+        """
+        if not self.torch_version:
+            return None
+        return "+cpu" not in self.torch_version
 
     def means(self) -> str:
         if not self.running:
@@ -293,6 +334,32 @@ def requirement() -> str:
     return f"{local}[policy]" if local is not None else "modelmri-policy[policy]"
 
 
+# The wheel index that carries CUDA builds, matched to the one ModelMRI's own
+# pyproject pins so both processes end up on the same CUDA minor. Two torches
+# built against different CUDA runtimes in one machine's memory is a class of
+# problem nobody wants to debug from a robot panel.
+CUDA_WHEEL_INDEX = "https://download.pytorch.org/whl/cu128"
+
+
+def cuda_index() -> str:
+    """The CUDA wheel index, or "" when this machine would not use it.
+
+    Asked of the hardware rather than assumed from the platform. A Windows
+    machine with no NVIDIA card would spend two and a half gigabytes on CUDA
+    kernels it can never run, and a Linux machine gets CUDA from PyPI's
+    default wheel already.
+    """
+    if sys.platform != "win32":
+        return ""
+    try:
+        from . import devices
+
+        found = devices.detect()
+    except Exception:
+        return ""
+    return CUDA_WHEEL_INDEX if getattr(found, "kind", "") == "cuda" else ""
+
+
 def port_file() -> Path:
     """Where a running sidecar records how to reach it.
 
@@ -331,6 +398,103 @@ def _drain(stream, sink: deque[str], echo) -> None:
             pass
 
 
+# The floor lerobot itself declares (`requires-python >=3.12` on every 0.6
+# release). ModelMRI supports 3.10, so on two of the four Pythons this project
+# is tested against, a venv built from `sys.executable` CANNOT hold the policy
+# stack at all -- pip would refuse it with a resolver message about a version
+# that is not the user's fault and does not name the fix.
+#
+# Stated rather than fetched: reading it from PyPI at install time would put a
+# network call in front of a check, and pip remains the authority anyway. If
+# lerobot raises its floor this becomes an over-strict pre-check whose refusal
+# is still true in direction, and pip's error still arrives underneath it.
+POLICY_PYTHON_MIN = (3, 12)
+
+
+def _version_of(exe: Path) -> tuple[int, int] | None:
+    """Ask an interpreter its version. `None` when it will not answer.
+
+    Run, not parsed from the filename. `python3.12` on PATH is a name somebody
+    chose, and a symlink pointing somewhere else is exactly the situation that
+    ends with a venv one minor too old and a confusing pip error.
+    """
+    try:
+        code, said = _run(
+            [str(exe), "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            timeout=30.0,
+        )
+    except SidecarError:
+        return None
+    if code != 0:
+        return None
+    line = said.strip().splitlines()[-1].strip() if said.strip() else ""
+    parts = line.split(".")
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None
+    return (int(parts[0]), int(parts[1]))
+
+
+def interpreter_for_venv() -> Path:
+    """A Python new enough to hold the policy stack, or a refusal saying so.
+
+    This process's own interpreter first, and any other only when that one is
+    too old. Borrowing a different Python is a real change in what gets built
+    -- a second CUDA wheel set compiled for a different ABI -- so it is a
+    fallback rather than a preference.
+    """
+    import shutil
+
+    mine = Path(sys.executable)
+    if sys.version_info >= POLICY_PYTHON_MIN:
+        return mine
+
+    want = f"{POLICY_PYTHON_MIN[0]}.{POLICY_PYTHON_MIN[1]}"
+    tried: list[str] = []
+    names = [f"python3.{minor}" for minor in range(POLICY_PYTHON_MIN[1], 20)]
+    names += [f"python{POLICY_PYTHON_MIN[0]}.{POLICY_PYTHON_MIN[1]}"]
+    for name in names:
+        found = shutil.which(name)
+        if not found:
+            continue
+        tried.append(found)
+        got = _version_of(Path(found))
+        if got is not None and got >= POLICY_PYTHON_MIN:
+            return Path(found)
+
+    if sys.platform == "win32":
+        # The py launcher is how a Windows machine usually has several. Asking
+        # it for a specific minor is the only reliable way to find one, since
+        # Windows does not put `python3.12` on PATH.
+        launcher = shutil.which("py")
+        if launcher:
+            for minor in range(POLICY_PYTHON_MIN[1], 20):
+                code, said = _run(
+                    [
+                        launcher,
+                        f"-{POLICY_PYTHON_MIN[0]}.{minor}",
+                        "-c",
+                        "import sys; print(sys.executable)",
+                    ],
+                    timeout=30.0,
+                )
+                path = said.strip().splitlines()[-1].strip() if said.strip() else ""
+                if code == 0 and path and Path(path).exists():
+                    tried.append(path)
+                    got = _version_of(Path(path))
+                    if got is not None and got >= POLICY_PYTHON_MIN:
+                        return Path(path)
+
+    looked = f" Looked at: {', '.join(tried)}." if tried else ""
+    raise SidecarError(
+        f"The action expert needs Python {want} or newer — that is lerobot's "
+        f"own floor, not this project's — and ModelMRI is running on "
+        f"{sys.version_info[0]}.{sys.version_info[1]}. Nothing newer was found "
+        f"on this machine.{looked} Install a Python {want}+ and it will be "
+        f"used for the sidecar's environment; ModelMRI itself can stay where "
+        f"it is, which is the entire point of the two being separate."
+    )
+
+
 def _run(argv: list[str], *, echo=None, cancel=None, timeout: float) -> tuple[int, str]:
     """Run a child to completion, streaming its output, killable throughout.
 
@@ -342,20 +506,30 @@ def _run(argv: list[str], *, echo=None, cancel=None, timeout: float) -> tuple[in
     import time
     from collections import deque
 
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        # Windows: its own process group, so terminating the install does not
-        # also signal the server that spawned it.
-        creationflags=(
-            subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-        ),
-    )
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            # Windows: its own process group, so terminating the install does
+            # not also signal the server that spawned it.
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            ),
+        )
+    except OSError as err:
+        # A program that will not start is a sentence naming the program, not
+        # a WinError somebody has to look up. Reachable in practice: every
+        # `exists()` check upstream is a moment before this line, and a venv
+        # being rebuilt in another terminal can win that race.
+        raise SidecarError(
+            f"Could not run `{argv[0]}` ({type(err).__name__}). It is not "
+            f"there, or it is not something this machine can execute."
+        ) from None
     tail: deque[str] = deque(maxlen=40)
     reader = threading.Thread(
         target=_drain, args=(proc.stdout, tail, echo), daemon=True
@@ -467,11 +641,21 @@ def install(
                 f"sidecar is the usual answer. Stop it and try again."
             )
 
+    # Which Python, before which package. A venv one minor too old fails at
+    # the pip step with a resolver message about `requires-python` that reads
+    # as a broken install rather than as a fact about lerobot.
+    base = interpreter_for_venv()
+    if echo is not None and base != Path(sys.executable):
+        echo(
+            f"ModelMRI runs on Python {sys.version_info[0]}.{sys.version_info[1]}, "
+            f"which lerobot does not support — building the sidecar from {base}"
+        )
+
     venv.parent.mkdir(parents=True, exist_ok=True)
     if echo is not None:
         echo(f"creating a virtual environment at {venv}")
     code, tail = _run(
-        [sys.executable, "-m", "venv", str(venv)],
+        [str(base), "-m", "venv", str(venv)],
         echo=echo,
         cancel=cancel,
         timeout=300.0,
@@ -484,23 +668,56 @@ def install(
         )
 
     exe = python_in(venv)
+    pip = [
+        str(exe),
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        # Off on purpose. pip's bar redraws with carriage returns, and every
+        # redraw becomes its own line once stdout is a pipe -- which turns a
+        # download into thousands of near-identical log lines.
+        "--progress-bar",
+        "off",
+    ]
+
+    # CUDA torch FIRST, when this machine has a CUDA card, and this is not an
+    # optimisation. PyPI's default torch wheel on Windows is CPU-only, so a
+    # plain `pip install lerobot` gives the sidecar a CPU torch while ModelMRI
+    # itself runs on the GPU -- measured on this machine as `2.11.0+cpu`, with
+    # lerobot printing "No accelerated backend detected. Using default cpu,
+    # this will be slow." One process on the card and one on the processor is
+    # a silent asymmetry: the numbers are still right, the wait is forty times
+    # longer, and nothing on the page says why.
+    #
+    # A separate call rather than `--extra-index-url` because pip picks
+    # freely between indexes and the choice would not be reproducible.
+    index = cuda_index()
+    if index:
+        if echo is not None:
+            echo(f"installing CUDA torch from {index} — this machine has a CUDA card")
+        code, tail = _run(
+            [*pip, "--index-url", index, "torch", "torchvision"],
+            echo=echo,
+            cancel=cancel,
+            timeout=INSTALL_TIMEOUT_S,
+        )
+        if code != 0:
+            # NOT fatal. A CPU sidecar is slow, not wrong, and refusing the
+            # whole install because the CUDA index was unreachable would trade
+            # a working slow thing for nothing at all. It is reported instead,
+            # and `status` keeps saying which build is there.
+            if echo is not None:
+                echo(
+                    "the CUDA index did not answer; carrying on with the "
+                    "default torch, which will run the policy on the processor"
+                )
+
     want = requirement()
     if echo is not None:
         echo(f"installing {want} — this downloads its own torch, so it is slow")
     code, tail = _run(
-        [
-            str(exe),
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            # Off on purpose. pip's bar redraws with carriage returns, and
-            # every redraw becomes its own line once stdout is a pipe -- which
-            # turns a download into thousands of near-identical log lines.
-            "--progress-bar",
-            "off",
-            want,
-        ],
+        [*pip, want],
         echo=echo,
         cancel=cancel,
         timeout=INSTALL_TIMEOUT_S,
@@ -737,6 +954,11 @@ def status(*, timeout: float = 5.0) -> PolicyStatus:
         return PolicyStatus(
             contract=CONTRACT,
             port=port,
+            # The environment's versions travel even with nothing loaded: an
+            # empty sidecar still has a torch build, and "it will run on the
+            # processor" is worth knowing BEFORE waiting for a policy to load.
+            lerobot_version=str(data.get("lerobot_version") or ""),
+            torch_version=str(data.get("torch_version") or ""),
             reason=(
                 "The sidecar is up but has no policy loaded, so there is "
                 "nothing yet that could act. Load one to ask what it would do."
@@ -751,7 +973,28 @@ def status(*, timeout: float = 5.0) -> PolicyStatus:
         dtype=str(data.get("dtype") or ""),
         normalisation=data.get("normalisation") or {},
         port=port,
+        family=str(data.get("family") or ""),
+        cameras=list(data.get("cameras") or []),
+        state_width=_whole(data.get("state_width")),
+        action_width=_whole(data.get("action_width")),
+        chunk_size=_whole(data.get("chunk_size")),
+        samples=bool(data.get("samples")),
+        lerobot_version=str(data.get("lerobot_version") or ""),
+        torch_version=str(data.get("torch_version") or ""),
     )
+
+
+def _whole(value: object) -> int | None:
+    """An int off the wire, or None. `None` is a real answer here.
+
+    "this policy consumes no state" and "the state is zero wide" are different
+    facts, and a caller building a request has to be able to tell them apart.
+    A bool is rejected because `isinstance(True, int)` is True and a width of
+    `True` would silently become 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value > 0 else None
 
 
 def start(
@@ -905,3 +1148,83 @@ def stop(*, timeout: float = 15.0) -> bool:
             proc.kill()
             proc.wait(timeout=timeout)
         return True
+
+
+# ------------------------------------------------------------ asking it to act
+
+
+def act(
+    *,
+    frames: dict,
+    state: list | None = None,
+    instruction: str = "",
+    seed: int | None = None,
+    timeout: float = REQUEST_TIMEOUT_S,
+) -> dict:
+    """What would this policy DO on this frame.
+
+    Returns the sidecar's answer with the provenance it carries: the chunk
+    itself, plus which policy, which revision, which device, which seed, and
+    the normalisation the actions are expressed in.
+
+    None of that is decoration. An action chunk without its policy is a number
+    with no owner, and one without its normalisation cannot be drawn against a
+    dataset's recorded actions -- the two are in different units and nothing
+    in the numbers says so. ROADMAP #50 names that overlay as the
+    plausible-wrong output to refuse.
+
+    `seed=None` means "do not touch the RNG", and it is NOT the same as
+    `seed=0`. Collapsing them would make every unseeded call silently
+    reproducible and hide the fact that most of these policies sample at all.
+    """
+    port = _read_port()
+    if not port:
+        raise SidecarError(
+            "No policy sidecar is running, so nothing here can say what the "
+            "robot would do — only where it looked. `modelmri policy start` "
+            "brings one up."
+        )
+    body: dict = {"frames": frames, "instruction": instruction}
+    if state is not None:
+        body["state"] = list(state)
+    # Present only when asked for, so the sidecar can tell "seed 0" from
+    # "nobody asked", which are different requests.
+    if seed is not None:
+        body["seed"] = int(seed)
+    data, _ = _post(port, "/act", body, timeout=timeout)
+    return data
+
+
+def hidden(
+    *,
+    frames: dict,
+    layers: list[int],
+    state: list | None = None,
+    instruction: str = "",
+    timeout: float = REQUEST_TIMEOUT_S,
+) -> tuple[dict, bytes]:
+    """The activations behind an action, as safetensors bytes.
+
+    Bytes rather than JSON because these are tensors: a single layer of a
+    vision tower is a few hundred thousand floats, and JSON would spend more
+    time formatting them than the forward pass took to produce them.
+
+    Returns `(headers_as_dict, raw_bytes)`. The contract rides in a header for
+    the same reason it rides in every JSON body -- a sidecar can be restarted
+    underneath a live client, and activations read across a version boundary
+    are a different policy's internals wearing this one's name.
+    """
+    port = _read_port()
+    if not port:
+        raise SidecarError(
+            "No policy sidecar is running, so there are no activations to "
+            "read. `modelmri policy start` brings one up."
+        )
+    body: dict = {
+        "frames": frames,
+        "instruction": instruction,
+        "layers": [int(n) for n in layers],
+    }
+    if state is not None:
+        body["state"] = list(state)
+    return _post(port, "/hidden", body, timeout=timeout)

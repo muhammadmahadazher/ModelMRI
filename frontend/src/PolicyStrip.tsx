@@ -86,10 +86,32 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             <>
               {policy.policy_repo || "a policy"}
               <span className="policy-sep">·</span>
+              {/* Empty is a fact, not a blank. "these are the same weights"
+                  and "nobody recorded which weights" are different claims and
+                  a placeholder would collapse them. */}
               {policy.revision ? policy.revision.slice(0, 7) : "revision not recorded"}
               <span className="policy-sep">·</span>
               {policy.device}
               {policy.dtype ? ` ${policy.dtype}` : ""}
+              {policy.cameras.length > 0 && (
+                <>
+                  <span className="policy-sep">·</span>
+                  {policy.cameras.length} camera
+                  {policy.cameras.length === 1 ? "" : "s"}
+                </>
+              )}
+              {policy.state_width !== null && (
+                <>
+                  <span className="policy-sep">·</span>
+                  state {policy.state_width}
+                </>
+              )}
+              {policy.chunk_size !== null && (
+                <>
+                  <span className="policy-sep">·</span>
+                  chunk {policy.chunk_size}
+                </>
+              )}
             </>
           ) : policy && !policy.installed ? (
             <>
@@ -131,6 +153,31 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
           This policy does not publish its action statistics, so its actions
           cannot be overlaid on a dataset's recorded ones — the two would be in
           different units with nothing to say so.
+        </div>
+      )}
+
+      {/* A CPU torch in the sidecar is not wrong, it is FORTY TIMES SLOWER
+          than the model running in this process, and nothing else on the page
+          would say why a frame takes half a minute. `null` is not `false`:
+          nothing has reported a build yet, which is a different situation and
+          gets no warning at all. */}
+      {policy?.accelerated === false && (
+        <div className="policy-verdict warn">
+          The sidecar holds a CPU build of torch ({policy.torch_version}), so
+          the policy runs on the processor while this server runs on the
+          accelerator. Answers are still correct and much slower.{" "}
+          <code>modelmri policy install --force</code> rebuilds it against this
+          machine's card.
+        </div>
+      )}
+
+      {/* Deterministic is a real property with a real consequence, and it is
+          better said here than discovered when a later panel refuses. */}
+      {action && policy && !policy.samples && policy.family && (
+        <div className="policy-verdict">
+          The {policy.family} action head is deterministic — the same frame
+          gives the same chunk every time. Anything that needs the policy's own
+          sampling spread as a reference has no reference here.
         </div>
       )}
     </div>
