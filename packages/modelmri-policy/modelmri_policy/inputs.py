@@ -59,11 +59,24 @@ def decode_frame(payload: object, *, camera: str):
         raise InputError(
             f"camera {camera!r} is not valid base64, so no image could be read from it"
         ) from None
-    # No "decoded to zero bytes" branch, and that is deliberate rather than an
-    # omission: the only input that decodes to nothing is the empty string,
-    # and the falsy check above already caught it with a better sentence. A
-    # guard that cannot fire is a guard nobody can test, which is worse than
-    # no guard because it reads as coverage.
+    # This branch IS reachable, and only on some interpreters — which is why
+    # it is here rather than removed as dead.
+    #
+    # It was removed once, on the reasoning that the only input decoding to
+    # nothing is the empty string and the falsy check above already caught it.
+    # True on Python 3.11 and later, where `b64decode("=", validate=True)`
+    # raises. On 3.10 the same call RETURNS `b""`, so `"="` reached PIL and
+    # came back as `UnidentifiedImageError` — a refusal, but one that blames
+    # the image instead of the encoding, on exactly one of the four Pythons
+    # this project supports. The 3.10 CI cell caught it.
+    #
+    # The lesson is the wider one: "this guard cannot fire" is a claim about
+    # every interpreter, and it was checked on one.
+    if not raw:
+        raise InputError(
+            f"camera {camera!r} decoded to zero bytes, so there is no image "
+            f"data in it at all"
+        )
     if len(raw) > MAX_FRAME_BYTES:
         raise InputError(
             f"camera {camera!r} decoded to {len(raw) / 1e6:,.1f} MB, past the "

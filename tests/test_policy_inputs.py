@@ -79,16 +79,26 @@ def test_a_frame_that_is_not_a_string_is_refused_by_type():
 
 
 def test_an_empty_frame_is_refused():
-    """Empty is caught before decoding, which is why `decode_frame` has no
-    "decoded to zero bytes" branch — the only input that decodes to nothing is
-    the empty string, and it never gets that far. A guard that cannot fire
-    reads as coverage while testing nothing."""
+    """Three ways to carry no image, and all three are refused by encoding
+    rather than by PIL.
+
+    The `"="` case is why `decode_frame` keeps its zero-bytes branch. On
+    Python 3.11+ `b64decode("=", validate=True)` raises; on 3.10 it RETURNS
+    `b""`. The branch was deleted once as unreachable — a claim about every
+    interpreter, checked on one — and the 3.10 CI cell found it. The assertion
+    below allows either sentence because the interpreters genuinely differ,
+    but insists both name the camera and neither reaches the image decoder."""
     with pytest.raises(inputs.InputError, match="rather than a base64 image"):
         inputs.decode_frame("", camera="top")
-    # And a single "=" is not valid base64 at all, which is a different
-    # sentence again — three inputs, three distinct refusals.
-    with pytest.raises(inputs.InputError, match="not valid base64"):
+
+    with pytest.raises(inputs.InputError) as caught:
         inputs.decode_frame("=", camera="top")
+    said = str(caught.value)
+    assert "'top'" in said
+    assert "not valid base64" in said or "zero bytes" in said
+    assert "could not be decoded as an image" not in said, (
+        "reached PIL, so the refusal blames the image rather than the encoding"
+    )
 
 
 # ---------------------------------------------------------- the camera SET
