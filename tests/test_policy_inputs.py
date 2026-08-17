@@ -249,20 +249,22 @@ def test_a_symbol_that_moved_inside_a_module_that_stayed_is_named_too():
 
 
 def test_the_shape_report_is_all_false_without_lerobot_rather_than_raising():
-    """`shape_report` exists to SAY which part moved. If it raised, the one
-    tool for diagnosing a broken sidecar would be the one thing that could not
-    run on a broken sidecar."""
+    """`shape_report` exists to SAY which part moved, so it must run on the
+    most broken sidecar there is — the one with no lerobot in it.
+
+    It did not. `versions()` imported lerobot directly, so this test skipped on
+    every runner and every developer machine: a diagnostic whose own test was
+    dark, checking a diagnostic that could not run on the failure it
+    diagnoses. Both are fixed; an absent package now reports as `""`."""
     from modelmri_policy import adapter
 
-    try:
-        report = adapter.shape_report()
-    except ImportError:
-        # `versions()` imports lerobot and torch. In an environment with
-        # neither, "cannot report" is itself the answer and is what the
-        # sidecar's own /status turns into a sentence.
-        pytest.skip("this environment has neither lerobot nor torch to report on")
+    report = adapter.shape_report()
     assert report["intact"] is False
     assert all(found is False for found in report["symbols"].values())
+    # ModelMRI's own environment deliberately has no lerobot — that is the
+    # separation working — and it does have torch.
+    assert report["lerobot"] == ""
+    assert report["torch"] != ""
 
 
 def test_a_deterministic_family_is_reported_as_deterministic():

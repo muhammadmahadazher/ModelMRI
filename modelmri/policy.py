@@ -88,6 +88,25 @@ class SidecarError(Refusal):
     """
 
 
+class SidecarGone(SidecarError):
+    """Nothing is listening on that port. The process is not there.
+
+    The ONE failure that means "the sidecar died", separated from its five
+    siblings because only this one justifies deleting the port file.
+
+    An adversarial review of this module found the cost of not separating
+    them. `status` caught the whole `SidecarError` class and reported every
+    member of it as "it has exited" — so a live sidecar speaking the wrong
+    contract, a wedged one answering 500, one answering slowly, and one
+    answering non-JSON were all reported as a crash, AND their port record was
+    deleted. The contract-drift refusal is the single thing this feature
+    exists to make visible; it was the thing most reliably destroyed. Worse,
+    with the record gone `start` then spawned a SECOND sidecar beside the live
+    one — precisely the two-processes-holding-weights failure `check_capacity`
+    exists to refuse.
+    """
+
+
 @dataclass
 class PolicyStatus:
     """What the sidecar is, or why there isn't one."""
@@ -104,6 +123,16 @@ class PolicyStatus:
     # overlay is named as the plausible-wrong output to avoid.
     normalisation: dict = field(default_factory=dict)
     port: int = 0
+    # Is a process ANSWERING on that port? Separate from `running`, which asks
+    # whether a policy is loaded, and separate from `port`, which is only what
+    # a file claimed.
+    #
+    # This field exists because `start` used to gate on `port` being non-zero.
+    # A review found what that costs: after a crash, `status` returned the
+    # dead port with `running=False`, `start` saw a truthy `port`, decided a
+    # sidecar was already up, and returned without starting one. The first
+    # `modelmri policy start` after any crash silently did nothing.
+    reachable: bool = False
     # Present when `running` is False: the sentence explaining why.
     reason: str = ""
 
@@ -137,6 +166,7 @@ class PolicyStatus:
             "dtype": self.dtype,
             "normalisation": dict(self.normalisation),
             "port": self.port,
+            "reachable": self.reachable,
             "reason": self.reason,
             "family": self.family,
             "cameras": list(self.cameras),
@@ -218,6 +248,7 @@ def check_capacity(
     already_held_bytes: int = 0,
     policy_bytes: int = 0,
     confirm: bool = False,
+    check_disk: bool = True,
 ) -> None:
     """Refuse before starting a second process that also holds weights.
 
@@ -248,9 +279,13 @@ def check_capacity(
 
     policy_need = int(policy_bytes or ASSUMED_POLICY_BYTES)
 
-    # Disk, for the venv itself.
-    volume, free = capacity.free_space(venv_dir())
-    if free and VENV_DISK_BYTES > free:
+    # Disk, for the venv itself -- and only when one is about to be BUILT.
+    # `start` passes `check_disk=False`, because refusing to launch a sidecar
+    # that is already installed, over room needed to install it, is refusing a
+    # thing that has already happened. The bytes are on the disk; that is what
+    # "installed" means.
+    volume, free = capacity.free_space(venv_dir()) if check_disk else (None, 0)
+    if check_disk and free and VENV_DISK_BYTES > free:
         raise capacity.TooBig(
             f"the policy sidecar's environment needs about "
             f"{VENV_DISK_BYTES / 1e9:,.0f} GB for its own torch, and "
@@ -344,20 +379,34 @@ CUDA_WHEEL_INDEX = "https://download.pytorch.org/whl/cu128"
 def cuda_index() -> str:
     """The CUDA wheel index, or "" when this machine would not use it.
 
-    Asked of the hardware rather than assumed from the platform. A Windows
-    machine with no NVIDIA card would spend two and a half gigabytes on CUDA
-    kernels it can never run, and a Linux machine gets CUDA from PyPI's
-    default wheel already.
+    Asked of the HARDWARE, not of ModelMRI's torch. `devices.detect()` reaches
+    "cuda" only through `torch.cuda.is_available()`, which is a fact about the
+    torch build in THIS environment — and this function is choosing the torch
+    build for a DIFFERENT one. A machine with a real NVIDIA card and a CPU
+    ModelMRI would have been given a CPU sidecar too, permanently, because the
+    thing being fixed was used as the test for whether it needed fixing.
+
+    `devices._nvidia_present()` is the right question and already exists: it
+    asks nvidia-smi, which answers about the driver rather than about a wheel.
+    Either signal is enough — a working CUDA torch here proves a card, and a
+    driver proves one torch cannot see.
+
+    Windows only. A Linux machine gets CUDA from PyPI's default wheel already,
+    so pointing at the index there would download the same thing twice.
     """
     if sys.platform != "win32":
         return ""
     try:
         from . import devices
 
-        found = devices.detect()
+        if devices._nvidia_present():
+            return CUDA_WHEEL_INDEX
+        return CUDA_WHEEL_INDEX if devices.detect().kind == "cuda" else ""
     except Exception:
+        # Measuring the machine is best-effort. Failing to measure means the
+        # default wheel, which is slow rather than wrong — and `status` keeps
+        # reporting the build that actually landed either way.
         return ""
-    return CUDA_WHEEL_INDEX if getattr(found, "kind", "") == "cuda" else ""
 
 
 def port_file() -> Path:
@@ -812,10 +861,20 @@ def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, b
             f"The policy sidecar refused {route} ({err.code}): {detail}"
         ) from None
     except urllib.error.URLError as err:
-        raise SidecarError(
+        raise SidecarGone(
             f"The policy sidecar is not answering on port {port} "
             f"({err.reason}). It may have exited; `modelmri policy start` "
             f"brings it back."
+        ) from None
+    except (TimeoutError, OSError) as err:
+        # Present here for the same reason it is in `_get`: without it a bare
+        # socket error escaped `_post` as an OSError while the identical
+        # condition arrived from `_get` as an authored refusal. One question,
+        # two answers, and only one of them reached a panel as a sentence.
+        raise SidecarError(
+            f"The policy sidecar accepted the connection on port {port} but "
+            f"did not answer {route} in time ({type(err).__name__}). A "
+            f"forward pass on a large policy can outlast this."
         ) from None
 
     if kind == "application/json":
@@ -854,7 +913,16 @@ READY_PREFIX = "MODELMRI_POLICY_PORT="
 
 def _get(port: int, route: str, *, timeout: float) -> dict:
     """A GET with the contract checked on the way back. See `_post`."""
-    req = urllib.request.Request(f"http://127.0.0.1:{port}{route}", method="GET")
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{route}",
+        # A GET has no body to put the version in, so it rides in a header.
+        # The sidecar checks it: `/status` is what the panel polls, and a
+        # client one version out being told "ready: true" by a sidecar it
+        # cannot talk to is the drift this contract exists to catch, arriving
+        # through the one route that was not looking.
+        headers={"X-ModelMRI-Contract": str(CONTRACT)},
+        method="GET",
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -864,14 +932,23 @@ def _get(port: int, route: str, *, timeout: float) -> dict:
             f"The policy sidecar refused {route} ({err.code}): {detail}"
         ) from None
     except urllib.error.URLError as err:
-        raise SidecarError(
+        # `SidecarGone`, and only here. Nothing accepted the connection, which
+        # is the one condition that actually means the process is not there.
+        raise SidecarGone(
             f"The policy sidecar is not answering on port {port} ({err.reason})."
         ) from None
     except (TimeoutError, OSError) as err:
+        # A timeout is NOT a death. Something accepted the connection and then
+        # took too long, which is a sidecar that is busy or wedged — and
+        # treating it as gone would delete the record of a process that is
+        # still holding a policy in memory.
+        #
         # The type, not the text. A socket error's message carries whatever
         # the OS put in it, and this value is published to a browser.
         raise SidecarError(
-            f"The policy sidecar did not answer on port {port} ({type(err).__name__})."
+            f"The policy sidecar accepted the connection on port {port} but "
+            f"did not answer in time ({type(err).__name__}). It is running and "
+            f"busy, or wedged."
         ) from None
     except ValueError:
         raise SidecarError(
@@ -943,27 +1020,41 @@ def status(*, timeout: float = 5.0) -> PolicyStatus:
 
     try:
         data = _get(port, "/status", timeout=timeout)
-    except SidecarError:
-        # The file said a port and nothing is there: that is a crash, not a
-        # configuration. Say so, and clear the claim so the next caller is
-        # told "not running" instead of being sent to the same dead port.
-        #
-        # The caught sentence is deliberately not repeated. It says "not
-        # answering on port N", which is the thing this line already says
-        # better, with the reason attached.
+    except SidecarGone:
+        # Nothing accepted the connection: the process really is not there.
+        # This is the ONLY branch that deletes the record, because it is the
+        # only one where the record is false.
         _forget_port()
         return PolicyStatus(
-            port=port,
             reason=(
-                f"A sidecar was recorded on port {port} but is not answering, "
-                f"so it has exited. `modelmri policy start` brings one back."
+                f"A sidecar was recorded on port {port} but nothing is "
+                f"listening there, so it has exited. `modelmri policy start` "
+                f"brings one back."
             ),
+        )
+    except SidecarError as err:
+        # Something IS there and it answered wrongly — a contract mismatch, a
+        # 500 from a wedged process, a timeout, a non-JSON body. The port
+        # record stays, because a live process holding a policy in memory is
+        # exactly what it records, and the authored sentence is carried
+        # through instead of being replaced by a guess about a crash.
+        #
+        # This is the branch an adversarial review found missing. Collapsing
+        # it into the one above destroyed the contract-drift refusal — the
+        # single failure this whole feature exists to surface — and then
+        # deleted the port record, after which `start` would spawn a second
+        # sidecar beside the live one.
+        return PolicyStatus(
+            port=port,
+            reachable=True,
+            reason=str(err),
         )
 
     if not data.get("ready"):
         return PolicyStatus(
             contract=CONTRACT,
             port=port,
+            reachable=True,
             # The environment's versions travel even with nothing loaded: an
             # empty sidecar still has a torch build, and "it will run on the
             # processor" is worth knowing BEFORE waiting for a policy to load.
@@ -976,6 +1067,7 @@ def status(*, timeout: float = 5.0) -> PolicyStatus:
         )
     return PolicyStatus(
         running=True,
+        reachable=True,
         contract=CONTRACT,
         policy_repo=str(data.get("policy_repo") or ""),
         revision=str(data.get("revision") or ""),
@@ -1007,6 +1099,34 @@ def _whole(value: object) -> int | None:
     return value if value > 0 else None
 
 
+def _kill(proc, tail: deque[str], pump=None) -> str:
+    """Stop a child and return what it said, without racing its reader.
+
+    The join matters. `tail` is a deque the pump thread is still appending to,
+    and joining an already-dead process's reader is instant — but reading the
+    deque while another thread appends to it is how a message arrives
+    half-written, which in this module is a message somebody is meant to act
+    on.
+    """
+    import subprocess
+
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            # Reaped, not merely signalled. `kill()` without a `wait()` leaves
+            # a zombie on POSIX for as long as this process lives.
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+    if pump is not None:
+        pump.join(timeout=5)
+    return "\n".join(tail).strip()
+
+
 def start(
     *,
     policy_repo: str = "",
@@ -1034,7 +1154,12 @@ def start(
 
     with _CHILD_LOCK:
         live = status()
-        if live.port:
+        # `reachable`, not `port`. A port is what a FILE said; reachable is
+        # what a process answered. Gating on the port meant the first
+        # `modelmri policy start` after any crash returned the dead port and
+        # started nothing — silently, because "attached to the running one" and
+        # "did nothing" print the same way.
+        if live.reachable:
             return live
 
         exe = require_installed()
@@ -1045,6 +1170,7 @@ def start(
             accel_name=accel_name,
             already_held_bytes=already_held_bytes,
             confirm=confirm,
+            check_disk=False,
         )
 
         if echo is not None:
@@ -1098,22 +1224,33 @@ def start(
                 # holding the caller for the full three minutes.
                 ready.set()
 
-        threading.Thread(target=_pump, daemon=True).start()
-        ready.wait(START_TIMEOUT_S)
+        pump = threading.Thread(target=_pump, daemon=True)
+        pump.start()
 
-        if port == 0:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            said = "\n".join(tail).strip()
-            raise SidecarError(
-                "The policy sidecar did not report a port, so it was "
-                "stopped. This is usually its environment failing to import "
-                "lerobot; `modelmri policy install --force` rebuilds it."
-                + (f" It said:\n{said}" if said else " It said nothing at all.")
-            )
+        # Everything from here to `_CHILD = proc` runs under a guard, because
+        # between those two lines this process owns a child that nothing else
+        # can see. An exception in the middle — a KeyboardInterrupt during the
+        # three-minute wait is the realistic one — would leave a sidecar
+        # holding a policy in memory with no handle, no port record and no way
+        # to stop it short of the task manager.
+        try:
+            ready.wait(START_TIMEOUT_S)
+
+            if port == 0:
+                said = _kill(proc, tail, pump)
+                raise SidecarError(
+                    "The policy sidecar did not report a port, so it was "
+                    "stopped. This is usually its environment failing to "
+                    "import lerobot; `modelmri policy install --force` "
+                    "rebuilds it."
+                    + (f" It said:\n{said}" if said else " It said nothing at all.")
+                )
+        except BaseException:
+            # BaseException, not Exception: KeyboardInterrupt and SystemExit
+            # are exactly the two that arrive during a long wait, and they are
+            # the two a bare `except Exception` would let orphan the child.
+            _kill(proc, tail, pump)
+            raise
 
         _CHILD = proc
         _write_port(port, proc.pid)
@@ -1154,9 +1291,15 @@ def stop(*, timeout: float = 15.0) -> bool:
 
     with _CHILD_LOCK:
         proc, _CHILD = _CHILD, None
-        _forget_port()
+        # Ownership FIRST, and the port record only if we own the child.
+        # Forgetting unconditionally meant a process that started nothing
+        # still unlinked the one machine-wide port file — erasing the record
+        # of somebody else's live sidecar, which is the same class of harm as
+        # signalling a pid you did not spawn, and the exact thing this
+        # function's docstring says it refuses to do.
         if proc is None or proc.poll() is not None:
             return False
+        _forget_port()
         proc.terminate()
         try:
             proc.wait(timeout=timeout)

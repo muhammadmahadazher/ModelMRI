@@ -978,6 +978,12 @@ export interface PolicyStatus {
    *  never drawn on an assumed identity scale. */
   normalisation: Record<string, Record<string, number[]>>;
   port: number;
+  /** Did a process ANSWER on that port? Distinct from `running`, which asks
+   *  whether a policy is loaded, and from `port`, which is only what a file
+   *  on the server's disk claimed. A sidecar that is up but drifted, wedged
+   *  or slow is `reachable: true, running: false` — and the `reason` then
+   *  carries what it actually said rather than a guess about a crash. */
+  reachable: boolean;
   reason: string;
   means: string;
   /** Which policy family the checkpoint declared: smolvla, pi0, act, … */
@@ -1011,8 +1017,53 @@ export interface PolicyStatus {
   assumed_policy_bytes: number;
 }
 
-export const getPolicy = () =>
-  fetch("/api/policy").then((r) => json<PolicyStatus>(r));
+/** On the demo and the .mri viewer there is no server, so this answers from
+ *  here rather than fetching a route that does not exist.
+ *
+ *  Not `noModelHere`: that REJECTS, and a rejection would make the strip hide
+ *  itself — taking the perception half, which the demo can honestly show,
+ *  down with it. A sidecar that is not installed is the true state of the
+ *  demo machine and of most real ones, so the honest answer is that state,
+ *  filled in with the same constants the server would have sent. */
+export const getPolicy = (): Promise<PolicyStatus> =>
+  DEMO || VIEWER
+    ? Promise.resolve({
+        running: false,
+        contract: null,
+        policy_repo: "",
+        revision: "",
+        device: "",
+        dtype: "",
+        normalisation: {},
+        port: 0,
+        reachable: false,
+        reason:
+          "This page is a recording, so there is no process here that could " +
+          "hold a policy. Install ModelMRI (`pip install modelmri`) and run " +
+          "`modelmri policy install` to ask a real one what it would do.",
+        means:
+          "No policy sidecar is running, so nothing here can say what the " +
+          "robot would DO — only where it looked.",
+        family: "",
+        cameras: [],
+        state_width: null,
+        action_width: null,
+        chunk_size: null,
+        samples: false,
+        lerobot_version: "",
+        torch_version: "",
+        accelerated: null,
+        installed: false,
+        venv: "",
+        contract_here: 1,
+        install_hint:
+          "Run `modelmri policy install` — it builds a separate virtual " +
+          "environment for the policy and its pinned lerobot, because " +
+          "installing lerobot beside ModelMRI breaks both.",
+        venv_disk_bytes: 6_000_000_000,
+        assumed_policy_bytes: 3_500_000_000,
+      })
+    : fetch("/api/policy").then((r) => json<PolicyStatus>(r));
 
 /** Load a policy's vision tower. Blank repo = the server's default.
  *

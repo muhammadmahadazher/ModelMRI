@@ -26,3 +26,18 @@ and one served across a version boundary is a different policy's answer
 wearing this one's name.
 
 MIT.
+
+## There is no lockfile here, deliberately
+
+There was one, and it was a trap. It pinned `lerobot 0.4.4` against a
+`pyproject.toml` that asks for `>=0.6,<0.7` — a resolution that contradicted
+the manifest beside it, and that nothing read: `modelmri policy install` runs
+`pip install <this directory>[policy]`, which resolves from the pyproject and
+never opens a lock.
+
+A lockfile nobody consumes still gets read by people, and this one would have
+told them the sidecar runs on a lerobot two minors old, across which the
+policy factory moved module and normalisation stopped being modules on the
+policy at all. Removed rather than regenerated: the pin in `pyproject.toml` is
+the single statement of what this installs, and the contract handshake at the
+end of `modelmri policy install` is what verifies it actually landed.

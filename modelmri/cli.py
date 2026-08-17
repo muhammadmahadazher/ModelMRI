@@ -954,11 +954,31 @@ def policy_command(args) -> int:
         return 0
 
     if what == "start":
+        # The residency refusal only fires if somebody TELLS it what this
+        # machine has, and this is the only production caller. Without these
+        # three arguments `check_capacity` saw `vram_gb=None`, took its
+        # unknown-VRAM early return, and the whole "two processes cannot
+        # offload into each other's memory" rule never ran from the command
+        # line that starts the second process. A guard nobody passes evidence
+        # to is a guard that is off.
+        found = None
+        try:
+            from . import devices as _devices
+
+            found = _devices.detect()
+        except Exception:
+            # Measuring the machine is best-effort; failing to measure it must
+            # not stop a sidecar from starting. `check_capacity` already
+            # treats unknown VRAM as "do not refuse on no evidence".
+            found = None
+
         try:
             status = _policy.start(
                 policy_repo=args.repo,
                 device=args.device,
                 echo=lambda line: print(f"  {line}", flush=True),
+                vram_gb=getattr(found, "vram_gb", None) if found else None,
+                accel_name=getattr(found, "name", "") if found else "",
                 confirm=args.yes,
             )
         except Exception as err:

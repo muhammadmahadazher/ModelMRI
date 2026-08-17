@@ -32,13 +32,13 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
     };
   }, []);
 
-  // A server too old to have the route is not the same as a machine with no
-  // sidecar, and inventing "not installed" for it would be answering a
-  // question nobody asked. Show nothing rather than something wrong.
-  if (failed) return null;
-
   const perception = vla?.loaded ?? false;
   const action = policy?.running ?? false;
+  // Three states, not two. `null` is "the answer has not arrived", which is
+  // NOT "not installed" — the strip used to print "not installed" and a
+  // six-gigabyte install instruction during the round trip, on every load,
+  // for every user who does have it installed.
+  const pending = policy === null && !failed;
 
   const gb = policy ? policy.venv_disk_bytes / 1e9 : 0;
 
@@ -72,13 +72,17 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
           <span className={`policy-led${action ? " on" : ""}`} />
           <span className="policy-label">ACTION</span>
           <span className="policy-state">
-            {!policy
+            {pending
               ? "asking…"
-              : action
-                ? `contract ${policy.contract} · port ${policy.port}`
-                : policy.installed
-                  ? "installed, not running"
-                  : "not installed"}
+              : failed || !policy
+                ? "cannot tell"
+                : action
+                  ? `contract ${policy.contract} · port ${policy.port}`
+                  : policy.reachable
+                    ? "running, no policy loaded"
+                    : policy.installed
+                      ? "installed, not running"
+                      : "not installed"}
           </span>
         </div>
         <div className="policy-body">
@@ -113,6 +117,13 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
                 </>
               )}
             </>
+          ) : pending ? (
+            "asking the server whether an action expert is installed…"
+          ) : failed || !policy ? (
+            // A server too old to have the route, or one that did not answer.
+            // Saying "not installed" here would be inventing a fact about
+            // somebody's machine from a network error.
+            "this server did not answer about the action expert, so nothing here knows whether one is installed"
           ) : policy && !policy.installed ? (
             <>
               a second process with its own environment — about {gb.toFixed(0)} GB,
@@ -134,7 +145,11 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
           real, common and perfectly valid configuration that answers exactly
           one of the two questions somebody came here with. */}
       <div className="policy-verdict">
-        {action && perception
+        {pending || failed
+          ? perception
+            ? "The vision tower is loaded here. Whether anything can say what the policy would DO is still unknown."
+            : "Nothing is loaded here yet, and whether an action expert exists on this machine is still unknown."
+          : action && perception
           ? "Both halves are available: this can say where the policy looked and what it would do."
           : perception
             ? "This can say where the policy LOOKED. Nothing here can say what it would DO — that needs the action expert."
@@ -161,7 +176,7 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
           would say why a frame takes half a minute. `null` is not `false`:
           nothing has reported a build yet, which is a different situation and
           gets no warning at all. */}
-      {policy?.accelerated === false && (
+      {action && policy?.accelerated === false && (
         <div className="policy-verdict warn">
           The sidecar holds a CPU build of torch ({policy.torch_version}), so
           the policy runs on the processor while this server runs on the

@@ -48,6 +48,10 @@ class Loaded:
     # The camera keys this policy was trained with, in the order its config
     # lists them. A request missing one is refused rather than blank-filled.
     cameras: list[str] = field(default_factory=list)
+    # The frame shape each camera was trained at, when the checkpoint says.
+    # Empty for a camera that does not publish one -- and empty means "it did
+    # not say", never "any size is fine".
+    camera_shapes: dict = field(default_factory=dict)
     # The width of the proprioceptive state vector, or None when the policy
     # consumes no state. None is NOT zero: "this policy takes no state" and
     # "the state is empty" are different facts.
@@ -76,6 +80,7 @@ class Loaded:
             "lerobot_version": self.lerobot_version,
             "torch_version": self.torch_version,
             "cameras": list(self.cameras),
+            "camera_shapes": dict(self.camera_shapes),
             "state_width": self.state_width,
             "action_width": self.action_width,
             "chunk_size": self.chunk_size,
@@ -137,14 +142,32 @@ def _need(module_path: str, name: str, why: str):
 
 
 def versions() -> tuple[str, str]:
-    """What this environment actually holds, for the receipt on every answer."""
-    import lerobot
-    import torch
+    """What this environment actually holds, for the receipt on every answer.
 
-    return str(getattr(lerobot, "__version__", "unknown")), str(torch.__version__)
+    `""` for a package that is not installed, and it must never raise. This
+    used to `import lerobot` directly, which meant `shape_report()` -- the one
+    function whose whole job is to say what is wrong with a sidecar -- could
+    not run on the most broken sidecar there is, the one with no lerobot in
+    it. A diagnostic that fails on the failure it diagnoses is not one.
+
+    Empty is a real answer and reads as one: nothing displays "" as a version,
+    and `PolicyStatus.accelerated()` already returns None rather than False
+    when the torch build is unknown.
+    """
+    return _installed_version("lerobot"), _installed_version("torch")
 
 
-def _features_of(cfg) -> tuple[list[str], int | None, int | None]:
+def _installed_version(name: str) -> str:
+    import importlib
+
+    try:
+        module = importlib.import_module(name)
+    except ImportError:
+        return ""
+    return str(getattr(module, "__version__", "") or "")
+
+
+def _features_of(cfg) -> tuple[list[str], dict, int | None, int | None]:
     """Cameras, state width and action width, read off the policy's own config.
 
     Read rather than assumed. The three hardcoded SmolVLA values that
@@ -160,11 +183,22 @@ def _features_of(cfg) -> tuple[list[str], int | None, int | None]:
     inputs = getattr(cfg, "input_features", None) or {}
     outputs = getattr(cfg, "output_features", None) or {}
 
-    cameras = [
-        key
-        for key, feat in inputs.items()
-        if getattr(feat, "type", None) is types.VISUAL
-    ]
+    # Name AND shape. The shape is published right beside the name and was
+    # being dropped, which left the one thing a caller needs in order to send
+    # a correctly sized frame unavailable — while the state and action widths
+    # two lines below were read from the identical field. A resolution the
+    # checkpoint states and this discards is a resolution the caller has to
+    # guess, and a wrongly sized frame is resized silently by the preprocessor
+    # rather than refused.
+    cameras = []
+    camera_shapes: dict[str, list[int]] = {}
+    for key, feat in inputs.items():
+        if getattr(feat, "type", None) is not types.VISUAL:
+            continue
+        cameras.append(key)
+        shape = tuple(getattr(feat, "shape", ()) or ())
+        if shape:
+            camera_shapes[key] = [int(n) for n in shape]
     state_width = None
     for feat in inputs.values():
         if getattr(feat, "type", None) is types.STATE:
@@ -177,7 +211,7 @@ def _features_of(cfg) -> tuple[list[str], int | None, int | None]:
             shape = tuple(getattr(feat, "shape", ()) or ())
             action_width = int(shape[0]) if shape else None
             break
-    return cameras, state_width, action_width
+    return cameras, camera_shapes, state_width, action_width
 
 
 def _normalisation_of(postprocessor) -> dict:
@@ -270,8 +304,32 @@ def load(repo: str, *, device: str = "") -> Loaded:
             f"same name."
         )
 
-    pre, post = make_pre_post(cfg, pretrained_path=repo)
-    cameras, state_width, action_width = _features_of(cfg)
+    # The device has to be forced into the PROCESSORS too, and this is not a
+    # detail -- it is the bug that running this found.
+    #
+    # `PreTrainedConfig.from_pretrained` corrects its own `device` when the
+    # requested one is unavailable ("Device 'cuda' is not available. Switching
+    # to 'cpu'"). The processor pipelines do not go through that: they are
+    # rebuilt from a SEPARATE json saved beside the weights, which still says
+    # whatever device the checkpoint was trained on. On a CPU-only machine
+    # that raises outright:
+    #
+    #     ValueError: Failed to instantiate processor step 'device_processor'
+    #     with config: {'device': 'cuda', ...}
+    #
+    # The louder failure is the one that does not raise. On a machine that HAS
+    # cuda, asking for `cpu` would leave the policy on the processor and the
+    # preprocessor moving every tensor to the card -- one question, two
+    # answers, and whichever way it resolved would not be the device the
+    # caller asked for or the one the answer got labelled with.
+    device_override = {"device_processor": {"device": str(want)}}
+    pre, post = make_pre_post(
+        cfg,
+        pretrained_path=repo,
+        preprocessor_overrides=device_override,
+        postprocessor_overrides=device_override,
+    )
+    cameras, camera_shapes, state_width, action_width = _features_of(cfg)
 
     return Loaded(
         policy=policy,
@@ -285,6 +343,7 @@ def load(repo: str, *, device: str = "") -> Loaded:
         lerobot_version=versions()[0],
         torch_version=versions()[1],
         cameras=cameras,
+        camera_shapes=camera_shapes,
         state_width=state_width,
         action_width=action_width,
         chunk_size=int(getattr(cfg, "chunk_size", 0) or 0) or None,
@@ -318,12 +377,27 @@ def act(
 ) -> dict:
     """One forward pass: what this policy would DO on this frame.
 
-    The seed goes into an explicit `noise` tensor rather than into torch's
-    global RNG. That matters for a reason worth stating: seeding the global
-    generator makes a result reproducible only if nothing else in the process
-    draws from it, and this process serves concurrent requests. An explicit
-    noise tensor is reproducible because it IS the randomness, not because
-    nobody else touched a shared one.
+    The seed is applied by seeding torch inside a `fork_rng`, and the POLICY
+    makes its own noise. An earlier version built the noise tensor here and
+    passed it in — and its shape was a guess. It is not
+    `(1, chunk_size, action_width)`: SmolVLA projects through
+    `max_action_dim`, so a six-wide action space needs THIRTY-TWO-wide noise,
+    and the guess died as
+
+        RuntimeError: mat1 and mat2 shapes cannot be multiplied (50x6 and 32x720)
+
+    Crashing is the good case. A family whose internal width happened to match
+    its declared one would have accepted the tensor and sampled from a
+    distribution nobody chose, and the chunk would have looked like every
+    other chunk. Guessing the shape of a tensor the model multiplies is
+    exactly the guess this project refuses, so it no longer guesses: the
+    policy knows its own noise shape and makes it.
+
+    The usual objection to seeding globally — that it is reproducible only if
+    nothing else in the process draws from the same generator — is answered by
+    the caller. `server._act` holds the policy lock across this call, so no
+    second forward pass is drawing concurrently, and `fork_rng` puts the
+    previous state back afterwards so nothing outside sees the seeding at all.
 
     A deterministic policy given a seed is told so in the response rather than
     having the seed quietly ignored — `seed_used` is None and `samples` is
@@ -334,28 +408,25 @@ def act(
 
     batch = _batch(loaded, frames=frames, state=state, instruction=instruction)
 
-    noise = None
-    seed_used = None
-    if seed is not None and loaded.samples:
-        chunk_size = loaded.chunk_size or 1
-        width = loaded.action_width or 1
-        generator = torch.Generator(device="cpu").manual_seed(int(seed))
-        # Generated on CPU and moved, deliberately. CUDA's generator produces
-        # a different stream from the CPU one for the same seed, so a chunk
-        # "at seed 7" would not be the same chunk on a machine without a GPU.
-        # A seed that means different things on different machines is not a
-        # seed.
-        noise = torch.randn(
-            (1, chunk_size, width), generator=generator, dtype=torch.float32
-        ).to(loaded.device)
-        seed_used = int(seed)
+    seed_used = int(seed) if (seed is not None and loaded.samples) else None
+
+    # Which generators `fork_rng` has to save and restore. CPU always; the
+    # specific CUDA device too when the policy is on one, because
+    # `torch.manual_seed` seeds every CUDA generator and leaving one reseeded
+    # would make the NEXT unseeded request quietly reproducible — a result
+    # that looks measured and is actually a leftover.
+    devices = []
+    if loaded.device.startswith("cuda"):
+        devices = [torch.device(loaded.device).index or 0]
 
     with torch.inference_mode():
         prepared = loaded.preprocessor(batch)
-        if noise is not None:
-            chunk = loaded.policy.predict_action_chunk(prepared, noise=noise)
-        else:
+        if seed_used is None:
             chunk = loaded.policy.predict_action_chunk(prepared)
+        else:
+            with torch.random.fork_rng(devices=devices, enabled=True):
+                torch.manual_seed(seed_used)
+                chunk = loaded.policy.predict_action_chunk(prepared)
         chunk = loaded.postprocessor(chunk)
 
     if not hasattr(chunk, "detach"):
@@ -391,7 +462,14 @@ def _batch(loaded: Loaded, *, frames: dict, state, instruction: str) -> dict:
 
     batch: dict = {}
     for name, array in frames.items():
-        tensor = torch.from_numpy(np.ascontiguousarray(array))
+        # `copy=True`, and torch says why: a PIL-derived array is read-only,
+        # and `torch.from_numpy` on one produces a tensor torch believes it
+        # may write to. It warns that writing is undefined behaviour. Nothing
+        # here writes today -- the `div_` below lands on the fresh float
+        # tensor `.to()` returns, not on this one -- but "undefined behaviour
+        # that happens to be unreached" is one refactor away from a frame
+        # being silently corrupted between decoding and the policy seeing it.
+        tensor = torch.from_numpy(np.array(array, dtype=np.uint8, copy=True))
         tensor = tensor.permute(2, 0, 1).to(torch.float32).div_(255.0)
         batch[name] = tensor.unsqueeze(0).to(loaded.device)
 

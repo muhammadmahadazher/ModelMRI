@@ -121,7 +121,13 @@ def read_frames(body: dict, *, expected: list[str] | None = None) -> dict:
 
     out = {name: decode_frame(value, camera=name) for name, value in frames.items()}
 
-    if expected:
+    # `is not None`, NOT truthiness. `[]` and `None` are different answers and
+    # collapsing them was a real hole: a policy whose config declares no visual
+    # features would have had EVERY camera check skipped, so any set of frames
+    # under any names reached the forward pass unvalidated. `None` means
+    # nobody knows what this policy takes; `[]` means it takes none, and
+    # sending it a camera is then as wrong as omitting one.
+    if expected is not None:
         missing = [name for name in expected if name not in out]
         extra = [name for name in out if name not in expected]
         if missing:
@@ -131,6 +137,13 @@ def read_frames(body: dict, *, expected: list[str] | None = None) -> dict:
                 f"{', '.join(missing)}. Substituting a blank frame would give "
                 f"a confident answer to a different question, so this refuses "
                 f"instead."
+            )
+        if not expected:
+            raise InputError(
+                f"this policy declares no camera inputs at all, and the "
+                f"request carried {', '.join(sorted(out))}. Feeding an image "
+                f"to a policy that does not consume one is not a degraded "
+                f"measurement, it is a measurement of something else."
             )
         if extra:
             raise InputError(
@@ -153,7 +166,12 @@ def read_state(body: dict, *, width: int | None = None):
 
     state = body.get("state")
     if state is None:
-        if width:
+        # `is not None`, not truthiness: `width=0` means the config published
+        # a zero-wide state, which is a strange checkpoint but a stated fact,
+        # and `width=None` means nothing was published. Treating 0 as "no
+        # requirement" would skip the check on exactly the checkpoint whose
+        # shapes are least trustworthy.
+        if width is not None:
             raise InputError(
                 f"this policy consumes a {width}-wide state vector and the "
                 f"request carried none"

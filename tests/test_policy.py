@@ -514,3 +514,155 @@ def test_a_newer_interpreter_on_path_is_used_when_this_one_is_too_old(monkeypatc
         lambda name: sys.executable if name.startswith("python3.") else None,
     )
     assert policy.interpreter_for_venv() == pathlib.Path(sys.executable)
+
+
+# ----------------------------------- what an adversarial review found missing
+#
+# Every test below reproduces a defect a review confirmed by measurement. They
+# are grouped because they share one root cause: `status()` collapsed five
+# distinct failures into "it has exited", and `start()` used a port number --
+# which is only what a FILE said -- as a liveness signal.
+
+
+def test_a_live_sidecar_on_the_wrong_contract_is_not_reported_as_a_crash(
+    monkeypatch, tmp_path
+):
+    """THE defect this whole feature exists to prevent, and it was being
+    destroyed by the status path. A sidecar answering with a different
+    contract is live, it is drifted, and that sentence is the single most
+    important one this module produces."""
+    httpd, port = _fake_sidecar(
+        _responder({"contract": policy.CONTRACT + 7, "ready": True})
+    )
+    recorded = tmp_path / "policy-port.json"
+    recorded.write_text(json.dumps({"port": port, "pid": 0, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+    try:
+        state = policy.status(timeout=5.0)
+        assert not state.running
+        assert state.reachable, "a process answered — it has not exited"
+        assert "different wire formats" in state.reason
+        assert "has exited" not in state.reason
+        assert recorded.exists(), (
+            "the port record was deleted for a sidecar that is still running, "
+            "which lets start() spawn a second one beside it"
+        )
+    finally:
+        httpd.shutdown()
+
+
+def test_a_wedged_sidecar_answering_500_keeps_its_port_record(monkeypatch, tmp_path):
+    """Needs no version bump to reach: a sidecar whose load thread died
+    answers 500 while still holding memory. Reporting that as "exited" and
+    deleting the record invites a second process onto the same card."""
+    httpd, port = _fake_sidecar(
+        _responder({"contract": policy.CONTRACT, "error": "load thread died"}, code=500)
+    )
+    recorded = tmp_path / "policy-port.json"
+    recorded.write_text(json.dumps({"port": port, "pid": 0, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+    try:
+        state = policy.status(timeout=5.0)
+        assert state.reachable
+        assert "500" in state.reason
+        assert recorded.exists()
+    finally:
+        httpd.shutdown()
+
+
+def test_only_a_refused_connection_deletes_the_port_record(monkeypatch, tmp_path):
+    """The other side of the same rule. Nothing listening IS a death, and the
+    record is then false and must go."""
+    httpd, port = _fake_sidecar(_responder({"contract": policy.CONTRACT}))
+    httpd.shutdown()
+    httpd.server_close()
+    recorded = tmp_path / "policy-port.json"
+    recorded.write_text(json.dumps({"port": port, "pid": 0, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+
+    state = policy.status(timeout=3.0)
+    assert not state.reachable
+    assert "nothing is listening" in state.reason
+    assert not recorded.exists()
+
+
+def test_start_gates_on_reachable_rather_than_on_a_number_from_a_file(
+    monkeypatch, tmp_path
+):
+    """`port` is what a file claimed; `reachable` is what a process answered.
+    Gating on the number meant the first `modelmri policy start` after any
+    crash returned the dead port and started nothing — silently, because
+    "attached to the running one" and "did nothing" print identically."""
+    dead = policy.PolicyStatus(port=51234, reason="it has exited")
+    assert not dead.reachable, (
+        "a crashed sidecar's status must not read as live on any field start() consults"
+    )
+
+    monkeypatch.setattr(policy, "status", lambda **_: dead)
+    monkeypatch.setattr(policy, "venv_dir", lambda: tmp_path / "absent")
+    # With the gate correct, start() proceeds past the attach check and hits
+    # the install refusal — proof it did not silently return the dead status.
+    with pytest.raises(policy.SidecarError, match="not installed"):
+        policy.start()
+
+
+def test_stop_does_not_erase_a_port_record_it_does_not_own(monkeypatch, tmp_path):
+    """One machine-wide port file. A process that started nothing unlinking it
+    erases the record of somebody else's live sidecar — the same class of harm
+    as signalling a pid you did not spawn, which this function's own docstring
+    says it refuses to do."""
+    recorded = tmp_path / "policy-port.json"
+    recorded.write_text(json.dumps({"port": 51234, "pid": 999, "contract": 1}))
+    monkeypatch.setattr(policy, "port_file", lambda: recorded)
+    monkeypatch.setattr(policy, "_CHILD", None)
+
+    assert policy.stop() is False
+    assert recorded.exists(), "stop() erased a record for a child it never had"
+
+
+def test_the_disk_rule_does_not_block_starting_an_installed_sidecar():
+    """Refusing to LAUNCH over the room needed to INSTALL is refusing a thing
+    that already happened. The bytes are on the disk; that is what installed
+    means."""
+    # No raise, on any machine, whatever its free space.
+    policy.check_capacity(vram_gb=None, check_disk=False)
+
+
+def test_the_residency_rule_still_fires_on_the_start_path():
+    """The disk rule being off must not take the VRAM rule with it — that rule
+    is the entire reason `start` calls this at all."""
+    from modelmri import capacity
+
+    with pytest.raises(capacity.TooBig, match="cannot offload into each other"):
+        policy.check_capacity(
+            vram_gb=8.0,
+            accel_name="RTX 4060",
+            already_held_bytes=6_000_000_000,
+            check_disk=False,
+        )
+
+
+def test_the_cli_start_path_passes_this_machine_to_the_capacity_check():
+    """A guard nobody hands evidence to is a guard that is off. `modelmri
+    policy start` is the ONLY production caller of `policy.start`, and it
+    omitted vram_gb — so `check_capacity` took its unknown-VRAM early return
+    and the residency rule never ran from the command that starts the second
+    process."""
+    import inspect
+
+    from modelmri import cli
+
+    src = inspect.getsource(cli.policy_command)
+    rest = src[src.index("_policy.start(") + len("_policy.start(") :]
+    # Balanced, not the first ")" — the echo argument is a lambda containing a
+    # call, and naive slicing stopped inside it and read an empty argument
+    # list as proof of nothing.
+    depth, end = 1, len(rest)
+    for i, ch in enumerate(rest):
+        depth += (ch == "(") - (ch == ")")
+        if depth == 0:
+            end = i
+            break
+    start_call = rest[:end]
+    assert "vram_gb=" in start_call, start_call
+    assert "accel_name=" in start_call, start_call

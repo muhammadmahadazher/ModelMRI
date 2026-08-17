@@ -179,6 +179,11 @@ def _act(policy: Policy, body: dict) -> dict:
 def make_handler(policy: Policy):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # A client that opens a connection and then stops sending would
+        # otherwise hold a handler thread for the life of the process. This is
+        # the only ceiling in the server, and it is generous: a request body
+        # is a handful of PNGs over loopback.
+        timeout = 120
 
         def log_message(self, *a):
             """Silence the default stderr access log.
@@ -214,6 +219,13 @@ def make_handler(policy: Policy):
         def _read(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0 or length > MAX_BODY:
+                # Close the connection rather than answer and keep it. The
+                # body is still sitting unread in the socket, so a keep-alive
+                # answer would leave the next request parser reading the tail
+                # of this one as a request line -- which is not a security
+                # boundary here (loopback only) but does turn one malformed
+                # request into a stream of nonsense ones.
+                self.close_connection = True
                 raise ValueError(
                     f"a body of {length} bytes is outside what this accepts"
                 )
@@ -225,7 +237,33 @@ def make_handler(policy: Policy):
                 self._send(403, {"error": "this sidecar answers loopback only"})
                 return
             if self.path == "/status":
-                self._send(200, {"ready": policy.ready, **policy.describe()})
+                # A GET carries no body, so the client's version rides in a
+                # header. Checked rather than skipped: `/status` is what the
+                # panel polls, and a client one version out learning "ready:
+                # true" from a sidecar it cannot actually talk to is the drift
+                # this contract exists to make visible, arriving through the
+                # one route that was not looking.
+                #
+                # ABSENT is allowed here and only here. `status` is also how a
+                # human with curl asks a sidecar what it is, and refusing that
+                # would make the diagnostic route need the thing it diagnoses.
+                stated = self.headers.get("X-ModelMRI-Contract")
+                if stated is not None:
+                    try:
+                        check(
+                            int(stated) if stated.strip().isdigit() else stated,
+                            side="ModelMRI client",
+                        )
+                    except ContractError as err:
+                        self._send(409, {"error": str(err)})
+                        return
+                with policy.lock:
+                    # Under the lock: `ready` and `describe()` are two reads of
+                    # state that `load` rebinds, and taking them separately let
+                    # a status arrive claiming ready with the previous
+                    # policy's description attached.
+                    answer = {"ready": policy.ready, **policy.describe()}
+                self._send(200, answer)
                 return
             self._send(404, {"error": f"no route {self.path}"})
 
