@@ -1,0 +1,439 @@
+"""Finding an image model, and the four things a row here must never claim.
+
+`image_catalog` reads a listing and a disk. Neither is a measurement, which is
+exactly what makes it dangerous: every number it produces is rendered beside a
+button that starts a multi-gigabyte download, so a wrong one is acted on rather
+than noticed.
+
+The module's docstring states four invariants, and this file is written against
+those rather than against how they are currently implemented:
+
+  0 bytes is UNKNOWN, never small      -> "0.0 GB" is the click a size column
+                                          exists to prevent
+  a pipeline tag is a TASK, not an
+  architecture                         -> a panel drawn for the wrong family is
+                                          a picture of something that does not
+                                          exist
+  cached is answered from the disk     -> a half-finished download must not
+                                          look like a model that is ready
+  a Hub that did not answer is a
+  refusal, in this project's words     -> and never the library's own text,
+                                          which carries paths from this machine
+
+Nothing here touches the network. `image_catalog` does `from . import hub`
+INSIDE each function, so the Hub is stubbed by dotted string, and the tests
+that assert a refusal arrives BEFORE a request make the stub explode rather
+than merely returning nothing.
+"""
+
+from __future__ import annotations
+
+import http.client
+import json
+import urllib.error
+
+import pytest
+from test_no_exception_leaks import CERT, WEIGHTS, leaked  # the same rule
+
+from modelmri import image_catalog, imaging
+from modelmri.errors import BadRequest, Refusal
+
+# The families `imaging.detect` can actually return, named through the module's
+# own constants so that a task table carrying a typo'd string fails rather than
+# comparing equal to another typo.
+REAL_FAMILIES = {
+    imaging.UNET_DIFFUSION,
+    imaging.DIT_DIFFUSION,
+    imaging.VIT,
+    imaging.CLIP,
+    imaging.DETECTION,
+    imaging.SEGMENTATION,
+    imaging.VLM,
+}
+
+
+# --------------------------------------------------------------- the stubs
+
+
+def _hub(monkeypatch, payload):
+    """Answer every Hub request with `payload`, without opening a socket."""
+    monkeypatch.setattr("modelmri.hub.token", lambda: None)
+    monkeypatch.setattr("modelmri.hub._api", lambda *_a, **_k: payload)
+
+
+def _hub_fails(monkeypatch, err):
+    """The Hub does not answer, in one of the shapes it really fails in."""
+
+    def _boom(*_a, **_k):
+        raise err
+
+    monkeypatch.setattr("modelmri.hub.token", lambda: None)
+    monkeypatch.setattr("modelmri.hub._api", _boom)
+
+
+def _no_request_may_happen(monkeypatch):
+    """Reaching the network at all is the failure, not the response to it."""
+
+    def _reached(*_a, **_k):
+        raise AssertionError("a request was made when nothing should have been")
+
+    monkeypatch.setattr("modelmri.hub._api", _reached)
+    monkeypatch.setattr("urllib.request.urlopen", _reached)
+
+
+def _cache(monkeypatch, *found):
+    """What `imaging.scan_cache` reports, so the disk under test is `tmp_path`."""
+    monkeypatch.setattr("modelmri.imaging.scan_cache", lambda *_a, **_k: list(found))
+
+
+def _cache_entry(tmp_path, name, *, weights_mb=0, family=imaging.UNET_DIFFUSION):
+    """A snapshot directory in the real shape: configs always, weights maybe.
+
+    `weights_mb=0` is the state that matters — a directory of configs with no
+    weight file in it, which is what an interrupted download leaves behind.
+    """
+    root = tmp_path / name.replace("/", "--")
+    (root / "unet").mkdir(parents=True, exist_ok=True)
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "StableDiffusionPipeline",
+                "unet": ["diffusers", "UNet2DConditionModel"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "unet" / "config.json").write_text(
+        json.dumps({"_class_name": "UNet2DConditionModel", "cross_attention_dim": 768}),
+        encoding="utf-8",
+    )
+    if weights_mb:
+        (root / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(
+            b"\x00" * (weights_mb * 1_000_000)
+        )
+    return imaging.ImageModel(
+        path=name,
+        directory=str(root),
+        family=family,
+        architecture="UNet2DConditionModel",
+        reason="" if family != imaging.UNKNOWN else "no class this knows",
+    )
+
+
+# A repo the Hub publishes real per-dtype counts for, and three that publish
+# nothing to go on — the GGUF and pickle case, which is most of them.
+SIZED = {
+    "id": "someone/sdxl",
+    "downloads": 900,
+    "likes": 12,
+    "lastModified": "2026-02-03T04:05:06.000Z",
+    "safetensors": {"parameters": {"F16": 1_000_000}, "total": 1_000_000},
+}
+UNSIZED = {"id": "someone/gguf-only", "downloads": 40, "lastModified": ""}
+UNSIZED_EMPTY = {"id": "someone/no-metadata", "safetensors": {}}
+UNSIZED_ZERO = {"id": "someone/zero-total", "safetensors": {"total": 0}}
+
+
+# ------------------------------------------------- refused before it is sent
+
+
+def test_a_task_nothing_here_can_open_is_refused_by_name_and_costs_no_request(
+    monkeypatch,
+):
+    """The refusal has to name the alternatives, because a caller who typed a
+    tag that does not exist has no other way to learn which ones do — and it
+    has to arrive before the request, or an unopenable task costs a round trip
+    and returns checkpoints nothing here can load."""
+    _no_request_may_happen(monkeypatch)
+
+    with pytest.raises(BadRequest) as caught:
+        image_catalog.search(task="text-to-hologram")
+    said = str(caught.value)
+
+    assert "text-to-hologram" in said
+    for tag in image_catalog.TASKS:
+        assert tag in said, f"the refusal did not offer `{tag}` as an alternative"
+
+
+def test_pricing_a_model_nobody_named_is_refused_rather_than_defaulted(monkeypatch):
+    """There is no default worth guessing, and a size quoted for a repo the
+    caller did not ask about is a number they would plan around."""
+    _no_request_may_happen(monkeypatch)
+
+    for named in ("", "   "):
+        with pytest.raises(BadRequest, match="nothing to price"):
+            image_catalog.size_of(named)
+
+
+# ------------------------------------------------- 0 is unknown, never small
+
+
+def test_a_repo_the_hub_publishes_no_size_for_reports_none_and_never_zero(monkeypatch):
+    """THE test in this file.
+
+    `hub.weight_bytes` returns 0 for a repo that publishes nothing to go on —
+    GGUF and pickle repos, which is most of them — and 0 is not a size. A row
+    carrying 0 renders as "0.0 GB" beside a download button, which reads as
+    "this one is tiny, click it" for a model whose real weight is unknown and
+    may be 1.5 TB. That is exactly the click a size column exists to prevent.
+
+    Asserted against `weight_bytes` itself so the test states the translation
+    rather than the value: 0 in, `None` out.
+    """
+    from modelmri import hub
+
+    _hub(monkeypatch, [SIZED, UNSIZED, UNSIZED_EMPTY, UNSIZED_ZERO])
+    _cache(monkeypatch)
+
+    rows = {r["id"]: r for r in image_catalog.search()}
+
+    for raw in (UNSIZED, UNSIZED_EMPTY, UNSIZED_ZERO):
+        assert hub.weight_bytes(raw) == 0, "the fixture is not an unsized repo"
+        assert rows[raw["id"]]["size_bytes"] is None, (
+            f"{raw['id']} published no size and was reported as a number"
+        )
+
+    assert hub.weight_bytes(SIZED) == 2_000_000
+    assert rows["someone/sdxl"]["size_bytes"] == 2_000_000
+    assert not any(r["size_bytes"] == 0 for r in rows.values()), (
+        "a row carrying 0 renders as 0.0 GB, which is a claim and not an unknown"
+    )
+
+
+def test_a_repo_with_no_size_metadata_says_unknown_rather_than_small(monkeypatch):
+    """The same rule at the other sink. `size_of` is what a reader asks before
+    committing to a download, so "no metadata" has to be a sentence rather than
+    a small number with no caveat."""
+    _hub(monkeypatch, dict(UNSIZED))
+    _cache(monkeypatch)
+
+    priced = image_catalog.size_of("someone/gguf-only")
+    assert priced["size_bytes"] is None
+    assert "UNKNOWN rather than small" in priced["means"]
+    assert "0.00 GB" not in priced["means"]
+
+
+# ------------------------------------------- a tag is a task, not a family
+
+
+def test_a_row_names_the_families_a_tag_allows_and_never_the_models_own(monkeypatch):
+    """`text-to-image` covers a UNet and a DiT, and their cross-attention is in
+    different places. Only the checkpoint's own config can settle which one a
+    repo is, so a listing row states what the tag is CONSISTENT with — under a
+    key whose name says so — and leaves the architecture to `imaging.detect`.
+
+    The key name is load-bearing: a reader who sees `family` believes it.
+    """
+    _hub(monkeypatch, [SIZED])
+    _cache(monkeypatch)
+
+    (row,) = image_catalog.search(task="text-to-image")
+
+    assert "families_possible" in row
+    assert "family" not in row, "a row that names a family is claiming one"
+    assert row["families_possible"] == list(
+        image_catalog.TASKS["text-to-image"]["families"]
+    )
+    for family in row["families_possible"]:
+        assert family in REAL_FAMILIES, f"`{family}` is not a family imaging returns"
+
+
+def test_every_task_offered_names_families_imaging_can_actually_return():
+    """Structural on purpose, so a task added with a typo'd family fails here
+    rather than in a picker that renders it.
+
+    `imaging.label` swallows a name it does not know — it falls through to the
+    UNKNOWN sentence rather than echoing an identifier at a reader — so a
+    misspelt family would otherwise reach the UI silently labelled "an
+    architecture this does not recognise" against a task that works fine.
+    """
+    offered = image_catalog.tasks()
+
+    assert [row["task"] for row in offered] == list(image_catalog.TASKS)
+    assert image_catalog.DEFAULT_TASK in image_catalog.TASKS
+
+    for row in offered:
+        assert row["label"] and row["means"], row["task"]
+        assert row["families"], f"{row['task']} offers no families at all"
+        for family in row["families"]:
+            assert family in REAL_FAMILIES, f"{row['task']} names `{family}`"
+            assert family != imaging.UNKNOWN
+            assert imaging.label(family) != imaging.label(imaging.UNKNOWN), (
+                f"{row['task']} names a family `imaging.label` does not know"
+            )
+
+
+# ------------------------------------------- the Hub did not answer, in words
+
+
+# The four failure shapes `hub.search` documents, each carrying text of its own
+# that must not survive into the refusal. A captive portal, a corporate proxy
+# and a flaky TLS terminator produce these; only the first is a `URLError`.
+UNREACHABLE = [
+    (urllib.error.URLError(f"getaddrinfo failed, certs at {CERT}"), "getaddrinfo"),
+    (TimeoutError(f"the read timed out loading {WEIGHTS}"), "timed out"),
+    (http.client.RemoteDisconnected(f"remote end closed, cache {WEIGHTS}"), "remote"),
+    (http.client.BadStatusLine(f"HTTP/1.1 nonsense from {CERT}"), "nonsense"),
+    (http.client.IncompleteRead(b"", 4096), "IncompleteRead"),
+]
+
+
+@pytest.mark.parametrize(
+    ("err", "its_own_words"),
+    UNREACHABLE,
+    ids=["urlerror", "stalled", "closed-mid-read", "bad-status-line", "truncated"],
+)
+def test_an_unreachable_hub_is_a_refusal_that_quotes_none_of_the_library(
+    monkeypatch, err, its_own_words
+):
+    """Two claims, and the second is the one `test_no_exception_leaks` exists
+    for: the failure has to arrive as a `Refusal` rather than a crash, and the
+    sentence has to be this project's own.
+
+    `str(URLError)` is machinery talking to itself, and library text routinely
+    carries absolute paths from the machine the server is running on — which is
+    published straight to a browser at the other end of these routes. The real
+    exception belongs in the terminal, and the refusal says where that is.
+
+    Both callers are checked, because a rule enforced at one sink and not the
+    other is a rule that half holds.
+    """
+    assert isinstance(
+        err, (urllib.error.URLError, OSError, http.client.HTTPException)
+    ), "the fixture is not a shape the Hub actually fails in"
+    _hub_fails(monkeypatch, err)
+
+    for asking in (
+        lambda: image_catalog.search(),
+        lambda: image_catalog.size_of("someone/sdxl"),
+    ):
+        with pytest.raises(Refusal) as caught:
+            asking()
+        said = str(caught.value)
+        assert not leaked(said), f"the refusal leaked {leaked(said)}"
+        assert its_own_words not in said, "the library's own text was relayed"
+        # And it still says the actionable half: where the real error went.
+        assert "terminal running `modelmri serve`" in said
+
+
+def test_a_cache_that_cannot_be_read_marks_rows_uncached_rather_than_failing(
+    monkeypatch,
+):
+    """Stated in `_cached_ids`: a cache that cannot be read is a reason to say
+    "not cached" for every row, not a reason to fail a search. The listing is
+    still the useful part, and the load will answer for itself."""
+
+    def _unreadable(*_a, **_k):
+        raise OSError("the cache directory is not readable")
+
+    _hub(monkeypatch, [SIZED, UNSIZED])
+    monkeypatch.setattr("modelmri.imaging.scan_cache", _unreadable)
+
+    rows = image_catalog.search()
+    assert [r["id"] for r in rows] == ["someone/sdxl", "someone/gguf-only"]
+    assert not any(r["cached"] for r in rows)
+
+
+# ------------------------------------------------- what is actually on a disk
+
+
+def test_a_cache_entry_holding_configs_and_no_weights_is_not_reported_as_ready(
+    tmp_path, monkeypatch
+):
+    """An interrupted download is a real state, and it is the one a browse list
+    cannot show: the configs are there, so the entry identifies perfectly and
+    looks like a model. Reporting it at 0 bytes would say it is ready and
+    weighs nothing, and the load would then fail after the wait rather than
+    before it."""
+    _cache(monkeypatch, _cache_entry(tmp_path, "someone/interrupted", weights_mb=0))
+
+    (row,) = image_catalog.local()
+    assert row["path"] == "someone/interrupted"
+    assert row["size_bytes"] is None, "0 bytes reads as a model that costs nothing"
+    assert row["complete"] is False
+    # And it is still LISTED. Dropping it would leave a directory on the disk
+    # that nothing in the UI accounts for.
+    assert row["known"] is True
+
+
+def test_a_finished_download_reports_the_bytes_that_are_actually_there(
+    tmp_path, monkeypatch
+):
+    """The other branch, so `complete` cannot quietly become "always false" and
+    still pass the test above."""
+    _cache(monkeypatch, _cache_entry(tmp_path, "someone/whole", weights_mb=4))
+
+    (row,) = image_catalog.local()
+    assert row["size_bytes"] == 4_000_000
+    assert row["complete"] is True
+
+
+def test_an_unknown_family_sorts_below_everything_that_was_identified(
+    tmp_path, monkeypatch
+):
+    """A model this cannot open is the least useful row on the page, so it goes
+    last — even when it is the biggest thing on the disk, which is the ordering
+    a size-first sort would get backwards."""
+    _cache(
+        monkeypatch,
+        _cache_entry(
+            tmp_path, "aaa/unrecognised", weights_mb=8, family=imaging.UNKNOWN
+        ),
+        _cache_entry(tmp_path, "zzz/identified", weights_mb=0),
+    )
+
+    rows = image_catalog.local()
+    assert [r["path"] for r in rows] == ["zzz/identified", "aaa/unrecognised"]
+    assert rows[-1]["known"] is False
+    assert rows[-1]["size_bytes"] == 8_000_000, (
+        "it sorted last on merit, not because it looked empty"
+    )
+
+
+def test_a_repo_already_on_this_disk_says_nothing_would_be_downloaded(monkeypatch):
+    """Whether a repo is here is a question about this machine, so it is
+    answered by looking rather than from the listing. A reader pricing
+    something they already have needs to be told the download is zero, not the
+    file size."""
+    _hub(monkeypatch, dict(SIZED))
+    _cache(monkeypatch, imaging.ImageModel(path="someone/sdxl", directory=""))
+
+    priced = image_catalog.size_of("someone/sdxl")
+    assert priced["cached"] is True
+    assert "nothing would be downloaded" in priced["means"]
+    assert "a download would transfer" not in priced["means"]
+    # The size is still reported — what changed is what it COSTS, not what it
+    # weighs, and the two are different questions.
+    assert priced["size_bytes"] == 2_000_000
+
+
+def test_a_repo_name_cannot_walk_out_of_the_hub_models_endpoint(monkeypatch):
+    """Found by the tests for this module, in this module.
+
+    `size_of` puts the caller's name into an API PATH, and the request carries
+    the reader's Hub token. `urllib.parse.quote(name, safe="/")` leaves `..`
+    intact, so `../whoami-v2` walks out of `/models/` to a different endpoint
+    entirely — with the token attached, from a route that is unauthenticated
+    on a server started with `--host 0.0.0.0`.
+
+    Refused on SHAPE before the URL is built, rather than trusted to quoting:
+    quoting decides how characters are encoded, and this is about which
+    characters are allowed at all.
+    """
+    import pytest
+
+    from modelmri import image_catalog
+    from modelmri.errors import BadRequest
+
+    asked = []
+    monkeypatch.setattr(
+        "modelmri.hub._api", lambda path, tok=None, **k: asked.append(path) or {}
+    )
+    monkeypatch.setattr("modelmri.hub.token", lambda: "a-real-token")
+
+    for hostile in ("../whoami-v2", "..%2fwhoami", "/models/x", "C:/x", "~/x", "a/b/c"):
+        with pytest.raises(BadRequest) as caught:
+            image_catalog.size_of(hostile)
+        assert "not a Hub repo id" in str(caught.value)
+
+    assert asked == [], f"a request was built for a hostile name: {asked}"

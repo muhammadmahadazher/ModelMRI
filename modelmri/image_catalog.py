@@ -315,6 +315,27 @@ def size_of(repo: str) -> dict:
     if not name:
         raise BadRequest("no model was named, so there is nothing to price.")
 
+    # The name goes into an API PATH, and the request carries the reader's Hub
+    # token. `urllib.parse.quote(name, safe="/")` leaves `..` intact, so
+    # `../whoami-v2` walks out of `/models/` to a different endpoint entirely —
+    # with the token attached, from a route that is unauthenticated on a
+    # server started with `--host 0.0.0.0`.
+    #
+    # `is_hub_id` is the same shape test `/api/image/load` uses, and it
+    # rejects `..`, a leading separator and a drive letter. Checked BEFORE the
+    # URL is built rather than trusting the quoting, because quoting decides
+    # how characters are encoded and this is about which characters are
+    # allowed at all.
+    from .behavdiff import is_hub_id
+
+    if not is_hub_id(name):
+        raise BadRequest(
+            f"`{name}` is not a Hub repo id, so there is nothing on the Hub to "
+            f"price. An id is `name` or `owner/name` — no leading separator, "
+            f"no drive letter and no `..`. A local directory has its size read "
+            f"off the disk instead, and is already listed."
+        )
+
     tok = hub.token()
     try:
         raw = hub._api(

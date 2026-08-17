@@ -298,3 +298,77 @@ def test_a_capacity_refusal_arrives_as_a_refusal_and_not_a_crash(
     assert r.status_code == 422, f"a capacity refusal came back as {r.status_code}"
     assert "will not fit" in r.json()["error"]
     assert "failed rather than refusing" not in r.text
+
+
+# ------------------------------------------------- finding one to load at all
+#
+# The catalogue routes. `image_catalog` has its own unit tests; what these
+# assert is the wiring and the status codes, because a refusal that arrives as
+# a 500 reads as "ModelMRI is broken" rather than "the Hub is down", and those
+# send a reader to two different places.
+
+
+def test_the_task_list_is_not_empty_and_its_default_is_one_of_them(client):
+    """A picker asks this instead of hardcoding a list, so an empty answer is a
+    picker with nothing in it — and a default outside the list is a picker that
+    opens on a selection it cannot make."""
+    d = client.get("/api/image/tasks").json()
+    assert d["tasks"], "the picker would render an empty dropdown"
+    tags = [t["task"] for t in d["tasks"]]
+    assert d["default"] in tags
+    for t in d["tasks"]:
+        assert t["label"] and t["means"], t["task"]
+
+
+def test_a_task_nobody_can_open_is_refused_by_name_rather_than_searched(client):
+    """422, not 500: the request is wrong, and the answer has to name the tags
+    that would work — a caller who typed one that does not exist has no other
+    way to learn which ones do. Nothing is downloaded to say so."""
+    r = client.get("/api/image/search", params={"task": "nonsense"})
+    assert r.status_code == 422
+    said = r.json()["error"]
+    for tag in client.get("/api/image/tasks").json()["tasks"]:
+        assert tag["task"] in said, f"the refusal did not offer `{tag['task']}`"
+
+
+def test_the_local_list_never_claims_bytes_for_an_unfinished_download(client):
+    """Whatever is cached on the machine running this. A cache entry holding
+    configs and no weights is an interrupted download, and reporting it at 0
+    bytes would say it is ready and costs nothing — so an incomplete row must
+    carry `null` and must not be counted into the total."""
+    d = client.get("/api/image/local").json()
+    assert d["means"]
+    for m in d["models"]:
+        if not m["complete"]:
+            assert m["size_bytes"] is None, f"{m['path']} claimed bytes it has none of"
+    assert d["bytes_on_disk"] == sum(
+        m["size_bytes"] or 0 for m in d["models"] if m["complete"]
+    )
+
+
+def test_pricing_with_no_model_named_is_a_422_rather_than_a_guess(client):
+    """The cost route exists to be asked before anything is spent, and a
+    default repo would price something the caller did not ask about."""
+    r = client.get("/api/image/size")
+    assert r.status_code == 422
+    assert "nothing to price" in r.json()["error"]
+
+
+def test_an_unreachable_hub_answers_503_rather_than_500(client, monkeypatch):
+    """503 says "the thing this depends on is down, try again"; 500 says
+    "ModelMRI broke". The Hub being unreachable is neither ModelMRI's fault nor
+    anything the reader can fix by reloading the page, and the sentence already
+    tells them their downloaded models still work — which a 500 would bury
+    under a generic failure."""
+    from modelmri.errors import Refusal
+
+    def unreachable(*_a, **_k):
+        raise Refusal(
+            "Could not reach the HuggingFace Hub. Check your connection — the "
+            "full error is in the terminal running `modelmri serve`."
+        )
+
+    monkeypatch.setattr("modelmri.image_catalog.search", unreachable)
+    r = client.get("/api/image/search")
+    assert r.status_code == 503, f"an unreachable Hub came back as {r.status_code}"
+    assert "Could not reach the HuggingFace Hub" in r.json()["error"]
