@@ -477,7 +477,15 @@ export default function CustomPanel({
                           {at !== null && <i className="l-mean" style={{ left: `${at * 100}%` }} />}
                         </span>
                         <span className="l-nums">
-                          {l.mean.toFixed(2)} ± {(l.std ?? 0).toFixed(2)}
+                          {/* `± 0.00` is not a smaller claim than a real
+                              spread — it is a LARGER one. It says this
+                              activation was measured with zero variance,
+                              which is a statement about precision nobody
+                              made. `mean === null` is already handled three
+                              lines up; the deviation beside it was still
+                              being invented. */}
+                          {l.mean.toFixed(2)}
+                          {l.std === null ? "" : ` ± ${l.std.toFixed(2)}`}
                         </span>
                       </>
                     )}
