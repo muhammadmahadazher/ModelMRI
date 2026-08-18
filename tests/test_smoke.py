@@ -1415,7 +1415,32 @@ def test_a_failed_cpu_fallback_does_not_leave_the_progress_meter_running(monkeyp
     monkeypatch.setattr(
         "transformers.AutoModelForCausalLM.from_pretrained", lambda *a, **k: Boom()
     )
-    rt.accel.kind = "cuda"  # so the CPU fallback branch is taken
+
+    # Patched at the DETECTOR, not by assigning `rt.accel.kind` after
+    # construction. `load` re-resolves the device on every call now — it has
+    # to, or one deliberate CPU load makes every later load CPU too — so a
+    # field set on the instance beforehand is overwritten before the fallback
+    # branch is ever reached.
+    #
+    # This also stops the test asking about the machine it runs on. Assigning
+    # the field passed here (a GPU box) and failed on CI (no GPU), where
+    # `detect("auto")` truthfully answered CPU and the fallback under test was
+    # therefore never entered. `prefer="cpu"` still goes to the real detector,
+    # because the fallback's own answer is part of what is being tested.
+    from modelmri import devices as devices_mod
+
+    real_detect = devices_mod.detect
+
+    def as_if_cuda(prefer: str = "auto"):
+        if prefer == "cpu":
+            return real_detect(prefer="cpu")
+        found = real_detect(prefer="cpu")
+        found.kind = "cuda"
+        found.name = "pretend CUDA card"
+        found.vram_gb = 8.0
+        return found
+
+    monkeypatch.setattr(devices_mod, "detect", as_if_cuda)
 
     with pytest.raises(RuntimeError, match="does not fit"):
         rt.load("acme/enormous")
