@@ -350,6 +350,176 @@ def from_inputs(
     return Dataset(name=name, cases=cases, description=description).validated()
 
 
+# ------------------------------------------------------------ from a recording
+
+
+# Step kinds whose `input` is a prompt somebody would want to re-run. A tool
+# call's input is arguments and a user turn's is a message; neither is the
+# thing a dataset case holds.
+PROMPT_KINDS = ("llm_call",)
+
+
+def from_traces(
+    traces,
+    *,
+    name: str,
+    only_errors: bool = False,
+    description: str = "",
+) -> tuple:
+    """A dataset built from runs that were recorded, and what was left out.
+
+    The loop this closes: a recorded failure currently leaves the tool. You
+    watch an agent go wrong, and there is no way to turn that into a case you
+    re-run after changing something. Curation needs no model at all, which is
+    why it can happen offline here.
+
+    Returns `(dataset, report)`. The report is not optional decoration —
+    nothing is dropped silently, and three things genuinely can be:
+
+      * a trace with no prompt-bearing step, which cannot become a case
+      * a trace whose prompt is identical to an earlier one, because
+        `from_inputs` hashes the input for the case id and one id cannot
+        carry two rows
+      * every non-error trace, when `only_errors` is set
+
+    ## What it will NOT do
+
+    It does not name the failure mode, and it does not write an expected
+    answer. The row is EVIDENCE — the input that produced a run somebody
+    thought was wrong. Deciding what the right answer was is a judgement, and
+    a judgement invented here would be indistinguishable from one somebody
+    made, which is the fabrication this project refuses everywhere else.
+    Every case comes back with `reference: None` and it is for a human to
+    fill in.
+
+    `traces` are already-fetched documents. This module never opens a store —
+    the same rule `trajectory.align` follows, and what lets both be tested
+    without one.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise BadRequest(
+            "a dataset needs a name. It is what an experiment records having "
+            "run against, so an unnamed one cannot be compared to anything."
+        )
+
+    inputs: list[str] = []
+    kept: list[str] = []
+    seen: dict[str, str] = {}
+    skipped: list[dict] = []
+
+    for doc in traces or []:
+        if not isinstance(doc, dict):
+            raise BadRequest(
+                f"a trace has to be a recorded document, not a {type(doc).__name__}."
+            )
+        trace_id = str(doc.get("id") or "")
+        steps = doc.get("steps") or []
+        failed = any(s.get("error") for s in steps if isinstance(s, dict))
+
+        if only_errors and not failed:
+            skipped.append(
+                {
+                    "trace_id": trace_id,
+                    "why": "no step in it recorded an error, and only failures "
+                    "were asked for",
+                }
+            )
+            continue
+
+        text = _prompt_of(steps)
+        if text is None:
+            skipped.append(
+                {
+                    "trace_id": trace_id,
+                    "why": (
+                        f"no step of a kind that carries a prompt "
+                        f"({', '.join(PROMPT_KINDS)}) — a tool call's input is "
+                        f"arguments, not a case"
+                    ),
+                }
+            )
+            continue
+
+        digest = receipts.digest(text)
+        if digest in seen:
+            # Reported with BOTH ids rather than deduplicated quietly: two
+            # runs of the same prompt is a real thing somebody may have meant,
+            # and they need to know which recording is now standing for both.
+            skipped.append(
+                {
+                    "trace_id": trace_id,
+                    "why": (
+                        f"its prompt is identical to trace {seen[digest]}, "
+                        f"which is already case {digest}. One case id cannot "
+                        f"carry two rows"
+                    ),
+                }
+            )
+            continue
+
+        seen[digest] = trace_id
+        inputs.append(text)
+        kept.append(trace_id)
+
+    if not inputs:
+        # `Dataset.validated()` refuses an empty set, and rightly — but its
+        # sentence is "there is nothing here to run", which throws away the
+        # one thing the caller needs. Nothing surviving is the MOST
+        # informative outcome of this function, and the reasons are the
+        # answer: every recording was a duplicate, or none carried a prompt,
+        # or the error filter excluded them all.
+        reasons = "; ".join(
+            f"{s['trace_id'] or 'an unnamed run'}: {s['why']}" for s in skipped
+        )
+        raise BadRequest(
+            f"none of the {len(traces or [])} recorded run(s) could become a "
+            f"case, so there is no dataset to build. "
+            + (reasons or "nothing was selected to build one from.")
+        )
+
+    dataset = from_inputs(name.strip(), inputs, description=description)
+    return dataset, {
+        "kept": kept,
+        "skipped": skipped,
+        "n_seen": len(traces or []),
+        "means": _from_traces_means(len(traces or []), kept, skipped, only_errors),
+    }
+
+
+def _prompt_of(steps) -> str | None:
+    """The first prompt-bearing step's input, or `None` if there is none.
+
+    First rather than longest or last: a run's first `llm_call` is the one the
+    rest of it followed from, and picking by any other rule would be choosing
+    which prompt the case is about by accident.
+    """
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        if step.get("kind") not in PROMPT_KINDS:
+            continue
+        text = step.get("input")
+        if isinstance(text, str) and text.strip():
+            return text
+    return None
+
+
+def _from_traces_means(
+    n_seen: int, kept: list, skipped: list, only_errors: bool
+) -> str:
+    which = "failed runs" if only_errors else "runs"
+    head = (
+        f"{len(kept)} case(s) from {n_seen} recorded {which}, "
+        f"{len(skipped)} left out and each one says why."
+    )
+    return (
+        f"{head} Every case carries the INPUT and no expected answer: the row "
+        f"is evidence that a run happened, and deciding what the right answer "
+        f"was is a judgement. One invented here would be indistinguishable "
+        f"from one you made."
+    )
+
+
 # --------------------------------------------------------------- experiments
 
 

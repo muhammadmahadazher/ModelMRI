@@ -256,3 +256,131 @@ def test_reading_experiments_from_elsewhere_on_the_network_is_refused(client, tw
     )
     assert r.status_code == 403
     assert "only possible from this machine" in r.json()["error"]
+
+
+# ---------------------------------------------------- a recording becomes a set
+
+
+def _trace(tid, prompt, *, error=False, kind="llm_call"):
+    return {"id": tid, "steps": [{"kind": kind, "input": prompt, "error": error}]}
+
+
+def test_a_recorded_run_becomes_a_case_with_no_invented_answer():
+    """The loop this closes: a failure you watched currently leaves the tool.
+
+    What it must NOT do is name the failure or write an expected output. The
+    row is EVIDENCE that a run happened; deciding what the right answer was is
+    a judgement, and one invented here would be indistinguishable from one the
+    reader made — the fabrication this project refuses everywhere else.
+    """
+    from modelmri import datasets
+
+    data, _ = datasets.from_traces(
+        [_trace("a", "what is 2+2?"), _trace("b", "capital of France?")],
+        name="from-failures",
+    )
+    assert len(data.cases) == 2
+    assert all(case.reference is None for case in data.cases), (
+        "an expected answer was invented for a case nobody answered"
+    )
+
+
+def test_a_repeated_prompt_names_both_recordings_rather_than_vanishing():
+    """`from_inputs` hashes the input for the case id, so one id cannot carry
+    two rows. Deduplicating quietly would leave somebody wondering where a
+    recording went; the skip names the trace it collided with."""
+    from modelmri import datasets
+
+    _, report = datasets.from_traces(
+        [_trace("a", "same prompt"), _trace("c", "same prompt")], name="dupes"
+    )
+    assert report["kept"] == ["a"]
+    said = report["skipped"][0]
+    assert said["trace_id"] == "c"
+    assert "identical to trace a" in said["why"]
+
+
+def test_nothing_surviving_refuses_with_the_reasons_rather_than_a_blank():
+    """The bug the tests found.
+
+    `Dataset.validated()` correctly refuses an empty set, but its sentence is
+    "there is nothing here to run" — which throws away the one thing the
+    caller needs. Nothing surviving is the MOST informative outcome here, and
+    the per-recording reasons are the answer.
+    """
+    from modelmri import datasets
+    from modelmri.errors import BadRequest
+
+    with pytest.raises(BadRequest) as caught:
+        datasets.from_traces(
+            [_trace("d", '{"q": 1}', kind="tool_call")], name="tools-only"
+        )
+    said = str(caught.value)
+    assert "d:" in said, "the refusal did not name the recording"
+    assert "carries a prompt" in said, "the refusal did not say why"
+    assert "nothing here to run" not in said
+
+
+def test_a_run_with_no_prompt_bearing_step_is_reported_not_dropped():
+    """A tool call's input is arguments, not a case. Silently skipping it
+    would make the count of cases mysteriously smaller than the count of
+    recordings somebody selected."""
+    from modelmri import datasets
+
+    data, report = datasets.from_traces(
+        [_trace("ok", "a real prompt"), _trace("d", '{"q": 1}', kind="tool_call")],
+        name="mixed",
+    )
+    assert [c.input_text for c in data.cases] == ["a real prompt"]
+    assert report["skipped"][0]["trace_id"] == "d"
+    assert "carries a prompt" in report["skipped"][0]["why"]
+
+
+def test_only_errors_says_why_it_left_the_healthy_runs_out():
+    """Filtering is not dropping. A run excluded by the filter still appears
+    in `skipped` with the filter named, so the numbers add up."""
+    from modelmri import datasets
+
+    _, report = datasets.from_traces(
+        [_trace("a", "fine"), _trace("b", "broken", error=True)],
+        name="only-bad",
+        only_errors=True,
+    )
+    assert report["kept"] == ["b"]
+    assert report["skipped"][0]["trace_id"] == "a"
+    assert "only failures were asked for" in report["skipped"][0]["why"]
+
+
+def test_the_counts_account_for_every_recording_seen():
+    """kept + skipped == n_seen, always. A recording that fell out of both
+    lists is one nobody can ask about."""
+    from modelmri import datasets
+
+    traces = [
+        _trace("a", "one"),
+        _trace("b", "two"),
+        _trace("c", "one"),
+        _trace("d", "x", kind="tool_call"),
+    ]
+    _, report = datasets.from_traces(traces, name="all")
+    assert len(report["kept"]) + len(report["skipped"]) == report["n_seen"] == 4
+
+
+def test_a_dataset_built_from_traces_needs_a_name(client):
+    """It is what an experiment records having run against, so an unnamed one
+    cannot be compared to anything later."""
+    r = client.post("/api/traces/dataset", json={"trace_ids": [], "name": ""})
+    assert r.status_code == 422
+
+
+def test_a_trace_id_that_is_not_in_the_store_is_its_own_kind_of_absence(client):
+    """The caller's mistake, not the recording's — so it is reported apart
+    from the runs that were read and left out."""
+    r = client.post(
+        "/api/traces/dataset",
+        json={"trace_ids": ["definitely-not-a-trace"], "name": "probe"},
+    )
+    # Nothing was read, so nothing could become a case — a 422 carrying the
+    # reason rather than an empty dataset that looks like a clean result.
+    assert r.status_code == 422
+    assert "could become a case" in r.json()["error"]

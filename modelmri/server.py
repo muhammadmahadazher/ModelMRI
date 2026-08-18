@@ -261,6 +261,21 @@ class ImageKnockoutRequest(ImageRunRequest):
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
+class TraceToDatasetRequest(BaseModel):
+    """Recorded runs, turned into a set of cases you can re-run.
+
+    No expected answers anywhere in this request, deliberately. The row is
+    evidence that a run happened; deciding what the right answer was is a
+    judgement, and one invented here would be indistinguishable from one the
+    reader made.
+    """
+
+    trace_ids: list[str] = Field(default_factory=list, max_length=500)
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    only_errors: bool = Field(default=False)
+
+
 class ExperimentCompareRequest(BaseModel):
     """Two runs of one dataset, case by case.
 
@@ -3924,6 +3939,53 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/scorers/run")
         return result.to_dict()
+
+    @app.post("/api/traces/dataset")
+    async def traces_to_dataset(req: TraceToDatasetRequest):
+        """Turn recorded runs into a dataset, closing the loop they leave.
+
+        You watch an agent go wrong and there is currently no way to make that
+        a case you re-run after changing something. Curation needs no model at
+        all, which is why this happens offline and in milliseconds.
+
+        Nothing is dropped silently: a run with no prompt-bearing step, a run
+        whose prompt repeats an earlier one, and every non-error run when only
+        failures were asked for each come back in `skipped` with the reason.
+        """
+        from . import datasets
+
+        store = app.state.traces
+
+        def _build():
+            docs = []
+            missing = []
+            for trace_id in req.trace_ids:
+                doc = store.get_trace(str(trace_id))
+                if doc is None:
+                    missing.append(str(trace_id))
+                else:
+                    docs.append(doc)
+            data, report = datasets.from_traces(
+                docs,
+                name=req.name,
+                only_errors=req.only_errors,
+                description=req.description,
+            )
+            # A id that is not in the store is its own kind of absence, and it
+            # is the caller's mistake rather than the recording's — so it is
+            # reported separately from the runs that were read and left out.
+            report["not_found"] = missing
+            return data, report
+
+        try:
+            data, report = await asyncio.to_thread(_build)
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/traces/dataset")
+
+        return {"dataset": data.to_dict(), **report}
 
     # --------------------------------------------------------- experiments
     #

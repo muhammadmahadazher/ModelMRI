@@ -139,6 +139,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
 | `GET` | `/api/traces/{trace_id}/bundle/preview` | Bundle Preview |
 | `GET` | `/api/traces/{trace_id}/patterns` | Trace Patterns |
+| `POST` | `/api/traces/dataset` | Traces To Dataset |
 | `POST` | `/api/traces/import` | Traces Import |
 | `POST` | `/api/traces/import/inspect` | Import Inspect |
 | `POST` | `/api/traces/{trace_id}/steps/{step_id}/adopt` | Adopt Step |
