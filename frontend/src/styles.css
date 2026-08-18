@@ -6677,3 +6677,110 @@ button:disabled,
   .device-pick { flex-basis: 100%; }
   .device-pick select { max-width: 100%; flex: 1; }
 }
+
+/* ---------- steps: where the picture stopped changing ----------
+   Two measurements of one question, kept visually distinct because they are
+   not the same answer: the bars are the LATENT moving (nothing decoded), the
+   strip is a subset of steps actually drawn. */
+.isect { margin-top: 18px; }
+.isect-head {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 0 0 8px;
+}
+.istep-controls { align-items: center; gap: 10px; flex-wrap: wrap; }
+.istep-prompt {
+  flex: 1 1 22ch;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-sm);
+  padding: 7px 10px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: var(--sf-sunk);
+  color: var(--ink);
+}
+.istep-num {
+  width: 7ch;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  padding: 4px 6px;
+  margin: 0 4px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: var(--sf-sunk);
+  color: var(--ink);
+}
+.istep-seed { display: inline-flex; align-items: center; gap: 5px; }
+
+/* The per-step bars. */
+.istep-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 84px;
+  padding: 6px 8px;
+  margin: 10px 0 6px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: var(--sf-sunk);
+}
+.istep-bar {
+  flex: 1 1 0;
+  min-width: 3px;
+  border-radius: 2px 2px 0 0;
+  background: var(--color-image);
+  transition: opacity var(--dur-micro) var(--ease-hover);
+}
+.istep-bar:hover { opacity: 0.75; }
+/* The first step has no previous latent to have moved from. Drawn as a hollow
+   full-height marker rather than a zero-height bar, because a missing bar and
+   a bar of zero read identically and only one of them is true. */
+.istep-bar.unknown {
+  height: 100%;
+  background: transparent;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 2px,
+    color-mix(in oklab, var(--color-image) 45%, transparent) 2px 4px
+  );
+}
+.istep-bar.commit {
+  background: var(--acc);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--acc) 55%, transparent);
+}
+.istep-claim {
+  border-left: 2px solid color-mix(in oklab, var(--color-image) 45%, transparent);
+  padding-left: 9px;
+  margin-top: 6px;
+}
+
+/* The filmstrip. */
+.istep-frames {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 10px 2px 4px;
+  scroll-snap-type: x proximity;
+}
+.istep-frame {
+  margin: 0;
+  flex: none;
+  scroll-snap-align: start;
+  text-align: center;
+}
+.istep-frame img {
+  display: block;
+  max-width: 168px;
+  height: auto;
+  border-radius: var(--r-well);
+  border: 1px solid var(--hair);
+  background: var(--sf-sunk);
+}
+.istep-frame figcaption { margin-top: 5px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .istep-frame img { max-width: 120px; }
+}

@@ -1618,6 +1618,128 @@ export interface ImageSearch {
  *  COSTS, read off the files rather than the Hub — including the state a
  *  browse list cannot show, which is `complete: false`.
  */
+/** One denoising step's latent movement.
+ *
+ *  `rms_change` and `cumulative` are `null` on the FIRST step: there is no
+ *  previous latent for it to have moved from, so the change is unknown rather
+ *  than zero. A bar chart that treats them as 0 draws a claim nobody made.
+ */
+export interface ImageStepRow {
+  step: number;
+  timestep: number | null;
+  rms_change: number | null;
+  cumulative: number | null;
+  rms_to_final: number | null;
+  latent_rms: number | null;
+}
+
+/** Where the denoiser committed. NOTHING here was decoded.
+ *
+ *  `vae_decodes` is 0 and is a checkable claim, not a promise: a decode would
+ *  make the answer a property of the VAE as much as of the denoiser, so the
+ *  same denoiser behind two decoders would appear to commit at two different
+ *  steps. `ImageFilmstripRun` is the one that draws pictures.
+ */
+export interface ImageStepTrace {
+  model: string;
+  prompt: string;
+  seed: number | null;
+  scheduler: string;
+  steps_requested: number;
+  steps_measured: number;
+  threshold: number;
+  /** `null` when no step met the threshold — not 0, which would name step 0. */
+  commit_step: number | null;
+  total_change: number | null;
+  vae_decodes: number;
+  latent_shape: number[] | null;
+  bytes_held: number | null;
+  steps: ImageStepRow[];
+  means: string;
+}
+
+/** One decoded step. */
+export interface ImageFrame {
+  /** The step this latent was handed over at, NOT its position in the strip.
+   *  A gap in these numbers is the whole point. */
+  step: number;
+  timestep: number | null;
+  /** A data URL, or `null` when there are no bytes. Never "" — an empty data
+   *  URL is a broken image and looks like a decode that produced black rather
+   *  than one that never happened. */
+  png: string | null;
+  png_bytes: number;
+  width: number | null;
+  height: number | null;
+  decoded_width: number | null;
+  decoded_height: number | null;
+  /** True when the emitted frame is smaller than what the decoder produced. A
+   *  picture silently shrunk is a picture of a resolution the model never
+   *  worked at. */
+  downsampled: boolean;
+  latent_rms: number | null;
+}
+
+export interface ImageFilmstripRun {
+  model: string;
+  prompt: string;
+  seed: number | null;
+  scheduler: string;
+  frames_decoded: number;
+  steps_requested: number;
+  steps_run: number;
+  decoded_steps: number[];
+  /** Listed, not implied. Eight frames from a fifty-step run is eight frames,
+   *  and a reader must not be able to mistake the strip for the run. */
+  skipped_steps: number[];
+  steps_never_reached: number[];
+  vae_decodes: number;
+  frame_pixels: number;
+  png_bytes_total: number;
+  peak_device_bytes: number | null;
+  frames: ImageFrame[];
+  means: string;
+}
+
+export interface ImageFilmstripPlan {
+  steps: number;
+  frames: number;
+  decoded_steps: number[];
+  skipped_steps: number[];
+  vae_decodes: number;
+  frame_pixels: number;
+  means: string;
+}
+
+export const imageStepsRun = (body: {
+  prompt: string;
+  steps: number;
+  seed: number | null;
+  threshold?: number;
+}) =>
+  fetch("/api/image/steps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageStepTrace>(r));
+
+export const imageFilmstrip = (body: {
+  prompt: string;
+  steps: number;
+  every: number;
+  seed: number | null;
+}) =>
+  fetch("/api/image/filmstrip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageFilmstripRun>(r));
+
+export const imageFilmstripCost = (q: { steps: number; every: number }) =>
+  fetch(`/api/image/filmstrip/cost?steps=${q.steps}&every=${q.every}`).then((r) =>
+    json<ImageFilmstripPlan>(r),
+  );
+
 export interface ImageLocalModel {
   /** The repo id, and the string `loadImage` takes. */
   path: string;

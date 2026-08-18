@@ -1,6 +1,7 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import RestingSketch from "./RestingSketch";
 import ImageModelPicker from "./ImageModelPicker";
+import ImageSteps from "./ImageSteps";
 import { useScanOnData } from "./useScanOnData";
 import {
   captureImageAttention,
@@ -810,7 +811,11 @@ export default function ImagePanel() {
           are for. Saying so is the difference between a panel that decided not
           to draw and a panel that looks broken: a half-empty card with no
           sentence in it is the second one. */}
-      {status.capabilities.length > 0 && !canCapture && !canKnock && !canAttribute && (
+      {status.capabilities.length > 0 &&
+        !canCapture &&
+        !canKnock &&
+        !canAttribute &&
+        !canTrace && (
         <div className="hint">
           What this checkpoint offers is{" "}
           <b>{status.capabilities.join(", ")}</b>, and none of the map, the
@@ -913,6 +918,20 @@ export default function ImagePanel() {
       )}
 
       {err && <div className="hint err">{err}</div>}
+
+      {/* ─── when it committed, and what it looked like getting there ───
+          Gated on `latent_trace` like every other control here. The cost of
+          this measurement was already being shown above; until now there was
+          nothing to spend it on, so the panel priced a run it could not
+          perform. */}
+      {canTrace && (
+        <div className="isect">
+          <h3 className="mid isect-head">
+            steps — where the picture stopped changing
+          </h3>
+          <ImageSteps steps={steps} />
+        </div>
+      )}
 
       {/* ─── the map: words across, steps down ────────────────────────── */}
       {run && columns.length > 0 && (
