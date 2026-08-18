@@ -71,15 +71,6 @@ class SAEEntry:
 
 REGISTRY: tuple[SAEEntry, ...] = (
     SAEEntry(
-        repo="jbloom/GPT2-Small-SAEs-Reformatted",
-        models=("gpt2", "openai-community/gpt2"),
-        d_in=768,
-        layers=tuple(range(12)),
-        point="resid_pre",
-        label="GPT-2 small · residual stream · 24,576 features",
-        note="The one this tool was built against, verified end to end.",
-    ),
-    SAEEntry(
         repo="google/gemma-scope-2b-pt-res",
         models=("google/gemma-2-2b", "google/gemma-2-2b-it"),
         d_in=2304,

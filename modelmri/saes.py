@@ -26,8 +26,10 @@ attached to and keeps the one that reconstructs, because "which convention"
 has no universal answer — Gemma Scope SAEs are trained on raw HuggingFace
 activations and must not be centered. See CONVENTIONS below.
 
-Default release: jbloom/GPT2-Small-SAEs-Reformatted, one SAE per GPT-2
-residual-stream hook point (e.g. blocks.8.hook_resid_pre, d_sae=24576).
+No default release. `SAEHandle.load` requires a repo and a hook, because a
+default that names one model is one model's SAE answering for every model —
+`sae_registry.for_model` is where "which release belongs to this model" is
+answered, and "none" is one of its answers.
 
 ## Two on-disk layouts, one in-memory object
 
@@ -74,8 +76,14 @@ from safetensors.torch import load_file
 
 from .errors import BadRequest, Refusal
 
-DEFAULT_SAE_REPO = "jbloom/GPT2-Small-SAEs-Reformatted"
-DEFAULT_SAE_HOOK = "blocks.8.hook_resid_pre"
+# No module-level default repo or hook. They named one model's release, and a
+# default that names a model is what `/api/sae/load` stopped doing: the
+# registry knows which release belongs to which model, so the answer comes
+# from there or the call is refused by name. A default here would put the
+# assumption back one layer down, where it is harder to see.
+#
+# `SAEHandle.load` therefore REQUIRES both. A caller that does not know which
+# SAE it wants is a caller that should be asking `sae_registry.for_model`.
 
 # The two layouts this module can open. Named rather than sniffed by repo id:
 # a repo called "gemma-scope-something" that ships safetensors is a thing that
@@ -673,8 +681,8 @@ class SAEHandle:
     @classmethod
     def load(
         cls,
-        repo: str = DEFAULT_SAE_REPO,
-        hook: str = DEFAULT_SAE_HOOK,
+        repo: str,
+        hook: str,
         *,
         width: str | None = None,
         average_l0: int | None = None,

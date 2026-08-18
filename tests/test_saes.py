@@ -243,7 +243,14 @@ def test_the_shipped_sae_declares_nothing_and_wants_both():
     ordering and the usability are asserted here — the exact figures depend on
     the prompt, and a test that pinned them would fail for the wrong reason.
     """
-    sae = SAEHandle.load()
+    # Named explicitly. There is no module-level default any more:
+    # it pointed at this release, and a default that names one model
+    # is what the SAE route stopped doing. The loader still opens any
+    # SAELens repo — only the registry's recommendation changed — so
+    # this still exercises that reader for anyone whose cache has it.
+    sae = SAEHandle.load(
+        "jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre"
+    )
     assert sae.declared_b_dec is None, "cfg gained the key; revisit the default"
 
     torch.manual_seed(3)

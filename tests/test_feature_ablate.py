@@ -550,7 +550,14 @@ def test_the_real_ranking_is_not_the_bar_chart():
     model.to(device)
     try:
         ids = tok(PROMPT, return_tensors="pt").input_ids.to(device)
-        sae = SAEHandle.load()
+        # Named explicitly. There is no module-level default any more:
+        # it pointed at this release, and a default that names one model
+        # is what the SAE route stopped doing. The loader still opens any
+        # SAELens repo — only the registry's recommendation changed — so
+        # this still exercises that reader for anyone whose cache has it.
+        sae = SAEHandle.load(
+            "jbloom/GPT2-Small-SAEs-Reformatted", "blocks.8.hook_resid_pre"
+        )
         out = feature_ablate.rank_features(
             model,
             model.transformer.h[sae.layer],
