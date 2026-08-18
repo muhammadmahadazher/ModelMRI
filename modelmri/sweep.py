@@ -499,8 +499,40 @@ def load_sweep(sweep_id: str) -> tuple:
         )
     raw_job = json.loads(found[0])
     out_dir = raw_job.get("out_dir") or ""
-    job = Job(**{**raw_job, "out_dir": Path(out_dir) if out_dir else None})
-    return job, [Row(**r) for r in json.loads(found[1])]
+    try:
+        job = Job(**{**raw_job, "out_dir": Path(out_dir) if out_dir else None})
+        rows = [Row(**r) for r in json.loads(found[1])]
+    except TypeError as err:
+        # A sweep saved by a version whose `Job` or `Row` had different fields.
+        # `Job(**raw)` raises TypeError on both an unexpected key and a missing
+        # one, and that reached the route as an unexplained 500 — a fact about
+        # the FILE reported as a fault in the server.
+        raise BadRequest(
+            f"the saved sweep {sweep_id!r} was written by a different version "
+            f"of ModelMRI and its stored shape no longer matches this one "
+            f"({type(err).__name__}). Re-run it rather than resuming it; the "
+            f"prompts are in the record and the measurements are not "
+            f"transferable across a schema change."
+        ) from None
+    return job, rows
+
+
+def _started_at(sweep_id: str) -> str:
+    """When the sweep FIRST ran, kept across a resume.
+
+    Finishing a run does not change when it began, and overwriting this with
+    the resume's own clock would reorder `saved_sweeps` — putting a sweep
+    started on Monday and finished on Friday above one that ran wholly on
+    Thursday.
+    """
+    db = _db()
+    try:
+        found = db.execute(
+            "SELECT started_at FROM sweep WHERE id = ?", (str(sweep_id),)
+        ).fetchone()
+    finally:
+        db.close()
+    return found[0] if found else ""
 
 
 def remaining(job: Job, rows: list[Row]) -> list[int]:
@@ -560,13 +592,28 @@ def _resumable(job: Job, rows: list[Row], runtime) -> str | None:
     no longer there.
     """
     for row in rows:
-        if not row.measured:
-            continue
+        # Checked for EVERY row, not only measured ones. An unmeasured row
+        # whose index is past the end is still evidence the prompt set moved,
+        # and skipping it let a shortened set through the guard.
+        if not isinstance(row.index, int) or isinstance(row.index, bool):
+            return f"a saved row has index {row.index!r}, which is not a position"
+        if row.index < 0:
+            # Python indexes backwards from a negative, so -1 would quietly
+            # read the LAST prompt and compare its digest against a row about
+            # the first.
+            return (
+                f"a saved row has index {row.index}, and a negative position "
+                f"reads backwards from the end rather than failing"
+            )
         if row.index >= len(job.prompts):
             return (
-                f"the saved run measured prompt {row.index} and this set has "
-                f"only {len(job.prompts)}, so the prompts have changed since"
+                f"a saved row is index {row.index} and this set has only "
+                f"{len(job.prompts)} prompt(s), so the prompts have changed"
             )
+        # Only a MEASURED row's digest matters: an unmeasured one carries no
+        # numbers to attach to the wrong prompt.
+        if not row.measured:
+            continue
         if row.prompt_sha256 != receipts.digest(job.prompts[row.index]):
             return (
                 f"prompt {row.index} is not the text that was measured — the "
@@ -602,16 +649,52 @@ def resume(sweep_id: str, runtime, *, on_row=None, cancel=None) -> tuple:
     if not left:
         return job, [keep[i] for i in sorted(keep)]
 
-    # Only the unrun prompts go through `run`, and their indices are restored
-    # afterwards: `run` numbers rows from 0 over the job it is given, so
-    # without this every resumed row would claim to be prompt 0..n of the
-    # original set and the join back would be silently wrong.
+    # PRICED, like a fresh run. A resume that skipped the projection let
+    # somebody finish a 40,000-pass remainder without ever being shown the
+    # number — the one thing `plan` exists to prevent, bypassed by the path
+    # that is most likely to be long.
     partial = Job(**{**asdict(job), "prompts": [job.prompts[i] for i in left]})
-    fresh = run(partial, runtime, on_row=on_row, cancel=cancel)
+    plan(partial, runtime)
+
+    # Every prompt kept its ORIGINAL text and its original position. `run`
+    # numbers rows from 0 over the job it is given, so the indices are
+    # restored afterwards — without that, every resumed row would claim to be
+    # prompt 0..n of the original set and the join back would be silently
+    # wrong.
+    #
+    # `out_dir` is dropped for the same reason: `run` names one `.mri` per
+    # prompt by POSITION, so a resume writing prompt 180 as position 0 would
+    # overwrite the first prompt's file and leave two rows pointing at one
+    # analysis. The files for the prompts being re-run are rewritten below,
+    # under their real positions.
+    resumed = Job(**{**asdict(partial), "out_dir": None})
+    fresh = run(resumed, runtime, on_row=on_row, cancel=cancel)
+
+    if len(fresh) != len(left):
+        # `Job.validated` drops prompts that are empty or whitespace, so `run`
+        # can return fewer rows than positions asked for. `zip(strict=True)`
+        # turned that into a bare ValueError; it is a fact about the saved
+        # prompt set and it gets a sentence.
+        raise BadRequest(
+            f"this sweep asked to finish {len(left)} prompt(s) and the run "
+            f"produced {len(fresh)} row(s), which happens when a saved prompt "
+            f"is empty or whitespace. Re-run it rather than resuming: the "
+            f"positions no longer line up and pairing them would attach each "
+            f"measurement to the wrong prompt."
+        )
+
     for row, original in zip(fresh, left, strict=True):
         row.index = original
+
     merged = {**keep, **{r.index: r for r in fresh}}
-    return job, [merged[i] for i in sorted(merged)]
+    ordered = [merged[i] for i in sorted(merged)]
+
+    # PERSISTED under the same id. Without this the database still advertised
+    # the work that had just been done — `saved_sweeps` kept reporting
+    # `n_remaining: 2` for a sweep that was finished, and resuming it again
+    # would re-run the same prompts.
+    save(job, ordered, started_at=_started_at(sweep_id), sweep_id=sweep_id)
+    return job, ordered
 
 
 def load_prompts(path: str | Path) -> list[str]:
