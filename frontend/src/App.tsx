@@ -153,9 +153,11 @@ export default function App() {
         </span>
         <span className="spacer" />
         <ThemeToggle />
-        {/* Beside the mode toggle, not inside it. Hues and light/dark are
-            orthogonal — see PalettePicker for why folding them into one list
-            would make "Amber" quietly mean "Amber, dark". */}
+        {/* Beside the mode toggle, not inside it, and now two controls rather
+            than one: hues, light/dark and contrast level are three orthogonal
+            axes. See PalettePicker for why folding them into one list made
+            "Amber" quietly mean "Amber, dark, standard" — and made high
+            contrast something you could only have INSTEAD of a palette. */}
         <PalettePicker />
         {accel && (
           <span

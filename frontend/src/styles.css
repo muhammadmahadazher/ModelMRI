@@ -198,44 +198,174 @@
     inset 0 -1px 0 0 rgb(255 255 255 / 0.45);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   THREE AXES, NOT TWO.
+
+     [data-palette]   which hues     paper slate amber forest ocean plum
+                                     rose graphite
+     [data-theme]     light | dark
+     [data-contrast]  standard | medium | high
+
+   The comment at the bottom of this file used to claim palette and mode were
+   orthogonal, and they were not: `contrast` was shipped as a PALETTE, so it
+   existed in exactly one hue family and could not be combined with any of the
+   others. Somebody who needs high contrast AND finds cobalt hard to look at
+   had nowhere to go. Material defines contrast as its own axis with exactly
+   three levels, "automatically applied to both light and dark themes", so it
+   is its own axis here too: eight hue families x two modes x three contrasts,
+   forty-eight real combinations rather than four-plus-one-that-does-not-
+   compose.
+
+   What each axis owns, and why they cannot collide:
+
+     palette   HUE and CHROMA. Not one lightness value. Nine numbers.
+     theme     the three surface planes, and which way ink travels from them.
+     contrast  the LIGHTNESS of the CONTENT — ink, hairlines, accent,
+               semantics.
+
+   Contrast moves L and only L. That is the entire reason this palette is in
+   OKLCH rather than hex: L is perceptually uniform, so one step means the
+   same apparent lightness at every hue, and a ratio can be dialled without
+   touching colour identity. The usual way to build a high-contrast mode —
+   desaturate until it is legible — is what makes those modes look like a
+   different, worse product.
+
+   Surfaces deliberately do NOT move with contrast. Material: "high contrast
+   is applied to the content in a card but not the card container." So the
+   paper metaphor (plate brighter than ground) survives all three levels, and
+   a high-contrast page is still recognisably this page rather than a black
+   rectangle with white text in it.
+
+   MEASURED, not asserted, and measured from PIXELS rather than from the
+   declarations: each token is painted into a 1x1 canvas and read back, so the
+   number accounts for the browser's own out-of-gamut mapping instead of
+   assuming the chroma asked for is the chroma shown. Every text token against
+   every surface it is actually painted on, plus every label over an accent or
+   semantic fill, in all forty-eight combinations. Worst case per level:
+
+     standard   4.56 – 5.28 : 1   AA at every size. Material's "mixed levels
+                                  of contrast to reduce cognitive load".
+                                  Binding pair: --ink-3 on --sf-sunk.
+     medium     6.29 – 7.26 : 1   Material's floor for medium is 3:1, but
+                                  standard already measures 4.56, so a medium
+                                  that only promised 3:1 would be a step DOWN.
+                                  6:1 is the real halfway house it describes:
+                                  "more contrast … but may experience visual
+                                  discomfort with higher contrasts".
+     high       7.61 – 8.36 : 1   Material's 7:1 for body text, cleared by
+                                  every one of the forty-eight.
+
+   And then the same thing again from the OTHER end, because a token audit
+   cannot see composition: every text-bearing element in the live page (232 of
+   them) walked, its colour composited through every translucent ancestor and
+   every inherited opacity, against the background that actually ends up
+   behind it. 232 x 48 = 11,136 measurements, WCAG AA thresholds by rendered
+   size and weight, disabled controls excluded as WCAG excludes them:
+
+     standard   4.53 – 4.90 : 1     medium  6.26 – 6.67 : 1
+     high       7.44 – 8.45 : 1     failures: 0
+
+   That pass is what found the five bugs a token audit structurally cannot:
+   `--color-mute` multiplied by a decorative opacity in three places, `--ink-4`
+   used as text against its own NON-TEXT comment, and a selected row whose
+   own wash made it the least legible row on the strip. Each is fixed and
+   commented where it lives.
+
+   One deliberate exception, stated so it is not mistaken for an oversight:
+   --line and --line-soft are decorative hairlines between two surfaces that
+   are already separated by fill and elevation, and they reach 3:1 only at
+   HIGH (3.07–3.43). --line-ctrl, which is the boundary WCAG 1.4.11 actually
+   governs because it is what makes an input look like an input, clears 3:1 at
+   every level in every combination (3.03 standard, 4.47 medium, 6.61 high).
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── the composition ──────────────────────────────────────────────────────
+   Every surface, ink, hairline and accent in this file is built HERE and
+   nowhere else, out of three inputs owned by three different axes:
+
+     var(--l-*)   LIGHTNESS   theme x contrast blocks
+     var(--c-*)   CHROMA      theme's base value, scaled per palette
+     var(--h-*)   HUE         the palette
+
+   That separation IS the architecture. Adding a palette is eight numbers and
+   no rules; adding a contrast level is a column of lightnesses and no hues.
+   Chroma is scaled rather than replaced so that no palette can accidentally
+   change how much contrast a level delivers — L is the one channel a palette
+   never touches, which is why the ratios above hold for all eight of them. */
+:root {
+  /* Defaults are "paper", restated in its own [data-palette] block below so
+     that no palette is the special case that only exists as an absence. */
+  --h-sf: 92;   --k-sf: 1.00;
+  --h-ink: 92;  --k-ink: 1.00;
+  --h-line: 92; --k-line: 1.00;
+  --h-acc: 264; --k-acc: 1.00;
+
+  --sf-plate:  oklch(var(--l-plate)  calc(var(--c-plate)  * var(--k-sf)) var(--h-sf));
+  --sf-ground: oklch(var(--l-ground) calc(var(--c-ground) * var(--k-sf)) var(--h-sf));
+  --sf-sunk:   oklch(var(--l-sunk)   calc(var(--c-sunk)   * var(--k-sf)) var(--h-sf));
+  --sf-float:  oklch(var(--l-float)  calc(var(--c-float)  * var(--k-sf)) var(--h-sf));
+
+  --line-soft: oklch(var(--l-line-soft) calc(var(--c-line-soft) * var(--k-line)) var(--h-line));
+  --line:      oklch(var(--l-line)      calc(var(--c-line)      * var(--k-line)) var(--h-line));
+  --line-ctrl: oklch(var(--l-line-ctrl) calc(var(--c-line-ctrl) * var(--k-line)) var(--h-line));
+
+  --ink:   oklch(var(--l-ink)   calc(var(--c-ink)   * var(--k-ink)) var(--h-ink));
+  --ink-2: oklch(var(--l-ink-2) calc(var(--c-ink-2) * var(--k-ink)) var(--h-ink));
+  --ink-3: oklch(var(--l-ink-3) calc(var(--c-ink-3) * var(--k-ink)) var(--h-ink));
+  --ink-4: oklch(var(--l-ink-4) calc(var(--c-ink-4) * var(--k-ink)) var(--h-ink)); /* NON-TEXT ONLY */
+
+  --acc:        oklch(var(--l-acc)        calc(var(--c-acc)        * var(--k-acc)) var(--h-acc));
+  --acc-hi:     oklch(var(--l-acc-hi)     calc(var(--c-acc-hi)     * var(--k-acc)) var(--h-acc));
+  --acc-tint:   oklch(var(--l-acc-tint)   calc(var(--c-acc-tint)   * var(--k-acc)) var(--h-acc));
+  --acc-quiet:  oklch(var(--l-acc-quiet)  calc(var(--c-acc-quiet)  * var(--k-acc)) var(--h-acc));
+  --acc-strong: oklch(var(--l-acc-strong) calc(var(--c-acc-strong) * var(--k-acc)) var(--h-acc));
+}
+
 /* ── light: warm paper. Three planes, and the plate is BRIGHTER than the
       ground — that inversion is the paper metaphor and the one genuinely
-      distinctive idea the old design already had. ───────────────────── */
+      distinctive idea the old design already had. The planes are stated once
+      here and never again: contrast does not move them. ──────────────── */
 :root,
 [data-theme="light"] {
   color-scheme: light;
 
-  --sf-plate:  oklch(1.000 0.000 92);
-  --sf-ground: oklch(0.966 0.009 92);
-  --sf-sunk:   oklch(0.945 0.010 92);
-  --sf-float:  oklch(1.000 0.000 92);
+  --l-plate:  1.000; --c-plate:  0.004;
+  --l-ground: 0.966; --c-ground: 0.009;
+  --l-sunk:   0.945; --c-sunk:   0.011;
+  --l-float:  1.000; --c-float:  0.003;
 
-  --line-soft: oklch(0.930 0.008 92);
-  --line:      oklch(0.880 0.010 92);
-  --line-ctrl: oklch(0.640 0.012 92);
+  /* content, at STANDARD contrast. Unchanged from what shipped: the whole
+     point of an orthogonal contrast axis is that the default stays put. */
+  --l-ink:   0.215; --c-ink:   0.010;
+  --l-ink-2: 0.400; --c-ink-2: 0.012;
+  --l-ink-3: 0.520; --c-ink-3: 0.014;
+  --l-ink-4: 0.640; --c-ink-4: 0.012;
 
-  --ink:   oklch(0.215 0.010 92);
-  --ink-2: oklch(0.400 0.012 92);
-  --ink-3: oklch(0.520 0.014 92);
-  --ink-4: oklch(0.640 0.012 92); /* NON-TEXT ONLY */
+  --l-line-soft: 0.930; --c-line-soft: 0.008;
+  --l-line:      0.880; --c-line:      0.010;
+  --l-line-ctrl: 0.640; --c-line-ctrl: 0.012;
 
-  --acc:        var(--cobalt-700);
-  --acc-hi:     var(--cobalt-600);
+  --l-acc:        0.503; --c-acc:        0.219; /* = cobalt-700 */
+  --l-acc-hi:     0.570; --c-acc-hi:     0.243;
+  --l-acc-tint:   0.938; --c-acc-tint:   0.052;
+  --l-acc-quiet:  0.965; --c-acc-quiet:  0.030;
+  --l-acc-strong: 0.880; --c-acc-strong: 0.078;
+
   --acc-on:     var(--sf-plate);
-  --acc-tint:   oklch(0.925 0.055 264);
-  --acc-quiet:  oklch(0.965 0.030 264);
-  --acc-strong: oklch(0.880 0.078 264);
 
-  --sem-feat:  var(--violet-700);
-  --sem-agent: var(--amber-800); /* was 3.76:1 as amber-600 — fails AA at 10.5px */
-  --sem-vla:   var(--green-700);
-  --sem-base:  var(--teal-700);
-  --sem-error: var(--crimson-700); /* -600 measured 4.49 on ground: under AA */
-  --sem-scope: var(--magenta-700);
+  --sem-feat:   var(--violet-700);
+  --sem-agent:  var(--amber-800); /* was 3.76:1 as amber-600 — fails AA at 10.5px */
+  --sem-vla:    var(--green-700);
+  --sem-base:   var(--teal-700);
+  --sem-error:  var(--crimson-700); /* -600 measured 4.49 on ground: under AA */
+  --sem-scope:  var(--magenta-700);
   --sem-ground: var(--moss-700);
 
-  /* shadow ink: the ground in shade, tinted to the brand. Never black. */
-  --sh: 21 35 65;
+  /* shadow ink: the ground in shade, tinted to the brand. Never black.
+     Indirected through --sh-light so a palette can tint its own shadow
+     without that value leaking into dark, where the shadow must be black. */
+  --sh-light: 21 35 65;
+  --sh: var(--sh-light);
 
   --glass-fill: rgb(255 255 255 / 0.62);
   --glass-rim: rgb(255 255 255 / 0.55);
@@ -249,33 +379,34 @@
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --sf-sunk:   oklch(0.160 0.012 264);
-  --sf-ground: oklch(0.185 0.012 264);
-  --sf-plate:  oklch(0.212 0.013 264);
-  --sf-float:  oklch(0.245 0.014 264);
+  --l-sunk:   0.160; --c-sunk:   0.012;
+  --l-ground: 0.185; --c-ground: 0.012;
+  --l-plate:  0.212; --c-plate:  0.013;
+  --l-float:  0.245; --c-float:  0.014;
 
-  --line-soft: oklch(0.265 0.014 264);
-  --line:      oklch(0.315 0.016 264);
-  --line-ctrl: oklch(0.520 0.016 264);
+  --l-ink:   0.930; --c-ink:   0.012;
+  --l-ink-2: 0.780; --c-ink-2: 0.014;
+  --l-ink-3: 0.640; --c-ink-3: 0.016;
+  --l-ink-4: 0.480; --c-ink-4: 0.016;
 
-  --ink:   oklch(0.930 0.012 264);
-  --ink-2: oklch(0.780 0.014 264);
-  --ink-3: oklch(0.640 0.016 264);
-  --ink-4: oklch(0.480 0.016 264); /* NON-TEXT ONLY */
+  --l-line-soft: 0.265; --c-line-soft: 0.014;
+  --l-line:      0.315; --c-line:      0.016;
+  --l-line-ctrl: 0.520; --c-line-ctrl: 0.016;
 
-  --acc:        var(--cobalt-400);
-  --acc-hi:     var(--cobalt-300);
+  --l-acc:        0.703; --c-acc:        0.170; /* = cobalt-400 */
+  --l-acc-hi:     0.770; --c-acc-hi:     0.128;
+  --l-acc-tint:   0.265; --c-acc-tint:   0.048;
+  --l-acc-quiet:  0.225; --c-acc-quiet:  0.030;
+  --l-acc-strong: 0.320; --c-acc-strong: 0.062;
+
   --acc-on:     var(--sf-sunk);
-  --acc-tint:   oklch(0.265 0.048 264);
-  --acc-quiet:  oklch(0.225 0.030 264);
-  --acc-strong: oklch(0.320 0.062 264);
 
-  --sem-feat:  var(--violet-400);
-  --sem-agent: var(--amber-300);
-  --sem-vla:   var(--green-400);
-  --sem-base:  var(--teal-400);
-  --sem-error: var(--crimson-400);
-  --sem-scope: var(--magenta-400);
+  --sem-feat:   var(--violet-400);
+  --sem-agent:  var(--amber-300);
+  --sem-vla:    var(--green-400);
+  --sem-base:   var(--teal-400);
+  --sem-error:  var(--crimson-400);
+  --sem-scope:  var(--magenta-400);
   --sem-ground: var(--moss-400);
 
   --sh: 0 0 0;
@@ -338,6 +469,173 @@
   --e3: 0 0 0 1px rgb(255 255 255 / 0.07), 0 8px 20px rgb(0 0 0 / 0.45);
   --e4: 0 0 0 1px rgb(255 255 255 / 0.09), 0 24px 56px rgb(0 0 0 / 0.55);
   --ring: 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+
+/* ══ the contrast axis ══════════════════════════════════════════════════
+   Three levels, per Material, "automatically applied to both light and dark
+   themes" — so each of the four blocks below is theme-qualified and every one
+   of the eight palettes inherits it for free. Nothing here names a hue: these
+   blocks are a column of LIGHTNESSES, and the palette supplies the rest.
+
+   Two things do move besides L. Chroma comes down a little as tone
+   approaches either end of the range, because the sRGB gamut narrows there
+   and a chroma the display cannot show is one the browser silently maps away
+   — the declared number would then be a fiction. And at HIGH the materials
+   change kind rather than degree: a rim is a light source caught on an edge,
+   and at 7:1 there is no such thing to catch, so rims become borders.
+
+   Every ratio quoted is measured against the worst surface that token is
+   painted on — --sf-sunk in light (the wells and the policy strip, the
+   darkest ground text sits on), --sf-plate in dark (the panels, the
+   lightest). Not against the page background, which is the flattering one.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── light · medium ──────────────────────────────────────────────────────
+   For readers who need more than standard but for whom high contrast halates.
+   Worst text pairing measured over all eight palettes: 6.29:1. */
+[data-theme="light"][data-contrast="medium"] {
+  --l-ink:   0.175; --c-ink:   0.010; /* 12.3:1 on --sf-sunk */
+  --l-ink-2: 0.345; --c-ink-2: 0.012; /* 8.78:1 */
+  --l-ink-3: 0.430; --c-ink-3: 0.014; /* 6.61:1 — the mute token, the weakest text on the page */
+  --l-ink-4: 0.545; --c-ink-4: 0.013; /* 4.24:1 on ground; still non-text, now clears 3:1 anyway */
+
+  --l-line-soft: 0.878; --c-line-soft: 0.009;
+  --l-line:      0.790; --c-line:      0.011;
+  --l-line-ctrl: 0.545; --c-line-ctrl: 0.013; /* 4.14:1 — control boundaries, WCAG 1.4.11 wants 3:1 */
+
+  --l-acc:        0.430; --c-acc:        0.212; /* 7.79:1 on --sf-sunk with cobalt; 6.20:1 with ocean, the palette whose hue carries the most luminance at a given L */
+  --l-acc-hi:     0.496; --c-acc-hi:     0.235;
+  --l-acc-tint:   0.950; --c-acc-tint:   0.055;
+  --l-acc-quiet:  0.964; --c-acc-quiet:  0.033;
+  --l-acc-strong: 0.876; --c-acc-strong: 0.086;
+
+  /* One tone for all seven meanings, as at standard, so no panel's colour
+     reads as louder than another's. Chroma is whatever the gamut allows at
+     that tone — teal and moss give up the most, which is why they are the
+     two that were already being clipped at standard. */
+  --sem-feat:   oklch(0.437 0.220 296); /* 7.59:1 on --sf-sunk */
+  --sem-agent:  oklch(0.437 0.080  72); /* 6.78:1 */
+  --sem-vla:    oklch(0.437 0.106 152); /* 6.35:1 */
+  --sem-base:   oklch(0.437 0.069 208); /* 6.52:1 */
+  --sem-error:  oklch(0.437 0.161  14); /* 7.35:1 */
+  --sem-scope:  oklch(0.437 0.191 322); /* 7.51:1 */
+  --sem-ground: oklch(0.437 0.089 112); /* 6.62:1 */
+}
+
+/* ── light · high ────────────────────────────────────────────────────────
+   Worst text pairing over all eight palettes: 7.61:1, against Material's 7:1. */
+[data-theme="light"][data-contrast="high"] {
+  --l-ink:   0.128; --c-ink:   0.008; /* 16.4:1 on --sf-sunk */
+  --l-ink-2: 0.250; --c-ink-2: 0.010; /* 12.7:1 */
+  --l-ink-3: 0.336; --c-ink-3: 0.011; /* 9.19:1 */
+  --l-ink-4: 0.452; --c-ink-4: 0.011; /* 6.34:1 on ground */
+
+  --l-line-soft: 0.760; --c-line-soft: 0.009;
+  --l-line:      0.612; --c-line:      0.011; /* 3.34:1 — hairlines become real borders */
+  --l-line-ctrl: 0.452; --c-line-ctrl: 0.012; /* 6.34:1 */
+
+  --l-acc:        0.388; --c-acc:        0.190; /* 9.16:1 */
+  --l-acc-hi:     0.448; --c-acc-hi:     0.222;
+  --l-acc-tint:   0.958; --c-acc-tint:   0.056;
+  --l-acc-quiet:  0.958; --c-acc-quiet:  0.035;
+  --l-acc-strong: 0.862; --c-acc-strong: 0.090;
+
+  --sem-feat:   oklch(0.388 0.195 296); /* 9.17:1 on --sf-sunk */
+  --sem-agent:  oklch(0.388 0.077  72); /* 8.34:1 */
+  --sem-vla:    oklch(0.388 0.094 152); /* 7.93:1 */
+  --sem-base:   oklch(0.388 0.061 208); /* 8.10:1 */
+  --sem-error:  oklch(0.388 0.143  14); /* 8.90:1 */
+  --sem-scope:  oklch(0.388 0.170 322); /* 9.09:1 */
+  --sem-ground: oklch(0.388 0.079 112); /* 8.17:1 */
+
+  /* The materials, at high contrast. This is where the old `contrast`
+     PALETTE's intent lands — and now it lands on all eight hue families
+     instead of one. A rim is light on a bevel and at this contrast nobody
+     sees it, so it becomes a border that they do. The glass frosts most of
+     the way over: 0.62 alpha left the hero legible through the model sheet,
+     which is a legibility bug at any contrast and a blocker at this one. */
+  --rim: inset 0 0 0 1px var(--line);
+  --rim-strong: inset 0 0 0 1px var(--line-ctrl);
+  --etch: inset 0 0 0 1px var(--line-ctrl);
+  --e1: 0 0 0 1px var(--line), 0 1px 2px -0.5px rgb(var(--sh) / 0.16);
+  --e2: 0 0 0 2px var(--line), 0 2px 5px -1px rgb(var(--sh) / 0.18);
+  --e3: 0 0 0 2px var(--line-ctrl), 0 8px 20px -8px rgb(var(--sh) / 0.20);
+  --e4: 0 0 0 2px var(--line-ctrl), 0 20px 44px -18px rgb(var(--sh) / 0.24);
+  --ring: 0 0 0 1px var(--line-ctrl);
+  --glass-fill: rgb(255 255 255 / 0.93);
+  --glass-rim: var(--line);
+  --glass-spec: var(--line-soft);
+}
+
+/* ── dark · medium ───────────────────────────────────────────────────────
+   Worst text pairing over all eight palettes: 6.85:1. Ink travels UP here, so
+   the same lever run the other way; surfaces are untouched in both directions. */
+[data-theme="dark"][data-contrast="medium"] {
+  --l-ink:   0.955; --c-ink:   0.010; /* 15.4:1 on --sf-plate */
+  --l-ink-2: 0.840; --c-ink-2: 0.013; /* 10.8:1 */
+  --l-ink-3: 0.730; --c-ink-3: 0.015; /* 7.66:1 */
+  --l-ink-4: 0.585; --c-ink-4: 0.016; /* 4.42:1 on ground */
+
+  --l-line-soft: 0.320; --c-line-soft: 0.015;
+  --l-line:      0.392; --c-line:      0.017;
+  --l-line-ctrl: 0.600; --c-line-ctrl: 0.017; /* 5.15:1 */
+
+  --l-acc:        0.768; --c-acc:        0.140; /* 8.19:1 */
+  --l-acc-hi:     0.824; --c-acc-hi:     0.110;
+  --l-acc-tint:   0.276; --c-acc-tint:   0.052;
+  --l-acc-quiet:  0.236; --c-acc-quiet:  0.033;
+  --l-acc-strong: 0.340; --c-acc-strong: 0.068;
+
+  --sem-feat:   oklch(0.762 0.127 296); /* 7.92:1 on --sf-plate */
+  --sem-agent:  oklch(0.762 0.140  72); /* 8.03:1 */
+  --sem-vla:    oklch(0.762 0.157 152); /* 8.80:1 */
+  --sem-base:   oklch(0.762 0.121 208); /* 8.64:1 */
+  --sem-error:  oklch(0.762 0.132  14); /* 7.81:1 */
+  --sem-scope:  oklch(0.762 0.164 322); /* 7.70:1 */
+  --sem-ground: oklch(0.762 0.150 112); /* 8.41:1 */
+}
+
+/* ── dark · high ─────────────────────────────────────────────────────────
+   Worst text pairing over all eight palettes: 8.04:1. Crimson and cobalt give
+   up the most chroma of the eight — at L 0.818 the sRGB gamut has no
+   saturated blue or red left at all — which is the honest cost of a 7:1 floor
+   on a dark ground, and the reason this is a mode you choose rather than the
+   default. */
+[data-theme="dark"][data-contrast="high"] {
+  --l-ink:   0.985; --c-ink:   0.005; /* 16.7:1 on --sf-plate */
+  --l-ink-2: 0.912; --c-ink-2: 0.009; /* 13.7:1 */
+  --l-ink-3: 0.822; --c-ink-3: 0.012; /* 10.5:1 */
+  --l-ink-4: 0.672; --c-ink-4: 0.014; /* 6.05:1 on ground */
+
+  --l-line-soft: 0.398; --c-line-soft: 0.015;
+  --l-line:      0.500; --c-line:      0.017; /* 3.13:1 — borders, not hairlines */
+  --l-line-ctrl: 0.688; --c-line-ctrl: 0.017; /* 6.36:1 */
+
+  --l-acc:        0.822; --c-acc:        0.115; /* 10.3:1 */
+  --l-acc-hi:     0.872; --c-acc-hi:     0.090;
+  --l-acc-tint:   0.286; --c-acc-tint:   0.055;
+  --l-acc-quiet:  0.244; --c-acc-quiet:  0.036;
+  --l-acc-strong: 0.356; --c-acc-strong: 0.074;
+
+  --sem-feat:   oklch(0.818 0.095 296); /* 9.73:1 on --sf-plate */
+  --sem-agent:  oklch(0.818 0.139  72); /* 9.84:1 */
+  --sem-vla:    oklch(0.818 0.157 152); /* 10.60:1 */
+  --sem-base:   oklch(0.818 0.128 208); /* 10.44:1 */
+  --sem-error:  oklch(0.818 0.095  14); /* 9.62:1 */
+  --sem-scope:  oklch(0.818 0.144 322); /* 9.46:1 */
+  --sem-ground: oklch(0.818 0.150 112); /* 10.25:1 */
+
+  --rim: inset 0 0 0 1px var(--line);
+  --rim-strong: inset 0 0 0 1px var(--line-ctrl);
+  --etch: inset 0 0 0 1px var(--line-ctrl);
+  --e1: 0 0 0 1px var(--line);
+  --e2: 0 0 0 2px var(--line);
+  --e3: 0 0 0 2px var(--line-ctrl);
+  --e4: 0 0 0 2px var(--line-ctrl);
+  --ring: 0 0 0 1px var(--line-ctrl);
+  --glass-fill: rgb(12 14 18 / 0.93);
+  --glass-rim: var(--line);
+  --glass-spec: var(--line-soft);
 }
 
 /* ── compatibility aliases ────────────────────────────────────────────
@@ -417,12 +715,46 @@ body {
   --num-prop: "tnum" 0, "zero" 1, "liga" 0, "calt" 0;
 }
 
+/* WHERE THE MONO BELONGS, AND WHERE IT DID NOT.
+
+   Twenty-four rules set the monospace face on things that are not
+   measurements and not identifiers: every section heading ("ATTENTION — WHERE
+   EACH TOKEN LOOKED"), every help paragraph, the section navigator, the
+   category filter, the policy labels, the footer. That is most of the visible
+   type on the page, and it is the likeliest single cause of the complaint
+   that this looks dull: a monospaced face has one width for every glyph, so
+   prose set in it has no rhythm — every word is the same grey block, headings
+   and body sit at
+   the same texture, and the page reads as terminal output rather than as a
+   designed instrument. It also loses the hierarchy the type scale was built
+   to carry, because at small sizes a mono 10.5px and a mono 11.5px are two
+   shades of the same texture rather than two steps.
+
+   The rule now: MONO IS FOR DIGITS AND IDENTIFIERS. Measurements, token
+   strings, tensor names, revision SHAs, model ids, code, table cells, model
+   output — anything a reader might need to compare column-wise or type back.
+   Sixty-four rules still set it, and they are all of those.
+
+   PROSE IS SANS, at a real step of the scale. The moved labels went UP a step
+   as they moved (2xs -> xs, xs -> sm), because a proportional face at the
+   same nominal size reads smaller than a monospaced one, and because every
+   contrast measurement in this file names the size it was taken at — going up
+   can only make those claims safer, exactly as the type-scale note above
+   records for the original snapping.
+
+   `code` is in this rule because it never declared a family of its own and
+   was therefore monospaced only by INHERITANCE — mono inside a mono panel,
+   and the page's sans anywhere else. Every `<code>` inside a help paragraph
+   was one accident away from being proportional, and moving those paragraphs
+   to sans would have been that accident. An identifier is mono because it is
+   an identifier, not because of what it happens to sit inside. */
 code,
 kbd,
 pre,
 samp,
 .mid,
 [class*="mono"] {
+  font-family: var(--font-mono);
   font-feature-settings: var(--num);
   font-variant-numeric: tabular-nums slashed-zero;
 }
@@ -803,9 +1135,8 @@ button.ghost.sm { padding: 6px 12px; font-size: var(--t-sm); }
    previously lived in a title attribute and nobody hovers a row they are
    about to click. */
 .why {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
   color: var(--color-agent);
   border: 1px solid color-mix(in oklab, var(--sem-agent) 35%, transparent);
   background: color-mix(in oklab, var(--sem-agent) 7%, transparent);
@@ -886,8 +1217,7 @@ button.model-btn:hover:not(:disabled) {
   box-shadow: var(--glass-shadow), var(--glass-specular), 0 0 22px color-mix(in oklab, var(--acc) 14%, transparent);
 }
 .model-btn-label {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
   letter-spacing: 0.18em;
   text-transform: uppercase;
@@ -948,10 +1278,10 @@ button.model-btn:hover:not(:disabled) {
   gap: 22px;
   flex-wrap: wrap;
   margin-top: 16px;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
-  letter-spacing: 0.2em;
+  letter-spacing: 0.16em;
+  font-weight: 600;
   text-transform: uppercase;
   color: var(--color-mute);
 }
@@ -1059,12 +1389,11 @@ html[data-theme="dark"] .panel {
 .sect { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .sect .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
 .sect h2 {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
   margin: 0;
-  letter-spacing: 0.2em;
-  font-weight: 600;
+  letter-spacing: 0.16em;
+  font-weight: 700;
   text-transform: uppercase;
 }
 /* SIGNATURE — the divider is a measurement rule, not a line.
@@ -1099,9 +1428,22 @@ html[data-theme="dark"] .panel {
 /* SIGNATURE — zero-jitter numerics. Every number that updates in place gets
    tabular figures and a slashed zero. Proportional digits make a streaming
    token count visibly shiver as glyph widths change; on an instrument that
-   reads as instability in the measurement, not in the font. */
+   reads as instability in the measurement, not in the font.
+
+   The second list is new, and it is the half that used to come for free: a
+   count in a section-nav badge or a "+7 more" was tabular only because the
+   whole element was monospaced, and a monospaced face has no proportional
+   figures to fall back to. Those labels are PROSE and now say so in the sans
+   face — so the figure setting that was implicit has to become explicit, or
+   moving the type would quietly reintroduce the shimmer this rule exists to
+   remove. Material puts it plainly: use tabular figures "in tables or places
+   where values may change often … to prevent layout shifting when values
+   change". Switzer carries tnum; where a face does not, the declaration is a
+   no-op rather than a regression. */
 .meta, .chip, .pill, .loadbar-row, .feat-val, .tl-dur, code, .mid,
-.tok, .lbl, .domain {
+.tok, .lbl, .domain,
+.cat-count, .trace-more, .specrow, .secnav, .hint, .why, .policy-state,
+.headtype, .weight-key, .channels, .attr-head, .lbl-chip, .palette-row {
   font-variant-numeric: tabular-nums slashed-zero;
 }
 .h-attn { color: var(--color-attn); } .d-attn { background: var(--color-attn); }
@@ -1180,18 +1522,16 @@ button.green:disabled {
   gap: 7px;
 }
 .policy-label {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
-  font-weight: 600;
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  font-weight: 650;
   letter-spacing: 0.09em;
   color: var(--color-mute);
 }
 .policy-half.on .policy-label { color: var(--color-vla); }
 .policy-state {
   margin-left: auto;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-3xs);
   color: var(--color-mute);
 }
@@ -1615,10 +1955,10 @@ input[type="range"]:focus-visible { outline: none; }
 
 .hint {
   color: var(--color-mute);
-  font-size: var(--t-xs);
+  font-size: var(--t-sm);
+  line-height: 1.6;
   margin-top: 10px;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
 }
 
 /* ---------- resting state ----------
@@ -1667,17 +2007,24 @@ input[type="range"]:focus-visible { outline: none; }
   gap: 8px;
   justify-items: center;
   max-width: 340px;
-  opacity: 0.92;
+  /* The 0.92 that used to sit here applied to the CAPTION as well as to the
+     drawing, and 9.5px type at 0.92 of --ink-3 measures 4.24:1. The drawing is
+     what wanted to recede, so the drawing is what recedes. */
 }
-.sketch svg { width: 100%; height: auto; overflow: visible; }
+.sketch svg { width: 100%; height: auto; overflow: visible; opacity: 0.92; }
 .sketch-cap {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-3xs);
   letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--color-mute);
-  opacity: 0.75;
+  /* No opacity. `--color-mute` is ALREADY the muted token — it is chosen to
+     land just over AA and nothing else — so multiplying it by 0.75 composites
+     9.5px type down to 4.43:1 at high contrast and 3.2:1 at standard, i.e.
+     the mode built to guarantee legibility was the one where this failed
+     hardest. The identical mistake is recorded a few hundred lines up at
+     `.linkish`, where 0.75 put the only sign-out control at 3.32:1. Muting is
+     the token's job; opacity is not a second volume knob for it. */
   text-align: center;
 }
 .sk-custom { --sk-ink: var(--color-cobalt); }
@@ -1755,6 +2102,13 @@ input[type="range"]:focus-visible { outline: none; }
 .trace-row.sel { border-color: color-mix(in oklab, var(--sem-agent) 40%, transparent); background: color-mix(in oklab, var(--sem-agent) 9%, transparent); }
 .trace-row .tname { color: var(--color-ink); font-weight: 600; }
 .trace-row .tmeta { color: var(--color-mute); }
+/* The selected row is painted with a 9% wash of its own hue, and --color-mute
+   is chosen to land just over AA on a CLEAN surface — so the wash took the
+   selected row's meta line to 4.42:1 while every unselected one around it sat
+   at 4.68. The row you are reading was the least legible row on the strip.
+   One step darker restores it to 7.47:1 without touching the wash, which is
+   what carries the selection. */
+.trace-row.sel .tmeta { color: var(--ink-2); }
 .trace-row .tmeta em { color: var(--color-pop); font-style: normal; }
 
 .timeline {
@@ -1800,9 +2154,8 @@ input[type="range"]:focus-visible { outline: none; }
 }
 .inspector.err { border-color: color-mix(in oklab, var(--sem-error) 50%, transparent); }
 .lbl-chip {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-3xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-2xs);
   letter-spacing: 0.16em;
   text-transform: uppercase;
   border: 1px solid;
@@ -1835,9 +2188,8 @@ input[type="range"]:focus-visible { outline: none; }
 
 footer {
   color: var(--color-mute);
-  font-size: var(--t-xs);
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-size: var(--t-sm);
+  font-family: var(--font-sans);
   letter-spacing: 0.05em;
   display: flex;
   gap: 14px;
@@ -2170,8 +2522,7 @@ footer .spacer { flex: 1; }
   margin: 1px 0 4px 10px;
   padding: 3px 8px;
   border-radius: var(--r-chip);
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
   letter-spacing: 0.04em;
   color: var(--color-mute);
@@ -2220,8 +2571,7 @@ code {
   gap: 14px;
   flex-wrap: wrap;
   align-items: center;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
   letter-spacing: 0.06em;
   color: var(--color-mute);
@@ -2273,8 +2623,7 @@ code {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
   color: var(--color-mute);
   letter-spacing: 0.05em;
@@ -2431,7 +2780,13 @@ code {
   bottom: -2px;
   width: 2px;
   border-radius: 1px;
-  background: var(--color-attn, #1a5fd0);
+  /* No literal fallback. `--color-attn` is defined in this file and
+     tests/test_css_vars.py exists to prove it stays defined, so the hex was a
+     second definition of the accent that no palette could reach — the one
+     place on the page that would have kept painting cobalt on an amber page
+     if the token ever went missing. A fallback that cannot follow the theme
+     is worse than the failure it guards against. */
+  background: var(--color-attn);
   opacity: 0.5;
 }
 
@@ -2470,6 +2825,25 @@ code {
   /* The segmented toggle keeps its 26x24 look; only the hit area grows, or
      three 44px squares would push the topbar into a second row. */
   .theme-seg button::after { inset: -10px -6px; }
+
+  /* Same reasoning, and a real bug until now: the swatches are <button>, so
+     the 44px min-height above stretched an 18px DISC into a 32px egg on
+     every phone. A circle that is not circular reads as a rendering fault
+     rather than as a control, and eight of them side by side made it
+     obvious. The disc keeps its geometry; the target grows around it —
+     24x44, which clears WCAG 2.5.8's 24x24 without the neighbouring targets
+     overlapping into each other across a 5px gap. */
+  .palette-dot {
+    min-height: 0;
+    width: 20px;
+    height: 20px;
+    position: relative;
+  }
+  .palette-dot::after {
+    content: "";
+    position: absolute;
+    inset: -12px -2px;
+  }
 
   footer a { display: inline-block; padding: 12px 0; }
 }
@@ -2619,9 +2993,9 @@ code {
    is the panel working — but merged into one ranking it answers "the chat
    template" every time and the user's own words fall off the bottom. */
 .attr-head {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--color-mute);
@@ -3678,9 +4052,8 @@ button.model-btn:hover:not(:disabled) {
   left: max(12px, calc((100vw - 980px) / 2 - 186px));
   width: 170px;
   z-index: 40;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -3857,9 +4230,8 @@ main > [id^="sec-"] {
   border: 0;
   border-radius: 8px;
   color: var(--color-ink);
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   text-align: left;
@@ -3882,9 +4254,8 @@ main > [id^="sec-"] {
 .palette-empty {
   padding: var(--sp-4);
   color: var(--color-mute);
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
 }
 
 @keyframes palette-in {
@@ -4033,9 +4404,8 @@ main > [id^="sec-"] {
 }
 .tune > summary {
   cursor: pointer;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-sm);
   letter-spacing: 0.04em;
   color: var(--color-mute);
 }
@@ -4063,8 +4433,8 @@ main > [id^="sec-"] {
    chosen token is half the mechanism and a magnitude would hide it. */
 
 .direct { margin-top: var(--sp-4); border-top: 1px solid var(--hair-soft); padding-top: var(--sp-3); }
-.direct-head { font-family: var(--font-mono);
-  font-feature-settings: var(--num); font-size: var(--t-sm); margin-bottom: var(--sp-2); }
+.direct-head { font-family: var(--font-sans); font-weight: 600;
+  font-size: var(--t-md); margin-bottom: var(--sp-2); }
 .dla-bars { display: grid; gap: 1px; }
 .dla-row {
   display: grid;
@@ -4119,8 +4489,7 @@ main > [id^="sec-"] {
    head can be labelled and irrelevant or unlabelled and load-bearing. */
 
 .headtype {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-3xs);
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -4391,8 +4760,7 @@ main > [id^="sec-"] {
 .fe-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 6px; }
 .fe-warn {
   padding: 2px 8px; border-radius: 999px;
-  font: 600 var(--t-2xs) var(--font-mono);
-  font-feature-settings: var(--num); letter-spacing: 0.04em;
+  font: 600 var(--t-xs) var(--font-sans); letter-spacing: 0.04em;
   color: var(--color-pop);
   background: color-mix(in oklab, var(--sem-error) 12%, transparent);
 }
@@ -4711,7 +5079,12 @@ main > [id^="sec-"] {
 }
 .mdiff-opts { flex-wrap: wrap; gap: 16px; margin: 10px 0 0; }
 .mdiff-opts label { display: flex; align-items: baseline; gap: 5px; }
-.mdiff-cost { opacity: 0.7; margin-left: 4px; }
+/* No opacity. `--ink-3` is already the muted token; multiplying it by 0.7
+   composited this to 2.80:1 at 11.5px, the worst text on the page in any
+   combination, and it is the sentence telling you how expensive the sweep you
+   are about to start will be. Third instance of the same bug in this file --
+   see `.linkish` and `.sketch-cap`. */
+.mdiff-cost { color: var(--ink-3); margin-left: 4px; } /* 4.99:1 on the plate */
 
 .mdiff-head { margin: 12px 0 6px; }
 
@@ -4931,7 +5304,9 @@ main > [id^="sec-"] {
 .tok-row dd { margin: 0; font-size: var(--t-sm); }
 .tok-none {
   font: 400 var(--t-xs)/1.5 var(--font-sans);
-  font-style: italic; color: var(--ink-3); opacity: 0.8;
+  /* Italic carries the "this is a caveat, not a number" reading on its own.
+     The 0.8 that used to carry it as well took `--ink-3` down to 3.27:1. */
+  font-style: italic; color: var(--ink-3); /* 4.99:1 on the plate */
 }
 .tok-partial { font-size: var(--t-xs); color: var(--ink-3); }
 .tok-table + .tok-cost { margin-top: 9px; }
@@ -5130,8 +5505,7 @@ main > [id^="sec-"] {
    where somebody debugs a demo. */
 .rub-kind {
   flex: none;
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
+  font-family: var(--font-sans);
   font-size: var(--t-3xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -5238,11 +5612,10 @@ main > [id^="sec-"] {
   border-radius: var(--r-pill);
   background: transparent;
   color: var(--color-mute);
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
   font-weight: 600;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
   transition:
@@ -5277,8 +5650,12 @@ main > [id^="sec-"] {
   font-size: var(--t-3xs);
   text-align: center;
 }
+/* 18% put the accent on a backing tinted with itself and measured 4.17:1 at
+   9.5px on the ocean palette — the count is the number you came to the filter
+   for. 10% is the most tint that keeps every palette over AA; worst case is
+   now 4.66:1 (ocean, light) and 5.39:1 (rose, dark). */
 .cat-chip.on .cat-count {
-  background: color-mix(in oklab, var(--acc) 18%, transparent);
+  background: color-mix(in oklab, var(--acc) 10%, transparent);
   color: var(--acc);
 }
 
@@ -5360,7 +5737,10 @@ main > [id^="sec-"] {
 .image-size.unknown {
   font-family: inherit;
   font-variant-numeric: normal;
-  color: var(--ink-4);
+  /* `--ink-4` is labelled NON-TEXT ONLY where it is defined, and measured
+     3.35:1 here at 11.5px. Dimmed is the intent; below AA is not. `--ink-3`
+     is the dimmest token that is still text, which is what this is. */
+  color: var(--ink-3); /* 4.99:1 on the plate */
   font-style: italic;
 }
 /* A download that stopped halfway, and a licence that has not been accepted.
@@ -5430,7 +5810,8 @@ main > [id^="sec-"] {
 }
 /* A step that reported no value for a column is not a zero, and it must not
    be shaded like one. No fill, and a mark that reads as absence. */
-.image-grid td.image-cell.missing { color: var(--ink-4); background: transparent; }
+/* Text, so --ink-3 rather than the NON-TEXT --ink-4 it used to borrow. */
+.image-grid td.image-cell.missing { color: var(--ink-3); background: transparent; }
 .image-read { margin-top: 8px; max-width: 78ch; }
 .image-means { margin-top: 10px; white-space: pre-line; max-width: 78ch; }
 
@@ -5443,12 +5824,11 @@ main > [id^="sec-"] {
 
 .image-subhead { display: flex; align-items: center; gap: 10px; margin: 20px 0 10px; }
 .image-subhead h3 {
-  font-family: var(--font-mono);
-  font-feature-settings: var(--num);
-  font-size: var(--t-2xs);
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
   margin: 0;
-  letter-spacing: 0.2em;
-  font-weight: 600;
+  letter-spacing: 0.16em;
+  font-weight: 700;
   text-transform: uppercase;
 }
 /* The same measurement rule the section headers carry, at one level down: a
@@ -5608,203 +5988,124 @@ main > [id^="sec-"] {
 .image-attr-facts { flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 
 /* ══ palettes ═══════════════════════════════════════════════════════════
-   A PALETTE is which hues; a MODE is light or dark. Orthogonal, so every
-   palette works in both — somebody who wants high contrast wants it in the
-   dark too, and somebody who likes amber still switches to light at midday.
+   A PALETTE is which hues. Nothing else. Eight numbers each, no lightness
+   among them, because lightness belongs to the theme and the contrast axis
+   and a palette that owned any of it could not compose with them — which is
+   exactly what went wrong with the old `contrast` palette.
 
-   Each block redefines TOKENS ONLY. Not one panel rule, canvas colour or
-   component style had to change to add five palettes, which is the whole
-   return on having built the token layer: `--sf-plate` is read in ninety
-   places and defined in six.
+   `--h-*` is the hue angle; `--k-*` multiplies the theme's base chroma for
+   that role. Four roles, because a palette is not one hue: the paper can be
+   warm while the ink is warmer still (amber), or the surfaces can carry a
+   hue the accent deliberately does not (forest). Splitting them is what
+   makes these read as designed rather than as one hue applied everywhere.
 
-   Every palette keeps the three-plane structure the paper metaphor depends
-   on — sunk darker than ground, plate brighter than ground in light and
-   brighter again in dark — because that inversion is what makes a panel read
-   as a sheet on a surface rather than a rectangle on a colour. */
+   Not one panel rule, canvas colour or component style changes to add a
+   palette. That is the whole return on the token layer: `--sf-plate` is read
+   in ninety places and now composed in exactly one.
+
+   Only `--sh-light` is a colour rather than a hue — the shadow ink, which
+   is the ground in shade. It is deliberately not `--sh`: in dark the shadow
+   has to be black whatever the palette, and a palette block sits later in
+   the cascade than the theme block it would otherwise overwrite. */
+
+/* ── paper · warm neutral. The original, and the default. ─────────────── */
+[data-palette="paper"],
+.palette-dot[data-p="paper"] {
+  --h-sf: 92;   --k-sf: 1.00;
+  --h-ink: 92;  --k-ink: 1.00;
+  --h-line: 92; --k-line: 1.00;
+  --h-acc: 264; --k-acc: 1.00;
+  --sh-light: 21 35 65;
+}
 
 /* ── slate · cooler, lower colour temperature ─────────────────────────── */
-[data-palette="slate"][data-theme="light"] {
-  --sf-plate:  oklch(1.000 0.000 250);
-  --sf-ground: oklch(0.968 0.006 250);
-  --sf-sunk:   oklch(0.947 0.008 250);
-  --sf-float:  oklch(1.000 0.000 250);
-  --line-soft: oklch(0.930 0.007 250);
-  --line:      oklch(0.882 0.009 250);
-  --line-ctrl: oklch(0.645 0.011 250);
-  --ink:   oklch(0.210 0.014 250);
-  --ink-2: oklch(0.398 0.014 250);
-  --ink-3: oklch(0.518 0.014 250);
-  --ink-4: oklch(0.640 0.012 250);
-  --sh: 18 30 60;
-}
-[data-palette="slate"][data-theme="dark"] {
-  --sf-sunk:   oklch(0.158 0.014 250);
-  --sf-ground: oklch(0.183 0.014 250);
-  --sf-plate:  oklch(0.212 0.015 250);
-  --sf-float:  oklch(0.246 0.016 250);
-  --ink:   oklch(0.938 0.010 250);
-  --ink-2: oklch(0.796 0.012 250);
-  --ink-3: oklch(0.664 0.012 250);
-  --ink-4: oklch(0.546 0.012 250);
-  --line-soft: oklch(0.268 0.014 250);
-  --line:      oklch(0.320 0.016 250);
-  --line-ctrl: oklch(0.520 0.018 250);
+[data-palette="slate"],
+.palette-dot[data-p="slate"] {
+  --h-sf: 250;   --k-sf: 0.70; /* less chroma in the paper, more in the ink: */
+  --h-ink: 250;  --k-ink: 1.35; /* a grey page read by a blue-grey text */
+  --h-line: 250; --k-line: 0.90;
+  --h-acc: 264;  --k-acc: 1.00;
+  --sh-light: 18 30 60;
 }
 
-/* ── amber · warm terminal. Easier late at night ─────────────────────── */
-[data-palette="amber"][data-theme="light"] {
-  --sf-plate:  oklch(0.995 0.008 78);
-  --sf-ground: oklch(0.960 0.015 78);
-  --sf-sunk:   oklch(0.936 0.018 78);
-  --sf-float:  oklch(1.000 0.006 78);
-  --line-soft: oklch(0.922 0.016 78);
-  --line:      oklch(0.872 0.020 78);
-  --line-ctrl: oklch(0.630 0.022 78);
-  --ink:   oklch(0.222 0.020 60);
-  --ink-2: oklch(0.402 0.024 60);
-  --ink-3: oklch(0.520 0.026 60);
-  --ink-4: oklch(0.640 0.024 60);
+/* ── amber · warm terminal. Easier late at night. ─────────────────────── */
+[data-palette="amber"],
+.palette-dot[data-p="amber"] {
+  --h-sf: 78;   --k-sf: 1.65;
+  --h-ink: 60;  --k-ink: 2.00; /* the ink is warmer than the paper, not equal to it */
+  --h-line: 78; --k-line: 2.00;
   /* The accent moves too, or an amber page with a cobalt button reads as two
-     designs. Measured at 5.4:1 on this ground — clear AA at the 10.5px the
-     section labels use, which is the size that decides it. */
-  --acc:       oklch(0.505 0.148 52);
-  --acc-hi:    oklch(0.570 0.160 52);
-  --acc-tint:  oklch(0.920 0.060 60);
-  --acc-quiet: oklch(0.962 0.030 60);
-  --acc-strong: oklch(0.874 0.084 56);
-  --sh: 48 30 12;
-}
-[data-palette="amber"][data-theme="dark"] {
-  --sf-sunk:   oklch(0.152 0.014 62);
-  --sf-ground: oklch(0.178 0.016 62);
-  --sf-plate:  oklch(0.208 0.018 62);
-  --sf-float:  oklch(0.242 0.020 62);
-  --line-soft: oklch(0.264 0.016 62);
-  --line:      oklch(0.316 0.018 62);
-  --line-ctrl: oklch(0.518 0.020 62);
-  --ink:   oklch(0.930 0.030 74);
-  --ink-2: oklch(0.790 0.034 74);
-  --ink-3: oklch(0.660 0.032 74);
-  --ink-4: oklch(0.540 0.028 74);
-  --acc:   oklch(0.790 0.148 74);
-  --acc-hi: oklch(0.848 0.150 74);
+     designs. H 52 rather than the surfaces' 78 so it separates from its own
+     ground instead of dissolving into it. */
+  --h-acc: 52;  --k-acc: 0.68;
+  --sh-light: 48 30 12;
 }
 
-/* ── forest · green-leaning neutral, softer accents ──────────────────── */
-[data-palette="forest"][data-theme="light"] {
-  --sf-plate:  oklch(0.998 0.004 150);
-  --sf-ground: oklch(0.964 0.010 150);
-  --sf-sunk:   oklch(0.942 0.012 150);
-  --sf-float:  oklch(1.000 0.003 150);
-  --line-soft: oklch(0.926 0.010 150);
-  --line:      oklch(0.876 0.013 150);
-  --line-ctrl: oklch(0.634 0.014 150);
-  --ink:   oklch(0.208 0.016 160);
-  --ink-2: oklch(0.394 0.018 160);
-  --ink-3: oklch(0.514 0.018 160);
-  --ink-4: oklch(0.636 0.016 160);
-  --acc:       oklch(0.470 0.108 168);
-  --acc-hi:    oklch(0.532 0.118 168);
-  --acc-tint:  oklch(0.918 0.052 160);
-  --acc-quiet: oklch(0.960 0.026 160);
-  --acc-strong: oklch(0.870 0.072 164);
-  --sh: 16 40 30;
-}
-[data-palette="forest"][data-theme="dark"] {
-  --sf-sunk:   oklch(0.150 0.014 162);
-  --sf-ground: oklch(0.176 0.016 162);
-  --sf-plate:  oklch(0.204 0.017 162);
-  --sf-float:  oklch(0.238 0.018 162);
-  --ink:   oklch(0.936 0.014 160);
-  --ink-2: oklch(0.792 0.016 160);
-  --ink-3: oklch(0.660 0.016 160);
-  --ink-4: oklch(0.542 0.014 160);
-  --line-soft: oklch(0.262 0.014 162);
-  --line:      oklch(0.314 0.016 162);
-  --line-ctrl: oklch(0.516 0.018 162);
-  --acc:    oklch(0.760 0.130 164);
-  --acc-hi: oklch(0.822 0.132 164);
+/* ── forest · green-leaning neutral, softer accents ───────────────────── */
+[data-palette="forest"],
+.palette-dot[data-p="forest"] {
+  --h-sf: 150;   --k-sf: 1.15;
+  --h-ink: 160;  --k-ink: 1.55;
+  --h-line: 150; --k-line: 1.30;
+  /* k 0.52: green is the hue with the least chroma available at the tones
+     an accent has to hit, so asking for more only gets it mapped away. */
+  --h-acc: 168;  --k-acc: 0.52;
+  --sh-light: 16 40 30;
 }
 
-/* ── high contrast · an ACCESSIBILITY mode, not a look ────────────────
-   Pure black on pure white, hairlines promoted to real borders, and the
-   three-plane subtlety deliberately flattened: the paper metaphor is a
-   luminance trick, and a luminance trick is exactly what somebody in bright
-   sun or with low vision cannot see. Correctness beats the metaphor here.
-
-   The semantic hues darken rather than disappearing, because they carry
-   MEANING in this app — a section dot is not decoration — and removing colour
-   entirely would take that meaning with it. */
-[data-palette="contrast"][data-theme="light"] {
-  --sf-plate:  #ffffff;
-  --sf-ground: #ffffff;
-  --sf-sunk:   #f2f2f2;
-  --sf-float:  #ffffff;
-  --line-soft: #767676;
-  --line:      #1a1a1a;
-  --line-ctrl: #000000;
-  --ink:   #000000;
-  --ink-2: #1a1a1a;
-  --ink-3: #333333;
-  --ink-4: #595959;
-  --acc:        #0033cc;
-  --acc-hi:     #0044ff;
-  --acc-on:     #ffffff;
-  --acc-tint:   #dbe4ff;
-  --acc-quiet:  #eef2ff;
-  --acc-strong: #b8c8ff;
-  --sem-feat:  #5b00b0;
-  --sem-agent: #7a4a00;
-  --sem-vla:   #005c2e;
-  --sem-base:  #00506b;
-  --sem-error: #a30012;
-  --sem-scope: #8a0060;
-  --sem-ground: #2f5c00;
-  --sh: 0 0 0;
-  /* Flat, and on purpose. A rim is a light source caught on an edge; at this
-     contrast it is invisible, so it becomes a border that is not. */
-  --rim: none;
-  --rim-strong: none;
-  --etch: inset 0 0 0 1px #1a1a1a;
-  --e1: 0 0 0 1px #1a1a1a;
-  --e2: 0 0 0 2px #1a1a1a;
-  --e3: 0 0 0 2px #000000;
+/* ── ocean · cold, high-altitude blue-green ───────────────────────────── */
+[data-palette="ocean"],
+.palette-dot[data-p="ocean"] {
+  --h-sf: 212;   --k-sf: 1.15;
+  --h-ink: 222;  --k-ink: 1.45;
+  --h-line: 212; --k-line: 1.20;
+  --h-acc: 236;  --k-acc: 0.78;
+  --sh-light: 12 34 52;
 }
-[data-palette="contrast"][data-theme="dark"] {
-  --sf-plate:  #000000;
-  --sf-ground: #000000;
-  --sf-sunk:   #0d0d0d;
-  --sf-float:  #0d0d0d;
-  --line-soft: #8a8a8a;
-  --line:      #e6e6e6;
-  --line-ctrl: #ffffff;
-  --ink:   #ffffff;
-  --ink-2: #f0f0f0;
-  --ink-3: #d4d4d4;
-  --ink-4: #a6a6a6;
-  --acc:        #7fb2ff;
-  --acc-hi:     #a8ccff;
-  --acc-on:     #000000;
-  --acc-tint:   #14233d;
-  --acc-quiet:  #0b1220;
-  --acc-strong: #24406e;
-  --sem-feat:  #d0a6ff;
-  --sem-agent: #ffc46b;
-  --sem-vla:   #6ce6a2;
-  --sem-base:  #7fd8ff;
-  --sem-error: #ff9aa4;
-  --sem-scope: #ff9ade;
-  --sem-ground: #b6e86b;
-  --etch: inset 0 0 0 1px #e6e6e6;
-  --e1: 0 0 0 1px #e6e6e6;
-  --e2: 0 0 0 2px #e6e6e6;
-  --e3: 0 0 0 2px #ffffff;
+
+/* ── plum · the one that is not a neutral pretending ──────────────────── */
+[data-palette="plum"],
+.palette-dot[data-p="plum"] {
+  --h-sf: 312;   --k-sf: 1.05;
+  --h-ink: 306;  --k-ink: 1.35;
+  --h-line: 312; --k-line: 1.10;
+  --h-acc: 300;  --k-acc: 1.00;
+  --sh-light: 44 18 56;
+}
+
+/* ── rose · warm, low colour temperature, no yellow in it ─────────────── */
+[data-palette="rose"],
+.palette-dot[data-p="rose"] {
+  --h-sf: 20;   --k-sf: 1.30;
+  --h-ink: 14;  --k-ink: 1.55;
+  --h-line: 20; --k-line: 1.35;
+  --h-acc: 8;   --k-acc: 0.84;
+  --sh-light: 60 20 26;
+}
+
+/* ── graphite · almost achromatic, for looking at colour ──────────────── */
+/* The one palette that gets out of the way. Every panel here carries a
+   semantic hue that MEANS something, and on a tinted ground those hues are
+   read against a competing tint. k 0.25 on the surfaces is not "grey" —
+   C 0 reads as unfinished, which is why nothing in this file is ever C 0 —
+   it is the least tint that still reads as a decision. */
+[data-palette="graphite"],
+.palette-dot[data-p="graphite"] {
+  --h-sf: 264;   --k-sf: 0.25;
+  --h-ink: 264;  --k-ink: 0.30;
+  --h-line: 264; --k-line: 0.30;
+  --h-acc: 264;  --k-acc: 1.00;
+  --sh-light: 14 16 24;
 }
 
 /* ── the palette picker ───────────────────────────────────────────────── */
 .palette-pick {
   display: inline-flex;
   align-items: center;
+  /* Eight swatches instead of five, so the group wraps rather than squeezing
+     when the topbar runs out of room. */
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 5px;
   padding: 3px;
   border: 1px solid var(--hair);
@@ -5814,6 +6115,11 @@ main > [id^="sec-"] {
 .palette-dot {
   width: 18px;
   height: 18px;
+  /* A flex item defaults to shrink:1, and eight of them in a wrapping topbar
+     is enough to squash 18px discs into ellipses on a 375px screen — which
+     reads as a rendering fault rather than as a control. The row wraps; the
+     swatches do not deform. */
+  flex: none;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 50%;
@@ -5830,13 +6136,254 @@ main > [id^="sec-"] {
   outline: none;
   box-shadow: 0 0 0 2px var(--sf-sunk), 0 0 0 4px var(--acc);
 }
-/* The swatch shows the palette's own ground and accent, so the button is a
-   sample of the thing rather than a label for it. Literal colours here and
-   only here: a var() would resolve to the CURRENT palette and every swatch
-   would look identical, which is the one place this file cannot be
-   token-driven. */
-.palette-dot[data-p="paper"]    { background: linear-gradient(135deg, #faf8f4 50%, #2a4bd7 50%); }
-.palette-dot[data-p="slate"]    { background: linear-gradient(135deg, #f6f7fa 50%, #2a4bd7 50%); }
-.palette-dot[data-p="amber"]    { background: linear-gradient(135deg, #faf3e6 50%, #a86a1c 50%); }
-.palette-dot[data-p="forest"]   { background: linear-gradient(135deg, #f2f8f4 50%, #1f7a56 50%); }
-.palette-dot[data-p="contrast"] { background: linear-gradient(135deg, #ffffff 50%, #000000 50%); }
+/* The swatch shows that palette's own ground and accent, so the control is a
+   sample of the thing rather than a label for it.
+
+   This used to be five hard-coded hex pairs, on the argument that a var()
+   here would resolve to the CURRENT palette and make every swatch identical.
+   That was true of the old token layer and is not true of this one: the
+   palette blocks above declare only `--h-*` and `--k-*`, and `--sf-ground`
+   and `--acc` are composed FROM those at computed-value time, per element.
+   So the same `[data-palette]` blocks are applied to the dots themselves
+   (see their selectors above) and each dot resolves the shared formula with
+   its own hue. One definition, two consumers, no literals — and the swatches
+   now also follow the current theme and contrast level, which is honest:
+   picking "amber" in dark high-contrast should show you amber in dark
+   high-contrast, not a light-mode chip of it. */
+.palette-dot {
+  /* The composition is repeated here rather than read through var(--acc),
+     and that is not redundancy — it is the one place it cannot be avoided.
+     A custom property's computed value is its specified value with every
+     var() ALREADY SUBSTITUTED, and that resolved string is what inherits. So
+     `--acc` arrives at a dot fully resolved against the ROOT's `--h-acc`, and
+     the dot's own `--h-acc` never gets a chance to matter: read through the
+     token and all eight swatches come out identical, which is exactly the
+     bug the old hard-coded hexes were papering over. Naming the formula on
+     the element that carries the hue makes the element resolve it. */
+  background: linear-gradient(
+    135deg,
+    oklch(var(--l-ground) calc(var(--c-ground) * var(--k-sf)) var(--h-sf)) 0 50%,
+    oklch(var(--l-acc) calc(var(--c-acc) * var(--k-acc)) var(--h-acc)) 50% 100%
+  );
+}
+
+/* ── the contrast picker ──────────────────────────────────────────────────
+   A separate control from light/dark, because it is a separate axis: the
+   whole point of the rebuild is that "high contrast" is no longer a place
+   you go INSTEAD of amber. It reuses .theme-seg's shape so the topbar reads
+   as two settings of the same kind rather than one setting and one oddity.
+
+   Labelled with a filled fraction of a disc rather than a word: three words
+   ("standard", "medium", "high") do not fit a phone topbar, and the amount
+   of black in the glyph is the quantity being chosen. Never colour alone —
+   the selected item carries a filled plate, its own elevation AND the accent
+   colour, which is the two-indicator rule. */
+.contrast-seg .glyph {
+  font-size: var(--t-md);
+  line-height: 1;
+}
+
+/* ══ interaction state layers ═══════════════════════════════════════════
+   The single cheapest fix for "the UI feels dead", and there were none of
+   these at all: a handful of controls recoloured their text on hover, most
+   did nothing, and nothing anywhere responded to being PRESSED. A control
+   that does not acknowledge the mousedown is the specific thing that reads
+   as an unresponsive page rather than an unattractive one.
+
+   Material's opacities, exactly, and not adjustable by feel:
+
+     hover  8%   focus 10%   press 10%   drag 16%   disabled 38%
+
+   The layer is a flat fill in the CONTENT's own colour, composited over
+   whatever the container already is. That is what lets one set of numbers
+   serve a cobalt button, a crimson chip and a bare row without any of them
+   naming a colour — and why it keeps working across all forty-eight
+   palette x theme x contrast combinations without a single override.
+
+   Mechanism: background-image, not a pseudo-element. Half the controls in
+   this file are `all: unset` and several already own ::before/::after for
+   their focus ring or their caret; a gradient layer needs no box and cannot
+   collide with either. The heatmap cells are the exception — their fill
+   arrives as an inline `background` shorthand from the panel that computed
+   it, which would drop a stylesheet background-image — so those take the
+   same layer as an inset box-shadow instead.
+
+   TWO INDICATORS, NEVER COLOUR ALONE. Hover is layer + cursor; press adds a
+   1px settle; focus is layer + the 3px ring at the end of this file;
+   disabled is 38% opacity AND desaturation. Anyone who cannot see the 8%
+   layer still has a second channel for every one of them.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root {
+  --state-hover: 0.08;
+  --state-focus: 0.10;
+  --state-press: 0.10;
+  --state-drag: 0.16;
+  --state-disabled: 0.38;
+
+  --layer-hover: linear-gradient(0deg,
+    color-mix(in oklab, currentColor calc(var(--state-hover) * 100%), transparent) 0 100%);
+  --layer-focus: linear-gradient(0deg,
+    color-mix(in oklab, currentColor calc(var(--state-focus) * 100%), transparent) 0 100%);
+  --layer-press: linear-gradient(0deg,
+    color-mix(in oklab, currentColor calc(var(--state-press) * 100%), transparent) 0 100%);
+  --layer-drag: linear-gradient(0deg,
+    color-mix(in oklab, currentColor calc(var(--state-drag) * 100%), transparent) 0 100%);
+}
+
+/* ── hover. Behind (hover: hover) because a touch device fires :hover on tap
+      and then keeps it, which leaves one row permanently lit. ─────────── */
+@media (hover: hover) and (pointer: fine) {
+  button.cta:hover:not(:disabled),
+  button.violet:hover:not(:disabled),
+  button.green:hover:not(:disabled),
+  button.ghost:hover:not(:disabled),
+  button.model-btn:hover:not(:disabled),
+  .icon-btn:hover,
+  .seg button:hover,
+  .theme-seg button:hover,
+  .patch-tabs button:hover:not(:disabled),
+  .pill.act:hover:not(:disabled),
+  .cat-chip:hover,
+  .model-row:not(.locked):not(.static):hover,
+  .feat-row:hover,
+  .trace-row:hover,
+  .cand:not([disabled]):hover,
+  .rub-row:hover,
+  .rub-chip:hover,
+  .receipt-line:hover,
+  .tok:hover,
+  .secnav-find:hover,
+  .dropzone:hover:not(:disabled),
+  .ins-target:hover:not(:disabled),
+  .palette-dot:hover,
+  .layer-table tbody tr:hover,
+  .lens-table tbody tr:hover,
+  .gguf-table tbody tr:hover,
+  .storage-row:hover {
+    background-image: var(--layer-hover);
+  }
+}
+
+/* ── press. The state that was missing everywhere. 10% and a 1px settle, so
+      the control moves TOWARDS the finger; a button that only brightens is
+      still a picture of a button. ─────────────────────────────────────── */
+button.cta:active:not(:disabled),
+button.violet:active:not(:disabled),
+button.green:active:not(:disabled),
+button.ghost:active:not(:disabled),
+button.model-btn:active:not(:disabled),
+.icon-btn:active,
+.seg button:active,
+.theme-seg button:active,
+.patch-tabs button:active:not(:disabled),
+.pill.act:active:not(:disabled),
+.cat-chip:active,
+.model-row:not(.locked):not(.static):active,
+.feat-row:active,
+.trace-row:active,
+.cand:not([disabled]):active,
+.rub-row:active,
+.rub-chip:active,
+.receipt-line:active,
+.secnav-find:active {
+  background-image: var(--layer-press);
+  transform: translateY(1px);
+}
+/* The dots are 18px discs whose selected state is a ring; 1px of travel on
+   one is a wobble against its neighbours, so they scale instead — same
+   "moves under the finger" reading, no jitter. */
+.palette-dot:active {
+  background-image: var(--layer-press);
+  transform: scale(0.94);
+}
+
+/* ── focus. IN ADDITION to the ring at the end of this file, not instead of
+      it: the ring says which control, the layer says it is live. ─────── */
+button.cta:focus-visible,
+button.violet:focus-visible,
+button.green:focus-visible,
+button.ghost:focus-visible,
+button.model-btn:focus-visible,
+.icon-btn:focus-visible,
+.seg button:focus-visible,
+.theme-seg button:focus-visible,
+.patch-tabs button:focus-visible,
+.pill.act:focus-visible,
+.cat-chip:focus-visible,
+.model-row:focus-visible,
+.feat-row:focus-visible,
+.trace-row:focus-visible,
+.cand:focus-visible,
+.rub-row:focus-visible,
+.receipt-line:focus-visible {
+  background-image: var(--layer-focus);
+}
+
+/* ── drag. One drop target in the app, and 16% is the only place Material's
+      drag opacity applies. ────────────────────────────────────────────── */
+.ins-drop.over {
+  background-image: var(--layer-drag);
+}
+
+/* ── disabled. 38% content opacity, per Material, plus desaturation so the
+      state survives a monochrome display. This was 0.75, 0.5 and 0.55 in
+      three different places, none of which read as "you cannot use this" —
+      0.75 is well inside the range a control might simply BE. Disabled
+      controls are exempt from the WCAG contrast minimum precisely so this
+      can be honest. `.model-row.locked` deliberately does NOT follow: its
+      whole purpose is to keep the REASON legible, and its own comment
+      already records why 0.5 was too far. ────────────────────────────── */
+button:disabled,
+.pill.act:disabled,
+.cand[disabled],
+.image-controls input[type="number"]:disabled {
+  opacity: var(--state-disabled);
+  filter: saturate(0.25);
+  background-image: none;
+  cursor: not-allowed;
+}
+
+/* ── table cells. The fill is an inline `background` shorthand computed by
+      the panel that owns the number, which would drop a stylesheet
+      background-image, so the same layer arrives as an inset shadow.
+      Merged with each cell's existing hover ring rather than replacing it:
+      the ring says WHICH cell, the layer says the grid is live. ─────── */
+@media (hover: hover) and (pointer: fine) {
+  .patch-grid td:hover {
+    box-shadow:
+      inset 0 0 0 100vmax color-mix(in oklab, currentColor calc(var(--state-hover) * 100%), transparent),
+      0 0 0 1px color-mix(in oklab, var(--color-cobalt) 40%, transparent);
+  }
+  .image-grid td.image-cell:hover,
+  .image-attr-grid td.image-cell:hover {
+    box-shadow:
+      inset 0 0 0 100vmax color-mix(in oklab, currentColor calc(var(--state-hover) * 100%), transparent);
+  }
+}
+
+/* Reduced motion keeps the layers — they are information, not decoration —
+   and drops only the travel, which is the part that moves. */
+@media (prefers-reduced-motion: reduce) {
+  button.cta:active:not(:disabled),
+  button.violet:active:not(:disabled),
+  button.green:active:not(:disabled),
+  button.ghost:active:not(:disabled),
+  button.model-btn:active:not(:disabled),
+  .icon-btn:active,
+  .seg button:active,
+  .theme-seg button:active,
+  .patch-tabs button:active:not(:disabled),
+  .pill.act:active:not(:disabled),
+  .cat-chip:active,
+  .model-row:active,
+  .feat-row:active,
+  .trace-row:active,
+  .cand:active,
+  .rub-row:active,
+  .rub-chip:active,
+  .receipt-line:active,
+  .secnav-find:active,
+  .palette-dot:active {
+    transform: none;
+  }
+}
