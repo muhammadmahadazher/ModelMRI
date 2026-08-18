@@ -256,7 +256,21 @@ def app_where(patch, monkeypatch):
 def test_a_module_route_does_not_republish_a_broken_exception(
     patch, method, path, monkeypatch
 ):
-    body = {"token": "x", "name": "x", "prompt": "x"}
+    # `repo`/`hook` are here for /api/sae/load specifically. That route now
+    # resolves an empty request against the registry — "the SAE for whatever
+    # model is loaded" rather than one model's release answering for all of
+    # them — so with nothing loaded it refuses BEFORE reaching `load_sae`,
+    # and this test would then be asserting against a guard instead of the
+    # thing it patched. Naming a repo skips the lookup and puts the patched
+    # function back in the path. Every other route ignores the extra keys, as
+    # they already do for the three above.
+    body = {
+        "token": "x",
+        "name": "x",
+        "prompt": "x",
+        "repo": "someone/sae",
+        "hook": "blocks.0.hook_resid_pre",
+    }
     r = app_where(patch, monkeypatch).request(method, path, json=body)
     assert r.status_code == 500, f"{path} answered {r.status_code}"
     assert BROKE not in r.text

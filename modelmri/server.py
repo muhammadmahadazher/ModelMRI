@@ -57,7 +57,6 @@ from .custom import AdapterError, CustomHandle
 # being honest and the tests say so.
 from .errors import BadRequest, Refusal
 from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
-from .saes import DEFAULT_SAE_HOOK, DEFAULT_SAE_REPO
 from .traces import TraceStore, record_generation
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
 from .vla import VLAHandle
@@ -181,8 +180,24 @@ class QuantCompare(BaseModel):
 
 
 class SAELoadRequest(BaseModel):
-    repo: str = DEFAULT_SAE_REPO
-    hook: str = DEFAULT_SAE_HOOK
+    """Which SAE to load. Empty means "the one for the model that is loaded".
+
+    NOT defaulted to a repo id. A constant here is one model's release
+    answering for every model: `{}` used to ask for the gpt2 SAE whatever was
+    resident, and against anything else that is a d_in mismatch rather than a
+    load. The registry knows which release belongs to which model; this asks
+    it.
+    """
+
+    repo: str = ""
+    hook: str = ""
+    #: Gemma Scope is published per (layer, dictionary width, average L0).
+    #: `runtime.load_sae` has always taken these; the request model did not,
+    #: so the coordinates could not be named through the API at all. None
+    #: still means "choose by the rule and say which rule", reported back in
+    #: `release.chosen_by`.
+    width: str | None = None
+    average_l0: int | None = None
 
 
 class SteerRequest(BaseModel):
@@ -1261,10 +1276,49 @@ def create_app(
     def sae_status() -> dict:
         return asdict(runtime.sae_status())
 
+    def _sae_for_current() -> tuple[str, str]:
+        """The release registered for whatever model is loaded.
+
+        Raises rather than falling back to a default: "this model has no SAE
+        anyone has published" is a real and common answer -- SAEs are trained
+        per model and public ones exist for a handful -- and a fallback would
+        turn it into a confusing dimension mismatch three calls later.
+        """
+        from . import sae_registry
+
+        current = runtime.hf_id if runtime.backend == "hf" else None
+        usable = [e for e in sae_registry.for_model(current) if e["supported"]]
+        if not usable:
+            listed = sae_registry.for_model(current)
+            extra = (
+                f" {listed[0]['repo']} is registered for it but this build "
+                f"cannot open it: {listed[0]['note']}"
+                if listed
+                else ""
+            )
+            raise Refusal(
+                f"No sparse autoencoder is registered for "
+                f"{current or 'the loaded model'}. They are trained per model "
+                f"and public ones exist for only a handful.{extra} The logit "
+                f"lens works on every model and needs nothing extra."
+            )
+        return usable[0]["repo"], usable[0]["default_hook"]
+
     @app.post("/api/sae/load")
     async def sae_load(req: SAELoadRequest):
         try:
-            status = await asyncio.to_thread(runtime.load_sae, req.repo, req.hook)
+            repo, hook = req.repo, req.hook
+            if not repo or not hook:
+                chosen_repo, chosen_hook = _sae_for_current()
+                repo = repo or chosen_repo
+                hook = hook or chosen_hook
+            status = await asyncio.to_thread(
+                runtime.load_sae,
+                repo,
+                hook,
+                width=req.width,
+                average_l0=req.average_l0,
+            )
             return asdict(status)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
