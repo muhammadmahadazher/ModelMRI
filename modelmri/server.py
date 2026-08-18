@@ -394,6 +394,24 @@ class CVAttributeRequest(BaseModel):
     batch: int = Field(default=32, ge=1, le=64)
 
 
+class StepTraceRequest(BaseModel):
+    """One run, keeping every step's latent, to find where it committed.
+
+    Deliberately NOT the filmstrip. This decodes nothing -- it measures how far
+    the latent moved per step, which is a property of the denoiser rather than
+    of the VAE that would draw it. The two answer different questions and the
+    responses say so.
+    """
+
+    prompt: str = Field(min_length=1)
+    steps: int = Field(default=20, ge=1, le=200)
+    seed: int | None = None
+    # 0 means "use the module's own default". Not a magic number here: the
+    # threshold decides which step gets called the commit point, and this file
+    # restating a value `image_steps` owns is two places to change it.
+    threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class FilmstripRequest(BaseModel):
     """Watch the picture form, decoding only the steps you name.
 
@@ -2353,6 +2371,7 @@ def create_app(
                 image_attention.capture,
                 handle.require(),
                 req.prompt,
+                model_name=handle.status().repo,
                 steps=req.steps,
                 seed=req.seed,
             )
@@ -2640,6 +2659,7 @@ def create_app(
                 image_steps.filmstrip,
                 handle.require(),
                 req.prompt,
+                model_name=handle.status().repo,
                 seed=req.seed,
                 steps=req.steps,
                 every=req.every,
@@ -2709,6 +2729,45 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=code)
         except Exception as err:
             return _internal(err, "/api/image/attribution")
+
+        return found.to_dict()
+
+    @app.post("/api/image/steps")
+    async def image_steps_run(req: StepTraceRequest):
+        """When the denoiser stopped moving, and what the steps after bought.
+
+        Nothing is decoded: the response carries `vae_decodes: 0` as a
+        checkable claim, because a decode would make the answer a property of
+        the VAE as much as of the denoiser. `/api/image/filmstrip` is the one
+        that draws pictures, and it says what a decoded frame is and is not
+        evidence of.
+        """
+        from . import image_steps
+
+        try:
+            handle = _image_can("step_commit")
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            kwargs = {}
+            if req.threshold > 0:
+                kwargs["threshold"] = float(req.threshold)
+            found = await asyncio.to_thread(
+                image_steps.trace,
+                handle.require(),
+                req.prompt,
+                seed=req.seed,
+                steps=req.steps,
+                model_name=handle.status().repo,
+                **kwargs,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/steps")
 
         return found.to_dict()
 

@@ -48,6 +48,7 @@ import math
 from dataclasses import dataclass, field
 
 from .errors import BadRequest, Refusal
+from .image_steps import public_model_name
 
 log = logging.getLogger(__name__)
 
@@ -163,6 +164,11 @@ def capture(
     height: int | None = None,
     width: int | None = None,
     on_step=None,
+    # The repo id the caller loaded. `pipe.name_or_path` is the snapshot
+    # DIRECTORY when diffusers resolved from cache, which is the normal case
+    # here — and a response is no place for somebody's drive letter, least of
+    # all one that ships inside a `.mri` they send to a colleague.
+    model_name: str = "",
 ):
     """Run the pipeline once, keeping every step's cross-attention.
 
@@ -249,7 +255,7 @@ def capture(
         tokens=tokens,
         steps=store.steps,
         seed=seed,
-        model=getattr(pipe, "name_or_path", "") or "",
+        model=public_model_name(pipe, model_name),
         padding_from=padding_from,
         steps_requested=requested,
         resolutions=sorted(store.resolutions),

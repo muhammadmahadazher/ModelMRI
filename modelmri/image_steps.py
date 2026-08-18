@@ -697,6 +697,10 @@ def trace(
     width: int | None = None,
     threshold: float = DEFAULT_COMMIT_THRESHOLD,
     on_step=None,
+    # The repo id the caller loaded. See `public_model_name`: a pipeline
+    # resolved from cache reports its snapshot DIRECTORY, and that path must
+    # not travel in a response or inside a shared `.mri`.
+    model_name: str = "",
 ) -> LatentTrace:
     """Run the pipeline once, keeping every step's latent, and measure the move.
 
@@ -796,7 +800,7 @@ def trace(
     return LatentTrace(
         prompt=prompt,
         seed=seed,
-        model=getattr(pipe, "name_or_path", "") or "",
+        model=public_model_name(pipe, model_name),
         scheduler=type(getattr(pipe, "scheduler", None)).__name__,
         steps=rows,
         steps_requested=steps,
@@ -961,10 +965,38 @@ def _rms(array, *, where: int) -> float:
 # the module docstring for why a flag would have cost `trace()` its checkable
 # `vae_decodes: 0`.
 
+
 # The longest side a frame is EMITTED at. This bounds the PAYLOAD and nothing
 # else: the decoder still runs at whatever the pipeline generated — 1024x1024 on
 # SDXL — and the picture is resized afterwards. Said out loud wherever it is
 # reported, because "bounded resolution" reads as "cheaper decode" and is not.
+def public_model_name(pipe, given: str = "") -> str:
+    """A model NAME, never a path off this machine.
+
+    `given` wins: the server knows the repo id it loaded, and an id somebody
+    typed is the answer a reader wants. Otherwise `name_or_path`, which
+    diffusers sets to the snapshot DIRECTORY when it resolved from cache --
+    recoverable, because the Hub's cache encodes the repo id in the directory
+    name (`models--org--repo`). Anything else that still looks like a path is
+    dropped rather than published: an empty model field is a gap, and a gap is
+    better than somebody's home directory in a file they shared.
+    """
+    if given:
+        return given
+    raw = str(getattr(pipe, "name_or_path", "") or "")
+    if not raw:
+        return ""
+    marker = "models--"
+    if marker in raw:
+        tail = raw.split(marker, 1)[1]
+        # `models--org--repo/snapshots/<sha>` -> `org/repo`
+        repo = tail.replace("\\", "/").split("/", 1)[0]
+        return repo.replace("--", "/")
+    if "/" in raw or "\\" in raw or ":" in raw:
+        return ""
+    return raw
+
+
 DEFAULT_FRAME_PIXELS = 384
 MIN_FRAME_PIXELS = 32
 MAX_FRAME_PIXELS = 768
@@ -1684,6 +1716,10 @@ def filmstrip(
     height: int | None = None,
     width: int | None = None,
     on_step=None,
+    # Same reason as `trace` above: the pipeline's own `name_or_path` is a
+    # local snapshot directory, and a filmstrip is exactly the kind of result
+    # somebody shares.
+    model_name: str = "",
 ) -> Filmstrip:
     """Run the pipeline once and decode the steps the caller named.
 
@@ -1813,7 +1849,7 @@ def filmstrip(
     return Filmstrip(
         prompt=prompt,
         seed=seed,
-        model=getattr(pipe, "name_or_path", "") or "",
+        model=public_model_name(pipe, model_name),
         scheduler=type(getattr(pipe, "scheduler", None)).__name__,
         frames=frames,
         steps_requested=steps,
