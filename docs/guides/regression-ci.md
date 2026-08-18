@@ -17,7 +17,7 @@ have the pull request that broke it say so.
 ## Making the baseline
 
 ```bash
-modelmri sweep prompts.txt --model gpt2 --layer 0 --out-dir baselines/
+modelmri sweep prompts.txt --model Qwen/Qwen3-1.7B --layer 0 --out-dir baselines/
 ```
 
 `--out-dir` writes one `.mri` per prompt. Commit the ones you want to hold the
@@ -66,6 +66,69 @@ a difference below that floor is not one the files can represent.
 
 **A changed generation always fails**, at any threshold. There is no magnitude
 at which "the model now says something else" is within tolerance.
+
+## The same gate over a whole set
+
+`diff` holds the line on ONE prompt. The question people ask after an edit is
+usually about a set of them — *did this help on the forty cases I care about* —
+and averaging those into a single score is exactly what hides a regression: two
+cases collapsing and three improving slightly average out to fine.
+
+`modelmri experiments` compares two runs of one dataset case by case. Same
+promise as `diff`: no torch, no accelerator, arithmetic over JSONL.
+
+```bash
+modelmri experiments before.jsonl after.jsonl \
+  --metric faithfulness --higher-is-better --dataset cases.jsonl
+```
+
+```yaml
+      - name: Did the edit hurt any case?
+        run: |
+          uv run modelmri experiments \
+            baselines/run.jsonl fresh/run.jsonl \
+            --metric faithfulness --higher-is-better \
+            --dataset cases.jsonl
+```
+
+### The direction is not optional
+
+`--higher-is-better` or `--lower-is-better` is **required**, and there is no
+table of metric names that decides it for you. KL divergence is better lower
+and faithfulness is better higher; a wrong guess inverts every conclusion in
+the report while producing output that looks entirely reasonable.
+
+### Reading its exit code
+
+| exit | meaning |
+|---|---|
+| `0` | ran, and no more cases got worse than `--fail-on-worse` allows |
+| `1` | ran, and too many got worse — the output names which |
+| `2` | **could not run** |
+
+`2` is the one worth wiring an alert to. An unknown metric, a missing file, or
+two runs of different datasets all exit 2, and a gate that could not run is not
+a gate that passed. Treating it as either of the others is how a broken
+comparison gets read as a green build.
+
+`--fail-on-worse` defaults to `0`: any regression fails. A number above zero is
+deciding in advance how much breakage is acceptable, which is a decision worth
+making out loud in the workflow file rather than inheriting from a default.
+
+### Turning a failure you watched into a case
+
+A run you saw go wrong can become a row in the set rather than leaving the
+loop:
+
+```bash
+curl -s localhost:5900/api/traces/dataset \
+  -H 'content-type: application/json' \
+  -d '{"trace_ids": ["<id>"], "name": "regressions", "only_errors": true}'
+```
+
+Every case comes back with **no expected answer**. The row is evidence that a
+run happened; deciding what the right answer was is a judgement, and one
+invented for you would be indistinguishable from one you made.
 
 ## What it will not do
 
