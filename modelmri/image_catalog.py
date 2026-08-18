@@ -167,8 +167,11 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             f"checkpoints nothing here can load."
         )
 
+    asked = int(limit or 24)
+    used = max(1, min(asked, MAX_RESULTS))
+
     params: list[tuple[str, str]] = [
-        ("limit", str(max(1, min(int(limit or 24), MAX_RESULTS)))),
+        ("limit", str(used)),
         ("sort", "downloads"),
         ("direction", "-1"),
         ("filter", tag),
@@ -204,7 +207,7 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             "is on this machine."
         ) from err
 
-    here, partial = _cached_ids()
+    here, partial, cache_capped = _cached_ids()
     spec = TASKS[tag]
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
@@ -222,8 +225,12 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
                 # checkpoint — only its own config can settle that, and
                 # `imaging.detect` reads it at load time.
                 "families_possible": list(spec["families"]),
-                "downloads": m.get("downloads", 0),
-                "likes": m.get("likes", 0),
+                # `None`, not 0, when the Hub published no count. Sorting by
+                # downloads is the default, so a repo whose count is simply
+                # absent would sort as the least popular thing on the page —
+                # a claim nobody made, rendered as a fact.
+                "downloads": _count(m.get("downloads")),
+                "likes": _count(m.get("likes")),
                 "gated": gated,
                 "updated": (m.get("lastModified") or "")[:10],
                 # `None`, never 0. The Hub publishes nothing to go on for GGUF
@@ -241,11 +248,31 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
                 "partial": repo in partial,
             }
         )
-    return out
+    # Both caps ride on the rows, because a caller that cannot see them
+    # reports a truncated list as a complete one. `search` is the function
+    # that APPLIES them, so it is the function that has to say so.
+    return _Rows(out, limit_asked=asked, limit_used=used, cache_capped=cache_capped)
+
+
+class _Rows(list):
+    """The rows, plus what was cut to produce them.
+
+    A `list` subclass rather than a new return shape: every caller and test
+    indexes and iterates this exactly as before, and the two caps are readable
+    by the route that renders the sentence. A cap nobody can see is reported
+    as a complete list.
+    """
+
+    def __init__(self, rows, *, limit_asked, limit_used, cache_capped):
+        super().__init__(rows)
+        self.limit_asked = limit_asked
+        self.limit_used = limit_used
+        self.cache_capped = cache_capped
 
 
 def _cached_ids() -> tuple:
-    """`(with_weights, configs_only)` — what is here, split by whether it is USABLE.
+    """`(with_weights, configs_only, capped)` — what is here, and whether the
+    walk hit its own limit.
 
     Returns two sets, and the split is the whole point. `imaging.scan_cache`
     admits an entry the moment a snapshot directory identifies, which a lone
@@ -271,7 +298,13 @@ def _cached_ids() -> tuple:
         found = imaging.scan_cache()
     except Exception:
         log.warning("could not read the image cache", exc_info=True)
-        return with_weights, configs_only
+        return with_weights, configs_only, False
+
+    # `scan_cache` stops at its own limit, and a repo past that point is
+    # reported as NOT cached — which reads as "you do not have this" for a
+    # model sitting on the disk. The cap travels so a caller can say the list
+    # is partial rather than complete.
+    capped = len(found) >= imaging.SCAN_CACHE_LIMIT
 
     for model in found:
         try:
@@ -283,7 +316,7 @@ def _cached_ids() -> tuple:
             log.warning("could not size %s", model.path, exc_info=True)
             weighs = 0
         (with_weights if weighs > 0 else configs_only).add(model.path)
-    return with_weights, configs_only
+    return with_weights, configs_only, capped
 
 
 def local() -> list[dict]:
@@ -322,6 +355,19 @@ def local() -> list[dict]:
         )
     out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
     return out
+
+
+def _count(value):
+    """A published count, or `None` when the Hub published none.
+
+    Not `0`. Sorting by downloads is the default, so a repo whose count is
+    simply absent would sort as the least popular thing on the page — a claim
+    nobody made, rendered as a fact. `isinstance(True, int)` is True, so a
+    bool is rejected rather than counted as 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 def _path_of(found):
@@ -393,7 +439,7 @@ def size_of(repo: str) -> dict:
         raise Refusal(f"The Hub did not describe `{name}` in a shape this reads.")
 
     weighs = hub.weight_bytes(raw)
-    here, partial = _cached_ids()
+    here, partial, _capped = _cached_ids()
     cached = name in here
     incomplete = name in partial
     return {

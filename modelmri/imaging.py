@@ -466,7 +466,15 @@ def _read_json(path: Path):
         return None
 
 
-def scan_cache(hub: str | Path | None = None, limit: int = 200) -> list[ImageModel]:
+# How many cache entries `scan_cache` will walk. Named rather than inline so a
+# caller can say the list is partial: a repo past this point comes back as NOT
+# cached, which reads as "you do not have this" for a model on the disk.
+SCAN_CACHE_LIMIT = 200
+
+
+def scan_cache(
+    hub: str | Path | None = None, limit: int = SCAN_CACHE_LIMIT
+) -> list[ImageModel]:
     """Every image model already on this disk. Downloads nothing.
 
     Same rule as `discover.scan`: what is here, before asking anybody to type

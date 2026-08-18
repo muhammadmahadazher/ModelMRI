@@ -505,3 +505,59 @@ def test_search_marks_a_skeleton_row_as_partial_not_cached(tmp_path, monkeypatch
     assert row["id"] == "someone/sdxl"
     assert row["cached"] is False
     assert row["partial"] is True
+
+
+# ------------------------------------- absent is not zero, and caps are said
+
+
+def test_a_repo_with_no_published_download_count_reports_none_not_zero(monkeypatch):
+    """Sorting by downloads is the DEFAULT, so a repo whose count is simply
+    absent would sort as the least popular thing on the page — a claim nobody
+    made, rendered as a fact."""
+    _hub(monkeypatch, [{"id": "someone/quiet"}])
+    _cache(monkeypatch)
+
+    row = image_catalog.search()[0]
+    assert row["downloads"] is None
+    assert row["likes"] is None
+
+
+def test_a_published_zero_is_still_a_zero(monkeypatch):
+    """The other half. A repo the Hub says has 0 downloads HAS 0 downloads,
+    and turning that into `None` would lose a real measurement."""
+    _hub(monkeypatch, [{"id": "someone/new", "downloads": 0, "likes": 0}])
+    _cache(monkeypatch)
+
+    row = image_catalog.search()[0]
+    assert row["downloads"] == 0
+    assert row["likes"] == 0
+
+
+def test_a_boolean_count_is_not_read_as_one(monkeypatch):
+    """`isinstance(True, int)` is True, which is how a bool becomes 1."""
+    _hub(monkeypatch, [{"id": "someone/odd", "downloads": True}])
+    _cache(monkeypatch)
+
+    assert image_catalog.search()[0]["downloads"] is None
+
+
+def test_the_result_cap_travels_with_the_rows(monkeypatch):
+    """A cap nobody can see is reported as a complete list. `search` is the
+    function that APPLIES the clamp, so it is the one that has to say so."""
+    _hub(monkeypatch, [SIZED])
+    _cache(monkeypatch)
+
+    rows = image_catalog.search(limit=500)
+    assert rows.limit_asked == 500
+    assert rows.limit_used == image_catalog.MAX_RESULTS
+    # And it is still a list, so nothing that iterates or indexes it changed.
+    assert isinstance(rows, list)
+    assert rows[0]["id"] == "someone/sdxl"
+
+
+def test_a_limit_inside_the_cap_reports_no_clamp(monkeypatch):
+    _hub(monkeypatch, [SIZED])
+    _cache(monkeypatch)
+
+    rows = image_catalog.search(limit=5)
+    assert rows.limit_asked == rows.limit_used == 5

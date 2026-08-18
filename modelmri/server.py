@@ -1961,14 +1961,37 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=503)
 
         sized = [r for r in rows if r["size_bytes"]]
+        here = sum(1 for r in rows if r["cached"])
+        half = sum(1 for r in rows if r.get("partial"))
+        # Every cap that shaped this list is named. A truncation nobody is
+        # told about reads as "this is all there is".
+        cut = []
+        if rows.limit_asked > rows.limit_used:
+            cut.append(
+                f"{rows.limit_asked} were asked for and the Hub is queried for "
+                f"at most {rows.limit_used}"
+            )
+        if rows.cache_capped:
+            cut.append(
+                f"this machine's cache was walked to its {image_catalog.imaging.SCAN_CACHE_LIMIT}"
+                f"-entry limit, so a model past that point shows as not here"
+            )
         return {
             "models": rows,
             "task": (task or image_catalog.DEFAULT_TASK),
+            "limit_asked": rows.limit_asked,
+            "limit_used": rows.limit_used,
+            "cache_capped": rows.cache_capped,
             "means": (
-                f"{len(rows)} model(s) from the Hub, "
-                f"{sum(1 for r in rows if r['cached'])} of them already on this "
-                f"machine. {len(rows) - len(sized)} publish no size metadata, "
-                f"which is UNKNOWN rather than small. Nothing was downloaded."
+                f"{len(rows)} model(s) from the Hub, {here} already on this "
+                f"machine and {half} with a cache entry but no weights in it. "
+                f"{len(rows) - len(sized)} publish no size metadata, which is "
+                f"UNKNOWN rather than small. Nothing was downloaded."
+                + (
+                    " " + ". ".join(c[:1].upper() + c[1:] for c in cut) + "."
+                    if cut
+                    else ""
+                )
             ),
         }
 
