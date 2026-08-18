@@ -9,8 +9,8 @@ is representing — and steering lets you change it and watch the output move.
 
 ## Sparse autoencoders, briefly
 
-A model's residual stream is dense: 768 numbers per token in GPT-2, each of
-which participates in many unrelated things at once. That superposition is why
+A model's residual stream is dense: hundreds to thousands of numbers per token,
+each of which participates in many unrelated things at once. That superposition is why
 you can't read a neuron and learn anything.
 
 A sparse autoencoder is trained to re-express that stream in a much wider basis

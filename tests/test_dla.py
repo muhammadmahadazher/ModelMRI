@@ -95,8 +95,8 @@ def test_the_pieces_add_up_to_the_real_logit_minus_the_residual(attributed):
 
 def test_the_residual_is_measured_and_not_zero_on_gpt2(attributed):
     """The roadmap predicts this and it holds: freezing the LayerNorm scale
-    costs something real on GPT-2. Showing it is mandatory — without it the
-    chart is a fabricated 100%."""
+    costs something real. Showing it is mandatory — without it the chart is a
+    fabricated 100%."""
     assert attributed.residual != 0.0
     assert 0 < attributed.residual_share < 0.5
 
@@ -161,10 +161,11 @@ def test_the_norm_reconstruction_is_verified_before_anything_is_reported(gpt2):
 
 
 def test_the_tolerance_is_derived_from_the_dtype_not_chosen():
-    """1e-3 absolute refused gpt2 on a bf16 load: the reconstruction differed
-    by 0.347 at a magnitude of 199, which is 0.17% — better than one
-    representable bf16 step. `lens.py` records finding the same bug in its own
-    agreement check."""
+    """1e-3 absolute refused a healthy model on a bf16 load: at the magnitude
+    the stream actually reaches, the reconstruction differed by less than one
+    representable bf16 step. The tolerance was measuring the dtype rather than
+    the model. `lens.py` records finding the same bug in its own agreement
+    check."""
     from modelmri import dla
 
     assert not hasattr(dla, "NORM_AGREEMENT"), "the absolute epsilon is gone"
@@ -240,8 +241,9 @@ def test_the_counts_describe_the_decomposition_not_the_visible_slice():
     survivors — the STRONGEST rows, which are the least likely to be below
     the residual floor.
 
-    MEASURED on gpt2 at the default top_k=40: 157 components are decomposed,
-    117 of them fall below the floor, and the sentence said 0.
+    MEASURED at the default top_k=40: most of the decomposed components fall
+    below the floor and never reach the visible slice, and the sentence
+    counting them said 0.
     """
     from modelmri.dla import Attribution, Contribution
 

@@ -172,12 +172,12 @@ def toy(
 def test_an_sae_that_decomposes_nothing_is_refused_with_its_fvu():
     """FVU >= 1 means the features are not a decomposition of anything.
 
-    Not hypothetical: the shipped SAE scored FVU 13579.24 with L0 7491.5 on
-    gpt2 blocks.8.hook_resid_pre before saes.py calibrated its input
-    convention. Ranking 7,491 simultaneously-firing features by causal effect
-    would have been ranking arbitrary directions with a confident number
-    attached — so the refusal carries the measured FVU rather than the word
-    "unusable".
+    Not hypothetical: the shipped SAE scored an FVU in the thousands, with
+    thousands of features firing at once, before saes.py calibrated its input
+    convention. Ranking that many simultaneously-firing features by causal
+    effect would have been ranking arbitrary directions with a confident
+    number attached — so the refusal carries the measured FVU rather than the
+    word "unusable".
     """
     with pytest.raises(feature_ablate.FeatureAblationError) as err:
         toy(sae=unusable_sae())
@@ -243,11 +243,11 @@ def test_only_features_that_fire_are_candidates():
 
 
 def test_prompt_scope_puts_features_from_earlier_tokens_on_trial():
-    """Measured on gpt2: 4 of the global top-8 fire only at earlier tokens.
+    """Measured: features in the global top-8 fire only at earlier tokens.
 
     The panel cannot show those at all today, and a position-local ranking
-    cannot either — they reach the prediction through attention. Position
-    scope had 43 candidates against 494 for the prompt on that run.
+    cannot either — they reach the prediction through attention. Prompt scope
+    puts far more candidates on trial than position scope does.
     """
     here = toy(scope="position")
     across = toy(scope="prompt")
@@ -285,11 +285,10 @@ def test_the_mechanism_check_is_about_the_edit_landing_and_says_so():
 
     It used to be a different claim — that re-encoding the edited stream shows
     the feature gone — taken on ONE row and reported as a property of the edit
-    and the SAE. Measured on gpt2 blocks.8.hook_resid_pre, that claim is false
-    on 38 of the 43 features firing at the attributed token, with residual
-    activations from 10.1% to 60.3%, and the 5 rows that pass do so because
-    relu clamped an overshoot (feature 5856's pre-activation goes 35.546 to
-    -2.331 for an activation of 35.546). So the tick is now about the edit,
+    and the SAE. Measured on the real SAE at blocks.8.hook_resid_pre, that
+    claim is false for most of the features firing at the attributed token,
+    and the few rows that do pass pass because relu clamped an overshoot
+    rather than because the feature left. So the tick is now about the edit,
     which really is a property of the edit and the dtype, and what the SAE
     still reads is per row.
     """
@@ -324,16 +323,16 @@ def test_every_scored_row_reports_what_the_encoder_still_reads():
 def test_the_edit_touches_one_direction_and_the_mean_moves_with_it():
     """What separates this from replacing the stream with the reconstruction.
 
-    Measured on gpt2: substituting the SAE's reconstruction while removing
-    NOTHING costs 0.0775 nats at the attribution position, more than 41 of the
-    43 features firing there score in total. This edit's no-op costs nothing
-    because it changes nothing.
+    Measured: substituting the SAE's reconstruction while removing NOTHING
+    costs more at the attribution position than almost every feature firing
+    there scores in total. This edit's no-op costs nothing because it changes
+    nothing.
 
     The edited token's d_model MEAN does move, and it is asserted here because
     the module used to claim it did not. `act*W_dec[f]` has a non-zero mean —
-    measured -0.0903948 for gpt2's feature 5856, 7.05% of the edit's norm — and
-    holding `mu` at the value the decomposition was taken with is exactly why
-    this edit equals "zero the feature, decode, re-add the error".
+    measured on the real SAE, not assumed — and holding `mu` at the value the
+    decomposition was taken with is exactly why this edit equals "zero the
+    feature, decode, re-add the error".
     """
     sae, resid = synthetic_sae(), toy_stream()
     feats = sae.encode(resid)

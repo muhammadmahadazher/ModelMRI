@@ -35,9 +35,9 @@ def block_with(width: int, head_dim: int | None = None) -> torch.nn.Module:
 
 
 def test_head_dim_is_read_from_the_projection_not_guessed():
-    """`hidden_size // n_heads` is right for gpt2 and wrong by 2x on
-    Qwen3-0.6B (128, not 64) and wrong on gemma-3-270m (256, not 160).
-    The wrong value ablates half of one head plus half of the next."""
+    """`hidden_size // n_heads` is wrong by 2x on Qwen3-0.6B (128, not 64)
+    and wrong on gemma-3-270m (256, not 160). The wrong value ablates half
+    of one head plus half of the next."""
     # 16 heads x 128 = 2048 wide, exactly Qwen3-0.6B's shape.
     assert ablate.head_geometry(block_with(2048), 16) == 128
     # 4 x 256 = 1024, gemma-3-270m-it's shape.
@@ -124,18 +124,16 @@ _CURRENT: dict = {"hook": None}
 
 
 def test_ranking_uses_kl_so_a_constant_logit_shift_scores_zero():
-    """Ablation shifts whole logit vectors. Measured on gpt2 L0H0 with the
-    prompt "The capital of France is": the top token's logit moves -0.258
-    while the vocabulary mean moves -0.145, so the honest residual is -0.113
-    and a raw logit difference calls that head 2.3x more important than it is.
+    """Ablation shifts whole logit vectors. A raw logit difference reads that
+    shift as importance; the distribution behind it has not moved, so KL is
+    the honest question and a uniform shift has to score zero.
     """
     p = torch.tensor([0.7, 0.2, 0.1])
     shifted = torch.log(p) + 12.345  # same distribution, different logits
     q = torch.softmax(shifted, dim=-1)
     # Not zero — float32 round-tripping through log/softmax costs ~1e-8.
-    # The bound is set against the smallest per-head signal worth resolving on
-    # gpt2 layer 0 (0.0028, head 6), which this is three orders of magnitude
-    # below.
+    # The bound is set against the smallest per-head signal worth resolving,
+    # which this sits orders of magnitude below.
     assert ablate.kl_nats(p, q) < 1e-6
 
 
@@ -209,9 +207,9 @@ def _tiny_run(baseline: str = "zero") -> dict:
 
 
 def test_the_answer_names_its_baseline():
-    """On gpt2 layer 0, zero-ablation ranks heads 7, 10, 9; replacing each
-    head with its mean ranks 3, 1, 10. Same model, same prompt, different
-    question — so an unlabelled number is the lie."""
+    """Zero-ablation and mean-ablation rank the same layer's heads in
+    different orders. Same model, same prompt, different question — so an
+    unlabelled number is the lie."""
     assert _tiny_run("zero")["baseline"] == "zero"
     assert _tiny_run("mean")["baseline"] == "mean"
 
@@ -246,9 +244,9 @@ def test_the_answer_carries_a_measured_noise_floor():
 
 
 def test_the_answer_says_the_scores_are_not_shares():
-    """Measured on gpt2 layer 0: the twelve per-head KLs sum to 1.995 while
-    ablating the whole layer gives 0.208. Presenting these as portions of a
-    prediction would be a fabrication."""
+    """The per-head KLs do not sum to the cost of ablating the whole layer —
+    measured, they overshoot it. Presenting them as portions of a prediction
+    would be a fabrication."""
     means = _tiny_run()["means"].lower()
     assert "not" in means and ("add up" in means or "share" in means)
 

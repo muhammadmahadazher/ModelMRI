@@ -91,7 +91,7 @@ def test_a_model_far_past_the_gpu_needs_confirmation(monkeypatch):
 
 @pytest.mark.parametrize(
     "gb",
-    [0.55, 1.5, 16.0, 30.0],  # gpt2, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
+    [0.55, 1.5, 16.0, 30.0],  # a 0.1B, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
 )
 def test_ordinary_models_are_not_blocked(monkeypatch, gb):
     """A guard that fires on normal work gets switched off."""
@@ -292,11 +292,11 @@ def _run_prefetch(monkeypatch, repo_files, repo="acme/model"):
 
 
 def test_a_redundant_second_copy_of_the_weights_is_not_downloaded(monkeypatch):
-    """gpt2 ships model.safetensors AND an identical pytorch_model.bin AND a
-    rust_model.ot. Measured: 1.7 GB pulled where 523 MB was needed, because
-    the ignore list covered TensorFlow, Flax, ONNX and TFLite but not Rust or
-    the redundant .bin. transformers loads the safetensors and never opens
-    the others."""
+    """A repo can ship model.safetensors AND an identical pytorch_model.bin
+    AND a rust_model.ot. Measured: several times the needed bytes came down,
+    because the ignore list covered TensorFlow, Flax, ONNX and TFLite but not
+    Rust or the redundant .bin. transformers loads the safetensors and never
+    opens the others."""
     got = _run_prefetch(
         monkeypatch,
         [
