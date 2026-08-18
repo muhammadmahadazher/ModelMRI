@@ -194,6 +194,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/image/filmstrip` | Image Filmstrip |
 | `POST` | `/api/image/knockout` | Image Knockout |
 | `POST` | `/api/image/load` | Image Load |
+| `POST` | `/api/image/steps` | Image Steps Run |
 | `POST` | `/api/image/unload` | Image Unload |
 | `POST` | `/api/judge` | Judge Score |
 | `POST` | `/api/judge/plan` | Judge Plan |
