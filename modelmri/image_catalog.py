@@ -204,7 +204,7 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             "is on this machine."
         ) from err
 
-    here = _cached_ids()
+    here, partial = _cached_ids()
     spec = TASKS[tag]
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
@@ -230,25 +230,60 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
                 # and pickle repos, and a picker rendering "0.0 GB" for an
                 # unknown invites the exact click a size column prevents.
                 "size_bytes": weighs or None,
-                # Answered by looking at the disk rather than guessed.
+                # Answered by looking at the disk rather than guessed, and
+                # "here" means the WEIGHTS are here. A repo whose cache entry
+                # holds a config and nothing else still has its whole download
+                # ahead of it.
                 "cached": repo in here,
+                # The third state, reported rather than folded into either:
+                # an interrupted download looks cached to a directory listing
+                # and costs the full size to finish.
+                "partial": repo in partial,
             }
         )
     return out
 
 
-def _cached_ids() -> set:
-    """Repo ids already in this machine's cache, or an empty set.
+def _cached_ids() -> tuple:
+    """`(with_weights, configs_only)` — what is here, split by whether it is USABLE.
 
-    Never raises. A cache that cannot be read is a reason to say "not cached"
-    for every row, not a reason to fail a search — the listing is still useful
-    and the load will answer for itself.
+    Returns two sets, and the split is the whole point. `imaging.scan_cache`
+    admits an entry the moment a snapshot directory identifies, which a lone
+    4 KB `config.json` satisfies. Treating that as "already on this machine"
+    is how `/api/image/size` came to answer:
+
+        Qwen/Qwen3.6-27B  ->  "already on this machine, so nothing would be
+                               downloaded"   (55.6 GB still to transfer)
+
+    measured live, alongside `/api/image/local` reporting the same repo as
+    `complete: false` in the same panel. Two routes answering one question
+    differently, and the one whose entire job is pricing a download before it
+    is spent was the one that was wrong.
+
+    Never raises. A cache that cannot be read means "not cached" for every
+    row — the listing is still useful and the load will answer for itself.
     """
+    from . import image_runtime
+
+    with_weights: set = set()
+    configs_only: set = set()
     try:
-        return {m.path for m in imaging.scan_cache()}
+        found = imaging.scan_cache()
     except Exception:
-        log.warning("could not read the image cache while searching", exc_info=True)
-        return set()
+        log.warning("could not read the image cache", exc_info=True)
+        return with_weights, configs_only
+
+    for model in found:
+        try:
+            weighs = image_runtime._weights_bytes(_path_of(model))
+        except Exception:
+            # Unsizeable is not the same as absent, and it is not "here"
+            # either — an entry nothing could measure must not be reported as
+            # a download that costs nothing.
+            log.warning("could not size %s", model.path, exc_info=True)
+            weighs = 0
+        (with_weights if weighs > 0 else configs_only).add(model.path)
+    return with_weights, configs_only
 
 
 def local() -> list[dict]:
@@ -358,19 +393,32 @@ def size_of(repo: str) -> dict:
         raise Refusal(f"The Hub did not describe `{name}` in a shape this reads.")
 
     weighs = hub.weight_bytes(raw)
-    cached = name in _cached_ids()
+    here, partial = _cached_ids()
+    cached = name in here
+    incomplete = name in partial
     return {
         "id": name,
         "size_bytes": weighs or None,
         "gated": bool(raw.get("gated", False)),
         "cached": cached,
-        "means": _size_means(name, weighs, cached),
+        "partial": incomplete,
+        "means": _size_means(name, weighs, cached, incomplete),
     }
 
 
-def _size_means(name: str, weighs: int, cached: bool) -> str:
+def _size_means(name: str, weighs: int, cached: bool, partial: bool = False) -> str:
     if cached:
         where = f"`{name}` is already on this machine, so nothing would be downloaded."
+    elif partial:
+        # The state that used to be reported as "nothing would be downloaded".
+        # A cache entry holding configs and no weights looks present to a
+        # directory listing and has its entire transfer still ahead of it.
+        size = f"{weighs / 1e9:,.2f} GB" if weighs else "an unpublished amount"
+        where = (
+            f"`{name}` has a cache entry on this machine but NO WEIGHTS in it — "
+            f"an interrupted download rather than a model that is ready. "
+            f"Finishing it costs {size}, not nothing."
+        )
     elif weighs:
         where = (
             f"`{name}` publishes {weighs / 1e9:,.2f} GB of weights, which is "

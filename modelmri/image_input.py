@@ -111,11 +111,25 @@ def decode(data_url: str):
     import io
 
     try:
+        # Pillow is LAZY: `open` reads the header and nothing else, so `.size`
+        # is available here without a single pixel being decompressed.
         picture = Image.open(io.BytesIO(raw))
-        # Pillow is lazy: `open` reads the header only, so a truncated or
-        # hostile file fails HERE rather than three functions later inside a
-        # sweep that has already been priced and started.
-        picture.load()
+        width, height = picture.size
+    except Image.DecompressionBombError as err:
+        # Pillow's OWN bound, which is VERSION-DEPENDENT and not quoted here:
+        # `Image.MAX_IMAGE_PIXELS` measured 89,478,485 on this machine, and a
+        # number written into a comment would be wrong on the next release.
+        # It can fire before this module's, and when it does the refusal below
+        # said "those bytes are
+        # not an image this can decode", which is false and sends somebody to
+        # re-export a file whose only problem is its size. Two refusals
+        # answering "is this too big?" have to agree about what the answer is.
+        raise BadImage(
+            f"that image is too large to decode safely — the imaging library "
+            f"refused it before this did ({type(err).__name__}). This reads up "
+            f"to {MAX_PIXELS:,} pixels; anything past that is a picture nobody "
+            f"needs at full size for a measurement the model resizes anyway."
+        ) from None
     except Exception as err:
         # The class, never the text. Pillow's messages carry file paths.
         raise BadImage(
@@ -125,15 +139,31 @@ def decode(data_url: str):
             f"problem."
         ) from None
 
-    width, height = picture.size
+    # BEFORE `load()`, which is the entire point and is where this check used
+    # to NOT be. A decompression bomb is a few kilobytes of PNG that expands to
+    # gigabytes of pixels; running the bound after `load()` means the expansion
+    # this refuses has already happened, and the refusal is a message about
+    # memory that is already gone.
     if width * height > MAX_PIXELS:
         raise BadImage(
             f"that image is {width:,}x{height:,}, which is "
             f"{width * height:,} pixels and above the {MAX_PIXELS:,} this "
             f"decodes. A few kilobytes of compressed file can expand to "
             f"gigabytes of pixels, so the limit is on the decoded size rather "
-            f"than the transferred one."
+            f"than the transferred one — and it is checked from the header, "
+            f"before anything is decompressed."
         )
+
+    try:
+        # Only now. A truncated or hostile file fails here rather than three
+        # functions later inside a sweep that has been priced and started.
+        picture.load()
+    except Exception as err:
+        raise BadImage(
+            f"that image's header read cleanly at {width:,}x{height:,} but its "
+            f"pixels did not ({type(err).__name__}) — a truncated or corrupt "
+            f"file."
+        ) from None
 
     # RGB, always. A palette or greyscale image reaching a three-channel model
     # is a shape error deep inside a forward pass; a four-channel RGBA one

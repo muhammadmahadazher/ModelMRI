@@ -418,3 +418,74 @@ def test_a_measurement_needing_a_processor_refuses_with_the_reason(monkeypatch):
     assert "owner/name" in said
     assert "torchvision" in said
     assert "No image model is loaded" not in said
+
+
+# ------------------------------------------- the bomb, and where it is caught
+
+
+def test_a_decompression_bomb_is_refused_from_the_header(monkeypatch):
+    """The bound existed and ran AFTER `picture.load()`, so the expansion it
+    refuses had already happened and the refusal was a message about memory
+    that was already gone.
+
+    `Image.open` is lazy — it reads the header and gives `.size` without
+    decoding a pixel — so the check belongs between `open` and `load`.
+
+    Measured: 9,000x9,000 (81M pixels) from 78,702 compressed bytes is refused
+    in 0.001s with a 0.3 MB peak allocation.
+    """
+    import base64
+    import io as _io
+    import tracemalloc
+
+    from PIL import Image
+
+    from modelmri import image_input
+
+    big = Image.new("L", (9000, 9000), 0)
+    buf = _io.BytesIO()
+    big.save(buf, "PNG", optimize=True)
+    url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(image_input.BadImage) as caught:
+            image_input.decode(url)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    said = str(caught.value)
+    assert "81,000,000 pixels" in said
+    assert "before anything is decompressed" in said
+    # 81M pixels at one byte each would be 81 MB. Nothing near that was
+    # allocated, which is the whole claim.
+    assert peak < 20_000_000, f"the image was decompressed anyway: {peak:,} bytes"
+
+
+def test_the_imaging_library_s_own_bound_gets_an_honest_sentence():
+    """Pillow has its own limit and it can fire first. Without a dedicated arm
+    the refusal said "those bytes are not an image this can decode", which is
+    FALSE — it is a perfectly good image that is too large — and it sends
+    somebody to re-export a file whose only problem is its size."""
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    from modelmri import image_input
+
+    huge = Image.MAX_IMAGE_PIXELS or 0
+    side = int((huge * 2) ** 0.5) + 1
+    big = Image.new("L", (side, side), 0)
+    buf = _io.BytesIO()
+    big.save(buf, "PNG", optimize=True)
+    url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    with pytest.raises(image_input.BadImage) as caught:
+        image_input.decode(url)
+    said = str(caught.value)
+    assert "too large to decode safely" in said
+    assert "not an image this can decode" not in said, (
+        "a too-big image was reported as an unreadable one"
+    )

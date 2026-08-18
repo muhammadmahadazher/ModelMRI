@@ -395,13 +395,21 @@ def test_an_unknown_family_sorts_below_everything_that_was_identified(
     )
 
 
-def test_a_repo_already_on_this_disk_says_nothing_would_be_downloaded(monkeypatch):
+def test_a_repo_already_on_this_disk_says_nothing_would_be_downloaded(
+    tmp_path, monkeypatch
+):
     """Whether a repo is here is a question about this machine, so it is
     answered by looking rather than from the listing. A reader pricing
     something they already have needs to be told the download is zero, not the
-    file size."""
+    file size.
+
+    The entry has REAL WEIGHTS on disk. An earlier version of this test stubbed
+    `ImageModel(path=..., directory="")` — an object with no notion of
+    completeness — and so codified the bug it was meant to guard: a cache entry
+    holding one config was reported as a free download of a 55 GB model.
+    """
     _hub(monkeypatch, dict(SIZED))
-    _cache(monkeypatch, imaging.ImageModel(path="someone/sdxl", directory=""))
+    _cache(monkeypatch, _cache_entry(tmp_path, "someone/sdxl", weights_mb=4))
 
     priced = image_catalog.size_of("someone/sdxl")
     assert priced["cached"] is True
@@ -442,3 +450,58 @@ def test_a_repo_name_cannot_walk_out_of_the_hub_models_endpoint(monkeypatch):
         assert "not a Hub repo id" in str(caught.value)
 
     assert asked == [], f"a request was built for a hostile name: {asked}"
+
+
+# ------------------------------------ what "already here" is allowed to mean
+
+
+def test_a_cache_entry_with_no_weights_is_not_a_free_download(tmp_path, monkeypatch):
+    """The worst finding of the review, reproduced live before the fix:
+
+        GET /api/image/size?repo=Qwen/Qwen3.6-27B
+        -> "already on this machine, so nothing would be downloaded"
+
+    That repo's cache entry held one 4 KB `config.json`. 55.6 GB was quoted as
+    free, and `/api/image/local` called the same repo `complete: false` in the
+    same panel — the one route whose whole job is pricing a download before it
+    is spent, disagreeing with the row beside it.
+
+    `imaging.scan_cache` admits an entry as soon as a snapshot directory
+    identifies, which a config alone satisfies. "Here" has to mean the WEIGHTS
+    are here.
+    """
+    skeleton = _cache_entry(tmp_path, "someone/half-done", weights_mb=0)
+    _cache(monkeypatch, skeleton)
+    _hub(monkeypatch, SIZED)
+
+    priced = image_catalog.size_of("someone/half-done")
+    assert priced["cached"] is False, "an interrupted download is not 'already here'"
+    assert priced["partial"] is True
+    assert "NO WEIGHTS" in priced["means"]
+    assert "nothing would be downloaded" not in priced["means"]
+
+
+def test_a_complete_entry_still_reports_as_here(tmp_path, monkeypatch):
+    """The other branch, so the fix cannot become 'nothing is ever cached'."""
+    whole = _cache_entry(tmp_path, "someone/finished", weights_mb=4)
+    _cache(monkeypatch, whole)
+    _hub(monkeypatch, SIZED)
+
+    priced = image_catalog.size_of("someone/finished")
+    assert priced["cached"] is True
+    assert priced["partial"] is False
+    assert "nothing would be downloaded" in priced["means"]
+
+
+def test_search_marks_a_skeleton_row_as_partial_not_cached(tmp_path, monkeypatch):
+    """`search` shares `_cached_ids`, so the same repo was getting a Load
+    button instead of a download, and its gated warning suppressed by
+    `gated && !cached` — a licence prompt withheld for weights that have not
+    in fact transferred."""
+    _cache(monkeypatch, _cache_entry(tmp_path, "someone/sdxl", weights_mb=0))
+    _hub(monkeypatch, [SIZED])
+
+    row = image_catalog.search()[0]
+    assert row["id"] == "someone/sdxl"
+    assert row["cached"] is False
+    assert row["partial"] is True
