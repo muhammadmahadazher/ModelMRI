@@ -90,8 +90,16 @@ def _one_line(value) -> str:
     one is visible in the value itself.
     """
     text = str(value)
-    for bad in (chr(13) + chr(10), chr(10), chr(13), chr(27), chr(0)):
-        text = text.replace(bad, " ")
+    # Literal escapes, deliberately. An earlier version built these with
+    # `chr(10)` and friends, which is the same set of characters and is
+    # invisible to a static analyser looking for newline replacement —
+    # CodeQL raised the finding again against it. A sanitiser a reviewer
+    # (or a scanner) cannot recognise is one nobody can rely on.
+    text = text.replace("\r\n", " ")
+    text = text.replace("\n", " ")
+    text = text.replace("\r", " ")
+    text = text.replace("\x1b", " ")
+    text = text.replace("\x00", " ")
     return text.strip()
 
 
