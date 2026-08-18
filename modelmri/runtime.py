@@ -450,6 +450,49 @@ class ModelStatus:
         return asdict(self)
 
 
+def text_config(cfg):
+    """The sub-config describing the LANGUAGE tower.
+
+    A text-only config describes it directly. A multimodal one (Gemma 3 and 4,
+    PaliGemma, Qwen-VL) has no shape of its own at the top level and nests one
+    config per modality, because "how many layers" has three answers for those
+    models and the tool is asking about the text one.
+
+    Returns `cfg` unchanged when there is nothing nested, so every caller can
+    use it unconditionally rather than each deciding for itself -- which is
+    how the fourteen call sites for this ended up disagreeing.
+    """
+    if getattr(cfg, "num_hidden_layers", None) is not None:
+        return cfg
+    inner = getattr(cfg, "text_config", None)
+    return cfg if inner is None else inner
+
+
+def decoder_blocks(root):
+    """The ModuleList of decoder blocks, or None if this layout is unknown.
+
+    Ordered most specific first: a multimodal model has BOTH
+    `model.language_model.layers` and `model.vision_tower.encoder.layers`, and
+    picking the wrong one draws attention maps for the image encoder while the
+    panel says they are the text model's.
+    """
+    for path in (
+        ("transformer", "h"),  # GPT-2 family
+        ("model", "language_model", "layers"),  # Gemma 3/4, PaliGemma
+        ("language_model", "model", "layers"),
+        ("model", "layers"),  # Llama, Qwen, Mistral, Gemma 1/2
+    ):
+        node = root
+        for name in path:
+            node = getattr(node, name, None)
+            if node is None:
+                break
+        else:
+            if hasattr(node, "__len__") and len(node):
+                return node
+    return None
+
+
 class ModelRuntime:
     """Owns the loaded model; thread-safe load, streaming generate, attention."""
 
@@ -596,7 +639,7 @@ class ModelRuntime:
             n_layers=(
                 int(
                     getattr(
-                        getattr(self.model, "config", None),
+                        text_config(getattr(self.model, "config", None)),
                         "num_hidden_layers",
                         0,
                     )
@@ -1027,7 +1070,7 @@ class ModelRuntime:
             # an architecture it cannot walk, and asking it for layer 0 first
             # turns "unsupported layout" into that message rather than into an
             # IndexError from a range built on the wrong number.
-            n_layers = int(self.model.config.num_hidden_layers)
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
                 result = patch.trace(
@@ -1068,11 +1111,9 @@ class ModelRuntime:
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""
-        root = self.model
-        if hasattr(root, "transformer") and hasattr(root.transformer, "h"):
-            return root.transformer.h[layer]  # GPT-2 family
-        if hasattr(root, "model") and hasattr(root.model, "layers"):
-            return root.model.layers[layer]  # Llama/Qwen/Gemma family
+        blocks = decoder_blocks(self.model)
+        if blocks is not None:
+            return blocks[layer]
         # A refusal, not an internal error, and the same one lens.py gives for
         # a missing final norm: this architecture is not one of the layouts
         # ModelMRI knows how to walk. It is user-reachable — POST
@@ -1086,7 +1127,9 @@ class ModelRuntime:
         raise Refusal(
             f"could not find this model's decoder blocks, so there is no layer "
             f"{layer} to read. Supported layouts: transformer.h (the GPT-2 "
-            f"family) and model.layers (Llama, Qwen, Gemma). If this "
+            f"family), model.layers (Llama, Qwen, Gemma 1/2) and "
+            f"model.language_model.layers (the multimodal Gemma 3/4 and "
+            f"PaliGemma shape). If this "
             f"architecture keeps its blocks somewhere else, open an issue "
             f"with the model id and it becomes one line here."
         )
@@ -1222,8 +1265,8 @@ class ModelRuntime:
         self.last_telemetry = run.finish(
             prompt_tokens=n_prompt,
             generated_tokens=generated,
-            n_layers=int(getattr(cfg, "num_hidden_layers", 0) or 0),
-            n_heads=int(getattr(cfg, "num_attention_heads", 0) or 0),
+            n_layers=int(getattr(text_config(cfg), "num_hidden_layers", 0) or 0),
+            n_heads=int(getattr(text_config(cfg), "num_attention_heads", 0) or 0),
             dtype_bytes=2 if self.accel.dtype in ("float16", "bfloat16") else 4,
             device=self.accel.torch_device,
             dtype=self.accel.dtype,
@@ -1337,8 +1380,8 @@ class ModelRuntime:
         # unguarded turned "this architecture has no attention" into an
         # AttributeError and a 500 — the panel said the tool was broken when
         # the honest answer is that there is nothing here to show.
-        n_layers = getattr(cfg, "num_hidden_layers", None)
-        n_heads = getattr(cfg, "num_attention_heads", None)
+        n_layers = getattr(text_config(cfg), "num_hidden_layers", None)
+        n_heads = getattr(text_config(cfg), "num_attention_heads", None)
         if n_layers is None or n_heads is None:
             return {
                 "available": False,
@@ -1385,7 +1428,7 @@ class ModelRuntime:
                         f"cannot read {variant!r} — expected ablate:LAYER.HEAD"
                     ) from err
                 block = self._block(a_layer)
-                n_heads = self.model.config.num_attention_heads
+                n_heads = text_config(self.model.config).num_attention_heads
                 # AblationError is a refusal — its own docstring says "we
                 # cannot take this measurement, and we say why rather than
                 # guess" — but it is still a plain RuntimeError, and this is
@@ -1635,7 +1678,10 @@ class ModelRuntime:
                 "Generate something first, then rank its heads."
             )
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             if layer is not None and not 0 <= layer < n_layers:
                 raise BadRequest(f"layer must be in [0,{n_layers})")
             layers = list(range(n_layers)) if layer is None else [layer]
@@ -1771,7 +1817,10 @@ class ModelRuntime:
         with self._lock:
             self._require_live_generation("Generate something first.")
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             if layer is not None and not 0 <= layer < n_layers:
                 raise BadRequest(f"layer must be in [0,{n_layers})")
             layers = list(range(n_layers)) if layer is None else [layer]
@@ -1969,7 +2018,10 @@ class ModelRuntime:
 
         with self._lock:
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             layers = list(range(n_layers)) if layer is None else [layer]
             ids = self.last_ids.unsqueeze(0).to(self.device)
             size = int(self.last_ids.shape[0])
@@ -2408,7 +2460,7 @@ class ModelRuntime:
                     self.tokenizer,
                     [
                         self._block(i)
-                        for i in range(self.model.config.num_hidden_layers)
+                        for i in range(text_config(self.model.config).num_hidden_layers)
                     ],
                     decode,
                     source_prompt,
@@ -2459,7 +2511,7 @@ class ModelRuntime:
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
 
-            n_layers = int(self.model.config.num_hidden_layers)
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
                 out = patch.path_trace(
@@ -2536,7 +2588,7 @@ class ModelRuntime:
         grid = self.patch_trace(clean, corrupt)
         sites = list(grid.get("sites") or [])
 
-        n_layers = int(self.model.config.num_hidden_layers)
+        n_layers = int(text_config(self.model.config).num_hidden_layers)
         blocks = [self._block(i) for i in range(n_layers)]
 
         def trace_fn(layer: int, position: int) -> dict:
@@ -2629,7 +2681,7 @@ class ModelRuntime:
                 texts.append(text)
                 labels.append(label)
 
-            n_layers = int(self.model.config.num_hidden_layers)
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             layers = list(range(n_layers))
             ids_list = [
                 self.tokenizer(t, return_tensors="pt")["input_ids"].to(self.device)
@@ -3875,7 +3927,7 @@ class ModelRuntime:
                 f"SAE d_in={sae.d_in} does not match model hidden_size={d_model} "
                 f"({self.hf_id}). This SAE was trained on a different model."
             )
-        n_layers = self.model.config.num_hidden_layers
+        n_layers = text_config(self.model.config).num_hidden_layers
         if not 0 <= sae.layer < n_layers:
             raise BadRequest(f"SAE layer {sae.layer} out of range [0,{n_layers})")
         self._block(sae.layer)  # raises early if architecture unsupported

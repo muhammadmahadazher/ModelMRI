@@ -1887,3 +1887,93 @@ def test_the_guard_only_covers_the_branch_that_names_a_path(route: str):
         route, json={"texts": ["a"], "question": "q", "prompts": ["a"]}
     )
     assert r.status_code != 403, "a request naming no path was refused as if it did"
+
+
+# ---------------------------------------------------------------------------
+# Multimodal configs.
+#
+# MEASURED on google/gemma-4-E4B-it-qat-mobile-transformers: `Gemma4Config`
+# has no `num_hidden_layers` at all. The shape lives in `text_config` (42
+# layers, 8 heads) beside `vision_config` (16) and `audio_config` (12), and the
+# decoder blocks are at `model.language_model.layers` rather than
+# `model.layers`. Every Gemma 3 and Gemma 4 is shaped this way, so before this
+# the newest models the tool can load reported `n_layers: None` and no
+# introspection feature worked on them.
+# ---------------------------------------------------------------------------
+
+
+def test_a_multimodal_config_reports_the_text_towers_shape():
+    from modelmri.runtime import text_config
+
+    class Vision:
+        num_hidden_layers = 16
+        num_attention_heads = 12
+
+    class Text:
+        num_hidden_layers = 42
+        num_attention_heads = 8
+
+    class Multimodal:
+        text_config = Text()
+        vision_config = Vision()
+
+    found = text_config(Multimodal())
+
+    assert found.num_hidden_layers == 42, "took the vision tower, or nothing"
+    assert found.num_attention_heads == 8
+
+
+def test_a_plain_config_is_returned_unchanged():
+    """Every caller uses the helper unconditionally, so it has to be a no-op on
+    the single-tower models that were working before."""
+    from modelmri.runtime import text_config
+
+    class Plain:
+        num_hidden_layers = 28
+        num_attention_heads = 16
+
+    cfg = Plain()
+    assert text_config(cfg) is cfg
+
+
+def test_a_config_with_neither_does_not_raise():
+    """A shape that cannot be read is `None` downstream, not an exception on
+    the load path."""
+    from modelmri.runtime import text_config
+
+    class Empty:
+        pass
+
+    cfg = Empty()
+    assert text_config(cfg) is cfg
+    assert getattr(text_config(cfg), "num_hidden_layers", None) is None
+
+
+def test_the_language_tower_is_preferred_over_the_vision_tower():
+    """A multimodal model has BOTH `model.language_model.layers` and
+    `model.vision_tower.encoder.layers`. Picking the wrong one draws the image
+    encoder's attention while the panel says it is the text model's."""
+    from modelmri.runtime import decoder_blocks
+
+    class Root:
+        class model:
+            class language_model:
+                layers = ["text"] * 42
+
+            class vision_tower:
+                class encoder:
+                    layers = ["vision"] * 16
+
+    blocks = decoder_blocks(Root())
+
+    assert blocks is not None and len(blocks) == 42
+    assert blocks[0] == "text"
+
+
+def test_an_unknown_layout_reports_none_rather_than_guessing():
+    from modelmri.runtime import decoder_blocks
+
+    class Exotic:
+        pass
+
+    assert decoder_blocks(Exotic()) is None
