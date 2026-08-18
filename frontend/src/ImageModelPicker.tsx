@@ -1,4 +1,5 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   errorText,
   getImageDiscovered,
@@ -330,7 +331,10 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
         // tag at once is not a valid Hub filter — the API ANDs repeated
         // `filter` values — so somebody has to choose, and it is not the
         // picker's choice to make silently.
-        setTask((cur) => cur || t.default);
+        // Deliberately NOT `cur || t.default`. Preselecting a task made
+        // the first search silently narrow to one tag, which is how a
+        // search for a segmenter came back empty with no explanation.
+        // "" is a real choice here and it means all of them.
       })
       .catch((e) => live && setFindErr(errorText(e)));
     return () => {
@@ -341,7 +345,11 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
   // The search itself, debounced. Gated on a task being known: an empty one
   // would be the server's default under a dropdown showing something else.
   useEffect(() => {
-    if (!open || tab !== "hub" || task === "") return;
+    // No `task === ""` guard any more: empty means every image task, the
+    // way an empty box in the text picker means "show me what there is".
+    // It used to short-circuit here, so the search box did nothing until
+    // a dropdown had been visited first.
+    if (!open || tab !== "hub") return;
     let live = true;
     setSearching(true);
     setFindErr("");
@@ -431,7 +439,17 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
     setTab(next);
   }
 
-  return (
+  // Portalled to <body>. MEASURED: the scrim is `position: fixed; inset: 0`,
+  // and it was rendering 935x546 at (36,136) inside a 1006x626 viewport --
+  // the panel's own box. `.panel` carries `transform: matrix(1,0,0,1,0,0)`
+  // and `filter: blur(0px)` left over from its entrance animation, and EITHER
+  // of those makes a descendant's `fixed` resolve against that ancestor
+  // instead of the viewport. So the dim-and-blur only ever covered the panel
+  // it was opened from, which is exactly what "only blur in a small part of
+  // the background" looks like. An identity transform still creates the
+  // containing block, so there is nothing to "turn off" -- the sheet has to
+  // leave the panel.
+  return createPortal(
     <div className="sheet-scrim" onClick={onClose}>
       <div
         id="image-model-sheet"
@@ -595,36 +613,41 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
           {tab === "hub" && (
             <>
               <div className="image-find">
-                <label className="meta" htmlFor="img-pick-task">
-                  what it should do
+                <label className="sr-only" htmlFor="img-pick-q">
+                  search the Hub for an image model
                 </label>
+                <input
+                  id="img-pick-q"
+                  className="combo search grow"
+                  placeholder="Search HuggingFace for an image model…  (empty = the most downloaded of each kind)"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  disabled={!tasks || tasks.tasks.length === 0}
+                  spellCheck={false}
+                  autoFocus
+                />
+                {/* A REFINEMENT, after the box, not a gate in front of it.
+                    "Any kind" is the default and is a real search across every
+                    task rather than a silent one. */}
                 <select
                   id="img-pick-task"
                   className="combo"
+                  aria-label="narrow to one kind of image model"
                   value={task}
                   onChange={(e) => setTask(e.target.value)}
                   disabled={!tasks || tasks.tasks.length === 0}
                 >
+                  <option value="">Any kind</option>
                   {tasks?.tasks.map((t) => (
                     <option key={t.task} value={t.task}>
                       {t.label}
                     </option>
                   ))}
                 </select>
-                {/* Both controls die together, because a search is only ever
-                    run against a task. Where no task list could be fetched — a
-                    static recording, which has no Hub to ask — a live-looking
-                    box that silently does nothing is worse than a dead one. */}
-                <input
-                  id="img-pick-q"
-                  className="combo grow"
-                  placeholder="search the Hub — a name, an author, a word"
-                  aria-label="search the Hub for an image model"
-                  value={q}
-                  onChange={(e) => setQ(e.target.value)}
-                  disabled={!tasks || tasks.tasks.length === 0}
-                  spellCheck={false}
-                />
+                {/* Both controls die together where no task list could be
+                    fetched — a static recording has no Hub to ask, and a
+                    live-looking box that silently does nothing is worse than
+                    a visibly dead one. */}
               </div>
 
               <div
@@ -705,6 +728,7 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

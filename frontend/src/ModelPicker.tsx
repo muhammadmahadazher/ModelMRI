@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Discovery,
   errorText,
@@ -329,7 +330,17 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     }
   }
 
-  return (
+  // Portalled to <body>. MEASURED: the scrim is `position: fixed; inset: 0`,
+  // and it was rendering 935x546 at (36,136) inside a 1006x626 viewport --
+  // the panel's own box. `.panel` carries `transform: matrix(1,0,0,1,0,0)`
+  // and `filter: blur(0px)` left over from its entrance animation, and EITHER
+  // of those makes a descendant's `fixed` resolve against that ancestor
+  // instead of the viewport. So the dim-and-blur only ever covered the panel
+  // it was opened from, which is exactly what "only blur in a small part of
+  // the background" looks like. An identity transform still creates the
+  // containing block, so there is nothing to "turn off" -- the sheet has to
+  // leave the panel.
+  return createPortal(
     <div className="sheet-scrim" onClick={onClose}>
       <div
         className="sheet glass"
@@ -729,7 +740,8 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
 
         {err && <div className="hint err">{err}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

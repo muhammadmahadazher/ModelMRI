@@ -124,10 +124,11 @@ TASKS: dict[str, dict] = {
     },
 }
 
-# What `search` asks for when no task is named. Every tag at once is not a
-# valid Hub filter — the API ANDs repeated `filter` values — so the default is
-# the one task most people mean by "image model", and the caller picks
-# otherwise. Stated rather than silently one of ten.
+# The task a caller means by "an image model" when one has to be named. No
+# longer what an EMPTY task falls back to: empty now searches every tag, one
+# call each, because the Hub ANDs repeated `filter` values and a silent
+# default of one tag meant a search for a segmentation model returned nothing
+# and did not say why.
 DEFAULT_TASK = "text-to-image"
 
 MAX_RESULTS = 50
@@ -159,7 +160,15 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
     """
     from . import hub
 
-    tag = (task or DEFAULT_TASK).strip()
+    tag = (task or "").strip()
+
+    if not tag:
+        # EVERY task, not a silent default of one. An empty box in the text
+        # picker means "show me what there is"; it meant "text-to-image only"
+        # here, so a search for a segmentation model returned nothing and said
+        # nothing about why.
+        return _across_all_tasks(query, limit)
+
     if tag not in TASKS:
         raise BadRequest(
             f"`{tag}` is not a task this reads. The ones it can open are: "
@@ -254,6 +263,66 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
     return _Rows(out, limit_asked=asked, limit_used=used, cache_capped=cache_capped)
 
 
+def _across_all_tasks(query: str = "", limit: int = 24) -> list[dict]:
+    """One search over every image task the catalogue knows.
+
+    The Hub ANDs repeated `filter` values, so ten tags is ten calls rather
+    than one call with ten filters. Each is already limited, and the merge is
+    by published download count — the same order a single-task search comes
+    back in, so the two read the same way.
+
+    A task whose call fails is SKIPPED rather than failing the whole search,
+    and the count of skipped ones rides back on the rows: nine tasks out of
+    ten is a different answer from ten, and a reader who is not told cannot
+    tell them apart. Only when EVERY task failed is this a refusal, because
+    then nothing was searched at all.
+    """
+    asked = int(limit or 24)
+    used = max(1, min(asked, MAX_RESULTS))
+    # Per task, so one crowded tag cannot fill the whole page and hide the
+    # other nine. Merged and re-capped below.
+    per_task = max(4, used // 2)
+
+    merged: dict[str, dict] = {}
+    capped = False
+    failed: list[str] = []
+    for name in TASKS:
+        try:
+            rows = search(query, name, per_task)
+        except Refusal:
+            failed.append(name)
+            continue
+        capped = capped or bool(getattr(rows, "cache_capped", False))
+        for row in rows:
+            # First writer wins, and the tasks are walked in catalogue order,
+            # so a model that carries two tags is reported under the one this
+            # project lists first rather than whichever call returned last.
+            merged.setdefault(row["id"], row)
+
+    if failed and len(failed) == len(TASKS):
+        raise Refusal(
+            "Could not reach the HuggingFace Hub for any image task. Check "
+            "your connection — the full error is in the terminal running "
+            "`modelmri serve`. Image models already downloaded still load: "
+            "they are listed under what is on this machine."
+        )
+
+    out = sorted(
+        merged.values(),
+        # `None` downloads sort last rather than as zero: a repo that published
+        # no count did not publish a zero.
+        key=lambda r: (r.get("downloads") is None, -(r.get("downloads") or 0)),
+    )
+    return _Rows(
+        out[:used],
+        limit_asked=asked,
+        limit_used=used,
+        cache_capped=capped,
+        tasks_searched=len(TASKS) - len(failed),
+        tasks_total=len(TASKS),
+    )
+
+
 class _Rows(list):
     """The rows, plus what was cut to produce them.
 
@@ -263,11 +332,27 @@ class _Rows(list):
     as a complete list.
     """
 
-    def __init__(self, rows, *, limit_asked, limit_used, cache_capped):
+    def __init__(
+        self,
+        rows,
+        *,
+        limit_asked,
+        limit_used,
+        cache_capped,
+        tasks_searched=None,
+        tasks_total=None,
+    ):
         super().__init__(rows)
         self.limit_asked = limit_asked
         self.limit_used = limit_used
         self.cache_capped = cache_capped
+        #: Set only by the all-tasks search. `None` means a single named task,
+        #: where "how many tasks were searched" is not a question. When a
+        #: task's Hub call fails the others still return, and a reader who is
+        #: not told that nine of ten were searched cannot tell a thin result
+        #: from a complete one.
+        self.tasks_searched = tasks_searched
+        self.tasks_total = tasks_total
 
     def __eq__(self, other) -> bool:
         """Equal only when the CAPS match too.
@@ -287,6 +372,8 @@ class _Rows(list):
             and self.limit_asked == other.limit_asked
             and self.limit_used == other.limit_used
             and self.cache_capped == other.cache_capped
+            and self.tasks_searched == other.tasks_searched
+            and self.tasks_total == other.tasks_total
         )
 
     def __ne__(self, other) -> bool:

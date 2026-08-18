@@ -2160,9 +2160,28 @@ def create_app(
                 f"this machine's cache was walked to its {image_catalog.imaging.SCAN_CACHE_LIMIT}"
                 f"-entry limit, so a model past that point shows as not here"
             )
+        # A task whose Hub call failed during an all-tasks search is a cap
+        # like any other: nine of ten searched is a different answer from ten,
+        # and a thin result then reads as "there is not much" rather than "one
+        # source did not answer".
+        if (
+            rows.tasks_searched is not None
+            and rows.tasks_total is not None
+            and rows.tasks_searched < rows.tasks_total
+        ):
+            cut.append(
+                f"{rows.tasks_total - rows.tasks_searched} of "
+                f"{rows.tasks_total} image tasks could not be reached, so "
+                f"anything published only under those is missing here"
+            )
         return {
             "models": rows,
-            "task": (task or image_catalog.DEFAULT_TASK),
+            # "" means every task, and says so rather than reporting one tag
+            # that was never the filter. It used to answer `text-to-image` for
+            # a search that had not been narrowed to anything.
+            "task": task or "",
+            "tasks_searched": rows.tasks_searched,
+            "tasks_total": rows.tasks_total,
             "limit_asked": rows.limit_asked,
             "limit_used": rows.limit_used,
             "cache_capped": rows.cache_capped,
