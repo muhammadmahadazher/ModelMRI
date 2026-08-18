@@ -6617,3 +6617,47 @@ button:disabled,
     transform: none;
   }
 }
+
+/* ---------- which device the next load goes to ----------
+   Rendered only on a machine with more than one, so this is never the
+   furniture that a one-option select would be. Sits beside the model button
+   because it is part of the same decision: what to load, and where. */
+.device-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.device-pick-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.device-pick select {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--ink);
+  background: var(--sf-sunk);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-pill);
+  padding: 5px 10px;
+  max-width: 30ch;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-micro) var(--ease-hover),
+    color var(--dur-micro) var(--ease-hover);
+}
+@media (hover: hover) and (pointer: fine) {
+  .device-pick select:hover { border-color: var(--line-ctrl); }
+}
+.device-pick select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--sf), 0 0 0 4px var(--acc);
+}
+.device-pick select:disabled { opacity: 0.55; cursor: default; }
+@media (max-width: 560px) {
+  /* The row already carries a model button and a Load; a third control wraps
+     rather than squeezing the model id down to an ellipsis. */
+  .device-pick { flex-basis: 100%; }
+  .device-pick select { max-width: 100%; flex: 1; }
+}

@@ -748,10 +748,16 @@ class ModelRuntime:
 
         Blocking — call from a worker thread.
         """
-        if device:
-            chosen = devices.detect(prefer=device)
-            self.accel = chosen
-            self.device = chosen.torch_device
+        # Re-resolved on EVERY load, including the ones that name nothing.
+        # An earlier version only touched `self.accel` when a device was
+        # named, so a single deliberate CPU load stuck: the next load with no
+        # device went to the CPU too, on a machine with a working GPU, and the
+        # only symptom was everything being slower for the rest of the
+        # session. "Let the tool choose" has to mean choosing, not remembering
+        # somebody else's choice.
+        chosen = devices.detect(prefer=device or "auto")
+        self.accel = chosen
+        self.device = chosen.torch_device
         if source not in ("hf", "ollama"):
             raise BadRequest(f"unknown source {source!r} (use 'hf' or 'ollama')")
 

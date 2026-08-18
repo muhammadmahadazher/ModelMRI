@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import DevicePicker from "./DevicePicker";
 import {
   cancelLoad,
   errorText,
@@ -59,6 +60,10 @@ export default function Playground({
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(CURATED[0]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // "" is Automatic: nothing is sent and the server chooses, which is
+  // what every load did before this control existed. Only a deliberate
+  // choice names a device.
+  const [device, setDevice] = useState("");
   const [prompt, setPrompt] = useState(
     "The Eiffel Tower is located in the city of",
   );
@@ -177,7 +182,7 @@ export default function Playground({
     setOversize(null);
     try {
       const t = performance.now();
-      const result = await loadModel(id, src, confirm);
+      const result = await loadModel(id, src, confirm, device);
       // A stopped load is not a failure. Say what happened and stay put.
       if ("cancelled" in result) {
         setMeta(result.message);
@@ -293,6 +298,13 @@ export default function Playground({
           <span className="model-btn-caret">⌄</span>
         </button>
         {source === "ollama" && <span className="chip">via Ollama</span>}
+        {/* Renders nothing unless this machine has more than one device: a
+            select with one option implies a decision nobody has. Empty value
+            means Automatic, so a machine that never touches it behaves
+            exactly as it did before the control existed. */}
+        {source !== "ollama" && (
+          <DevicePicker value={device} onChange={setDevice} disabled={busy !== ""} />
+        )}
         <button className="ghost" onClick={() => void ensureLoaded()} disabled={busy !== "" || !!isLoadedPick}>
           {isLoadedPick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load"}
         </button>

@@ -178,15 +178,55 @@ export interface LoadCancelled {
   message: string;
 }
 
+/** One device a model could be sent to.
+ *
+ *  `free_bytes` is `null` where the backend cannot report it -- Apple's
+ *  unified memory, Intel XPU, and system RAM on every platform. Null is
+ *  UNKNOWN; rendering it as 0 would say the machine is out of memory when
+ *  nobody asked it.
+ */
+export interface DeviceOption {
+  /** What to send as `device` on a load: "cuda:0", "cpu". */
+  id: string;
+  kind: string;
+  name: string;
+  vram_gb: number | null;
+  dtype: string;
+  reason: string;
+  free_bytes: number | null;
+  total_bytes: number | null;
+  /** Where a load with no device named goes -- i.e. what has always happened. */
+  is_default: boolean;
+}
+
+export interface DeviceList {
+  devices: DeviceOption[];
+  default: string;
+  means: string;
+}
+
+/** Every device on this machine, not just the one in use.
+ *
+ *  `/api/session` reports the ONE device a model is on, which is a different
+ *  question and the only one the app could answer before this.
+ */
+export const getDevices = () =>
+  fetch("/api/devices").then((r) => json<DeviceList>(r));
+
 export const loadModel = (
   hf_id?: string,
   source: "hf" | "ollama" = "hf",
   confirm = false,
+  /** "" keeps the existing behaviour exactly: the server chooses, as it always
+   *  has. Only a deliberate choice sends anything else. */
+  device = "",
 ) =>
   fetch("/api/model/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(hf_id ? { hf_id, source, confirm } : { source, confirm }),
+    body: JSON.stringify(
+      hf_id ? { hf_id, source, confirm, device } : { source, confirm, device },
+    ),
   }).then((r) => json<ModelStatus | LoadCancelled>(r));
 
 /** Stop an in-flight download.

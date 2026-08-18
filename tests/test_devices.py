@@ -160,3 +160,23 @@ def test_a_list_is_returned_even_with_no_torch_at_all(monkeypatch):
 
     assert rows, "the list must never come back empty"
     assert any(r["is_default"] for r in rows)
+
+
+def test_a_named_device_does_not_outlive_the_load_that_named_it(two_gpus, monkeypatch):
+    """MEASURED, not hypothesised: load with device="cpu", then load again
+    naming nothing, and the second one also went to the CPU on a machine with
+    a working GPU. `self.accel` was mutated by the explicit load and nothing
+    reset it, so "let the tool choose" quietly meant "keep the last choice" —
+    and every load for the rest of the session was slower with no way to tell
+    why. Empty means detect."""
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda i: (1, int(CARDS[i][1])))
+
+    forced = devices.detect(prefer="cpu")
+    assert forced.kind == "cpu"
+
+    # The call the runtime makes when nothing was named. It must re-detect
+    # rather than return whatever the previous call settled on.
+    after = devices.detect(prefer="" or "auto")
+
+    assert after.torch_device == "cuda:0"
+    assert after.kind == "cuda"
