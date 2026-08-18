@@ -547,7 +547,10 @@ def _label_names(model) -> list | None:
     if not isinstance(table, dict) or not table:
         return None
     try:
-        return [str(table[k]) for k in sorted(table, key=lambda k: int(k))]
+        # `key=int`, not `key=lambda k: int(k)` — the lambda was a wrapper
+        # around a callable that already does exactly that, and it hid the
+        # one thing this line is about: the sort is on the INTEGER.
+        return [str(table[k]) for k in sorted(table, key=int)]
     except (TypeError, ValueError):
         # Keys that are not indices at all. Unknown, said as unknown.
         return None
