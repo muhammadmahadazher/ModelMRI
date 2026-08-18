@@ -158,7 +158,9 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/image/attention/cost` | Image Attention Cost |
 | `GET` | `/api/image/attribution/cost` | Image Attribution Cost |
 | `GET` | `/api/image/available` | Image Available |
+| `GET` | `/api/image/cv/cost` | Image Cv Cost |
 | `GET` | `/api/image/discovered` | Image Discovered |
+| `GET` | `/api/image/filmstrip/cost` | Image Filmstrip Cost |
 | `GET` | `/api/image/local` | Image Local |
 | `GET` | `/api/image/search` | Image Search |
 | `GET` | `/api/image/size` | Image Size |
@@ -186,6 +188,10 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/ground` | Ground Answer |
 | `POST` | `/api/image/attention` | Image Attention Capture |
 | `POST` | `/api/image/attribution` | Image Attribution |
+| `POST` | `/api/image/cv/attribute` | Image Cv Attribute |
+| `POST` | `/api/image/cv/predict` | Image Cv Predict |
+| `POST` | `/api/image/cv/readout` | Image Cv Readout |
+| `POST` | `/api/image/filmstrip` | Image Filmstrip |
 | `POST` | `/api/image/knockout` | Image Knockout |
 | `POST` | `/api/image/load` | Image Load |
 | `POST` | `/api/image/unload` | Image Unload |

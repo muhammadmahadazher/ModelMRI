@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, behavdiff, custom, gguf_read, otel, paths
+from . import image_steps as _steps_defaults
 from . import openai_api as openai_api_mod
 from .custom import AdapterError, CustomHandle
 
@@ -354,6 +355,69 @@ class ImageAttributionRequest(BaseModel):
     fill: str = Field(default="grey")
     target: int | None = Field(default=None, ge=0)
     batch: int = Field(default=32, ge=1, le=64)
+
+
+class CVPredictRequest(BaseModel):
+    """One picture, and what the model says about it.
+
+    The image travels IN the request as a data URL for the same reason
+    `ImageAttributionRequest` does: a path in a body names a file on the
+    server's disk, which is somebody else's machine as often as it is yours.
+    """
+
+    image: str = Field(min_length=1)
+    top_k: int = Field(default=5, ge=1, le=100)
+    # A detector's boxes and a segmenter's masks come with scores, and the
+    # threshold decides what is reported as found. Named rather than fixed:
+    # the right cut for a crowded street scene is not the right cut for a
+    # single object on a plain ground.
+    mask_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class CVAttributeRequest(BaseModel):
+    """Occlusion attribution over a prediction this model actually made.
+
+    `target` names WHICH answer to attribute. `None` is "whatever the model
+    itself said", which is the ordinary question -- naming one asks a
+    different question, auditing a label you supplied, and the result says
+    which of the two it was. `region` narrows a segmenter's mask; `query`
+    picks a detector's box.
+    """
+
+    image: str = Field(min_length=1)
+    target: int | None = Field(default=None, ge=0)
+    query: int | None = Field(default=None, ge=0)
+    region: tuple[int, int, int, int] | None = None
+    patch: int = Field(default=16, ge=1, le=512)
+    stride: int | None = Field(default=None, ge=1, le=512)
+    fill: str = Field(default="grey")
+    batch: int = Field(default=32, ge=1, le=64)
+
+
+class FilmstripRequest(BaseModel):
+    """Watch the picture form, decoding only the steps you name.
+
+    `every` and `at` are two ways to choose the same thing and both are
+    reported back, because a strip of 8 frames from a 50-step run must never
+    be mistakable for a 50-step recording. Decoding every step would not fit
+    beside the pipeline in 8 GB anyway.
+    """
+
+    prompt: str = Field(min_length=1)
+    steps: int = Field(default=20, ge=1, le=200)
+    seed: int | None = None
+    every: int | None = Field(default=None, ge=1, le=200)
+    at: list[int] | None = None
+    include_final: bool = True
+    # The LONGEST SIDE of each emitted frame, not a pixel count. Bounds and
+    # default imported from the module that enforces them: a second copy here
+    # is a second opinion, and the first version of this accepted only values
+    # `image_steps` refuses.
+    frame_pixels: int = Field(
+        default=_steps_defaults.DEFAULT_FRAME_PIXELS,
+        ge=_steps_defaults.MIN_FRAME_PIXELS,
+        le=_steps_defaults.MAX_FRAME_PIXELS,
+    )
 
 
 class VLAFrameRequest(BaseModel):
@@ -2360,6 +2424,222 @@ def create_app(
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)
+
+    @app.get("/api/image/cv/cost")
+    def image_cv_cost(
+        height: int,
+        width: int,
+        patch: int = 16,
+        stride: int | None = None,
+        batch: int = 32,
+    ):
+        """What the three CV measurements cost, before any is spent."""
+        from . import image_cv
+
+        try:
+            handle = app.state.image
+            handle.require()
+            shape = image_cv.readout_shape_of(handle.require())
+            return image_cv.plan(
+                int(height),
+                int(width),
+                layers=shape.get("layers"),
+                heads=shape.get("heads"),
+                tokens=shape.get("tokens"),
+                patch=int(patch),
+                stride=None if stride is None else int(stride),
+                batch=int(batch),
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+    @app.post("/api/image/cv/predict")
+    async def image_cv_predict(req: CVPredictRequest):
+        """What a classifier, detector or segmenter says about one image.
+
+        The label names come off the checkpoint's own `id2label`. A checkpoint
+        that publishes none gets indices AND a note saying so, rather than
+        borrowing ImageNet's names -- a wrong class name is read as the
+        model's answer, which is worse than a number nobody can interpret.
+        """
+        from . import image_cv, image_input
+
+        try:
+            handle = app.state.image
+            handle.require()
+            processor = handle.require_processor()
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            picture = image_input.decode(req.image)
+            # A TENSOR, prepared by the checkpoint's own processor. `image_cv`
+            # deliberately does no image loading, so that what the model is
+            # shown is exactly what was built for it rather than whatever a
+            # convenience path guessed.
+            tensor = image_input.to_tensor(
+                picture, processor, device=handle.status().device
+            )
+            found = await asyncio.to_thread(
+                image_cv.predict,
+                handle.require(),
+                tensor,
+                top_k=req.top_k,
+                processor=processor,
+                mask_threshold=req.mask_threshold,
+                model_name=handle.status().repo,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/cv/predict")
+
+        return found.to_dict()
+
+    @app.post("/api/image/cv/readout")
+    async def image_cv_readout(req: CVPredictRequest):
+        """What each layer looked at -- where the architecture has such a thing.
+
+        A ViT has attention; a convolutional backbone does not. The refusal
+        says which, rather than producing something shaped like an answer.
+        """
+        from . import image_cv, image_input
+
+        try:
+            handle = _image_can("layer_readout")
+            processor = handle.require_processor()
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            picture = image_input.decode(req.image)
+            tensor = image_input.to_tensor(
+                picture, processor, device=handle.status().device
+            )
+            found = await asyncio.to_thread(
+                image_cv.layer_readout,
+                handle.require(),
+                tensor,
+                model_name=handle.status().repo,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/cv/readout")
+
+        return found.to_dict()
+
+    @app.post("/api/image/cv/attribute")
+    async def image_cv_attribute(req: CVAttributeRequest):
+        """Cover each window and measure what the PREDICTION did.
+
+        Not always the argmax. "Why did it pick that" and "what supports this
+        other class" are different questions, and a detector's third box is a
+        different question again from its first.
+        """
+        from . import image_cv, image_input
+
+        try:
+            handle = _image_can("attribution")
+            processor = handle.require_processor()
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            picture = image_input.decode(req.image)
+            tensor = image_input.to_tensor(
+                picture, processor, device=handle.status().device
+            )
+            found = await asyncio.to_thread(
+                image_cv.attribute,
+                handle.require(),
+                tensor,
+                target=req.target,
+                query=req.query,
+                region=req.region,
+                processor=processor,
+                patch=req.patch,
+                stride=req.stride,
+                fill=req.fill,
+                batch=req.batch,
+                model_name=handle.status().repo,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/cv/attribute")
+
+        return found.to_dict()
+
+    @app.get("/api/image/filmstrip/cost")
+    def image_filmstrip_cost(
+        steps: int = 20,
+        every: int | None = None,
+        include_final: bool = True,
+        frame_pixels: int = _steps_defaults.DEFAULT_FRAME_PIXELS,
+    ):
+        """How many decodes a strip costs, and which steps it would hold.
+
+        Answered before the run because a VAE decode per step is a full pass
+        through the decoder on top of the denoising being measured -- the
+        reason the sibling latent measurement decodes nothing at all.
+        """
+        from . import image_steps
+
+        try:
+            return image_steps.filmstrip_plan(
+                int(steps),
+                every=None if every is None else int(every),
+                include_final=bool(include_final),
+                frame_pixels=int(frame_pixels),
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+    @app.post("/api/image/filmstrip")
+    async def image_filmstrip(req: FilmstripRequest):
+        """Run the pipeline once and decode the steps you named.
+
+        The response says which steps were decoded and which were skipped, so
+        an 8-frame strip cannot be mistaken for a 50-step run -- and it
+        carries the caveat that a decoded frame is not evidence of when the
+        LATENT stopped moving, which is what `/api/image/steps` measures.
+        """
+        from . import image_steps
+
+        try:
+            handle = _image_can("latent_trace")
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            found = await asyncio.to_thread(
+                image_steps.filmstrip,
+                handle.require(),
+                req.prompt,
+                seed=req.seed,
+                steps=req.steps,
+                every=req.every,
+                at=req.at,
+                include_final=req.include_final,
+                frame_pixels=req.frame_pixels,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/filmstrip")
+
+        return found.to_dict()
 
     @app.post("/api/image/attribution")
     async def image_attribution(req: ImageAttributionRequest):
