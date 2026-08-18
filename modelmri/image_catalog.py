@@ -269,6 +269,37 @@ class _Rows(list):
         self.limit_used = limit_used
         self.cache_capped = cache_capped
 
+    def __eq__(self, other) -> bool:
+        """Equal only when the CAPS match too.
+
+        Inheriting `list.__eq__` would have compared the rows alone, so a
+        complete list of 50 and a list of 50 truncated from 200 compared
+        equal — which is precisely the silent-truncation defect this class
+        exists to prevent, reappearing in the comparison operator.
+
+        Against a plain list this still compares as a list, so a test may
+        write `rows == [...]` and mean it.
+        """
+        if not isinstance(other, _Rows):
+            return list.__eq__(self, other)
+        return (
+            list.__eq__(self, other)
+            and self.limit_asked == other.limit_asked
+            and self.limit_used == other.limit_used
+            and self.cache_capped == other.cache_capped
+        )
+
+    def __ne__(self, other) -> bool:
+        # Python derives `!=` from `__eq__` only when `__ne__` is absent; `list`
+        # defines one, so it would have been inherited and disagreed with the
+        # `__eq__` above.
+        result = self.__eq__(other)
+        return result if result is NotImplemented else not result
+
+    # Lists are unhashable and this stays unhashable: it is mutable, and a
+    # hash over mutable state is the other half of the same trap.
+    __hash__ = None
+
 
 def _cached_ids() -> tuple:
     """`(with_weights, configs_only, capped)` — what is here, and whether the

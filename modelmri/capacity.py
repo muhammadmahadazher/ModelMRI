@@ -75,6 +75,26 @@ class TooBig(ValueError):
         )
 
 
+def _one_line(value) -> str:
+    """One line of text, safe to put in a log.
+
+    A repo id and a path both arrive from a request, and a newline in either
+    ENDS the real entry and starts a forged one — so a model named
+    `x<newline>WARNING:root:ALL CLEAR` writes a reassuring line into the log a
+    reader is checking to find out what happened.
+
+    The line breaks are REPLACED rather than escaped. `%r` was the first fix
+    and it is a genuine mitigation, but it left the value able to carry them
+    and the scanner does not model `repr` as sanitisation — a mitigation a
+    reviewer cannot verify is one that gets removed by the next edit. This
+    one is visible in the value itself.
+    """
+    text = str(value)
+    for bad in (chr(13) + chr(10), chr(10), chr(13), chr(27), chr(0)):
+        text = text.replace(bad, " ")
+    return text.strip()
+
+
 def _rebuild_too_big(message: str, overridable: bool) -> TooBig:
     """Module level so `pickle` can find it by name — a closure or a lambda
     could not be pickled either, which would move the problem rather than fix
@@ -156,18 +176,18 @@ def guard(
         # happen, so a download proceeded looking exactly like one that had
         # been cleared. The terminal is where this project already puts what a
         # reader needs and a response should not carry.
-        # `%r`, not `%s`. `label` is a repo id and `target` a path, and both
-        # arrive from a request — a newline in either forges a log line, which
-        # is what CodeQL's log-injection rule is about and it is right. `repr`
-        # escapes them, and it also makes a trailing space or a zero-width
-        # character visible rather than invisible in a log somebody is reading
-        # to work out what happened.
+        # Every interpolated value goes through `_one_line` first: a repo id
+        # and a path both arrive from a request, and a newline in either
+        # forges a log entry. `%r` was the first attempt and it is a real
+        # mitigation, but CodeQL raised the finding again against it — the
+        # scanner does not model `repr` as sanitisation, and a mitigation a
+        # reviewer cannot verify is one the next edit removes.
         log.warning(
-            "disk space could not be measured for %r (%r), so %r was NOT "
+            "disk space could not be measured for %s (%s), so %s was NOT "
             "checked against free space before downloading",
-            str(volume),
-            str(target),
-            str(label),
+            _one_line(volume),
+            _one_line(target),
+            _one_line(label),
         )
 
     if free and need_bytes > free:

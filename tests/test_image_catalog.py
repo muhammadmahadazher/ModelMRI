@@ -561,3 +561,27 @@ def test_a_limit_inside_the_cap_reports_no_clamp(monkeypatch):
 
     rows = image_catalog.search(limit=5)
     assert rows.limit_asked == rows.limit_used == 5
+
+
+def test_a_truncated_list_does_not_compare_equal_to_a_complete_one():
+    """Inheriting `list.__eq__` compared the ROWS alone, so a complete list of
+    50 and a list of 50 truncated from 200 were equal — the silent-truncation
+    defect this class exists to prevent, reappearing in the comparison
+    operator. CodeQL flagged it as attributes added without `__eq__`."""
+    from modelmri.image_catalog import _Rows
+
+    rows = [{"id": "someone/sdxl"}]
+    complete = _Rows(rows, limit_asked=50, limit_used=50, cache_capped=False)
+    truncated = _Rows(rows, limit_asked=200, limit_used=50, cache_capped=False)
+    half_read = _Rows(rows, limit_asked=50, limit_used=50, cache_capped=True)
+    identical = _Rows(rows, limit_asked=50, limit_used=50, cache_capped=False)
+
+    assert complete != truncated
+    assert complete != half_read
+    assert complete == identical
+    # `!=` is inherited from `list` unless overridden, so it would have
+    # disagreed with `__eq__` above.
+    assert not (complete != identical)
+    # Against a plain list it still compares as a list, so a test may write
+    # `rows == [...]` and mean it.
+    assert complete == rows
