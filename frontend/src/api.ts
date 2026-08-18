@@ -1314,6 +1314,198 @@ export const imageKnockout = (
     body: JSON.stringify({ prompt, words, seed, steps }),
   }).then((r) => json<ImageKnockout>(r));
 
+// ------------------------------------------ occlusion attribution (images)
+//
+// The interventional saliency map, and the reason it is here rather than a
+// gradient: covering a region and re-running MEASURES what the model loses,
+// where a gradient or an attention weight only correlates with it. Gated on
+// the `attribution` capability — ViT, detection and segmentation heads have
+// it; a diffusion pipeline does NOT, because there is no class logit to move.
+//
+// Two routes, in the order they must be called. `cost` needs no model and is
+// asked first, because the number it returns is the one that decides whether
+// to run at all: the same image at stride 1 rather than stride 16 is not a
+// slower run, it is a different afternoon.
+
+/** Windows and passes, before a single one is taken.
+ *
+ *  `seconds` is `null` unless a per-pass time was measured, and `null` here
+ *  is **"nobody measured"** rather than "instant" — this route deliberately
+ *  publishes no forecast of its own, because a wait invented from a constant
+ *  somebody typed would be a number this tool made up.
+ *
+ *  `within_ceiling: false` means `POST /api/image/attribution` will REFUSE
+ *  this geometry. `estimate` still prices it, on purpose: a caller about to
+ *  be refused needs the number that got them refused, or they are left
+ *  guessing at the stride.
+ */
+export interface ImageAttributionCost {
+  map_rows: number;
+  map_cols: number;
+  n_windows: number;
+  /** Every window plus the one unoccluded reference run. */
+  passes: number;
+  forward_calls: number;
+  /** The batch actually used, already clamped to what the module allows. */
+  batch: number;
+  patch: number;
+  stride: number;
+  /** The occluded copies of the input alone. The activations behind them are
+   *  a multiple of it that nothing can know without running the model, so
+   *  they are absent here rather than estimated. */
+  input_bytes_per_call: number;
+  seconds: number | null;
+  within_ceiling: boolean;
+  ceiling: number;
+  means: string;
+}
+
+/** Where the occluders went, and at what resolution the map therefore is. */
+export interface ImageAttributionGrid {
+  /** The dimensions of the tensor the model SAW, after its own processor
+   *  resized the picture — not the dimensions of the file that was picked. */
+  height: number;
+  width: number;
+  patch: number;
+  stride: number;
+  map_rows: number;
+  map_cols: number;
+  n_windows: number;
+  passes: number;
+  /** Pixels shared by neighbouring windows, from the stride alone. Positive
+   *  means the map's cells are not disjoint regions of the image. */
+  overlap: number;
+  /** The last row (or column) had to be pulled back to the edge, so it
+   *  overlaps its neighbour by more than `patch - stride`. A fact about this
+   *  map rather than a defect — without the clamp a strip of the image would
+   *  be under no window at all while the map still looked complete. */
+  edge_row_clamped: boolean;
+  edge_col_clamped: boolean;
+}
+
+/** One occluded region, and what covering it did to the target class.
+ *
+ *  **`logit_drop` is SIGNED.** Positive means covering this window COST the
+ *  class evidence. Negative means covering it HELPED — a region that was
+ *  arguing against the class, which is a finding rather than an error. An
+ *  absolute value prints the same number for both, so nothing here may take
+ *  one.
+ */
+export interface ImageAttributionWindow {
+  row: number;
+  col: number;
+  top: number;
+  left: number;
+  height: number;
+  width: number;
+  logit_drop: number;
+  /** The same movement in softmax probability, which is a different quantity
+   *  and not a better one — it moves when any other class moves. `null` for a
+   *  single-output head, where a softmax is 1.0 by construction. */
+  prob_drop: number | null;
+}
+
+/** One occlusion map, and everything it is not allowed to claim. */
+export interface ImageAttribution {
+  grid: ImageAttributionGrid;
+  /** `map_rows` x `map_cols` of signed logit drops, every cell filled. */
+  map: number[][];
+  windows: ImageAttributionWindow[];
+  /** `grey`, `black`, `white` or `image_mean`. There is no neutral fill: a
+   *  flat square is a specific baseline, not removal. */
+  fill: string;
+  /** What that word was in numbers, per channel where it varies. */
+  fill_value: number[];
+  value_range: [number, number];
+  /** **True means the range was GUESSED from this one image's extremes**
+   *  rather than read from the checkpoint's own processor. One picture's
+   *  extremes are a lower bound on the model's input range, not the range —
+   *  so "grey" landed somewhere that is not necessarily the midpoint, and
+   *  the fill that was actually applied is a weaker claim than it looks. */
+  value_range_inferred: boolean;
+  target: number;
+  target_label: string;
+  /** Whether the class was the model's own top prediction or one that was
+   *  named. Attributing the model's answer and auditing a label you supplied
+   *  are different questions with the same picture. */
+  target_chosen_by_model: boolean;
+  classes: number;
+  base_logit: number;
+  /** `null` for a single-output head. */
+  base_prob: number | null;
+  /** **The scale the peak has to be read against**: largest drop minus
+   *  smallest, over the whole map. A spread at or below the reported
+   *  precision is a map made of rounding, and ranking its windows is ranking
+   *  rounding — `means` says so, and a panel must not draw a confident peak
+   *  over that sentence. */
+  spread: number;
+  /** `null` — not the first window — when the map is exactly flat. A model
+   *  returning the same logits for every occlusion has said it did not use
+   *  the image, and naming a peak there is reading rank order out of a tie. */
+  strongest: ImageAttributionWindow | null;
+  /** The window that most INCREASED the class when covered. **`null` means
+   *  NOTHING argued against the class**, which is a different answer from a
+   *  drop of 0.0 and must not render as an empty slot. */
+  most_negative: ImageAttributionWindow | null;
+  passes: number;
+  forward_calls: number;
+  /** Both travel because a silent cap is a defect: `batch_used` below
+   *  `batch_requested` is a different run time from the one that was asked
+   *  for, and somebody will time it. */
+  batch_requested: number;
+  batch_used: number;
+  seconds: number;
+  model_name: string;
+  /** Class names were supplied and did not match the head's width, so they
+   *  were dropped ENTIRELY rather than applied by position. */
+  class_names_dropped: boolean;
+  means: string;
+}
+
+/** Price the sweep before running it. Needs no model — it is arithmetic over
+ *  the geometry — so it answers on a resting server too.
+ *
+ *  `stride` of 0 is the query-string way of saying "not stated", which the
+ *  module then reads as the patch size: non-overlapping windows, the cheapest
+ *  schedule that covers every pixel exactly once.
+ */
+export const imageAttributionCost = (
+  height: number,
+  width: number,
+  patch: number,
+  stride: number,
+  batch: number,
+) =>
+  fetch(
+    `/api/image/attribution/cost?height=${height}&width=${width}` +
+      `&patch=${patch}&stride=${stride}&batch=${batch}`,
+  ).then((r) => json<ImageAttributionCost>(r));
+
+/** Cover each window of one image, re-run, and report what moved.
+ *
+ *  The picture travels as a data URL rather than as a path, deliberately: a
+ *  path in a request body names a file on the SERVER's disk, which is
+ *  somebody else's machine as often as it is yours — and a browser cannot
+ *  produce one for a file the user picked anyway.
+ *
+ *  `target` of `null` asks the ordinary question: attribute whatever the
+ *  model itself predicted. Naming a class asks a different one — auditing a
+ *  label you supplied — and the result says which of the two it answered.
+ */
+export const imageAttribution = (
+  image: string,
+  patch: number,
+  stride: number,
+  fill: string,
+  batch: number,
+  target: number | null,
+) =>
+  fetch("/api/image/attribution", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image, patch, stride, fill, batch, target }),
+  }).then((r) => json<ImageAttribution>(r));
+
 // ------------------------------------------------- finding an image model
 //
 // The four routes over `image_catalog`, and they exist because the image side

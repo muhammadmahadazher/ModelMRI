@@ -814,6 +814,179 @@ export async function demoFetch(
         "of here.",
     );
   }
+  // ---- the occlusion preflight, answered FOR REAL --------------------------
+  //
+  // The one image route this page can answer honestly, and the reason is that
+  // it needs nothing: `vision_attr.estimate` is arithmetic over a geometry,
+  // not a measurement of a model. Refusing it would have been the easy answer
+  // and the wrong one — the whole argument of that route is that the number
+  // arrives BEFORE anything is spent, and a visitor who only ever sees it
+  // refused never learns that a stride of 1 is a different afternoon from a
+  // stride of 16.
+  //
+  // Duplicated arithmetic is a real cost and it is taken deliberately here.
+  // `modelmri/vision_attr.py` is the source of truth; this mirrors `_axis`,
+  // `_count_windows`, `_clamp_batch` and `estimate` exactly, ceiling
+  // included, so the sentence a visitor reads is the sentence the tool
+  // writes. Anything that drifts there has to be brought across.
+  if (p === "/api/image/attribution/cost") {
+    const num = (name: string, fallback: number) => {
+      const raw = q.get(name);
+      if (raw === null || raw.trim() === "") return fallback;
+      return Number(raw);
+    };
+    const height = num("height", 224);
+    const width = num("width", 224);
+    const patch = num("patch", 16);
+    // 0 is the query-string way of saying "not stated", and the module then
+    // uses the patch size — non-overlapping windows.
+    const asked = num("stride", 0);
+    const stride = asked || patch;
+    const batchAsked = num("batch", 32);
+
+    const whole = (v: number, name: string) =>
+      Number.isInteger(v) ? "" : `${name} must be a whole number of pixels, not ${v}.`;
+    // Python's format rounds a half to EVEN and `toFixed` rounds it away from
+    // zero, so `{12.5:.0f}` is "12" here and "13" there. The geometry that
+    // lands exactly on a half is a patch of 14 at stride 16 — the ViT-large
+    // patch size against the ordinary one — which is far too ordinary to let
+    // the two sentences differ by a digit.
+    const asPython = (v: number) => {
+      const floor = Math.floor(v);
+      const rest = v - floor;
+      if (rest > 0.5) return floor + 1;
+      if (rest < 0.5) return floor;
+      return floor % 2 === 0 ? floor : floor + 1;
+    };
+    // The same refusals, in the same order, with the same sentences. A
+    // geometry the tool would reject must be rejected here too, or the demo
+    // teaches a schedule that cannot run.
+    const bad =
+      whole(height, "height") ||
+      whole(width, "width") ||
+      whole(patch, "patch") ||
+      whole(stride, "stride") ||
+      (patch < 1 ? "patch must be at least 1 pixel." : "") ||
+      (stride < 1
+        ? "stride must be at least 1 pixel. A stride of 0 would place every " +
+          "window at the same place forever."
+        : "") ||
+      (height < 1 || width < 1
+        ? `an image of ${height}x${width} pixels has nothing to occlude.`
+        : "") ||
+      (patch > Math.min(height, width)
+        ? `a patch of ${patch} does not fit inside a ${height}x${width} ` +
+          `image. The occluder has to be smaller than what it is occluding.`
+        : "") ||
+      (stride > patch
+        ? `a stride of ${stride} with a patch of ${patch} leaves ` +
+          `${asPython((1 - patch / stride) * 100)}% of the pixels under no ` +
+          `window at all, so the map would have holes in it and still look ` +
+          `like a map of the whole image. Set the stride to ${patch} or less.`
+        : "") ||
+      (batchAsked < 1 ? "batch must be at least 1 occluded copy per call." : "");
+    if (bad) return refuse(422, bad);
+
+    // `_axis`: starts every `stride` pixels, plus a final one pulled back to
+    // the edge when the last window would leave a strip uncovered. Without
+    // that clamp the map is silent about part of the image while still being
+    // presented as a map OF the image.
+    const axis = (length: number) => {
+      const starts: number[] = [];
+      for (let s = 0; s + patch <= length; s += stride) starts.push(s);
+      if (starts.length === 0) starts.push(0);
+      if (starts[starts.length - 1] + patch < length) starts.push(length - patch);
+      return starts.length;
+    };
+    const count = (h: number, w: number, st: number) => {
+      const one = (length: number) => {
+        const starts: number[] = [];
+        for (let s = 0; s + patch <= length; s += st) starts.push(s);
+        if (starts.length === 0) starts.push(0);
+        if (starts[starts.length - 1] + patch < length) starts.push(length - patch);
+        return starts.length;
+      };
+      return [one(h), one(w)] as const;
+    };
+
+    const rows = axis(height);
+    const cols = axis(width);
+    const nWindows = rows * cols;
+    const passes = nWindows + 1;
+    // MAX_BATCH, and both numbers travel because a silent cap is a defect.
+    const batch = Math.min(batchAsked, 64);
+    const calls = 1 + Math.ceil(nWindows / batch);
+    const inputBytes = batch * 3 * height * width * 4;
+    // MAX_PASSES. `estimate` NEVER refuses on this — a caller about to be
+    // refused needs the number that got them refused.
+    const ceiling = 4096;
+    const within = passes <= ceiling;
+
+    let fits = "";
+    if (!within) {
+      for (let s = 1; s <= patch; s++) {
+        const [r, c] = count(height, width, s);
+        if (r * c + 1 <= ceiling) {
+          fits = `A stride of ${s} would be ${r * c} windows (${r}x${c}) and fits.`;
+          break;
+        }
+      }
+      if (!fits) {
+        const [r, c] = count(height, width, patch);
+        fits =
+          `Even a plain tiling at stride ${patch} is ${r * c} windows, so ` +
+          `this image needs a larger patch or a raised ceiling — and a ` +
+          `larger patch means a coarser map, which is the trade being made.`;
+      }
+    }
+
+    return ok({
+      map_rows: rows,
+      map_cols: cols,
+      n_windows: nWindows,
+      passes,
+      forward_calls: calls,
+      batch,
+      patch,
+      stride,
+      input_bytes_per_call: inputBytes,
+      // `null` is "nobody measured", not "instant". Nothing here has timed a
+      // forward pass, and a forecast off a typed constant would be invented.
+      seconds: null,
+      within_ceiling: within,
+      ceiling,
+      means:
+        `A ${patch}x${patch} occluder at stride ${stride} over a ` +
+        `${height}x${width} image is ${nWindows} windows — a ${rows}x${cols} ` +
+        `map — and ${passes} forward passes, sent ${batch} at a time in ` +
+        `${calls} calls. The occluded copies alone are ` +
+        `${(inputBytes / 1e6).toLocaleString(undefined, {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 1,
+        })} MB per call; the activations behind them are a multiple of that ` +
+        `which nothing here can know without running the model.` +
+        ` No per-pass time was measured, so there is no forecast here — an ` +
+        `invented one would be a number this tool made up.` +
+        (within
+          ? ""
+          : ` THIS IS PAST THE CEILING OF ${ceiling} PASSES and \`sweep\` ` +
+            `will refuse it. ${fits}`),
+    });
+  }
+  if (p === "/api/image/attribution") {
+    return refuse(
+      409,
+      "The preflight above is real arithmetic and answers here; this is the " +
+        "sweep itself, and it is the half that needs a model. Every window " +
+        "of your picture is covered up and the checkpoint re-run — 197 " +
+        "forward passes for a 224x224 image at a 16-pixel patch — and the " +
+        "score is the signed movement in the class logit that results. " +
+        "There is no model behind this page to move, and a baked map would " +
+        "be somebody else's photograph attributed to a run you did not " +
+        "make. `pip install modelmri` and point it at a ViT, a detector or " +
+        "a segmentation head of your own.",
+    );
+  }
   return undefined;
 }
 

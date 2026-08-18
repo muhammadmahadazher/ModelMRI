@@ -5505,6 +5505,108 @@ main > [id^="sec-"] {
 }
 .image-arm-val { text-align: right; }
 
+/* ── occlusion attribution ──────────────────────────────────────────────
+   The one heatmap on this panel that is DIVERGING, and it has to be. A drop
+   is signed: positive means covering that window cost the class its evidence,
+   negative means covering it HELPED — a region arguing against the answer,
+   which is a finding about the picture rather than a defect in the sweep. A
+   single-hue ramp paints "argued against" as a paler shade of "argued for",
+   and an absolute value paints them identically; both erase the one thing the
+   sign is carrying. So two hues, and zero paints as nothing in the middle.
+
+   Both are tokens this stylesheet defines. `.patch-grid` records the cost of
+   getting that wrong: `color-mix` with an undefined custom property yields
+   transparent rather than an error, so a misspelt token deletes half a
+   diverging scale silently and the map still looks like a map. */
+.image-attr { margin-top: 4px; }
+.image-pick { flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+.image-pick .meta { max-width: 64ch; }
+.image-controls .combo { font-size: var(--t-xs); padding: 5px 8px; min-width: 0; }
+/* Wider than its siblings because its placeholder is a sentence: the empty
+   state means "whatever the model itself predicted", which is a different
+   question from any number that could go in the box, and a truncated
+   placeholder is the one thing that would not say so. */
+.image-controls input.image-attr-class { width: 10.5rem; }
+
+.image-attr-panes {
+  display: grid;
+  grid-template-columns: minmax(0, 21rem) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-top: 14px;
+  max-width: 76ch;
+}
+@media (max-width: 720px) {
+  .image-attr-panes { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The picture, at the aspect ratio of the TENSOR the model saw — set inline
+   from `grid.width / grid.height`, because that is a property of the run and
+   not of this stylesheet. `object-fit: fill` rather than `contain`: the
+   processor's resize is a stretch into its own frame, so letterboxing the
+   original here would put the overlay's cells over the wrong pixels. */
+.image-attr-shot {
+  position: relative;
+  width: 100%;
+  border-radius: 9px;
+  overflow: hidden;
+  border: 1px solid var(--hair-soft);
+  box-shadow: var(--rim);
+  background: var(--sf-sunk);
+}
+.image-attr-shot img { display: block; width: 100%; height: 100%; object-fit: fill; }
+.image-attr-over { position: absolute; inset: 0; display: grid; }
+.image-attr-cell { display: block; }
+/* Outlined, not recoloured — the colour already carries the score, and the
+   ring says something orthogonal: this is the extreme of its half. A hairline
+   of paper inside the ring keeps it legible over a busy photograph. */
+.image-attr-cell.peak {
+  box-shadow: inset 0 0 0 1px var(--color-paper), inset 0 0 0 3px var(--color-image);
+}
+.image-attr-cell.against {
+  box-shadow: inset 0 0 0 1px var(--color-paper), inset 0 0 0 3px var(--color-probe);
+}
+
+/* The key, in words as well as in colour. A reader who takes the two hues for
+   "strong" and "weak" has read half the map backwards, and nothing in the
+   picture itself would tell them. */
+.image-attr-key { display: grid; gap: 7px; align-content: start; max-width: 42ch; }
+.image-attr-ramp {
+  height: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  /* Mixed toward the card rather than toward `transparent`: a gradient that
+     passes through transparent interpolates through transparent BLACK in
+     sRGB, which puts a grey bruise across the neutral middle of a scale whose
+     whole point is that its middle is neutral. */
+  background: linear-gradient(
+    to right,
+    color-mix(in oklab, var(--color-probe) 76%, var(--color-card)),
+    var(--color-card) 50%,
+    color-mix(in oklab, var(--color-image) 76%, var(--color-card))
+  );
+}
+.image-attr-ends {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-2xs);
+  color: var(--color-mute);
+}
+
+/* The same map with the numbers in it. Wider cells than the attention grid:
+   these are signed and printed to four decimals, so `+0.8125` has to fit
+   without the column collapsing the sign onto the digits. */
+.image-attr-grid td.image-cell { min-width: 60px; }
+/* Row and column indices are two characters. The attention grid rotates its
+   heads because they are whole words; rotating `c0` would be a vertical
+   label taller than the number it sits over. */
+.image-attr-grid thead th { writing-mode: horizontal-tb; transform: none; }
+
+.image-attr-facts { flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
 /* ══ palettes ═══════════════════════════════════════════════════════════
    A PALETTE is which hues; a MODE is light or dark. Orthogonal, so every
    palette works in both — somebody who wants high contrast wants it in the

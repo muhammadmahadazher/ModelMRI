@@ -1,4 +1,4 @@
-import { CSSProperties, useEffect, useState } from "react";
+import { CSSProperties, useEffect, useRef, useState } from "react";
 import RestingSketch from "./RestingSketch";
 import { useScanOnData } from "./useScanOnData";
 import {
@@ -8,11 +8,16 @@ import {
   getImageLocal,
   getImageTasks,
   imageAttentionCost,
+  imageAttribution,
+  imageAttributionCost,
   imageKnockout,
   imageSize,
   imageStepsCost,
   ImageAttentionCost,
   ImageAttentionRun,
+  ImageAttribution,
+  ImageAttributionCost,
+  ImageAttributionWindow,
   ImageKnockout,
   ImageLocal,
   ImageSearch,
@@ -141,6 +146,72 @@ function downloads(n: number): string {
   return String(n);
 }
 
+/** The four occluders `vision_attr.FILLS` accepts.
+ *
+ *  Typed here because no route publishes the list, and the module is the
+ *  source of truth — a name outside it is refused server-side and says so.
+ *  None of them is neutral, which is the point of shipping several: a finding
+ *  that only survives one fill is a finding about the fill.
+ */
+const FILLS = ["grey", "black", "white", "image_mean"];
+
+/** A SIGNED score on a DIVERGING scale with a neutral midpoint at zero.
+ *
+ *  This is the one rule the map cannot bend. A positive drop means covering
+ *  that window COST the class its evidence; a negative one means covering it
+ *  HELPED — a region that was arguing against the class, which is a real
+ *  finding about the picture and not an error in the sweep. An absolute value
+ *  paints those two identically, and a single-hue ramp paints "argued
+ *  against" as a paler shade of "argued for": both erase the distinction the
+ *  sign exists to carry.
+ *
+ *  Two hues the stylesheet actually defines, and normalised by the largest
+ *  MAGNITUDE either way so zero lands on transparent in both directions.
+ *  `PatchPanel.cell` records why the token names matter: `color-mix` with an
+ *  undefined custom property yields transparent rather than an error, so a
+ *  misspelt token silently deletes half a diverging scale.
+ */
+function attrShade(v: number, mag: number): string {
+  if (mag <= 0 || v === 0) return "transparent";
+  // Capped below full strength: this paints OVER the picture, and an opaque
+  // cell would hide the region it is a claim about.
+  const a = Math.min(1, Math.abs(v) / mag) * 76;
+  return v > 0
+    ? `color-mix(in oklab, var(--color-image) ${a}%, transparent)`
+    : `color-mix(in oklab, var(--color-probe) ${a}%, transparent)`;
+}
+
+/** A signed logit movement, with the sign always shown.
+ *
+ *  The sign is the reading, so it is never dropped and never implied by a
+ *  colour alone. Scores arrive at six decimals and a map can span a
+ *  thousandth of a logit, so a value too small for fixed decimals goes to
+ *  exponential rather than printing as "0.0000" — a window that moved the
+ *  logit by 3e-5 moved it.
+ */
+function drop(v: number): string {
+  if (v === 0) return "0";
+  const a = Math.abs(v);
+  return (v > 0 ? "+" : "-") + (a < 0.0001 ? a.toExponential(2) : a.toFixed(4));
+}
+
+/** Where one window sat, in the pixels of the tensor the model saw. */
+function box(w: { top: number; left: number; height: number; width: number }): string {
+  return `pixels ${w.top}-${w.top + w.height} by ${w.left}-${w.left + w.width}`;
+}
+
+/** The span a peak has to be read against, at the precision it was measured.
+ *
+ *  Six decimals rather than four, because that is what the scores are
+ *  reported at and the whole question this number answers is whether the map
+ *  is bigger than its own rounding. A span printed as "0.000000" would hide
+ *  exactly the case it exists to expose, so anything below four decimals goes
+ *  to exponential instead.
+ */
+function span(v: number): string {
+  return v > 0 && v < 0.0001 ? v.toExponential(2) : v.toFixed(6);
+}
+
 export default function ImagePanel() {
   const [status, setStatus] = useState<ImageStatus | null>(null);
   // What is on this disk, sized. `null` is "the scan has not answered yet",
@@ -185,6 +256,30 @@ export default function ImagePanel() {
   const [armsCost, setArmsCost] = useState<ImageAttentionCost | null>(null);
   const [traceCost, setTraceCost] = useState<ImageTraceCost | null>(null);
   const [costErr, setCostErr] = useState("");
+
+  // ── occlusion attribution, for the checkpoints that have a class to lose
+  //
+  // The picture is held as a DATA URL and there is no path box anywhere near
+  // it. A path in a request body names a file on the SERVER's disk — which is
+  // somebody else's machine as often as it is yours — and a browser cannot
+  // produce one for a file a person picked in any case.
+  const [picture, setPicture] = useState("");
+  const [pictureName, setPictureName] = useState("");
+  // What the FILE is, which is not what the model sees: the checkpoint's own
+  // processor resizes (and may crop) before a window is ever placed.
+  const [pictureDims, setPictureDims] = useState<{ w: number; h: number } | null>(null);
+  const [aPatch, setAPatch] = useState(16);
+  const [aStride, setAStride] = useState(16);
+  const [aFill, setAFill] = useState("grey");
+  const [aBatch, setABatch] = useState(32);
+  // Empty means "whatever the model itself predicted", which is the ordinary
+  // question. A number asks a different one — auditing a class you named —
+  // and the result says which of the two it answered.
+  const [aTarget, setATarget] = useState("");
+  const [attrCost, setAttrCost] = useState<ImageAttributionCost | null>(null);
+  const [attrCostErr, setAttrCostErr] = useState("");
+  const [attr, setAttr] = useState<ImageAttribution | null>(null);
+  const pickRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   // Set when a load was refused. Some of those refusals are overridable and
@@ -284,6 +379,24 @@ export default function ImagePanel() {
   const canCapture = caps.has("cross_attention") && status?.cross_attention_dim !== 0;
   const canKnock = caps.has("token_knockout") && status?.cross_attention_dim !== 0;
   const canTrace = caps.has("latent_trace");
+  // A ViT, a detector or a segmentation head has something to lose when a
+  // region is covered. A diffusion pipeline has NO class logit to move, so it
+  // never carries this capability and the whole block below is absent for it —
+  // gated on what the server said, never on what the repo id looked like.
+  const canAttribute = caps.has("attribution");
+
+  // WHICH geometry the preflight prices, and the two are not interchangeable.
+  //
+  // The sweep runs on the tensor the checkpoint's own processor produced, not
+  // on the file that was picked: a 4000x3000 photograph reaches the model as
+  // 224x224, so pricing the file would quote a map a hundred times the size of
+  // the one the run actually makes. `image_size` is that input size when the
+  // checkpoint states it. When it does not, the file's own dimensions are the
+  // only geometry anything here knows — priced, and labelled as the weaker
+  // claim it is rather than passed off as the run's.
+  const shotSize = status && status.image_size && status.image_size > 0 ? status.image_size : 0;
+  const pricedH = shotSize || pictureDims?.h || 0;
+  const pricedW = shotSize || pictureDims?.w || 0;
 
   // THE PREFLIGHT, and it runs before any button is pressed rather than after
   // one is. Each line is a different question about the same `steps`, and each
@@ -315,6 +428,35 @@ export default function ImagePanel() {
     };
   }, [loaded, steps, nWords, canCapture, canKnock, canTrace]);
 
+  // The occlusion preflight, on the same principle and one step earlier: this
+  // route needs no model at all, so the number arrives as soon as a geometry
+  // is known — before a picture has even been picked, when the checkpoint
+  // states its own input size. It is the number that decides whether to run,
+  // because the same image at stride 1 rather than stride 16 is not a slower
+  // run, it is a different afternoon.
+  useEffect(() => {
+    if (!loaded || !canAttribute || pricedH < 1 || pricedW < 1) return;
+    let live = true;
+    setAttrCostErr("");
+    // Dropped before the new one is asked for, not after it arrives. The Run
+    // button is gated on this number, so a price left on screen from the
+    // previous stride is a button offering a run that the ceiling it was
+    // checked against no longer describes.
+    setAttrCost(null);
+    void imageAttributionCost(pricedH, pricedW, aPatch, aStride, aBatch)
+      .then((c) => live && setAttrCost(c))
+      .catch((e) => {
+        if (!live) return;
+        // A refused geometry has no cost, and a stale one from the last
+        // setting would price a schedule nobody is about to run.
+        setAttrCost(null);
+        setAttrCostErr(errorText(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [loaded, canAttribute, pricedH, pricedW, aPatch, aStride, aBatch]);
+
   async function onLoad(which: string, confirm = false) {
     setBusy("load");
     setErr("");
@@ -328,6 +470,9 @@ export default function ImagePanel() {
       setRun(null);
       setKnock(null);
       setPicked([]);
+      // The picture stays — it is the reader's file, not a reading — but the
+      // map over it was a claim about a checkpoint that is no longer here.
+      setAttr(null);
     } catch (e) {
       // Verbatim. The server's refusals name the checkpoint, the two byte
       // counts and what to do about them, and a rewrite here would lose the
@@ -379,6 +524,9 @@ export default function ImagePanel() {
       setRun(null);
       setKnock(null);
       setPicked([]);
+      // The picture stays — it is the reader's file, not a reading — but the
+      // map over it was a claim about a checkpoint that is no longer here.
+      setAttr(null);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -405,6 +553,75 @@ export default function ImagePanel() {
     try {
       setKnock(await imageKnockout(prompt, picked, seed, steps));
     } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** The picked file, as a data URL, plus what it actually is.
+   *
+   *  Read in the browser and sent in the body. Nothing here uploads a path:
+   *  see the note on `picture` above for why there is no box to type one in.
+   */
+  function onPick(file: File | undefined) {
+    // A new picture makes any map on screen a map of the previous one.
+    setAttr(null);
+    setErr("");
+    if (!file) {
+      setPicture("");
+      setPictureName("");
+      setPictureDims(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () =>
+      setErr(
+        `${file.name} could not be read from disk. Nothing was sent — this ` +
+          `failed in the browser, before the measurement was asked for.`,
+      );
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : "";
+      if (!url.startsWith("data:image/")) {
+        setErr(
+          `${file.name} did not read back as an image. The sweep needs a ` +
+            `picture the checkpoint's own processor can open.`,
+        );
+        return;
+      }
+      setPicture(url);
+      setPictureName(file.name);
+      // Decoded here only to SAY what was picked, and — when the checkpoint
+      // never states its own input size — to have a geometry to price at all.
+      const probe = new Image();
+      probe.onload = () =>
+        setPictureDims({ w: probe.naturalWidth, h: probe.naturalHeight });
+      probe.onerror = () => setPictureDims(null);
+      probe.src = url;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function onAttribute() {
+    setBusy("attribute");
+    setErr("");
+    try {
+      const named = aTarget.trim();
+      setAttr(
+        await imageAttribution(
+          picture,
+          aPatch,
+          aStride,
+          aFill,
+          aBatch,
+          named === "" ? null : Number(named),
+        ),
+      );
+    } catch (e) {
+      // Cleared rather than kept: a refusal beside the previous run's map
+      // reads as though the map on screen is the answer to what was just
+      // asked, and it is the answer to something else.
+      setAttr(null);
       setErr(errorText(e));
     } finally {
       setBusy("");
@@ -767,6 +984,56 @@ export default function ImagePanel() {
     : 0;
   const fmt = masses(peak);
 
+  // The two ends of the map, and then the largest MAGNITUDE either way —
+  // which is what a diverging scale has to be normalised by. Normalising the
+  // halves separately would make the deepest negative exactly as saturated as
+  // the strongest positive, so a map with one faint region arguing against the
+  // class would paint it as that region's equal.
+  const attrFlat = attr ? attr.map.flat() : [];
+  const attrHi = attrFlat.reduce((m, v) => (v > m ? v : m), attrFlat[0] ?? 0);
+  const attrLo = attrFlat.reduce((m, v) => (v < m ? v : m), attrFlat[0] ?? 0);
+  const attrMag = Math.max(Math.abs(attrHi), Math.abs(attrLo));
+  // Two different unrankable maps, and they are NOT the same finding.
+  //
+  // A spread of exactly 0 is the model saying it did not use the image at
+  // all: identical logits under every occlusion, which is why `strongest`
+  // comes back null rather than as the first window of a tie. A spread that
+  // is merely tiny is a map made of ROUNDING — real differences, all of them
+  // inside the precision the scores are reported at, so ranking its windows
+  // is ranking the last digit. Collapsing the two would report a model that
+  // ignored the picture as one whose map was just a bit noisy.
+  //
+  // Flatness is read off `strongest`, NEVER off `spread === 0`. `spread`
+  // arrives rounded to the six decimals the scores are reported at, so a map
+  // that really did move — by 4e-7, say — comes over the wire as a spread of
+  // 0.0 with a strongest window intact. Testing the number would call that
+  // model "did not use the image", which is the confident version of the
+  // wrong answer. The server sets `strongest` to null on the UNROUNDED
+  // spread, so it is the only field that can tell the two apart.
+  const attrIsFlat = attr !== null && attr.strongest === null;
+  const attrIsNoise = attr !== null && !attrIsFlat && attr.spread <= 1e-6;
+  // Either way no peak is drawn and no cell is shaded: a diverging scale
+  // normalised to a span that small paints rounding as structure.
+  const attrUnrankable = attrIsFlat || attrIsNoise;
+  // A run whose batch was silently reduced is a different run time from the
+  // one that was asked for, and somebody is going to time it.
+  const batchCut = attr !== null && attr.batch_used < attr.batch_requested;
+  // Which edge, if either, had its last window pulled back to cover the strip
+  // a plain tiling would have left out.
+  const attrClamped = !attr
+    ? ""
+    : attr.grid.edge_row_clamped && attr.grid.edge_col_clamped
+      ? "row and the last column"
+      : attr.grid.edge_row_clamped
+        ? "row"
+        : attr.grid.edge_col_clamped
+          ? "column"
+          : "";
+  // Every window by its cell, so a cell can say where in the picture it was
+  // and what the probability did as well as the logit.
+  const attrWindows = new Map<string, ImageAttributionWindow>();
+  attr?.windows.forEach((w) => attrWindows.set(`${w.row}:${w.col}`, w));
+
   return (
     <div ref={scanRef} className="panel image">
       <div className="sect">
@@ -820,15 +1087,28 @@ export default function ImagePanel() {
           are for. Saying so is the difference between a panel that decided not
           to draw and a panel that looks broken: a half-empty card with no
           sentence in it is the second one. */}
-      {status.capabilities.length > 0 && !canCapture && !canKnock && (
+      {status.capabilities.length > 0 && !canCapture && !canKnock && !canAttribute && (
         <div className="hint">
           What this checkpoint offers is{" "}
-          <b>{status.capabilities.join(", ")}</b>, and neither the map nor the
-          knockout below is among them — so both controls are absent rather
-          than present and unable to answer.{" "}
+          <b>{status.capabilities.join(", ")}</b>, and none of the map, the
+          knockout or the occlusion sweep below is among them — so those
+          controls are absent rather than present and unable to answer.{" "}
           {dim === 0
             ? "Nothing here attends to a prompt, so there is nothing for a word-to-pixel map to be about."
             : "This panel reads words against pixels; measurements over image patches belong to a different one."}
+        </div>
+      )}
+
+      {/* Offers occlusion and nothing else this panel draws — the ordinary
+          case for a ViT, and worth a sentence rather than a silently
+          half-empty card above a working control. */}
+      {canAttribute && !canCapture && !canKnock && (
+        <div className="hint">
+          What this checkpoint offers is{" "}
+          <b>{status.capabilities.join(", ")}</b>. There is no prompt for it to
+          attend to, so the word-to-pixel map and the knockout are absent — but
+          it has a class to lose, which is what the occlusion sweep below
+          measures.
         </div>
       )}
 
@@ -1104,6 +1384,513 @@ export default function ImagePanel() {
                 outlined — every word was measured either way.
               </p>
               <p className="meta image-means">{knock.means}</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ─── occlusion attribution ──────────────────────────────────────
+          The interventional saliency map, and the only one this project was
+          ever going to draw. A gradient or an attention weight says a region
+          CORRELATES with the answer; this covers the region up, runs the model
+          again and measures what the class actually lost — the same argument
+          `patch.py` makes on the text side.
+
+          Gated on `attribution` alone. A diffusion pipeline has no class logit
+          to move and never carries it, so this whole half of the panel is
+          absent there rather than present and unable to answer. */}
+      {canAttribute && (
+        <div className="image-attr">
+          <div className="image-subhead">
+            <h3 className="h-image">OCCLUSION — WHERE THE EVIDENCE ACTUALLY WAS</h3>
+            <span className="rule" />
+          </div>
+          <p className="meta">
+            Cover one window of a picture with a flat fill, run the model again,
+            and record what the class logit did. Do it for every window and the
+            result is a map of where the evidence for the answer was — measured
+            by removing it, rather than inferred from a gradient.
+          </p>
+
+          {/* ── the picture ─────────────────────────────────────────────
+              Read in the browser and carried in the request body as a data
+              URL. There is deliberately no box to type a path into: a path in
+              a request names a file on the SERVER's disk, which is somebody
+              else's machine as often as it is yours. */}
+          <input
+            ref={pickRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              onPick(e.target.files?.[0]);
+              e.target.value = ""; // so re-picking the same file fires again
+            }}
+          />
+          <div className="row image-pick">
+            <button
+              className="ghost sm"
+              onClick={() => pickRef.current?.click()}
+              disabled={busy !== ""}
+            >
+              {picture ? "pick another picture" : "pick a picture"}
+            </button>
+            {picture ? (
+              <span className="meta">
+                <b>{pictureName}</b>
+                {pictureDims
+                  ? ` — ${pictureDims.w}x${pictureDims.h} as it sits on your disk`
+                  : " — its dimensions did not decode in the browser"}
+              </span>
+            ) : (
+              <span className="meta">
+                A file from this machine, read here and sent in the body. There
+                is no path box on purpose: a path in a request names a file on
+                the server's disk rather than on yours, and a browser cannot
+                produce one for a file you picked in any case.
+              </span>
+            )}
+          </div>
+
+          <div className="row image-controls">
+            <label className="meta" htmlFor="image-patch">
+              patch
+            </label>
+            <input
+              id="image-patch"
+              type="number"
+              min={1}
+              max={512}
+              value={aPatch}
+              onChange={(e) => {
+                setAttr(null);
+                setAPatch(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
+              }}
+            />
+            <label className="meta" htmlFor="image-stride">
+              stride
+            </label>
+            <input
+              id="image-stride"
+              type="number"
+              min={1}
+              max={512}
+              value={aStride}
+              onChange={(e) => {
+                setAttr(null);
+                setAStride(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
+              }}
+            />
+            <label className="meta" htmlFor="image-fill">
+              fill
+            </label>
+            <select
+              id="image-fill"
+              className="combo"
+              value={aFill}
+              onChange={(e) => {
+                setAttr(null);
+                setAFill(e.target.value);
+              }}
+            >
+              {FILLS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+            <label className="meta" htmlFor="image-batch">
+              batch
+            </label>
+            <input
+              id="image-batch"
+              type="number"
+              min={1}
+              max={64}
+              value={aBatch}
+              onChange={(e) => {
+                setAttr(null);
+                setABatch(Math.max(1, Math.min(64, Number(e.target.value) || 1)));
+              }}
+            />
+            <label className="meta" htmlFor="image-target">
+              class
+            </label>
+            <input
+              id="image-target"
+              className="image-attr-class"
+              type="number"
+              min={0}
+              placeholder="the model's own"
+              value={aTarget}
+              onChange={(e) => {
+                setAttr(null);
+                setATarget(e.target.value);
+              }}
+            />
+          </div>
+
+          <p className="meta">
+            <b>There is no neutral fill.</b> Nothing here can delete a region,
+            only replace it with something else, so a flat square is a specific
+            baseline and a different one gives a different map — which is why
+            all four of {FILLS.join(", ")} are offered rather than one. A
+            stride below the patch overlaps the windows for a smoother map at a
+            quadratic price. Leave <b>class</b> empty to attribute whatever the
+            model itself predicted; naming one audits a label you supplied
+            instead, which is a different question with the same picture.
+          </p>
+
+          {/* ── the preflight, BEFORE any run ───────────────────────────
+              This route needs no model, so the number arrives as early as a
+              geometry is known — and it is the number that decides whether to
+              run at all. */}
+          <div className="image-cost">
+            {attrCost ? (
+              <>
+                <p className="meta">
+                  <b>this sweep</b> · {attrCost.means}
+                </p>
+                <p className="meta">
+                  Priced at {pricedH}x{pricedW},{" "}
+                  {shotSize > 0
+                    ? "the input size this checkpoint states — which is what its own processor resizes your picture to before a single window is placed, so the file's own dimensions never reach the sweep."
+                    : "the dimensions of the file you picked, because this checkpoint states no input size of its own. Its processor may resize to something else entirely, and the run would then be over a geometry this preflight does not know — a weaker number than the one above it looks like."}
+                </p>
+                {attrCost.seconds === null && (
+                  <p className="meta">
+                    No per-pass time has been measured on this machine, so
+                    there is no forecast above. <b>That is "nobody measured",
+                    not "instant"</b> — a wait invented from a typed constant
+                    would be a number this tool made up.
+                  </p>
+                )}
+              </>
+            ) : attrCostErr ? null : pricedH < 1 ? (
+              <p className="meta">
+                This checkpoint states no input size, so nothing here knows a
+                geometry to price yet. Pick a picture and the sweep is costed
+                against its dimensions before you can run it.
+              </p>
+            ) : (
+              <p className="meta">pricing the sweep…</p>
+            )}
+            {attrCostErr && <p className="meta">{attrCostErr}</p>}
+          </div>
+
+          {/* Past the ceiling: the button is not offered, and the passes and
+              the ceiling are, because those two are what a reader needs to
+              pick a stride. `estimate` prices a run it would refuse on
+              purpose — being told only "no" leaves you guessing at the
+              parameter that caused it. */}
+          <div className="row">
+            {attrCost && !attrCost.within_ceiling ? (
+              <span className="meta">
+                <b>No run is offered at this setting.</b> It is{" "}
+                <b>{attrCost.passes}</b> forward passes against a ceiling of{" "}
+                <b>{attrCost.ceiling}</b>, and the sweep refuses it — a job
+                rather than a click, and finding that out by waiting is the
+                failure the ceiling exists to prevent. The preflight above
+                still priced it, and names a stride that fits.
+              </span>
+            ) : (
+              <>
+                <button
+                  className="cta"
+                  onClick={() => void onAttribute()}
+                  disabled={busy !== "" || picture === "" || !attrCost}
+                >
+                  {busy === "attribute"
+                    ? "Covering it up, a window at a time…"
+                    : "Cover it up and re-run"}
+                </button>
+                {picture === "" ? (
+                  <span className="meta">
+                    Pick a picture first. This measures what a model looked at
+                    in ONE image, so there is no default worth substituting.
+                  </span>
+                ) : !attrCost ? (
+                  <span className="meta">
+                    The preflight has no number for this setting, so there is
+                    nothing to run it against — its sentence above says why.
+                  </span>
+                ) : null}
+              </>
+            )}
+          </div>
+
+          {/* ── the map ─────────────────────────────────────────────────
+              Drawn over the picture in a DIVERGING scale with a neutral
+              midpoint at zero, because the scores are signed and the sign is
+              the finding. */}
+          {attr && (
+            <>
+              <div className="image-attr-panes">
+                <div
+                  className="image-attr-shot"
+                  style={{ aspectRatio: `${attr.grid.width} / ${attr.grid.height}` }}
+                >
+                  <img src={picture} alt={`the picture this sweep covered up: ${pictureName}`} />
+                  {/* Colour only, and hidden from the accessibility tree: the
+                      table below is the same map with the numbers in it, and
+                      196 unlabelled cells announced twice is worse than once. */}
+                  <div
+                    className="image-attr-over"
+                    aria-hidden="true"
+                    style={{
+                      gridTemplateColumns: `repeat(${attr.grid.map_cols}, 1fr)`,
+                      gridTemplateRows: `repeat(${attr.grid.map_rows}, 1fr)`,
+                    }}
+                  >
+                    {attr.map.map((row, r) =>
+                      row.map((v, c) => (
+                        <span
+                          key={`${r}:${c}`}
+                          className={
+                            [
+                              "image-attr-cell",
+                              !attrUnrankable &&
+                              attr.strongest &&
+                              attr.strongest.row === r &&
+                              attr.strongest.col === c
+                                ? "peak"
+                                : "",
+                              !attrUnrankable &&
+                              attr.most_negative &&
+                              attr.most_negative.row === r &&
+                              attr.most_negative.col === c
+                                ? "against"
+                                : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" ") || undefined
+                          }
+                          style={{
+                            background: attrUnrankable ? "transparent" : attrShade(v, attrMag),
+                          }}
+                        />
+                      )),
+                    )}
+                  </div>
+                </div>
+
+                {/* The scale, spelled out. A reader who takes the two hues for
+                    "strong" and "weak" has read the map backwards in half of
+                    it, so both ends are named in words as well as numbers. */}
+                <div className="image-attr-key">
+                  <span className="meta">
+                    covering it <b>RAISED</b> the class — that region was
+                    arguing against the answer
+                  </span>
+                  <div className="image-attr-ramp" aria-hidden="true" />
+                  <div className="image-attr-ends">
+                    <span className="mid">{drop(attrLo)}</span>
+                    <span className="mid">0</span>
+                    <span className="mid">{drop(attrHi)}</span>
+                  </div>
+                  <span className="meta">
+                    covering it <b>COST</b> the class its evidence
+                  </span>
+                  <span className="meta">
+                    Zero sits at the middle of the scale and paints as nothing,
+                    so a window that changed the answer in neither direction
+                    reads as neither.
+                  </span>
+                </div>
+              </div>
+
+              <p className="meta image-read">
+                The overlay is over the tensor the model saw — this
+                checkpoint's own processor produced it from your file, doing
+                the resize the model was trained with. If that processor crops
+                as well as resizing, your picture underneath is stretched into
+                the same frame and the alignment is off by exactly that crop.
+                {attr.grid.overlap > 0 &&
+                  ` Neighbouring windows share ${attr.grid.overlap} pixels at this stride, so the cells above are drawn as a plain tiling of the frame while the windows they stand for overlapped.`}
+                {attrClamped !== "" &&
+                  ` The last ${attrClamped} had to be pulled back to the edge so that no strip of the image sat under no window at all, which makes that final overlap larger than the stride.`}
+              </p>
+
+              {/* The same map with the numbers in it. The colour is derived
+                  here; the number is the measurement. */}
+              <div className="image-grid-wrap">
+                <table
+                  className="image-grid image-attr-grid"
+                  aria-label="signed logit movement per occluded window, by map row and column"
+                >
+                  <thead>
+                    <tr>
+                      <th />
+                      {attr.map[0].map((_, c) => (
+                        <th key={c} className="mid">
+                          c{c}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="stagger">
+                    {attr.map.map((row, r) => (
+                      <tr key={r} style={{ "--i": r } as CSSProperties}>
+                        <th className="mid">r{r}</th>
+                        {row.map((v, c) => {
+                          const w = attrWindows.get(`${r}:${c}`);
+                          return (
+                            <td
+                              key={c}
+                              className="image-cell"
+                              style={{
+                                background: attrUnrankable
+                                  ? "transparent"
+                                  : attrShade(v, attrMag),
+                              }}
+                              title={
+                                `row ${r}, column ${c}` +
+                                (w ? ` — ${box(w)}` : "") +
+                                ` — ${drop(v)} logits` +
+                                (w && w.prob_drop !== null
+                                  ? `, ${drop(w.prob_drop)} in softmax probability`
+                                  : ", no probability: this head has a single output")
+                              }
+                            >
+                              {drop(v)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="row image-attr-facts">
+                <span className="pill">{attr.model_name}</span>
+                <span className="pill on">
+                  {attr.target_label || `class ${attr.target}`}
+                  {attr.target_chosen_by_model
+                    ? " · the model's own top prediction"
+                    : " · the class you named"}
+                </span>
+                <span className="pill">
+                  {attr.fill} fill
+                  {attr.fill_value.length > 0
+                    ? ` at ${attr.fill_value.map((v) => v.toFixed(3)).join(", ")}`
+                    : ""}
+                </span>
+                <span className="pill">
+                  {attr.seconds}s measured, batches of {attr.batch_used}
+                </span>
+              </div>
+
+              {/* ── what the map is allowed to claim ──────────────────
+                  Three verdicts, and the first two are not the same one. A
+                  spread of exactly zero is the model saying it did not use
+                  the picture; a spread inside the reported precision is a map
+                  of real differences that are all smaller than the last digit
+                  they are printed to. Neither may name a peak, and the reason
+                  they may not is different in each. */}
+              {attrIsFlat ? (
+                <div className="hint">
+                  <b>There is no strongest window: this map is exactly flat.</b>{" "}
+                  The model returned the same logit under every one of these
+                  occlusions, which is it telling you it did not use the image
+                  — nothing moved in either direction, so nothing argued for
+                  the class and nothing argued against it. Naming a peak here
+                  would be reading rank order out of a tie, and the cells above
+                  are unshaded rather than uniformly pale.
+                </div>
+              ) : attrIsNoise ? (
+                <div className="hint">
+                  <b>This map is made of rounding.</b> Its entire span is{" "}
+                  {span(attr.spread)} logits, at or below the precision these
+                  scores are reported at — so ranking its windows is ranking
+                  the last digit, and no peak is named or drawn. The cells above
+                  are left unshaded for the same reason: a diverging scale
+                  normalised to a span that small paints noise as structure. The
+                  paragraph below is the server's own account of it.
+                </div>
+              ) : (
+                <>
+                  {attr.strongest !== null && (
+                    <p className="meta">
+                      <b>Strongest</b> — row {attr.strongest.row}, column{" "}
+                      {attr.strongest.col} ({box(attr.strongest)}): covering it
+                      moved the logit by <b>{drop(attr.strongest.logit_drop)}</b>
+                      {attr.strongest.prob_drop !== null
+                        ? `, and the softmax probability by ${drop(attr.strongest.prob_drop)}`
+                        : ""}
+                      . That is a peak <i>relative to the other windows of this
+                      picture</i>, and the whole map spans{" "}
+                      <b>{span(attr.spread)}</b> logits — the span is the scale
+                      the peak means anything on.
+                    </p>
+                  )}
+
+                  {attr.most_negative ? (
+                    <p className="meta">
+                      <b>Arguing against the class</b> — row{" "}
+                      {attr.most_negative.row}, column {attr.most_negative.col}{" "}
+                      ({box(attr.most_negative)}) at{" "}
+                      <b>{drop(attr.most_negative.logit_drop)}</b>: covering it
+                      RAISED the logit, so that region was evidence against the
+                      answer rather than for it. An absolute value would have
+                      printed it as the same size of evidence <i>for</i>.
+                    </p>
+                  ) : (
+                    <p className="meta">
+                      <b>Nothing argued against the class.</b> No window raised
+                      the logit when it was covered — which is a different
+                      finding from a window that moved it by 0.0, and the reason
+                      there is a sentence here rather than an empty slot where a
+                      most-negative window would go.
+                    </p>
+                  )}
+                </>
+              )}
+
+              {/* Rule of the module, not of this panel: a silent cap is a
+                  defect, so both numbers are shown whenever they differ. */}
+              {batchCut && (
+                <div className="hint">
+                  <b>The batch was reduced.</b> {attr.batch_requested} occluded
+                  copies per call were asked for and {attr.batch_used} were
+                  used. Both are shown because the smaller one is more forward
+                  calls and a different wall-clock time — the {attr.seconds}s
+                  above is the reduced run's, not the run you asked for.
+                </div>
+              )}
+
+              {attr.value_range_inferred && (
+                <div className="hint">
+                  <b>The input value range was inferred from this one image's
+                  extremes</b>, not read from the checkpoint's processor — it
+                  published too little to compute one. That changes what the
+                  fill actually was: the range used was{" "}
+                  {attr.value_range[0].toFixed(4)} to{" "}
+                  {attr.value_range[1].toFixed(4)} as guessed from this picture,
+                  and one picture's extremes are a lower bound on the model's
+                  input range rather than the range. A photograph that never
+                  reaches the bottom of it puts "{attr.fill}" somewhere that is
+                  not the midpoint the word implies.
+                </div>
+              )}
+
+              {attr.class_names_dropped && (
+                <div className="hint">
+                  <b>The class names did not match this head's {attr.classes}{" "}
+                  outputs</b>, so they were dropped entirely rather than applied
+                  by position. The target is numbered above rather than named,
+                  which is the right way round: a picture captioned with the
+                  wrong class name is worse than one captioned with a number.
+                </div>
+              )}
+
+              {/* The server's own paragraph, verbatim — including the four
+                  sentences this panel is not allowed to soften: that a fill is
+                  a baseline and not a removal, that occlusion is out of
+                  distribution, that softmax confidence is not the probability
+                  of being right, and that one image is a sample rather than a
+                  property of the model. */}
+              <p className="meta image-means">{attr.means}</p>
             </>
           )}
         </div>
