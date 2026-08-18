@@ -23,6 +23,7 @@ Two thresholds, deliberately different in kind:
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -34,6 +35,9 @@ MIN_INTERESTING_GB = 20.0
 # How much bigger than VRAM a download may be before we ask. Four is roughly
 # the point past which no amount of offloading rescues the load.
 VRAM_MULTIPLE = 4.0
+
+
+log = logging.getLogger(__name__)
 
 
 class TooBig(ValueError):
@@ -49,6 +53,33 @@ class TooBig(ValueError):
         # handler that catches both and reads one differently is the seam
         # where one of the two stops being checked.
         self.sentence = str(message)
+
+    def __reduce__(self):
+        """Survive `copy`, `deepcopy` and `pickle`.
+
+        `BaseException.__reduce__` rebuilds an exception by calling the class
+        with `self.args` — positionally. `overridable` is keyword-ONLY, so it
+        is not in `args`, and every one of the three raised:
+
+            TypeError: TooBig.__init__() missing 1 required keyword-only
+            argument: 'overridable'
+
+        A refusal that cannot be copied is a refusal that dies on any path
+        which moves it between contexts, and the failure arrives as a
+        confusing TypeError about the exception rather than the sentence the
+        exception was carrying.
+        """
+        return (
+            _rebuild_too_big,
+            (self.args[0] if self.args else "", self.overridable),
+        )
+
+
+def _rebuild_too_big(message: str, overridable: bool) -> TooBig:
+    """Module level so `pickle` can find it by name — a closure or a lambda
+    could not be pickled either, which would move the problem rather than fix
+    it."""
+    return TooBig(message, overridable=overridable)
 
 
 def free_space(target: Path) -> tuple[Path, int]:
@@ -116,6 +147,22 @@ def guard(
     # `free_override` lets a caller state the disk situation — used by tests,
     # so a verdict does not depend on how full the developer's drive is.
     free = measured if free_override is None else free_override
+
+    if not free:
+        # `free_space` returns 0 for a volume it could not measure, and the
+        # refusal below is correctly SKIPPED — refusing on no evidence would
+        # ban a legitimate download, the same argument `need_bytes <= 0` makes
+        # above. What was missing is that nobody was told the check did not
+        # happen, so a download proceeded looking exactly like one that had
+        # been cleared. The terminal is where this project already puts what a
+        # reader needs and a response should not carry.
+        log.warning(
+            "disk space could not be measured for %s (%s), so %s was NOT "
+            "checked against free space before downloading",
+            volume,
+            target,
+            label,
+        )
 
     if free and need_bytes > free:
         where = volume.drive or volume

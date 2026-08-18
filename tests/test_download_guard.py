@@ -497,3 +497,65 @@ def test_a_readable_gpu_still_reports_its_size(tmp_path):
             free_override=10**15,
         )
     assert "NVIDIA RTX 4060 has 8.0 GB" in str(caught.value)
+
+
+def test_a_refusal_survives_being_copied_and_pickled():
+    """`BaseException.__reduce__` rebuilds an exception by calling the class
+    with `self.args` POSITIONALLY, and `overridable` is keyword-only — so it
+    is not in `args` and all three of copy, deepcopy and pickle raised:
+
+        TypeError: TooBig.__init__() missing 1 required keyword-only
+        argument: 'overridable'
+
+    A refusal that cannot be copied dies on any path that moves it between
+    contexts, and the failure arrives as a confusing TypeError about the
+    exception rather than the sentence it was carrying.
+    """
+    import copy
+    import pickle
+
+    from modelmri.capacity import TooBig
+
+    original = TooBig("needs 5.0 GB and C: has 1.0 GB free", overridable=True)
+    for rebuilt in (
+        copy.copy(original),
+        copy.deepcopy(original),
+        pickle.loads(pickle.dumps(original)),
+    ):
+        assert isinstance(rebuilt, TooBig)
+        assert rebuilt.overridable is True
+        assert rebuilt.sentence == original.sentence
+        assert str(rebuilt) == str(original)
+
+    # And the flag genuinely round-trips rather than defaulting to a truthy
+    # value: an unoverridable disk refusal must not come back overridable.
+    hard = pickle.loads(pickle.dumps(TooBig("no room", overridable=False)))
+    assert hard.overridable is False
+
+
+def test_a_disk_that_could_not_be_measured_is_said_out_loud(caplog):
+    """`free_space` returns 0 for a volume it could not read, and the disk
+    refusal is correctly SKIPPED — refusing on no evidence would ban a
+    legitimate download.
+
+    What was missing is that nobody was told the check did not happen, so a
+    download proceeded looking exactly like one that had been cleared.
+    """
+    import logging
+    from pathlib import Path
+
+    from modelmri import capacity
+
+    with caplog.at_level(logging.WARNING, logger="modelmri.capacity"):
+        capacity.guard(
+            5_000_000_000,
+            Path("."),
+            label="some/model",
+            vram_gb=8.0,
+            free_override=0,
+            confirm=True,
+        )
+    said = caplog.text
+    assert "could not be measured" in said
+    assert "some/model" in said
+    assert "NOT" in said
