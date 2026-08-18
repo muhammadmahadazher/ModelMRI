@@ -108,12 +108,23 @@ export default function PalettePicker() {
     e.preventDefault();
     const at = PALETTES.findIndex((p) => p.key === palette);
     const last = PALETTES.length - 1;
-    let next = at;
-    if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = last;
-    else if (e.key === "ArrowRight" || e.key === "ArrowDown")
-      next = at >= last ? 0 : at + 1;
-    else next = at <= 0 ? last : at - 1;
+    // One expression rather than a seeded `let` and four assignments: the
+    // chain is exhaustive, so the seed was written and never read. Both
+    // wrapping arms also survive `at === -1` — a stored palette this build no
+    // longer ships — landing on the first or last swatch rather than
+    // indexing off the end.
+    const next =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? last
+          : e.key === "ArrowRight" || e.key === "ArrowDown"
+            ? at >= last
+              ? 0
+              : at + 1
+            : at <= 0
+              ? last
+              : at - 1;
     setPalette(PALETTES[next].key);
     panel.current
       ?.querySelectorAll<HTMLElement>(".palette-dot")
