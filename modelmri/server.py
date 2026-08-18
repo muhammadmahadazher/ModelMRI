@@ -261,6 +261,31 @@ class ImageKnockoutRequest(ImageRunRequest):
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
+class ImageAttributionRequest(BaseModel):
+    """One picture, covered up a window at a time.
+
+    The image travels IN the request as a data URL, never as a path: a path
+    in a body names a file on the server's disk, which is somebody else's
+    machine as often as it is yours, and a browser cannot produce one for a
+    file the user picked anyway.
+
+    `target` is `None` for "whatever the model itself says", which is the
+    ordinary question. Naming a class asks a different one — auditing a label
+    you supplied rather than attributing the model's own answer — and the
+    result says which of the two it was.
+    """
+
+    image: str = Field(min_length=1)
+    patch: int = Field(default=16, ge=1, le=512)
+    # `None` means "the patch size", i.e. non-overlapping windows. Not
+    # defaulted to a number here, because `vision_attr` refuses a stride wider
+    # than the patch and it should be the one deciding that.
+    stride: int | None = Field(default=None, ge=1, le=512)
+    fill: str = Field(default="grey")
+    target: int | None = Field(default=None, ge=0)
+    batch: int = Field(default=32, ge=1, le=64)
+
+
 class VLAFrameRequest(BaseModel):
     """One frame, plus the seed that makes the answer reproducible.
 
@@ -470,6 +495,34 @@ def _not_from_this_machine(
             status_code=403,
         )
     return None
+
+
+def _label_names(model) -> list | None:
+    """The head's own class names, or `None` when it publishes none.
+
+    `id2label` is a dict keyed by index, and transformers hands it back with
+    STRING keys after a JSON round-trip — so the order is restored by sorting
+    on the INTEGER, not by trusting insertion order and not by sorting the
+    keys as text, which puts "10" immediately after "1". A list built in the
+    wrong order puts every name against the wrong class and looks entirely
+    reasonable doing it.
+
+    `None` rather than a list of "class 0", "class 1": `vision_attr` drops
+    names that do not match the head's width rather than applying them to the
+    wrong classes, and invented names would defeat that check.
+
+    Module level rather than a closure so it can be tested directly. The first
+    version was a closure, and the test written for it could only re-implement
+    the sort — a test that passes whether or not the code is right.
+    """
+    table = getattr(getattr(model, "config", None), "id2label", None)
+    if not isinstance(table, dict) or not table:
+        return None
+    try:
+        return [str(table[k]) for k in sorted(table, key=lambda k: int(k))]
+    except (TypeError, ValueError):
+        # Keys that are not indices at all. Unknown, said as unknown.
+        return None
 
 
 def _from_this_machine(request) -> bool:
@@ -2102,6 +2155,95 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/image/knockout")
+
+    @app.get("/api/image/attribution/cost")
+    def image_attribution_cost(
+        height: int = 224,
+        width: int = 224,
+        patch: int = 16,
+        stride: int = 0,
+        batch: int = 32,
+    ):
+        """How many forward passes covering the image up would take.
+
+        Asked FIRST and answers without a model, because the number it
+        produces is the one that decides whether to run at all: the same image
+        at stride 1 rather than stride 16 is not a slower run, it is a
+        different afternoon. `estimate` never refuses on the ceiling — a
+        caller about to be refused needs the number that got them refused.
+        """
+        from . import vision_attr
+
+        try:
+            return vision_attr.estimate(
+                height,
+                width,
+                patch=patch,
+                # 0 is the query-string way of saying "not stated"; the module
+                # then uses the patch size, which is non-overlapping windows.
+                stride=stride or None,
+                batch=batch,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+    @app.post("/api/image/attribution")
+    async def image_attribution(req: ImageAttributionRequest):
+        """Cover each window of one image, re-run, and report what moved.
+
+        Every saliency map this project could have drawn for a classifier is a
+        gradient or an attention weight, and both are correlational. This is
+        the interventional one: it removes evidence and measures the answer,
+        which is the same argument `patch.py` makes on the text side and
+        `vla_occlude.py` makes for a robot's camera.
+        """
+        from . import image_input, vision_attr
+
+        try:
+            handle = _image_can("attribution")
+            processor = handle.require_processor()
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+        try:
+            picture = image_input.decode(req.image)
+            # The checkpoint's own preprocessor does the resize and the
+            # normalisation, because those two are what it was trained with
+            # and doing either here would be doing them differently.
+            tensor = image_input.to_tensor(
+                picture, processor, device=handle.status().device
+            )
+            # READ from the processor rather than inferred from this one
+            # picture. `vision_attr` will infer a range from the image's own
+            # extremes and say that it did, which is honest but weak: a
+            # photograph of a bright sky never reaches the bottom of the
+            # model's input range, so "grey" would land somewhere that is not
+            # the midpoint. `None` here means the processor published too
+            # little, and the inference-with-a-caveat is then the right answer.
+            value_range = image_input.value_range_of(processor)
+
+            found = await asyncio.to_thread(
+                vision_attr.sweep,
+                handle.require(),
+                tensor,
+                target=req.target,
+                patch=req.patch,
+                stride=req.stride,
+                fill=req.fill,
+                value_range=value_range,
+                batch=req.batch,
+                class_names=_label_names(handle.require()),
+                model_name=handle.status().repo,
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/attribution")
+
+        return found.to_dict()
 
     @app.get("/api/image/steps/cost")
     def image_steps_cost(steps: int = 20, threshold: float = 0.0):

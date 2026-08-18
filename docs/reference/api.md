@@ -154,6 +154,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/graph` | Graph |
 | `GET` | `/api/image` | Image Status |
 | `GET` | `/api/image/attention/cost` | Image Attention Cost |
+| `GET` | `/api/image/attribution/cost` | Image Attribution Cost |
 | `GET` | `/api/image/available` | Image Available |
 | `GET` | `/api/image/local` | Image Local |
 | `GET` | `/api/image/search` | Image Search |
@@ -176,6 +177,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/ground` | Ground Answer |
 | `POST` | `/api/image/attention` | Image Attention Capture |
+| `POST` | `/api/image/attribution` | Image Attribution |
 | `POST` | `/api/image/knockout` | Image Knockout |
 | `POST` | `/api/image/load` | Image Load |
 | `POST` | `/api/image/unload` | Image Unload |

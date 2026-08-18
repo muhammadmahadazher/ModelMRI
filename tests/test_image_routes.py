@@ -372,3 +372,109 @@ def test_an_unreachable_hub_answers_503_rather_than_500(client, monkeypatch):
     r = client.get("/api/image/search")
     assert r.status_code == 503, f"an unreachable Hub came back as {r.status_code}"
     assert "Could not reach the HuggingFace Hub" in r.json()["error"]
+
+
+# ------------------------------------------- covering the picture up
+
+
+def test_the_attribution_cost_answers_with_no_model_at_all(client):
+    """Asked FIRST, because the number it produces is what decides whether to
+    run: the same image at stride 1 rather than 16 is not a slower run, it is
+    a different afternoon."""
+    d = client.get("/api/image/attribution/cost?height=224&width=224&patch=16").json()
+    assert d["map_rows"] == 14
+    assert d["map_cols"] == 14
+    # N windows plus the unoccluded reference, which every window is measured
+    # against. Forgetting it under-quotes by exactly the pass the map needs.
+    assert d["passes"] == 196 + 1
+    assert d["within_ceiling"] is True
+
+
+def test_a_stride_that_would_take_an_afternoon_still_gets_priced(client):
+    """`estimate` NEVER refuses on the ceiling. A caller who is about to be
+    refused needs the number that got them refused, or they are guessing at
+    the stride."""
+    d = client.get(
+        "/api/image/attribution/cost?height=224&width=224&patch=8&stride=1"
+    ).json()
+    assert d["passes"] > d["ceiling"]
+    assert d["within_ceiling"] is False
+    assert d["map_rows"] == 217
+
+
+def test_no_seconds_are_forecast_for_a_machine_nobody_timed(client):
+    """A duration from somebody else's hardware is the number people plan
+    around, so there is none rather than an invented one."""
+    d = client.get("/api/image/attribution/cost").json()
+    assert d["seconds"] is None
+    assert "no per-pass time was measured" in d["means"].lower()
+
+
+def test_attribution_refuses_before_it_reads_the_image(client):
+    """Nothing is loaded, so decoding a picture would be work done for an
+    answer that cannot come. The refusal names the missing model rather than
+    complaining about the image."""
+    r = client.post("/api/image/attribution", json={"image": "not-a-data-url"})
+    assert r.status_code == 409
+    assert "No image model is loaded" in r.json()["error"]
+
+
+def test_an_image_is_required_rather_than_defaulted(client):
+    """This measures what a model looked at in ONE picture. There is no
+    default image worth substituting."""
+    assert client.post("/api/image/attribution", json={}).status_code == 422
+    assert client.post("/api/image/attribution", json={"image": ""}).status_code == 422
+
+
+def test_class_names_are_ordered_by_index_and_not_by_text(monkeypatch):
+    """The ordering trap, on the real function.
+
+    `id2label` survives a JSON round-trip with STRING keys, so sorting them as
+    text puts "10" immediately after "1" and every name lands against the
+    wrong class — while looking entirely reasonable. Sorting on the integer is
+    what fixes it.
+
+    Measured on the real head: `google/vit-base-patch16-224` reports class 610
+    as "jersey, T-shirt, tee shirt", which is the correct ImageNet name for
+    that index.
+    """
+    from modelmri.server import _label_names
+
+    class _Model:
+        class config:
+            id2label = {"2": "third", "0": "first", "10": "eleventh", "1": "second"}
+
+    names = _label_names(_Model())
+    assert names[:3] == ["first", "second", "third"]
+    assert names[-1] == "eleventh", "sorted as text, '10' would land at index 1"
+
+
+def test_a_head_that_publishes_no_names_offers_none_rather_than_inventing_them():
+    """`vision_attr` DROPS names that do not match the head's width rather
+    than applying them to the wrong classes. A list of "class 0", "class 1"
+    would be exactly the right length and would defeat that check."""
+    from modelmri.server import _label_names
+
+    class _Bare:
+        class config:
+            pass
+
+    class _Empty:
+        class config:
+            id2label = {}
+
+    assert _label_names(_Bare()) is None
+    assert _label_names(_Empty()) is None
+    assert _label_names(object()) is None
+
+
+def test_a_label_table_that_is_not_keyed_by_index_is_unknown_not_guessed():
+    """Keys that are not indices at all. Reported as unknown rather than
+    ordered by whatever `sorted` does to mixed types."""
+    from modelmri.server import _label_names
+
+    class _Weird:
+        class config:
+            id2label = {"cat": "a cat", "dog": "a dog"}
+
+    assert _label_names(_Weird()) is None
