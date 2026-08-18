@@ -449,6 +449,171 @@ def save(job: Job, rows: list[Row], *, started_at: str, sweep_id: str) -> str:
     return sweep_id
 
 
+def saved_sweeps(limit: int = 50) -> list[dict]:
+    """Every sweep on this machine, newest first, with how far each one got.
+
+    `save` has existed since the sweep did and nothing ever read it back, so a
+    saved sweep was write-only: findable in the database and unreachable from
+    the tool that wrote it.
+    """
+    db = _db()
+    try:
+        rows = db.execute(
+            "SELECT id, started_at, model, metric, n_prompts, n_measured, "
+            "n_refused FROM sweep ORDER BY started_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    finally:
+        db.close()
+    return [
+        {
+            "sweep_id": r[0],
+            "started_at": r[1],
+            "model": r[2],
+            "metric": r[3],
+            "n_prompts": r[4],
+            "n_measured": r[5],
+            "n_refused": r[6],
+            # The number that decides whether resuming is worth anything.
+            "n_remaining": max(0, r[4] - r[5]),
+            "complete": r[4] > 0 and r[5] >= r[4],
+        }
+        for r in rows
+    ]
+
+
+def load_sweep(sweep_id: str) -> tuple:
+    """`(job, rows)` for a saved sweep, or a refusal naming the id."""
+    db = _db()
+    try:
+        found = db.execute(
+            "SELECT job, rows_json FROM sweep WHERE id = ?", (str(sweep_id),)
+        ).fetchone()
+    finally:
+        db.close()
+    if found is None:
+        raise BadRequest(
+            f"there is no saved sweep with id {sweep_id!r} on this machine. "
+            f"Sweeps are stored beside the traces, so one run on another "
+            f"machine is not here."
+        )
+    raw_job = json.loads(found[0])
+    out_dir = raw_job.get("out_dir") or ""
+    job = Job(**{**raw_job, "out_dir": Path(out_dir) if out_dir else None})
+    return job, [Row(**r) for r in json.loads(found[1])]
+
+
+def remaining(job: Job, rows: list[Row]) -> list[int]:
+    """Which prompt indices still need running.
+
+    A row that was MEASURED is done. A row that was not is not a result — "the
+    sweep was cancelled before this prompt ran" and "this prompt could not be
+    measured" are both reasons to try again, and a resume that skipped them
+    would report a partial sweep as finished.
+
+    Retrying a prompt that genuinely cannot be measured costs one more attempt
+    per resume and writes the same sentence again, which is the honest
+    outcome: the alternative is a sweep that silently never covers it.
+    """
+    done = {r.index for r in rows if r.measured}
+    return [i for i in range(len(job.prompts)) if i not in done]
+
+
+def resume_plan(sweep_id: str, runtime=None) -> dict:
+    """What finishing a saved sweep would cost, before it starts.
+
+    Priced first like everything else here, and it also checks the three ways
+    a resume can be WRONG rather than merely expensive — see `_resumable`.
+    """
+    job, rows = load_sweep(sweep_id)
+    left = remaining(job, rows)
+    blocked = _resumable(job, rows, runtime)
+    return {
+        "sweep_id": sweep_id,
+        "model": job.model,
+        "metric": job.metric,
+        "n_prompts": len(job.prompts),
+        "n_measured": sum(1 for r in rows if r.measured),
+        "n_remaining": len(left),
+        "remaining_indices": left,
+        # `None` when nothing blocks it. A string is the reason it must not
+        # run, and it is never merely a warning.
+        "blocked": blocked,
+        "means": (
+            f"{len(job.prompts) - len(left)} of {len(job.prompts)} prompt(s) "
+            f"already measured, {len(left)} left."
+            + (f" This cannot be resumed: {blocked}" if blocked else "")
+        ),
+    }
+
+
+def _resumable(job: Job, rows: list[Row], runtime) -> str | None:
+    """Why this sweep must not be resumed, or `None`.
+
+    Three checks, and each exists because failing it produces one table of
+    numbers that came from two different runs — which looks exactly like a
+    table of numbers that came from one.
+
+    The prompt check is by DIGEST rather than by count. A set with the same
+    number of prompts and one of them edited would otherwise attach the old
+    row to the new prompt, and every number in it would be about text that is
+    no longer there.
+    """
+    for row in rows:
+        if not row.measured:
+            continue
+        if row.index >= len(job.prompts):
+            return (
+                f"the saved run measured prompt {row.index} and this set has "
+                f"only {len(job.prompts)}, so the prompts have changed since"
+            )
+        if row.prompt_sha256 != receipts.digest(job.prompts[row.index]):
+            return (
+                f"prompt {row.index} is not the text that was measured — the "
+                f"set has been edited, and reusing the old row would attach a "
+                f"measurement to a prompt it was never about"
+            )
+    if runtime is not None:
+        live = getattr(runtime, "hf_id", "") or ""
+        if live and job.model and live != job.model:
+            return (
+                f"the saved run measured `{job.model}` and `{live}` is loaded "
+                f"now. Finishing it would put two models' numbers in one table"
+            )
+    return None
+
+
+def resume(sweep_id: str, runtime, *, on_row=None, cancel=None) -> tuple:
+    """Finish a saved sweep, keeping what was already measured.
+
+    A sweep that died at prompt 180 of 200 currently starts over, and losing
+    four hours to a sleeping laptop is a worse failure than any missing
+    feature. This runs the remainder and returns `(job, rows)` in prompt
+    order, so the result is indistinguishable from a run that never stopped —
+    except that it happened faster.
+    """
+    job, rows = load_sweep(sweep_id)
+    blocked = _resumable(job, rows, runtime)
+    if blocked is not None:
+        raise BadRequest(f"this sweep cannot be resumed: {blocked}.")
+
+    keep = {r.index: r for r in rows if r.measured}
+    left = remaining(job, rows)
+    if not left:
+        return job, [keep[i] for i in sorted(keep)]
+
+    # Only the unrun prompts go through `run`, and their indices are restored
+    # afterwards: `run` numbers rows from 0 over the job it is given, so
+    # without this every resumed row would claim to be prompt 0..n of the
+    # original set and the join back would be silently wrong.
+    partial = Job(**{**asdict(job), "prompts": [job.prompts[i] for i in left]})
+    fresh = run(partial, runtime, on_row=on_row, cancel=cancel)
+    for row, original in zip(fresh, left, strict=True):
+        row.index = original
+    merged = {**keep, **{r.index: r for r in fresh}}
+    return job, [merged[i] for i in sorted(merged)]
+
+
 def load_prompts(path: str | Path) -> list[str]:
     """Prompts from a .jsonl (one object with `prompt`) or a .txt (one a line).
 

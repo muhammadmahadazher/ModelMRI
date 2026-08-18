@@ -170,6 +170,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/rubric` | Rubric List |
 | `GET` | `/api/scorers` | Scorers Catalogue |
+| `GET` | `/api/sweeps` | Sweeps List |
+| `GET` | `/api/sweeps/{sweep_id}/resume` | Sweeps Resume Plan |
 | `GET` | `/api/telemetry` | Read Telemetry |
 | `GET` | `/api/trajectory/cost` | Trajectory Cost |
 | `GET` | `/api/weights` | Weights View |

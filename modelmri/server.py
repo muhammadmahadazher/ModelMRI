@@ -3896,6 +3896,47 @@ def create_app(
     # different answer next Tuesday. These are arithmetic and they are
     # reproducible with the network off.
 
+    # -------------------------------------------------------------- sweeps
+    #
+    # `sweep.save` has existed since the sweep did and nothing ever read it
+    # back — a saved sweep was write-only, sitting in the database and
+    # unreachable from the tool that wrote it.
+
+    @app.get("/api/sweeps")
+    async def sweeps_list(limit: int = 50) -> dict:
+        """Every sweep saved on this machine, and how far each one got."""
+        from . import sweep as sweep_mod
+
+        rows = await asyncio.to_thread(sweep_mod.saved_sweeps, limit)
+        unfinished = [r for r in rows if not r["complete"]]
+        return {
+            "sweeps": rows,
+            "means": (
+                f"{len(rows)} saved sweep(s), {len(unfinished)} of them "
+                f"unfinished. A sweep that stopped keeps the prompts it "
+                f"already measured, so finishing one costs only what is left."
+            ),
+        }
+
+    @app.get("/api/sweeps/{sweep_id}/resume")
+    async def sweeps_resume_plan(sweep_id: str) -> dict:
+        """What finishing a stopped sweep would cost, and whether it may run.
+
+        Three things make a resume WRONG rather than merely expensive, and all
+        three are checked here before anything is spent — see
+        `sweep._resumable`. `blocked` is a sentence, never a warning to
+        override.
+        """
+        from . import sweep as sweep_mod
+
+        try:
+            return await asyncio.to_thread(
+                sweep_mod.resume_plan, sweep_id, app.state.runtime
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
     @app.get("/api/scorers")
     def scorers_catalogue() -> dict:
         """Every scorer, WITH the way each one lies.
