@@ -12,6 +12,64 @@ from pathlib import Path
 from . import __version__
 
 
+def compare_experiments(
+    before,
+    after,
+    *,
+    metric: str,
+    higher_is_better: bool,
+    dataset=None,
+    floor: float | None = None,
+    fail_on_worse: int = 0,
+    as_json: bool = False,
+) -> int:
+    """Two runs of one dataset, case by case, as a CI gate.
+
+    Pays for NO torch, like `diff` and unlike `verify`: both sides are already
+    measured and the comparison is arithmetic over JSONL. That is the point —
+    the roadmap wants this runnable on every pull request in milliseconds, on
+    a machine with no accelerator.
+
+    The exit code is the gate. Non-zero when more than `fail_on_worse` cases
+    got worse, and the default is 0 because any regression should fail a gate
+    — a threshold above zero is somebody deciding in advance how much breakage
+    is acceptable, which is a decision to make out loud rather than by
+    default.
+    """
+    from . import datasets
+    from .errors import BadRequest, Refusal
+
+    try:
+        comparison = datasets.compare_experiments(
+            datasets.read_experiment(before),
+            datasets.read_experiment(after),
+            metric=metric,
+            higher_is_better=higher_is_better,
+            dataset=datasets.read_dataset(dataset) if dataset else None,
+            floor=floor,
+        )
+    except (BadRequest, Refusal) as err:
+        # 2, not 1. A gate that cannot run is not a gate that passed, and it
+        # must not be confused with one that ran and found regressions.
+        print(f"modelmri experiments: {err}", file=sys.stderr)
+        return 2
+
+    if as_json:
+        print(json.dumps(comparison.to_dict(), indent=2))
+    else:
+        print(datasets.render(comparison))
+
+    worse = comparison.counts.get(datasets.WORSE, 0)
+    if worse > fail_on_worse:
+        print(
+            f"\n{worse} case(s) got worse on {metric}, above the "
+            f"{fail_on_worse} this gate allows.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def diff_sessions(
     path_a, path_b, *, fail_over: float | None = None, as_json: bool = False
 ) -> int:
@@ -1335,6 +1393,63 @@ def main() -> None:
     )
     differ.add_argument("--json", action="store_true", help="emit JSON")
 
+    experiments = sub.add_parser(
+        "experiments",
+        help="Compare two runs of one dataset, case by case, and exit "
+        "non-zero when cases got worse",
+    )
+    experiments.add_argument("before", help="the baseline experiment .jsonl")
+    experiments.add_argument("after", help="the experiment to check against it")
+    experiments.add_argument(
+        "--metric",
+        required=True,
+        metavar="NAME",
+        help="which recorded metric to compare. Required: a run can carry "
+        "several, and picking one for you would pick the conclusion.",
+    )
+    # No default and no name map. KL divergence is better lower and
+    # faithfulness better higher; guessing inverts every conclusion in half of
+    # all comparisons and the output looks entirely right either way.
+    direction = experiments.add_mutually_exclusive_group(required=True)
+    direction.add_argument(
+        "--higher-is-better",
+        dest="higher_is_better",
+        action="store_true",
+        help="a larger number is an improvement (faithfulness, accuracy)",
+    )
+    direction.add_argument(
+        "--lower-is-better",
+        dest="higher_is_better",
+        action="store_false",
+        help="a smaller number is an improvement (KL divergence, loss)",
+    )
+    experiments.add_argument(
+        "--dataset",
+        default=None,
+        metavar="PATH",
+        help="the dataset both runs cover, so the report can quote what each "
+        "case asked. Omitted means nothing looked, which is reported as "
+        "unknown rather than as none.",
+    )
+    experiments.add_argument(
+        "--floor",
+        type=float,
+        default=None,
+        metavar="X",
+        help="smallest difference worth calling a change, in the metric's own "
+        "units. Omit to use the coarser floor the two files themselves state, "
+        "or exact arithmetic when neither states one.",
+    )
+    experiments.add_argument(
+        "--fail-on-worse",
+        type=int,
+        default=0,
+        metavar="N",
+        help="exit 1 when more than N cases got worse. Default 0 — any "
+        "regression fails, which is what a gate is for.",
+    )
+    experiments.add_argument("--json", action="store_true", help="emit JSON")
+
     sweeper = sub.add_parser(
         "sweep",
         help="Run one measurement over many prompts and report the "
@@ -1638,6 +1753,19 @@ def main() -> None:
     elif args.command == "diff":
         raise SystemExit(
             diff_sessions(args.a, args.b, fail_over=args.fail_over, as_json=args.json)
+        )
+    elif args.command == "experiments":
+        raise SystemExit(
+            compare_experiments(
+                args.before,
+                args.after,
+                metric=args.metric,
+                higher_is_better=args.higher_is_better,
+                dataset=args.dataset,
+                floor=args.floor,
+                fail_on_worse=args.fail_on_worse,
+                as_json=args.json,
+            )
         )
     elif args.command == "sweep":
         raise SystemExit(
