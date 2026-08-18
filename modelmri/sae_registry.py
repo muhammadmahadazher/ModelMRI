@@ -86,9 +86,11 @@ REGISTRY: tuple[SAEEntry, ...] = (
         layers=tuple(range(26)),
         point="resid_post",
         label="Gemma Scope · gemma-2-2b · residual stream",
-        supported=False,
-        note="Gemma Scope ships .npz parameter files, which this loader does "
-        "not open yet. Listed so you know it exists.",
+        note="Loaded and run here: layer 20, width_16k, average_l0 71 against "
+        "google/gemma-2-2b (2,614,341,888 params, hidden_size 2304). The SAE "
+        "reported d_in 2304, d_sae 16384 and a JumpReLU threshold span of "
+        "4.516486 to 30.225666. Widths and sparsities are read from the "
+        "repo's own listing, not assumed.",
     ),
     SAEEntry(
         repo="google/gemma-scope-9b-pt-res",
@@ -97,8 +99,17 @@ REGISTRY: tuple[SAEEntry, ...] = (
         layers=tuple(range(42)),
         point="resid_post",
         label="Gemma Scope · gemma-2-9b · residual stream",
+        # `False` here means UNVERIFIED, not unreadable — see the field's own
+        # docstring. It is the same layout and the same code path as the 2b
+        # release above, which has been run; this one has not, because
+        # gemma-2-9b does not fit the 8.6 GB card it would have been run on.
+        # Claiming it works on that basis would be exactly the kind of
+        # untested assertion the flag exists to prevent.
         supported=False,
-        note="Same .npz format as the 2b release.",
+        note="Same .npz layout as the 2b release, read by the same code path, "
+        "which has been verified against that release. This one has not been "
+        "run here — gemma-2-9b needs more memory than the machine it would "
+        "have been tested on. Expected to work; not measured.",
     ),
     SAEEntry(
         repo="EleutherAI/sae-llama-3-8b-32x",
