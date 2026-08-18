@@ -172,7 +172,7 @@ def store(tmp_path, monkeypatch):
 
 
 META = {
-    "model": "gpt2",
+    "model": "Qwen/Qwen3-1.7B",
     "layer": 6,
     "hidden_size": D,
     "method": "caa",
@@ -184,7 +184,9 @@ META = {
 def test_a_saved_direction_round_trips(store):
     _, vec = sv.fit_direction(separated(), 6)
     sv.save("politeness", vec, META)
-    back, payload, warnings = sv.load("politeness", hidden_size=D, model="gpt2")
+    back, payload, warnings = sv.load(
+        "politeness", hidden_size=D, model="Qwen/Qwen3-1.7B"
+    )
     assert torch.allclose(back.float(), vec.float(), atol=1e-6)
     assert payload["layer"] == 6 and payload["method"] == "caa"
     assert warnings == []
@@ -194,7 +196,14 @@ def test_saving_without_provenance_is_refused(store):
     _, vec = sv.fit_direction(separated(), 6)
     with pytest.raises(BadRequest, match="hidden_size"):
         sv.save(
-            "x", vec, {"model": "gpt2", "layer": 1, "method": "caa", "dtype": "f32"}
+            "x",
+            vec,
+            {
+                "model": "Qwen/Qwen3-1.7B",
+                "layer": 1,
+                "method": "caa",
+                "dtype": "f32",
+            },
         )
 
 
@@ -202,7 +211,7 @@ def test_a_wrong_shaped_direction_is_refused_by_name(store):
     _, vec = sv.fit_direction(separated(), 6)
     sv.save("politeness", vec, META)
     with pytest.raises(Refusal, match="Refusing rather than reshaping"):
-        sv.load("politeness", hidden_size=D * 2, model="gpt2")
+        sv.load("politeness", hidden_size=D * 2, model="Qwen/Qwen3-1.7B")
 
 
 def test_a_different_model_warns_loudly_rather_than_blocking(store):
@@ -210,14 +219,14 @@ def test_a_different_model_warns_loudly_rather_than_blocking(store):
     running it knows that is what they are doing."""
     _, vec = sv.fit_direction(separated(), 6)
     sv.save("politeness", vec, META)
-    _, _, warnings = sv.load("politeness", hidden_size=D, model="gpt2-medium")
+    _, _, warnings = sv.load("politeness", hidden_size=D, model="Qwen/Qwen3-4B")
     assert any("equal size is not equal basis" in w for w in warnings)
 
 
 def test_loading_a_direction_that_failed_its_null_says_so(store):
     _, vec = sv.fit_direction(structureless(), 6)
     sv.save("nothing", vec, dict(META, beats_null=False))
-    _, _, warnings = sv.load("nothing", hidden_size=D, model="gpt2")
+    _, _, warnings = sv.load("nothing", hidden_size=D, model="Qwen/Qwen3-1.7B")
     assert any("never evidence of anything" in w for w in warnings)
 
 
@@ -245,7 +254,7 @@ def test_the_catalogue_omits_values_but_keeps_provenance(store):
     rows = sv.catalogue()
     assert len(rows) == 1
     assert "values" not in rows[0]
-    assert rows[0]["model"] == "gpt2" and rows[0]["layer"] == 6
+    assert rows[0]["model"] == "Qwen/Qwen3-1.7B" and rows[0]["layer"] == 6
 
 
 def test_an_unreadable_file_is_listed_as_damaged_not_dropped(store):

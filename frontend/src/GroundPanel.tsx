@@ -31,9 +31,8 @@ import { useScanOnData } from "./useScanOnData";
  */
 
 /** A short document that produces a real finding on arrival: one passage
- *  carries the date the question asks for, three do not, and on gpt2 the
- *  first outscores the rest by more than twenty to one. Short enough to read
- *  in the box, so nobody has to take the split on trust. */
+ *  carries the date the question asks for and three do not. Short enough to
+ *  read in the box, so nobody has to take the split on trust. */
 const DOC_DEFAULT = [
   "The Antikythera mechanism was recovered from a shipwreck in 1901.",
   "It is an ancient Greek geared device used to predict astronomical positions and eclipses decades in advance.",

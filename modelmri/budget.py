@@ -27,9 +27,9 @@ labelled `basis="one probe pass on this machine"` and is never presented as a
 property of the model. It is a better number than a figure from someone else's
 card, and it is still a sample.
 
-Measured end to end on gpt2 (bf16, cuda, RTX 4060, "The capital of France is",
-the full 146-pass head sweep): the projection called 146 passes exactly, 4.90 s
-against 4.46 s actual (1.10x), and 1.1 MB peak against 1.8 MB actual. The peak
+Measured end to end (bf16, cuda, RTX 4060, "The capital of France is", a full
+head sweep): the projection called the pass count exactly, came within about
+10% on seconds, and ran low on the peak. The peak
 runs low — per-iteration allocator churn is not in a single probe — so it is an
 estimate to compare against a budget, not a bound to promise anybody. The
 refusal threshold is set well under 1.0 partly for that reason.
@@ -306,11 +306,11 @@ def probe_pass(run, device_kind: str) -> Probe:
     `run` must do one iteration of **the loop being projected**, not a bare
     forward pass — hooks installed, softmax taken, everything the real body
     does. This is the easiest thing here to get wrong and it fails quietly.
-    Measured on gpt2 (bf16, cuda, "The capital of France is", 146-pass sweep):
-    probing `model(ids)` predicted a 0.7 MB peak against 1.8 MB actually used,
-    because `ablate._cut` clones the projection's input and `distribution()`
-    upcasts the logits to fp32 — neither of which a bare pass does. Probing a
-    real iteration predicted 1.1 MB against the same 1.8 MB. A probe that does
+    Measured (bf16, cuda, "The capital of France is", a full head sweep):
+    probing `model(ids)` predicted a peak well under half of what was actually
+    used, because `ablate._cut` clones the projection's input and
+    `distribution()` upcasts the logits to fp32 — neither of which a bare pass
+    does. Probing a real iteration came far closer. A probe that does
     less work than the loop it projects is not a cheap estimate, it is a wrong
     one, and it is wrong in the direction that approves an analysis which then
     runs the card out of memory.

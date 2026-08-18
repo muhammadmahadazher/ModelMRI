@@ -74,7 +74,7 @@ interface Props {
  *  drive. Showing the shape of the answer makes the wait legible, and the
  *  widths are staggered so it reads as a list rather than a loading bar.
  */
-function ModelSkeleton({ label }: { label: string }) {
+export function ModelSkeleton({ label }: { label: string }) {
   const widths = [62, 44, 71, 38, 55, 67, 41, 58];
   return (
     <>

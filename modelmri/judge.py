@@ -67,17 +67,17 @@ NO_FORMS = (" no", " No", " NO", "no", "No", " false", " False", "false")
 #
 # MEASURED, not chosen, summing every single-token casing:
 #
-#   gpt2                    mass 0.064 - 0.157, and p(yes) 0.473 - 0.555
-#                           REGARDLESS OF THE TEXT — 0.555 for a text
-#                           mentioning a cat against 0.546 for one about the
-#                           stock market, on the rubric "does it mention a
-#                           cat?". A coin flip.
 #   Qwen2.5-0.5B-Instruct   mass 0.021 - 0.974 depending on the phrasing, and
-#                           p(yes) 0.990 on the same cat rubric.
+#                           p(yes) 0.990 on the rubric "does it mention a
+#                           cat?".
 #
-# The floor is for "did not answer", NOT for "is a weak judge". At 15% gpt2
-# has answered — badly — and refusing it here would be tuning a threshold to
-# exclude one model. What exposes gpt2 is that its answer does not move with
+# A weak judge sits at the other end: a little mass on the verdict token, and
+# a p(yes) near a coin flip REGARDLESS OF THE TEXT.
+#
+# The floor is for "did not answer", NOT for "is a weak judge". A model
+# committing a tenth of its mass HAS answered — badly — and refusing it here
+# would be tuning a threshold to exclude one model. What exposes a weak judge
+# is that its answer does not move with
 # the text, and that the mass is reported beside the ratio rather than hidden
 # behind it. An earlier draft used 0.01, which let through a case with 2%.
 MIN_VERDICT_MASS = 0.10
@@ -295,13 +295,11 @@ class Score:
             f"probability mass on the verdict token, read from one forward "
             f"pass each — not a sampled label."
         ]
-        # HOW MUCH it committed, always — not only the ratio. Measured, gpt2
-        # puts 6%-16% on a verdict token and then splits it 0.55/0.45 whatever
-        # it is shown: 0.555 for a text mentioning a cat against 0.546 for one
-        # about the stock market, and 0.493 for "Paris is the capital of
-        # France" against 0.473 for "...of Germany" — saying no, weakly, to a
-        # true statement. The ratio alone hides that; the mass beside it does
-        # not.
+        # HOW MUCH it committed, always — not only the ratio. A weak judge puts
+        # a few percent on a verdict token and then splits it near 50/50
+        # whatever it is shown, saying no — weakly — to a true statement as
+        # readily as to a false one. The ratio alone hides that; the mass
+        # beside it does not.
         masses = [p.mass for p in self.passes if p.answered]
         if masses:
             committed = statistics.median(masses)

@@ -40,7 +40,7 @@ interface Props {
   onGenerated?: () => void;
 }
 
-const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
+const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "Qwen/Qwen3-1.7B"];
 
 // Sent with every generation and echoed in the readout, so what you read is
 // what the run used. These were previously implicit server defaults, which
@@ -353,7 +353,7 @@ export default function Playground({
           This warning existed and rendered beneath the output, which is after
           the reader has already typed a question, waited, and read something
           confidently wrong. By then they have concluded the tool is broken --
-          asking gpt2 "whats 2+2" and being told about respecting each other
+          asking a base model "whats 2+2" and getting a confident non-answer
           is not a bug report anybody writes as "I used a base model".
           A caveat that arrives after the surprise is a footnote; the same
           sentence before it is a warning. */}
@@ -400,11 +400,10 @@ export default function Playground({
         {/* Why the answer can be wrong, said before anyone has to wonder.
             Two different causes get mistaken for a broken tool:
 
-            a base model is a text CONTINUER — gpt2 finishes your sentence, it
+            a base model is a text CONTINUER — it finishes your sentence, it
             was never trained to answer a question — and any temperature above
             zero SAMPLES, so the same prompt gives a different answer each
-            time. gpt2 on "The Eiffel Tower is located in the city of" gives
-            Paris at T=0 and Amsterdam at T=0.7, measured.
+            time.
 
             ModelMRI shows what the model did; it does not improve it. That is
             the product. But a reader who knows neither of these concludes the
@@ -417,9 +416,9 @@ export default function Playground({
             And `sampled` is false on a replay: the demo and an opened .mri
             play back one fixed recording, so claiming a different answer each
             run is exactly wrong there. That inversion shipped: on the hosted
-            demo the true half (gpt2 is a base model) was suppressed because
-            the payload carried no `instruct`, while the false half was
-            asserted. */}
+            demo the true half (the replayed model was a base model) was
+            suppressed because the payload carried no `instruct`, while the
+            false half was asserted. */}
         {(() => {
           const sampled = DECODE.temperature > 0 && !DEMO && !replay;
           const base = model?.instruct === false;

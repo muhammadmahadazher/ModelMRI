@@ -487,11 +487,19 @@ def from_traces(
 
 
 def _prompt_of(steps) -> str | None:
-    """The first prompt-bearing step's input, or `None` if there is none.
+    """The first prompt-bearing step carrying TEXT, or `None` if there is none.
 
     First rather than longest or last: a run's first `llm_call` is the one the
     rest of it followed from, and picking by any other rule would be choosing
     which prompt the case is about by accident.
+
+    "Carrying text" is the part the name leaves out, and it is a real
+    difference: a step whose `input` is absent, blank or not a string is
+    skipped and the search continues, so on a recording whose first `llm_call`
+    logged nothing the case is about the SECOND one. That is the right
+    behaviour — an empty prompt is not a case, and stopping at it would turn
+    every such recording into a skip — but it is not what "the first" says on
+    its own, and a reader trusting the shorter sentence would expect `None`.
     """
     for step in steps:
         if not isinstance(step, dict):

@@ -289,7 +289,7 @@ class Scored:
     """One run, every rule's answer for it, and enough to tell it apart.
 
     The name alone does not identify a run. A hundred rows reading
-    "generation", "gpt2", "generation" are a hundred rows a reader cannot
+    "generation", "generation", "generation" are a hundred rows a reader cannot
     order, date, or choose between — the list becomes a wall rather than a
     result, and the rule that matched is attached to something anonymous.
 

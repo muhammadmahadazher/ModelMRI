@@ -25,6 +25,23 @@ import {
  * and the count of what it replaced is shown, along with the honest caveat
  * that "none found" is not "none there".
  */
+
+/** A count, or the word for not having one.
+ *
+ *  `n.toLocaleString()` on a field the server did not send throws, and a throw
+ *  inside a render blanks the whole page — which is exactly what happened when
+ *  the demo answered `/api/traces/{id}/bundle/preview` with a trace document:
+ *  the reader lost every panel on the page because one number was absent.
+ *
+ *  "unknown" rather than 0, because they are different facts and this panel's
+ *  entire job is to say what is about to leave the machine. A redaction count
+ *  silently rendered as 0 reads as "nothing was replaced", which is the one
+ *  wrong answer that matters here.
+ */
+function count(n: number | null | undefined): string {
+  return typeof n === "number" && Number.isFinite(n) ? n.toLocaleString() : "unknown";
+}
+
 export default function ShareRun({
   traceId,
   selected,
@@ -99,23 +116,23 @@ export default function ShareRun({
           <dl className="share-grid">
             <div>
               <dt className="meta">steps</dt>
-              <dd className="mid">{prev.n_steps.toLocaleString()}</dd>
+              <dd className="mid">{count(prev.n_steps)}</dd>
             </div>
             <div>
               <dt className="meta">fields scanned</dt>
-              <dd className="mid">{prev.fields_scanned.toLocaleString()}</dd>
+              <dd className="mid">{count(prev.fields_scanned)}</dd>
             </div>
             <div>
               <dt className="meta">replaced</dt>
               <dd className={prev.n_redactions ? "mid share-hit" : "mid"}>
-                {prev.n_redactions.toLocaleString()}
+                {count(prev.n_redactions)}
               </dd>
             </div>
           </dl>
           {/* The sentence is authored server-side beside the redaction, so
               the panel cannot claim something the pass did not do. */}
-          <p className="meta share-means">{prev.means}</p>
-          {prev.redactions.length > 0 && (
+          {prev.means && <p className="meta share-means">{prev.means}</p>}
+          {(prev.redactions?.length ?? 0) > 0 && (
             <ul className="share-kinds">
               {prev.redactions.map((r) => (
                 <li key={r.label} className="meta">

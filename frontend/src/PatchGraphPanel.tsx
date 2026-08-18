@@ -362,9 +362,9 @@ export default function PatchGraphPanel({
             level for `depth` levels — because a panel that quotes a different
             number from the projection is a third answer to one question.
             NO DURATION: this said "a minute or so on a laptop", which was a
-            constant nobody measured, printed as guidance. It is 12s on gpt2
-            and 119s on Qwen3-1.7B for the same dials, and `estimate` refuses
-            to quote seconds for exactly that reason. */}
+            constant nobody measured, printed as guidance. The same dials take
+            119s on Qwen3-1.7B and a different time on every other model, and
+            `estimate` refuses to quote seconds for exactly that reason. */}
         <span className="meta">
           each level is one path trace per receiver — at most{" "}
           {depth * maxReceivers} traces, several hundred forward passes each

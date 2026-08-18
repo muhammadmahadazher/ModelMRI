@@ -361,12 +361,11 @@ def test_the_edit_touches_one_direction_and_the_mean_moves_with_it():
 def test_a_no_op_edit_scores_the_measured_floor():
     """Hook installed, captured stream written back unchanged, nothing removed.
 
-    Measured on gpt2 (fp32/cuda, 11 tokens): exactly 0.0 against the base
-    distribution on four repeats, equal to a no-hook replay. The floor is the
-    thing that proves the write-back is inert; the RESOLUTION is a different
-    number, because two real scores in that run came back negative (-1e-08,
-    -3e-08) — impossible for a KL, and float32 summation over 50257 vocabulary
-    entries.
+    On a real run in fp32 the floor comes back at exactly 0.0 against the base
+    distribution, equal to a no-hook replay. The floor is the thing that proves
+    the write-back is inert; the RESOLUTION is a different number, because real
+    scores in that run came back very slightly negative — impossible for a KL,
+    and float32 summation over a whole vocabulary.
     """
     out = toy()
     assert out["noise_floor_kl"] == pytest.approx(0.0, abs=1e-9)
@@ -405,8 +404,8 @@ def test_the_answer_says_the_scores_under_count_rather_than_over():
     """Direction matters and the head panel's wording does not transfer.
 
     Features: 43 singles sum to 0.66446 against 2.135221 for one joint
-    ablation — 3.2x UNDER. Heads on gpt2 layer 0: 1.995 against 0.208 — 8x
-    over. Copying ablate.py's sentence here would invert the caveat.
+    ablation — 3.2x UNDER. Head ablations run the other way and over-count, so
+    copying ablate.py's sentence here would invert the caveat.
     """
     means = toy()["means"].lower()
     assert "not" in means and "add up" in means
@@ -446,12 +445,11 @@ def test_the_answer_carries_a_per_position_reconstruction_error():
 def test_the_reconstruction_baseline_follows_the_scope():
     """A one-token baseline understates what a prompt-scope ranking edits.
 
-    Measured on gpt2: substituting the reconstruction at position 10 costs
-    0.077530 nats, and over positions 0-10 — the window a prompt-scope ranking
-    actually edits — 0.221217, 2.85x more. Against the first, 2 of 43 features
-    clear; against the second, 1 of 256. The panel printed the first beside a
-    prompt-scope ranking, so a feature was shown as clearing the SAE's own
-    error when it did not.
+    Substituting the reconstruction at the attributed token costs a fraction of
+    what substituting it over the whole window a prompt-scope ranking actually
+    edits does, and far fewer features clear the wider bar. The panel printed
+    the narrow one beside a prompt-scope ranking, so a feature was shown as
+    clearing the SAE's own error when it did not.
     """
     at_pos = toy(scope="position")
     over_prompt = toy(scope="prompt")
@@ -467,12 +465,10 @@ def test_the_reconstruction_baseline_follows_the_scope():
 def test_every_score_is_paired_with_a_same_size_random_control():
     """A score is partly the size of the edit, and the response says how much.
 
-    Measured on gpt2 at the attributed token: a random Gaussian direction at
-    feature 5856's norm of 35.5 costs 0.0666-0.1093 nats over five draws
-    against that feature's own 0.417461 — so the top row clears its control by
-    about 4x, not by everything, and 9 of the 43 rows do not clear theirs at
-    all. Two of those nine, #22852 and #1288, are in the bar chart's plotted
-    top-8.
+    A random Gaussian direction at a feature's own norm is not free: on a real
+    run the top row clears its control by a few times over rather than by
+    everything, and a real minority of rows do not clear theirs at all — some
+    of those sitting inside the bar chart's plotted top-8.
     """
     out = toy()
     for row in out["ranked"]:
@@ -506,8 +502,7 @@ def test_the_ranking_is_sorted_and_every_row_reports_the_top_token():
         assert 0.0 <= row["p_top_before"] <= 1.0
         assert 0.0 <= row["p_top_after"] <= 1.0
     # TWO passes per row, not one: the feature's own edit and its same-norm
-    # control. Checked against real runs — 43 features tested came back as 92
-    # passes on gpt2, 256 as 518.
+    # control. Checked against real runs.
     assert out["passes"] == 2 * out["n_tested"] + 6
     assert out["position"] == POSITION
 

@@ -55,8 +55,9 @@ REPRODUCED = "reproduced"
 DIFFERS = "differs"
 NOT_VERIFIABLE = "not verifiable"
 
-# A full export is every layer and head -- 144 blocks on gpt2, 900+ on a
-# larger model -- and each is compared cell by cell in Python. The bound keeps
+# A full export is every layer and head -- hundreds of blocks on a small model
+# and 900+ on a larger one -- and each is compared cell by cell in Python. The
+# bound keeps
 # `verify` from taking longer than the analysis it is checking. Whatever it
 # drops is NAMED in the check's own sentence: a report that quietly checked
 # 512 of 900 and said "reproduced" would read as having checked all of them.

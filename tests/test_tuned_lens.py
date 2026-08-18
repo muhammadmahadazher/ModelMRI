@@ -48,12 +48,12 @@ def test_the_cache_key_carries_all_four_things_that_change_the_lens(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
-    a = tl.cache_path("gpt2", "float32", "abc", 1000)
+    a = tl.cache_path("Qwen/Qwen3-1.7B", "float32", "abc", 1000)
     for changed in (
-        tl.cache_path("gpt2-medium", "float32", "abc", 1000),
-        tl.cache_path("gpt2", "bfloat16", "abc", 1000),
-        tl.cache_path("gpt2", "float32", "def", 1000),
-        tl.cache_path("gpt2", "float32", "abc", 2000),
+        tl.cache_path("Qwen/Qwen3-0.6B", "float32", "abc", 1000),
+        tl.cache_path("Qwen/Qwen3-1.7B", "bfloat16", "abc", 1000),
+        tl.cache_path("Qwen/Qwen3-1.7B", "float32", "def", 1000),
+        tl.cache_path("Qwen/Qwen3-1.7B", "float32", "abc", 2000),
     ):
         assert changed != a, "each of the four must change the cache key"
 
@@ -100,7 +100,7 @@ def test_too_few_sequences_is_refused_rather_than_split_anyway():
 
 def _info(**over) -> tl.TunedLensInfo:
     kw = dict(
-        model_id="gpt2",
+        model_id="Qwen/Qwen3-1.7B",
         dtype="float32",
         n_layers=2,
         d_model=768,
@@ -176,10 +176,12 @@ def test_a_lens_for_another_model_is_refused(tmp_path):
     save_file(
         {"A.0": torch.eye(4), "b.0": torch.zeros(4)},
         str(path),
-        metadata={"modelmri": json.dumps({"model_id": "gpt2", "dtype": "float32"})},
+        metadata={
+            "modelmri": json.dumps({"model_id": "Qwen/Qwen3-1.7B", "dtype": "float32"})
+        },
     )
-    with pytest.raises(Refusal, match="fitted to gpt2"):
-        tl.load(path, model_id="gpt2-medium", dtype="float32")
+    with pytest.raises(Refusal, match="fitted to Qwen/Qwen3-1.7B"):
+        tl.load(path, model_id="Qwen/Qwen3-0.6B", dtype="float32")
 
 
 def test_a_lens_fitted_in_another_dtype_is_refused(tmp_path):
@@ -190,15 +192,19 @@ def test_a_lens_fitted_in_another_dtype_is_refused(tmp_path):
     save_file(
         {"A.0": torch.eye(4), "b.0": torch.zeros(4)},
         str(path),
-        metadata={"modelmri": json.dumps({"model_id": "gpt2", "dtype": "float32"})},
+        metadata={
+            "modelmri": json.dumps({"model_id": "Qwen/Qwen3-1.7B", "dtype": "float32"})
+        },
     )
     with pytest.raises(Refusal, match="fitted in float32"):
-        tl.load(path, model_id="gpt2", dtype="bfloat16")
+        tl.load(path, model_id="Qwen/Qwen3-1.7B", dtype="bfloat16")
 
 
 def test_a_missing_lens_says_so(tmp_path):
     with pytest.raises(BadRequest, match="no tuned lens"):
-        tl.load(tmp_path / "nope.safetensors", model_id="gpt2", dtype="float32")
+        tl.load(
+            tmp_path / "nope.safetensors", model_id="Qwen/Qwen3-1.7B", dtype="float32"
+        )
 
 
 # --------------------------------------------------- against a real model

@@ -2,7 +2,7 @@
 
 The value of this module is entirely in what it REFUSES to label, so most of
 these tests are about the gates rather than the scores. Each gate exists
-because the ones before it were measured on gpt2 and found insufficient.
+because the ones before it were measured and found insufficient.
 """
 
 from __future__ import annotations
@@ -206,7 +206,7 @@ def _mri(**over) -> bytes:
     from modelmri import session
 
     kw = dict(
-        model_id="gpt2",
+        model_id="Qwen/Qwen3-1.7B",
         device="cpu",
         dtype="float32",
         n_params=1,

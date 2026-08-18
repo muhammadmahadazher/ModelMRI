@@ -9,7 +9,7 @@ imported from ablate.py rather than defined again, so a head score, a token
 score and a feature score on one screen mean the same thing.
 
 Every number below was measured on this machine before this file existed:
-gpt2, float32, cuda, eager attention; SAE
+float32, cuda, eager attention; SAE
 jbloom/GPT2-Small-SAEs-Reformatted @ blocks.8.hook_resid_pre (d_sae 24576),
 calibrated by saes.py to `centered+b_dec`; prompt "The Eiffel Tower is located
 in the city of" (11 tokens); attributing at position 10, top token " Paris" at
@@ -162,7 +162,7 @@ Over the 43 features firing at the attribution position the singles sum to
 0.66446 while one joint ablation removing all 43 gives 2.135221 — the singles
 UNDER-count by 3.2x. On the top-8 alone, 0.660624 against 1.34494 (2.0x
 under); globally over all 494 features, 0.811683 against 5.862094 (7.2x
-under). Head ablation on gpt2 layer 0 OVER-counts 8x, and ablate.py's wording
+under). Head ablation misses in the other direction, and ablate.py's wording
 for that must not be copied onto these numbers. The algebra says why: removing
 every firing feature leaves the stream equal to `err + b_dec + mean`, which
 guts it, and the model's response is superlinear.
@@ -170,8 +170,8 @@ guts it, and the model's response is superlinear.
 **The calibration's FVU is not the number to print beside a feature, and it is
 not even in the same units.** FVU 0.000984 and rel_err 0.029397 are aggregates
 over all 11 tokens and both are dominated by token 0, whose residual-stream
-norm is 3077.3 against 94.6-116.8 for every other token — the GPT-2 attention
-sink — and whose relative error is 0.012. Per-token ||x-recon||/||x|| in the
+norm is 3077.3 against 94.6-116.8 for every other token — the attention sink
+at token 0 — and whose relative error is 0.012. Per-token ||x-recon||/||x|| in the
 calibrated space:
 [0.012, 0.186, 0.367, 0.425, 0.258, 0.177, 0.205, 0.208, 0.199, 0.209, 0.204].
 At the attribution position the SAE fails to model 20.36% of the stream's norm
@@ -254,8 +254,8 @@ SCOPES = ("position", "prompt")
 # cost is `2 * tested + 6`, and this cap is what keeps prompt scope inside a
 # minute on a CPU.
 #
-# Measured cost is ~33 ms per pass on this box (gpt2, fp32, cuda, 11 tokens)
-# and roughly 20x that on CPU, so this cap is ~17 s of GPU and ~6 min of CPU.
+# Measured on this box (fp32, cuda, 11 tokens), a pass costs roughly 20x more
+# on CPU than on GPU, so this cap is seconds of GPU and minutes of CPU.
 # It does not bite at scope="position" (43 candidates); it bites at
 # scope="prompt" (494), and the ordering it truncates by is peak activation —
 # which is exactly the ordering this file exists to say is not the causal one.
@@ -291,7 +291,7 @@ WRITEBACK_TOLERANCE = 1e-6
 # intended. This is the mechanism check: the edit is `x - act*W_dec[f]` and
 # nothing else, so a dtype or a device that rounded it away, or a hook that did
 # not land, shows up as a deviation here. Measured exactly 0.0 in float32
-# through the hook on gpt2 blocks.8.hook_resid_pre, with no row but the edited
+# through the hook at blocks.8.hook_resid_pre, with no row but the edited
 # one changed; the tolerance is slack for accelerators that are not
 # bit-reproducible, not room for a swallowed edit.
 EDIT_TOLERANCE = 1e-4
@@ -407,10 +407,9 @@ def rank_features(
             f"unknown intervention {intervention!r} — this measurement offers "
             f"only {', '.join(INTERVENTIONS)}. Replacing the stream with the "
             "SAE's reconstruction is the obvious alternative and it is "
-            "disqualified by its own no-op: on gpt2 blocks.8.hook_resid_pre it "
-            "costs 0.0775 nats before removing anything, which is more than 41 "
-            "of the 43 features firing at the attribution position score in "
-            "total."
+            "disqualified by its own no-op: substituting the reconstruction "
+            "while removing NOTHING already moves the answer more than most of "
+            "the features firing at the attribution position score in total."
         )
     if scope not in SCOPES:
         raise BadRequest(
@@ -529,13 +528,13 @@ def rank_features(
         exactly that and nothing else — verified below as `removal_verified`.
 
         What does NOT follow, and was claimed here: that the SAE's reading of
-        the result is the old reading minus one row. Measured on gpt2
-        blocks.8.hook_resid_pre at position 10, removing feature 5856 moves 44
-        other features by more than 1e-6, drives 33 previously-firing features
-        to exactly zero, starts 2 silent ones, and moves 42.4943 of activation
-        outside the target against the 35.546 it removed inside it (119.55%);
-        the unmodelled remainder at that position grows from 21.3036 to
-        31.8553. So this is an edit to the stream, not a surgical deletion from
+        the result is the old reading minus one row. Measured at
+        blocks.8.hook_resid_pre, removing one feature moves dozens of other
+        features, drives previously-firing features to exactly zero, starts
+        silent ones firing, and moves more activation outside the target than
+        it removed inside it;
+        the unmodelled remainder at that position grows while the score is
+        being taken. So this is an edit to the stream, not a surgical deletion from
         the decomposition, and `encoder_residual` on each row is what that
         costs there.
         """
@@ -702,7 +701,7 @@ def rank_features(
     # `x - act*W_dec[f]` by anything at all? It reads the tensor captured
     # through the same hook DURING an edited pass, after the cast to the
     # model's dtype and device, so a dtype that rounded the edit away shows up
-    # here. Measured exactly 0.0 in float32 on gpt2 blocks.8.hook_resid_pre.
+    # here. Measured exactly 0.0 in float32 at blocks.8.hook_resid_pre.
     #
     # What it deliberately no longer claims is that the feature has left the
     # SAE's reading of the stream. That is `encoder_residual`, it is per row,
@@ -829,15 +828,15 @@ def rank_features(
             f"`x - activation x W_dec[{probe_f}]` by at most {edit_deviation:g} "
             f"(tolerance {EDIT_TOLERANCE:g}), measured on the top row through "
             f"the same hook during an edited pass, after the cast to the "
-            f"model's dtype. Measured exactly 0.0 on gpt2 "
+            f"model's dtype. Measured exactly 0.0 at "
             f"blocks.8.hook_resid_pre in float32. This does NOT mean the "
             f"feature left the SAE's reading of the stream: encoder and decoder "
             f"directions are not dual, so re-encoding afterwards still reports "
             f"some of it — {n_encoder_residual} of {n_tested} rows here read "
             f"above {ENCODER_RESIDUAL_TOLERANCE:.0%} of their original "
             f"activation, the worst at {worst_encoder:.1%}. That is per row, in "
-            f"`encoder_residual`, because it varies (0% to 60.3% on gpt2 "
-            f"blocks.8.hook_resid_pre) and one row cannot speak for the rest."
+            f"`encoder_residual`, because it varies widely from row to row "
+            f"and one row cannot speak for the rest."
         ),
         "n_encoder_residual": n_encoder_residual,
         "encoder_residual_max": round(worst_encoder, 4),
@@ -845,9 +844,9 @@ def rank_features(
         "control_means": (
             f"Every score above is paired with `control_kl`: the same tokens "
             f"edited by a random Gaussian direction of the same norm, seed "
-            f"{CONTROL_SEED}. It is not zero — on gpt2 blocks.8.hook_resid_pre "
-            f"a random direction at the top feature's norm of 35.5 costs about "
-            f"0.09 nats, against that feature's own 0.417 — so part of a score "
+            f"{CONTROL_SEED}. It is not zero — a random direction at the top "
+            f"feature's own norm costs a sizeable fraction of what that "
+            f"feature itself scores — so part of a score "
             f"is the SIZE of the edit rather than the identity of the feature. "
             f"{n_clearing_control} of {n_tested} rows here score above their own "
             f"control — and that is ONE DRAW's verdict, not a property of the "
@@ -866,10 +865,9 @@ def rank_features(
             f"(activation x W_dec) is subtracted from the residual stream at "
             f"{sae.hook}. Larger = removing it alone moves the answer more. "
             "These are NOT each feature's share of the prediction and they do "
-            "not add up: measured on gpt2 with the prompt 'The Eiffel Tower is "
-            "located in the city of' at the last prompt token, the 43 "
-            "single-feature scores sum to 0.66446 while removing all 43 at "
-            "once gives 2.135221, so the singles UNDER-count by 3.2x. Head "
+            "not add up: the single-feature scores can sum to a fraction of "
+            "what one joint ablation of those same features costs, so the "
+            "singles UNDER-count. Head "
             "ablation misses in the other direction, and that panel's wording "
             "does not transfer. sum_of_singles and joint_kl are both here so "
             "the gap is visible; neither is a correction factor. This is also "

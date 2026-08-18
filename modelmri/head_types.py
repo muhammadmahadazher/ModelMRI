@@ -28,10 +28,10 @@ THREE GATES, AND A LABEL NEEDS ALL OF THEM
                  it happens to do a little of
 
 Each was added because the ones before it were not enough, and each failure
-was measured rather than argued. The σ gate alone labelled 138 of gpt2's 144
-heads: a null of 0.0008 with almost no spread means any score clears it, and a
-head putting 0.15× chance on the induction offset was labelled an induction
-head at 201σ.
+was measured rather than argued. The σ gate alone labelled all but a handful
+of a model's heads: a null near zero with almost no spread means any score
+clears it, and a head putting a fraction of chance on the induction offset was
+labelled an induction head at hundreds of σ.
 
 TWO NULLS, BECAUSE THE PATTERNS FAIL DIFFERENTLY
 
@@ -43,8 +43,8 @@ text and ordinary on random text is doing the thing.
 It is the wrong null for the other two. A previous-token head attends to i-1
 whether or not anything repeats, and a sink attends to position 0 always — so
 their non-repeating "null" is just the same number again, the margin is
-nothing, and a real previous-token head would never be labelled. Measured on
-gpt2 rather than assumed. For those, the null is CHANCE under causal masking:
+nothing, and a real previous-token head would never be labelled. Measured
+rather than assumed. For those, the null is CHANCE under causal masking:
 at position i there are i+1 positions to look at, so an unremarkable head puts
 1/(i+1) of its mass on any one of them.
 
@@ -79,10 +79,10 @@ MARGIN_SIGMA = 3.0
 
 # AND it has to attend to the offset more than an indifferent head would.
 #
-# The sigma gate alone labelled 138 of gpt2's 144 heads. The null for a
-# repetition-dependent pattern is ~0.0008 with a spread near zero, so ANY score
-# clears three of them: L7H9 put 0.0043 on the induction offset -- 0.15x what
-# chance would give it -- and was labelled an induction head at 201 sigma. That
+# The sigma gate alone labelled all but a handful of a model's heads. The null
+# for a repetition-dependent pattern can sit near zero with a spread near zero,
+# so ANY score clears three of them: a head putting a fraction of what chance
+# would give it on the induction offset was labelled an induction head. That
 # is significance without effect size, and it is the same failure as a detector
 # with no null at all, arrived at from the other side.
 #
@@ -101,11 +101,11 @@ MIN_TIMES_CHANCE = 1.0
 #
 # The gate this replaced was "an outlier among this model's own heads", by
 # median and MAD. It fails structurally in BOTH directions and both were
-# measured on gpt2. When a behaviour is the NORM it cannot be an outlier: an
-# outlier test reported ZERO sink heads in a model with heads putting 95% of
-# their mass on position 0. And when it merely excluded one pattern it handed
-# the label to a weaker one — L5H8 read "induction" at 0.089 while 70% of its
-# attention sat on position 0.
+# measured rather than argued. When a behaviour is the NORM it cannot be an
+# outlier: an outlier test reported ZERO sink heads in a model whose heads put
+# almost all their mass on position 0. And when it merely excluded one pattern
+# it handed the label to a weaker one — a head read "induction" while most of
+# its attention sat on position 0.
 
 # A vocabulary smaller than this cannot be sampled into sequences that mean
 # anything: a byte-level tokenizer has ~256 base tokens, and "random tokens"
@@ -183,9 +183,9 @@ class TypeReport:
 
     def means(self) -> str:
         counts = self.counts()
-        # A label held by most of the heads is not distinguishing them. gpt2
-        # attends to the first token throughout, so 90 of its 144 heads have
-        # position 0 as their peak -- true, and useless read as "these 90 are
+        # A label held by most of the heads is not distinguishing them. A model
+        # that attends to the first token throughout can have most of its heads
+        # peak at position 0 -- true, and useless read as "these ones are
         # special".
         dominant = next(
             (
@@ -336,7 +336,7 @@ def _measure(model, ids, seq_len: int, n_layers: int, n_heads: int):
                 sinks[row, layer] = rows[:, :, 0].mean(dim=1).double()
                 # One gather instead of a Python loop over positions and
                 # heads. The old inner loop did a GPU->CPU transfer per
-                # (position, layer) -- 288 of them per sequence on gpt2.
+                # (position, layer) -- hundreds of them per sequence.
                 picked = torch.gather(
                     rows, 2, safe.unsqueeze(0).expand(n_heads, -1, -1)
                 )
@@ -422,11 +422,11 @@ def label_heads(
     #
     # The gate this replaces was "an outlier among this model's own heads",
     # and it fails structurally in both directions. When a behaviour is the
-    # NORM it cannot be detected as an outlier: gpt2 attends heavily to the
-    # first token throughout, so an outlier test reported ZERO sink heads in a
-    # model with heads putting 95% of their mass there. And when it merely
-    # excludes one pattern it hands the label to a weaker one: L5H8 read
-    # "induction" at 0.089 while 70% of its attention sat on position 0.
+    # NORM it cannot be detected as an outlier: a model that attends heavily to
+    # the first token throughout got ZERO sink heads out of an outlier test,
+    # while its heads put almost all their mass there. And when it merely
+    # excludes one pattern it hands the label to a weaker one: a head read
+    # "induction" while most of its attention sat on position 0.
     #
     # The sink is an ABSOLUTE position and so does not appear in the relative
     # profile -- position 0 is a different offset at every index. Both axes,

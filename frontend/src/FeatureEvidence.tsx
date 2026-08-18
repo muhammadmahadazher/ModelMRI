@@ -193,10 +193,9 @@ export default function FeatureEvidencePanel({
               )}
 
               {/* A histogram of ONE firing is not a distribution, it is the
-                  span already printed above drawn as a rectangle. Measured on
-                  gpt2 layer 8: feature 5302 fired once in 98 tokens and the
-                  chart was 19 empty bins and a block. Saying so is shorter
-                  and truer than drawing it. */}
+                  span already printed above drawn as a rectangle: a row of
+                  empty bins and a single block. Saying so is shorter and
+                  truer than drawing it. */}
               {ev.n_fired > 1 ? (
                 <>
                   <div className="fe-hist" aria-label="activation distribution">

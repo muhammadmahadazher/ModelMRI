@@ -154,9 +154,9 @@ def test_the_majority_class_line_is_measured_on_the_held_out_set():
 
 def test_a_saturated_null_is_a_third_state_not_a_verdict():
     """When a shuffled fit reaches the top of the scale, NO accuracy could
-    have cleared it. Measured: at six held-out examples the null hit 1.00 at
-    five of gpt2's twelve layers, so READABLE was decided by which shuffles
-    happened to fit."""
+    have cleared it. On a small held-out set the null can saturate at several
+    layers at once, so READABLE is decided by which shuffles happened to
+    fit."""
     labels = _balanced(80)
     states = _states(80, 512, 3, signal_from=0, labels=labels, strength=0.0)
     report = probe.sweep(states, labels, n_permutations=8)

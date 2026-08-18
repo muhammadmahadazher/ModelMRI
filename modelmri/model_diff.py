@@ -424,7 +424,8 @@ def check_pair(
     if shape_a["n_layers"] != shape_b["n_layers"]:
         # The example layer is picked from the SMALLER model so it exists in
         # both. Hardcoding "layer 12" produced "layer 12 of 12 is the same
-        # place as layer 12 of 6" on gpt2 against distilgpt2 — an illustration
+        # place as layer 12 of 6" on a 12-layer model against a 6-layer one —
+        # an illustration
         # naming a layer one of the two models does not have.
         example = min(shape_a["n_layers"], shape_b["n_layers"]) // 2
         raise DiffError(
@@ -557,11 +558,11 @@ def steepest_drop(cosines: list[float]) -> tuple[int | None, float]:
 
     The first version of this compared each layer against a floor and the
     floor was the constant 0.999 — dressed in a docstring claiming it was
-    measured on the pair, which it was not. MEASURED on gpt2 against a copy
+    measured on the pair, which it was not. MEASURED on a model against a copy
     with one head zeroed in block 6: the cosine reads 1.000000000 through
-    layer 6 and 0.999475 at layer 7, exactly where that block's output first
-    appears, and 0.999475 sits ABOVE 0.999. A real divergence, correctly
-    measured, reported as none.
+    layer 6 and drops at layer 7, exactly where that block's output first
+    appears — and that drop still sits ABOVE 0.999. A real divergence,
+    correctly measured, reported as none.
 
     The largest single-step DECREASE needs no constant. It is the layer where
     the curve turns, which is the question a reader is asking, and it is
@@ -643,9 +644,9 @@ def head_pass_estimate(n_layers: int, n_heads: int, n_prompts: int) -> int:
     """What the head half costs, before it is run.
 
     `rank_heads` is one pass per head plus a base, a repeat for the noise
-    floor and a joint check. Times two sides, times every prompt. On gpt2 with
-    six prompts that is about 1,760 passes; on a 1.7B model with 448 heads it
-    is about 5,400. Both are answerable in minutes and neither should start
+    floor and a joint check. Times two sides, times every prompt. On a 1.7B
+    model with 448 heads and six prompts that
+    is about 5,400. Answerable in minutes, and it should not start
     without the reader having seen the number.
 
     An unstated layer or head count is refused rather than quoted. With

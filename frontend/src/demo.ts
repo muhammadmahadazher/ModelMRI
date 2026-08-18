@@ -17,14 +17,22 @@ export const DEMO = import.meta.env.VITE_DEMO === "1";
 
 const cache = new Map<string, unknown>();
 
+/** Path segments that sit where a trace id sits and are not one.
+ *
+ *  `/api/traces/search` and `/api/traces/{id}` are the same shape, so a route
+ *  table that matches on shape alone reads "search" as the id of a trace and
+ *  serves a recording under it. Named here rather than ordered around,
+ *  because ordering is a rule nobody can see. */
+const TRACE_COLLECTIONS = new Set(["search", "import", "dataset", "adopt"]);
+
 /** Which recorded model is on screen.
  *
  *  The picker offers every model it discovers, so with one recording you
- *  could select Qwen3-0.6B and the demo would keep replaying gpt2 underneath
- *  — the page attributing one model's sentence to another, which is how a
- *  visitor concludes Qwen3 thinks the Eiffel Tower is the tallest building in
- *  the world. Either a scenario exists for what you picked, or the load is
- *  refused by name.
+ *  could select any model in that list and the demo would keep replaying
+ *  Qwen/Qwen3-1.7B underneath — the page attributing one model's sentence to
+ *  another, which is how a visitor comes away believing the model they picked
+ *  wrote a sentence it never saw. Either a scenario exists for what you
+ *  picked, or the load is refused by name.
  */
 let active: string | null = null;
 
@@ -93,8 +101,9 @@ export async function demoSessionFile(): Promise<Blob | null> {
  *  Returns `{status, payload}`, mirroring `viewerFetch` — the two shims are
  *  built on the same trick and are meant to stay comparable. The status
  *  matters: a miss has to be able to say 422 *and why*, because the version
- *  that quietly served layer 0 for every unbaked layer is how 141 of 144
- *  head selections drew the wrong arcs under a dial that said otherwise.
+ *  that quietly served layer 0 for every unbaked layer drew one head's arcs
+ *  under a dial naming another, for nearly every selection the controls
+ *  offered.
  *
  *  `undefined` still means "this demo has no answer", and main.tsx turns that
  *  into a 409 — but nothing reachable should return it, and
@@ -127,7 +136,24 @@ export async function demoFetch(
     });
   }
   if (p === "/api/session/state") return ok((await bundle<any>("env")).session_state ?? {});
-  if (p === "/api/models/local") return ok([{ id: "gpt2", size_gb: 1.1 }]);
+  // Reading the HuggingFace cache means reading a disk, which this page does
+  // not have. This used to answer with a model list written into this file --
+  // an inventory of a machine nobody here can see, at a size nothing
+  // measured. The "On this machine" tab below answers from `discovered.json`
+  // because that payload was RECORDED and is labelled as the demo's own
+  // recordings; serving it here instead would relabel recordings as cache
+  // entries and claim they are sitting on the reader's disk.
+  if (p === "/api/models/local") {
+    return refuse(
+      501,
+      `Listing the models already in your HuggingFace cache reads your disk, ` +
+        `and this page is a static recording served from the web with no ` +
+        `access to one. Nothing here will name a model instead — a list ` +
+        `written into the page would be an inventory of somebody else's ` +
+        `machine. Installed, this reads your own cache and reports what each ` +
+        `model actually occupies on disk.`,
+    );
+  }
   // Real discovery output from a real machine, with the paths generalised —
   // without this the demo's "On this machine" tab said "Nothing found …set
   // MODELMRI_MODELS_DIR", which is a confusing first impression of a feature
@@ -240,7 +266,7 @@ export async function demoFetch(
 
   // Switch scenarios if one was recorded for this model, and refuse by name
   // if not. Answering "loaded" for a model the demo cannot replay is what put
-  // Qwen3-0.6B in the picker above gpt2's output.
+  // Qwen3-0.6B in the picker above Qwen/Qwen3-1.7B's output.
   if (p === "/api/model/load") {
     const idx = await index();
     const want = (body as any)?.hf_id;
@@ -287,7 +313,8 @@ export async function demoFetch(
           `the real tool.`,
       );
     }
-    // Steering was only ever recorded against gpt2's SAE, so it is the only
+    // Steering was only ever recorded against one scenario's SAE -- the one
+    // `saeScenario()` below reads out of the index -- so it is the only
     // scenario whose A/B has a steered side to show.
     if (steerActive) {
       const f = await bundle<any>("features");
@@ -366,13 +393,13 @@ export async function demoFetch(
 
   // Features, SAE and steering belong to ONE scenario.
   //
-  // features.json is gpt2's: a 768-dim GPT-2 SAE, gpt2's 23-token sentence,
-  // and a steered completion of it. Served unconditionally, selecting
-  // Qwen3-0.6B left the page reporting a GPT-2 SAE loaded against a 1024-dim
-  // model, a feature strip showing gpt2's words under Qwen3's output, and an
-  // A/B pairing Qwen3's baseline against gpt2's steered text. That is the
-  // failure this module's own docstring says was eliminated — one model's
-  // sentence attributed to another.
+  // features.json carries ONE scenario's SAE, that model's recorded sentence
+  // and a steered completion of it. Served unconditionally, selecting any
+  // other model left the page reporting an SAE loaded against a model of a
+  // different width, a feature strip showing one model's words under
+  // another's output, and an A/B pairing one model's baseline against
+  // another's steered text. That is the failure this module's own docstring
+  // says was eliminated — one model's sentence attributed to another.
   //
   // The real server cannot do this: `load()` clears `sae`, `_feats` and
   // `_steer` on every model change, so the panel falls to "no SAE exists for
@@ -509,8 +536,72 @@ export async function demoFetch(
   if (p === "/api/telemetry") return recorded("telemetry");
   if (p === "/api/lens/tuned") return recorded("lens_tuned");
 
+  // `/api/traces/…` is EIGHT routes on the real server, not one, and this
+  // used to answer the whole prefix with the recorded trace document. So the
+  // bundle preview, the pattern finder, the dataset builder, search, import
+  // and adopt were each handed a document of the WRONG SHAPE and a 200 to go
+  // with it. The preview then read `n_steps` off a trace, got `undefined`,
+  // and `.toLocaleString()` blanked the entire page a few seconds after load.
+  //
+  // The crash was the honest outcome; the quiet ones were worse. A panel
+  // handed the wrong document mostly does not crash — it renders whatever it
+  // can find and shows the reader numbers that belong to something else.
+  //
+  // The recording carries exactly two of these. The rest refuse BY NAME.
   if (p === "/api/traces") return ok((await bundle<any>("traces")).list);
-  if (p.startsWith("/api/traces/")) return ok((await bundle<any>("traces")).trace);
+
+  // A single segment that is not one of the sibling collection routes is a
+  // trace id. `search`, `import`, `dataset` and `adopt` sit at the same depth
+  // as an id and are not one.
+  const traceId = /^\/api\/traces\/([^/]+)$/.exec(p)?.[1];
+  if (traceId && !TRACE_COLLECTIONS.has(traceId)) {
+    return ok((await bundle<any>("traces")).trace);
+  }
+
+  if (p.endsWith("/bundle/preview")) {
+    return refuse(
+      409,
+      "The preview counts the steps and the redactions in a file this page " +
+        "would write from a live runtime's own state, and there is no such " +
+        "runtime behind a recording. Numbers invented for it would describe " +
+        "a file nobody is going to get.",
+    );
+  }
+  if (p.endsWith("/patterns")) {
+    return refuse(
+      409,
+      "Finding patterns means querying every run recorded on a machine. This " +
+        "page carries one recording, so any answer would be a pattern of one.",
+    );
+  }
+  if (p === "/api/traces/search") {
+    return refuse(
+      409,
+      "Search runs against the full-text index of every step recorded on your " +
+        "machine. This page has a single recording and no index behind it.",
+    );
+  }
+  if (p === "/api/traces/dataset") {
+    return refuse(
+      409,
+      "Building an evaluation set draws cases from the runs recorded on your " +
+        "machine. One recording is not a set.",
+    );
+  }
+  if (p.startsWith("/api/traces/import")) {
+    return refuse(
+      409,
+      "Importing reads a file from your disk into a local database. This page " +
+        "has neither. `pip install modelmri` to bring your own traces in.",
+    );
+  }
+  if (p.startsWith("/api/traces/")) {
+    return refuse(
+      409,
+      "This acts on the trace database a local install keeps. The recording " +
+        "on this page is read-only and has nothing behind it to change.",
+    );
+  }
 
   // Custom models. The demo can't read your filesystem, so it serves the
   // adapter template's real inspection and keeps the panel's own flow —
@@ -738,6 +829,25 @@ export async function demoFetch(
         "every diffusion pipeline on your disk with what each one weighs, " +
         "and marks the ones holding configs and no weights as the " +
         "interrupted downloads they are rather than as models ready to load.",
+    });
+  }
+  if (p === "/api/image/discovered") {
+    // The folder walk, answered the same way the cache read above is: an empty
+    // list with the reason attached. A recording has no working directory to
+    // walk, and `roots: []` is the truthful answer to "where did you look" —
+    // nowhere. Naming a plausible directory would be this page inventing a
+    // path on a machine it cannot see.
+    return ok({
+      models: [],
+      roots: [],
+      truncated: false,
+      means:
+        "This page is a static recording and has no working directory to " +
+        "walk, so it lists no folders and no models found in them. " +
+        "Installed, this searches the directory ModelMRI was started from " +
+        "(plus anything in MODELMRI_MODELS_DIR) and names every image model " +
+        "sitting there outside the Hub cache — and it reports which " +
+        "directories it walked, so an empty answer says where it looked.",
     });
   }
   if (p === "/api/image/tasks") {

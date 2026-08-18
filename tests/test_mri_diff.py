@@ -326,9 +326,8 @@ def test_nothing_comparable_is_not_a_failure(pair):
 
 
 def test_rankings_from_different_baselines_are_not_compared(pair):
-    """`ablate.py` measures the baselines agreeing only weakly (Spearman
-    0.34-0.47 on gpt2 layer 0), so a cross-baseline diff measures the
-    baseline."""
+    """`ablate.py` measures the baselines agreeing only weakly, so a
+    cross-baseline diff measures the baseline."""
     a, b = pair
     doc = _doc(b.read_bytes())
     doc["ranking"]["baseline"] = "resample"

@@ -30,28 +30,27 @@ function of `attention_mask.cumsum(-1) - 1`, input_ids never read — it used
 to come back with floor 0.0, a verified mask and a full ranking in which
 every score was the suffix's position shift. So the run also feeds one pass a
 deliberately WRONG ordering and requires the answer to move. Measured with
-`position_ids.flip(-1)` at the last prompt token: gpt2 2.166768, Qwen3-0.6B
-0.011300, gemma-3-270m-it 4.616208 nats — the smallest of those is 11,300x
-the tolerance. A uniform shift would not do: `position_ids + 1` moves gpt2
-3.396605 (learned absolute embeddings) but Qwen3 only 5e-06 and gemma
-0.000107, because RoPE is invariant to shifting every position together, and
-5e-06 is inside the range Qwen3's own content tokens score in.
+`position_ids.flip(-1)` at the last prompt token: Qwen3-0.6B 0.011300,
+gemma-3-270m-it 4.616208 nats — the smaller of those is 11,300x
+the tolerance. A uniform shift would not do: `position_ids + 1` moves Qwen3
+only 5e-06 and gemma 0.000107, because RoPE is invariant to shifting every
+position together, and 5e-06 is inside the range Qwen3's own content tokens
+score in.
 
 **Masking is the only baseline.** The obvious alternative, substituting a
-neutral token, is three different experiments wearing one name: gpt2 has no
-pad and unk == bos == eos, Qwen3 has a pad and no unk or bos, gemma has a
-real <pad>. On gpt2 the substitute is <|endoftext|>, and inserting a
-document boundary reverses the ranking end to end — the model is reacting to
-being told the document ended, not to losing a word. Masking preserves the
-sequence length and every index, so ids.shape is asserted unchanged.
+neutral token, is a different experiment on every model: Qwen3 has a pad and
+no unk or bos, gemma has a real <pad>, and a model with no pad at all
+substitutes whatever its unk resolves to. Where that is an end-of-document
+marker the ranking is reacting to being told the document ended, not to
+losing a word. Masking preserves the sequence length and every index, so
+ids.shape is asserted unchanged.
 
-**Index 0 is a sink and never enters the ranked list.** On gpt2 it scores
-4.86309, 2.79x the next candidate in bf16 — 4.92884 and 3.23x in fp32, which
-is the pair tests/test_attribute.py re-runs, and the two must not be quoted
-across each other. Prepending <|endoftext|> moves the
-word "The" to index 1 and it falls to 0.46107 — 10.5x — while the score at
-index 0 stays at 4.76083, 2.1% from where it was with a completely different
-token sitting there. The score follows the position, not the token. (Checked
+**Index 0 is a sink and never enters the ranked list.** It can outscore the
+next candidate several times over. Prepending a document-boundary token moves
+the word that was sitting at index 0 to index 1 and its score collapses,
+while the score at index 0 stays about where it was with a completely
+different token sitting there. The score follows the position, not the token.
+(Checked
 against the obvious artifact: with a 2D mask, masking key 0 leaves query 0
 with no keys at all. Re-run with a 4D mask that spares the diagonal, every
 off-diagonal score reproduces bit-for-bit.) It is reported on its own row,
@@ -62,22 +61,19 @@ is the only candidate whose own key is being taken from its own query, and
 sparing the diagonal drops its score to exactly 0.0 while leaving every other
 score untouched — so what it measures is the mask's shape, not the token. The
 "it is tiny anyway" version of this argument is false and must not be
-substituted: it is 0.06375 against a max of 4.86309 on gpt2, but on
-Qwen3-0.6B the same position scores 6.24429 and is the LARGEST of all 13
-candidates, and on gemma-3-270m-it 1.92183 against a max of 9.33529. Without
-the rule it tops the Qwen3 ranking on an artifact.
+substituted: on Qwen3-0.6B the same position scores 6.24429 and is the
+LARGEST of all 13 candidates, and on gemma-3-270m-it 1.92183 against a max of
+9.33529. Without the rule it tops the Qwen3 ranking on an artifact.
 
 **These do not add up, and the direction is not even fixed.** Over the
 tokens this list actually shows — everything before the position except
-index 0 — the singles OVER-count: gpt2 3.51088 summed against 1.93419 for
-one joint mask of those same three tokens (1.82x), gemma-3-270m-it 34.70212
-against 22.02131 (1.58x). Sum a different set and the same passes go the
-other way: over the typed span, gemma is 4.62745 against 13.29702 (0.35x),
-and gpt2 — whose typed span is the whole prompt, index 0 included — is
-8.37397 against 8.53054 (0.98x). Same model, same prompt, same forward
+index 0 — the singles OVER-count: gemma-3-270m-it 34.70212 summed against
+22.02131 for one joint mask of those same tokens (1.58x). Sum a different set
+and the same passes go the other way: over the typed span, gemma is 4.62745
+against 13.29702 (0.35x). Same model, same prompt, same forward
 passes, opposite sign. So `sum_of_singles` and `joint_kl` are both returned,
 the panel may say the two disagree, and nothing here is a correction factor.
-(Head ablation in ablate.py over-counts 8x on gpt2 and under-counts on
+(Head ablation in ablate.py under-counts on
 gemma. Masking a token and zeroing a head are not the same phenomenon; that
 docstring's framing must not be copied onto these numbers.)
 
@@ -87,8 +83,8 @@ scores are the template's own '\\n' (6.24429, excluded as the self position),
 'assistant' (2.02161) and '<|im_start|>' (0.32266), while every word the user
 typed sits between 3.1e-05 and 7.9e-05 — four to five orders down. A list
 that does not separate them answers "the chat template" every time. And on
-that model the entire content signal is 2.50e-04 nats, while merely moving
-gpt2 from fp32 to bf16 shifts a distribution by 1.88e-02: below the model's
+that model the entire content signal is 2.50e-04 nats, far below what merely
+moving a model from fp32 to bf16 does to a distribution: below the model's
 own arithmetic, the ranking is real in the sense that it reproduces, and is
 not evidence that one word mattered more than another.
 """
@@ -117,11 +113,11 @@ MAX_CANDIDATES = 64
 
 # How far the explicit-mask base may sit from a plain model(ids) before we stop
 # and say the model's position semantics are not what this file assumes.
-# Measured: exactly 0.0 on gpt2, Qwen3-0.6B and gemma-3-270m-it — the logits
+# Measured: exactly 0.0 on Qwen3-0.6B and gemma-3-270m-it — the logits
 # are bit-identical (torch.equal), the explicit arguments do not select a
 # different kernel. The tolerance is slack for accelerators that are not
-# bit-reproducible, and sits 31x below the smallest per-token score seen on any
-# of the three (Qwen3's 3.1e-05).
+# bit-reproducible, and sits 31x below the smallest per-token score seen on
+# either (Qwen3's 3.1e-05).
 AGREEMENT_TOLERANCE = 1e-6
 
 # Only the pipe form. The wider `^<\|?.+\|?>$` looks equivalent and is not: on
@@ -144,14 +140,15 @@ def control_token_ids(tokenizer: Any) -> set[int]:
     tokens that the tokenizer's own chat template mentions by name, which is
     the only arm that finds Qwen3's <think> 151667 — the token that model
     emits with p=0.999531 at the end of a templated prompt, and which is
-    declared special nowhere. Measured totals: gpt2 1, Qwen3-0.6B 26,
+    declared special nowhere. Measured totals: Qwen3-0.6B 26,
     gemma-3-270m-it 10.
 
     Compare ids taken from the sequence, never strings you hope tokenize to
-    them. `convert_tokens_to_ids(" the")` returns 50256 on gpt2 — the unk
-    fallback, which is <|endoftext|>, which is in this set — because GPT-2
-    spells that token with U+0120 and not a space. That false positive greys
-    out the model's own answer.
+    them. `convert_tokens_to_ids(" the")` does not return the id of " the" on
+    a byte-level BPE vocabulary — those spell it with U+0120 and not a space,
+    so the lookup falls through to the unk id, which on a model whose unk is
+    its end-of-document token is in this set. That false positive greys out
+    the model's own answer.
     """
     ids: set[int] = {
         int(i) for i in (getattr(tokenizer, "all_special_ids", None) or [])
@@ -218,11 +215,11 @@ def rank_tokens(
     `n_prompt` is where the prompt ends and the model's own output begins.
     Without it every token past the prompt falls outside `typed_span` and is
     labelled `"template"` — so attributing at a generated token files the
-    model's own words under the chat template, on gpt2, which has no chat
-    template at all. Measured there (bf16/cuda, "The capital of France is",
-    12 greedy tokens, attributing at index 16): 11 of the 15 ranked rows sit
-    past the prompt, and the largest score in the whole run is the model's own
-    ' Republic'. Groups are therefore four-valued — `generated` wins over the
+    model's own words under the chat template, even on a base model that has
+    no chat template at all. Attribute far enough past the prompt and most of
+    the ranked rows sit past it, with the largest score in the whole run
+    landing on a token the model wrote itself. Groups are therefore
+    four-valued — `generated` wins over the
     rest, because past the prompt nothing is template and nothing is typed.
     """
     # THE FOUR ARGUMENT CHECKS, AND WHY TWO OF THEM ARE NOT AttributionError.
@@ -245,8 +242,9 @@ def rank_tokens(
         raise BadRequest(
             f"unknown baseline {baseline!r} — this measurement offers only "
             f"{', '.join(BASELINES)}. Substituting a neutral token instead of "
-            "masking is three different experiments across gpt2, Qwen3 and "
-            "gemma, and on gpt2 it reverses the ranking."
+            "masking is a different experiment on every model — which token "
+            "stands in depends on the tokenizer — and inserting a document "
+            "boundary can reverse the ranking outright."
         )
     if ids.dim() != 2 or int(ids.shape[0]) != 1:
         raise RuntimeError(
@@ -313,10 +311,10 @@ def rank_tokens(
     # Deliberately wrong, and reversed rather than shifted. RoPE is invariant
     # to moving every position by the same amount, so `arange + 1` is not a
     # probe at all on a RoPE model: it moves Qwen3-0.6B by 5e-06 nats and
-    # gemma-3-270m-it by 0.000107, against gpt2's 3.396605, which has learned
-    # absolute embeddings. Reversal changes the relative offsets and moves all
-    # three. Values stay inside [0, S), so nothing here can index out of a
-    # learned position table.
+    # gemma-3-270m-it by 0.000107, while a model with learned absolute
+    # embeddings moves a great deal. Reversal changes the relative offsets and
+    # moves both kinds. Values stay inside [0, S), so nothing here can index
+    # out of a learned position table.
     wrong_position_ids = position_ids.flip(-1)
 
     with torch.no_grad():
@@ -351,8 +349,8 @@ def rank_tokens(
         # re-phases the whole suffix and bills it to the one masked token. So
         # ask the only question that separates them: hand the model an
         # ordering that is wrong on purpose and require the answer to move.
-        # Measured with flip(-1) at the last prompt token: gpt2 2.166768,
-        # Qwen3-0.6B 0.011300, gemma-3-270m-it 4.616208 nats.
+        # Measured with flip(-1) at the last prompt token: Qwen3-0.6B
+        # 0.011300, gemma-3-270m-it 4.616208 nats.
         moved = kl_nats(
             base, distribution(logits_at(ones, position_ids=wrong_position_ids))
         )
@@ -430,10 +428,9 @@ def rank_tokens(
         index0["note"] = (
             "An attention sink, not content — kept out of the order because "
             "the score belongs to the position rather than to the token "
-            "sitting in it. Measured on gpt2 (bf16/cuda, 'The capital of "
-            "France is', last prompt token): 4.86309 here, and prepending "
-            "<|endoftext|> holds index 0 at 4.76083 while the word that moved "
-            "off it to index 1 falls to 0.46107."
+            "sitting in it. Prepend another token and this row stays about "
+            "where it was, while the word that moved off index 0 to index 1 "
+            "collapses."
         )
 
         # Sum against joint over the SAME set: the tested rows only. Index 0
@@ -448,13 +445,13 @@ def rank_tokens(
         #
         # It does NOT answer for every index, and the claim that it did used
         # to sit here. Index 0 is the exception and it is the row this panel
-        # highlights: masking key 0 leaves query 0 with no keys at all, and
-        # gpt2's eager path then hands that row a uniform distribution over
-        # every position, so column 0 still carries 0.200195 of the weight
-        # (Qwen3-0.6B through its chat template, S=13: 0.077148). Every other
-        # index measured on either model came back exactly 0. The
-        # score survives it — index 0 comes back 4.863085746765137 under this
-        # 2D mask and 4.863085746765137 under a diagonal-sparing 4D one that
+        # highlights: masking key 0 leaves query 0 with no keys at all, and an
+        # eager attention path then hands that row a uniform distribution over
+        # every position, so column 0 still carries weight (Qwen3-0.6B through
+        # its chat template, S=13: 0.077148). Every other
+        # index measured came back exactly 0. The
+        # score survives it — index 0 comes back identical to the last float
+        # under this 2D mask and under a diagonal-sparing 4D one that
         # leaves query 0 its own key — so this is an over-broad verification
         # claim rather than a wrong number, which is why the probe is the
         # index nearest `position` and why `mask_check` says at which index it
@@ -532,9 +529,9 @@ def rank_tokens(
         # Half-open, and the whole point of it is the gap between this and
         # `range(1, position)`. When the cap bites, the indices in that gap
         # were candidates and were not tested, and a reader has no way to tell
-        # them from tokens that were tested and scored nothing: measured on
-        # gpt2 with a 73-token prompt, 64 of 71 candidates were tested and
-        # indices 1..7 came back with no mark of any kind. "Not asked" and
+        # them from tokens that were tested and scored nothing: with a
+        # 73-token prompt, 64 of 71 candidates are tested and
+        # indices 1..7 come back with no mark of any kind. "Not asked" and
         # "asked, and the answer was nothing" are different findings.
         "tested_span": [tested[0], tested[-1] + 1],
         "coverage": (
@@ -559,7 +556,7 @@ def rank_tokens(
             "which way they miss depends on which tokens you sum: with the "
             "prompt 'The capital of France is' in bf16 at the last prompt "
             "token, summing exactly the rows in this list over-states one "
-            "joint mask of those same rows by 1.82x on gpt2 and 1.58x on "
+            "joint mask of those same rows by 1.58x on "
             "gemma-3-270m-it, while summing only the typed span under-states "
             "it by 0.35x on gemma. sum_of_singles and joint_kl are both here "
             "so the gap is visible; neither is a correction factor."

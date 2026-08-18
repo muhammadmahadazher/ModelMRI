@@ -362,12 +362,18 @@ def local() -> list[dict]:
     out: list[dict] = []
     for found in imaging.scan_cache():
         bytes_on_disk = 0
+        sized = True
         try:
             bytes_on_disk = image_runtime._weights_bytes(_path_of(found))
         except Exception:
-            # A cache entry that cannot be sized is still worth listing. 0
-            # travels as None below, which every reader treats as unknown.
+            # A cache entry that cannot be sized is still worth listing, but it
+            # must not be listed as an interrupted download. Those are two
+            # different states — "the weights are not there" and "nobody could
+            # tell" — and an earlier version collapsed both into
+            # `complete: false`, which made the route's own summary sentence
+            # say a permission error was a half-finished download.
             log.warning("could not size %s", found.path, exc_info=True)
+            sized = False
         out.append(
             {
                 "path": found.path,
@@ -381,11 +387,77 @@ def local() -> list[dict]:
                 # a real state — an interrupted download — and reporting it as
                 # 0 GB would say it is ready to load.
                 "size_bytes": bytes_on_disk or None,
-                "complete": bytes_on_disk > 0,
+                # Three states, not two. True: weights are here. False: they
+                # are not, which is an interrupted download. None: this entry
+                # could not be sized at all, so neither claim can be made.
+                "complete": (bytes_on_disk > 0) if sized else None,
             }
         )
     out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
     return out
+
+
+def discovered(roots=None) -> dict:
+    """Image models in ordinary folders — the running directory and elsewhere.
+
+    `local()` answers "what has the Hub cache got". This answers "what is on
+    this machine at all", which is the question somebody who cloned a
+    checkpoint into their project directory is actually asking. The two are
+    reported separately rather than merged, because where a model came from
+    decides what you can do with it: a cache entry has a repo id to re-fetch,
+    a loose folder has only a path.
+
+    The roots looked in are RETURNED. A picker that says "nothing found"
+    without saying where it looked is telling somebody their model is missing
+    when the truth may be that the directory holding it was never searched.
+    """
+    from pathlib import Path
+
+    from . import discover, image_runtime, imaging
+
+    looked = [str(r) for r in (roots if roots is not None else discover.roots())]
+    models, truncated = imaging.scan_dirs(roots)
+
+    # A folder that is ALSO in the Hub cache is one model, not two. Compared
+    # by resolved path rather than by name: two checkpoints can share a
+    # directory name and be different weights.
+    cached: set[str] = set()
+    for row in imaging.scan_cache():
+        try:
+            cached.add(str(Path(_path_of(row)).resolve()))
+        except OSError:
+            continue
+
+    out: list[dict] = []
+    for found in models:
+        try:
+            here = Path(found.path).resolve()
+        except OSError:
+            here = Path(found.path)
+        if str(here) in cached:
+            continue
+        bytes_on_disk = 0
+        sized = True
+        try:
+            bytes_on_disk = image_runtime._weights_bytes(here)
+        except Exception:
+            log.warning("could not size %s", found.path, exc_info=True)
+            sized = False
+        out.append(
+            {
+                "path": found.path,
+                "family": found.family,
+                "label": imaging.label(found.family),
+                "known": found.known,
+                "architecture": found.architecture,
+                "capabilities": list(found.capabilities),
+                "reason": found.reason,
+                "size_bytes": bytes_on_disk or None,
+                "complete": (bytes_on_disk > 0) if sized else None,
+            }
+        )
+    out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
+    return {"models": out, "roots": looked, "truncated": truncated}
 
 
 def _count(value):

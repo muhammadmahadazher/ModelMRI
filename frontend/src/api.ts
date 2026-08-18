@@ -233,8 +233,8 @@ export const getAttention = (layer: number, head: number) =>
  *
  *  Deliberately not called "importance". These are marginal sensitivities to
  *  removing one head alone; they are not additive and not shares of the
- *  prediction — measured on gpt2 layer 0, the twelve per-head scores sum to
- *  1.995 while ablating the whole layer gives 0.208.
+ *  prediction — the per-head scores of a layer do not sum to what ablating
+ *  the whole layer costs.
  */
 export type Baseline = "zero" | "mean" | "resample";
 
@@ -247,9 +247,9 @@ export interface HeadScore {
   /** Null under `resample`: there is no single "after" across eight draws. */
   p_top_after: number | null;
   flips_top: boolean;
-  /** Resample only — the spread across draws. Head 10 on gpt2 layer 0 ranged
-   *  0.027 to 0.335 around a median of 0.036, so one draw could have reported
-   *  any of those as the head's score. */
+  /** Resample only — the spread across draws, which can run several times
+   *  wider than the median it surrounds, so a single draw could have reported
+   *  a very different number as the head's score. */
   kl_min?: number;
   kl_max?: number;
   draws?: number;
@@ -401,9 +401,8 @@ export const compareBaselines = (layer: number) =>
  *  Same units as `HeadScore.kl` — both come from `kl_nats` in ablate.py, so a
  *  head score and a token score on one screen mean the same thing. What they
  *  are NOT is comparable in behaviour: `modelmri/attribute.py` measured the
- *  singles over-stating one joint mask by 1.82x on gpt2 over the rows this
- *  list shows, and under-stating it by 0.35x on gemma-3-270m-it over the typed
- *  span. The panel prints both live numbers rather than a factor.
+ *  singles under-stating one joint mask by 0.35x on gemma-3-270m-it over the
+ *  typed span. The panel prints both live numbers rather than a factor.
  */
 export interface TokenScore {
   index: number;
@@ -419,10 +418,10 @@ export interface TokenScore {
    *  Four values, and each of the three that are not `typed` exists because
    *  collapsing it into another one made the panel state something nobody
    *  measured. `generated` is the model's OWN output — folded into `template`
-   *  it put gpt2's own words under a heading reading "chat template scaffold",
-   *  on a model whose span_note says in the same breath that it has no chat
-   *  template. `unknown` is "the server could not locate your words" — folded
-   *  into `typed` it put the chat template under "what you typed". */
+   *  it put the model's own words under a heading reading "chat template
+   *  scaffold", on a model whose span_note says in the same breath that it has
+   *  no chat template. `unknown` is "the server could not locate your words"
+   *  — folded into `typed` it put the chat template under "what you typed". */
   group: "typed" | "template" | "generated" | "unknown";
 }
 
@@ -439,8 +438,8 @@ export interface TokenAttribution {
   position: number;
   target_token: string;
   /** The same forward pass twice, nothing masked. Measured at exactly 0.0 on
-   *  gpt2, Qwen3-0.6B and gemma-3-270m-it; anything at or below it is
-   *  arithmetic rather than the model. */
+   *  Qwen3-0.6B and gemma-3-270m-it; anything at or below it is arithmetic
+   *  rather than the model. */
   noise_floor_kl: number;
   passes: number;
   elapsed_s: number;
@@ -460,8 +459,7 @@ export interface TokenAttribution {
   /** Half-open index window that was actually tested. When `truncated`, the
    *  candidates below `tested_span[0]` were asked nothing — and on the strip
    *  they would otherwise be indistinguishable from tokens that were tested
-   *  and scored nothing. Measured on gpt2 with a 73-token prompt: 64 of 71
-   *  candidates tested, and indices 1..7 rendered with no mark at all. */
+   *  and scored nothing. */
   tested_span: [number, number];
   /** Where the prompt ends. Rows at or past it are the model's own output,
    *  which is a third thing from "your words" and "the chat template". */
@@ -681,34 +679,30 @@ export interface FeatureScore {
   feature_id: number;
   /** Peak activation over the positions that were edited — re-encoded in
    *  float32 by the ablation, NOT read from the float16 cache the bar chart
-   *  plots. Measured on gpt2: fp16 rounding moved the top feature's KL by
-   *  0.09%, with a max activation error of 0.0916, so the two numbers can
-   *  differ in the first decimal and neither is wrong. */
+   *  plots. fp16 rounding moves what the cache holds, so the two numbers can
+   *  differ and neither is wrong. */
   activation: number;
   /** Every token index the feature was removed at. One entry at
    *  `scope="position"`. At `scope="prompt"` this is the field that lets the
    *  panel show a feature which fires nowhere near the token being attributed
-   *  and still reaches the answer through attention — measured on gpt2, 4 of
-   *  the causal top-8 across the prompt fire only at earlier tokens. */
+   *  and still reaches the answer through attention. */
   positions: number[];
   kl: number;
   /** What a RANDOM direction of the same norm, subtracted at the same tokens,
-   *  cost. It is not zero and it is not small: at the top feature's norm of
-   *  35.5 on gpt2, five draws spanned 0.0666-0.1093 nats against that
-   *  feature's own 0.4175. A row below its own control has a score that is the
-   *  size of its edit rather than the identity of its feature. */
+   *  cost. It is not zero and it is not small. A row below its own control has
+   *  a score that is the size of its edit rather than the identity of its
+   *  feature. */
   control_kl: number;
-  /** `kl > control_kl`. Measured on gpt2 at the attributed token, 34 of 43
-   *  rows clear it — and two that do not, #22852 and #1288, sit 5th and 6th in
-   *  the bar chart above. */
+  /** `kl > control_kl`. A row that fails it can still sit near the top of the
+   *  bar chart above — activation rank and clearing the control are two
+   *  different orderings. */
   clears_control: boolean;
   /** Share of this feature's original activation the SAE's ENCODER still
    *  reports after the feature's own contribution was subtracted, at the worst
    *  of the edited positions. Not a failure of the edit — the stream moves by
    *  exactly one rank-1 term, which `removal_verified` checks — but a property
    *  of this SAE: W_enc[:,f] and W_dec[f] are not dual, so the encoder reads
-   *  other features' contributions through f's direction. Measured on gpt2
-   *  blocks.8.hook_resid_pre it runs 0% to 60.3%, above 1% on 38 of 43 rows. */
+   *  other features' contributions through f's direction. */
   encoder_residual: number;
   p_top_before: number;
   p_top_after: number;
@@ -716,7 +710,7 @@ export interface FeatureScore {
   /** The server's verdict against `resolution_kl`, and never recomputed here
    *  against `noise_floor_kl`. The floor is exactly 0.0 on this path and two
    *  measured scores came back NEGATIVE (-1e-08, -3e-08) — float32 summation
-   *  over 50257 vocabulary entries — so a client greying out "at or below the
+   *  over the whole vocabulary — so a client greying out "at or below the
    *  floor" would grey out nothing. Measured: 2 of 43 scores are at or below
    *  the floor, 8 of 43 are below the resolution. */
   below_resolution: boolean;
@@ -727,9 +721,9 @@ export interface FeatureScore {
  *  Every caveat rendered by the panel is either a field here or is computed
  *  from two fields here. Nothing is remembered: the additivity direction in
  *  particular is READ OFF THIS RUN, because features miss in the opposite
- *  direction from heads — the head panel's singles over-count 8x on gpt2 layer
- *  0 while these under-count 3.2x — and a remembered direction would be
- *  exactly backwards.
+ *  direction from heads — the head panel's singles over-count the joint while
+ *  these under-count it — and a remembered direction would be exactly
+ *  backwards.
  */
 export interface FeatureAblation {
   /** Which edit was made, named rather than assumed. "Removing a feature" is
@@ -794,8 +788,8 @@ export interface FeatureAblation {
   rel_err: number;
   /** The WORST share of a token's norm the SAE fails to model, over the window
    *  these edits actually landed in. At position scope that is the attributed
-   *  token (0.2036 on gpt2); at prompt scope it is the worst of eleven tokens
-   *  (0.4253, at token 3). Null when the stream has no norm there. */
+   *  token; at prompt scope it is the worst token in the window. Null when the
+   *  stream has no norm there. */
   residual_share: number | null;
   /** The same quantity at the attributed token alone, kept beside the
    *  scope-matched one rather than replaced by it. */
@@ -1596,10 +1590,15 @@ export interface ImageLocalModel {
   /** `null` is UNKNOWN. A cache entry that could not be sized is still worth
    *  listing, and it is not a model that weighs nothing. */
   size_bytes: number | null;
-  /** **`false` is an interrupted download** — a cache entry holding configs
-   *  and no weights. It is not a model that is ready, and offering a Load
-   *  button on one is offering a click that cannot work. */
-  complete: boolean;
+  /** Three states, and `!complete` is the wrong test for all of them.
+   *
+   *  `true` — the weights are on this disk.
+   *  `false` — they are not: an interrupted download, and offering a Load
+   *  button on one is offering a click that cannot work.
+   *  `null` — the entry could not be sized at all, so neither claim is
+   *  available. Reporting that as `false` sends somebody to re-download a
+   *  model they may already have. */
+  complete: boolean | null;
 }
 
 export interface ImageLocal {
@@ -1644,6 +1643,56 @@ export const searchImageModels = (q: string, task: string, limit = 24) =>
  *  finished downloading. Reads files; asks the Hub nothing. */
 export const getImageLocal = () =>
   fetch("/api/image/local").then((r) => json<ImageLocal>(r));
+
+/** One image model found in an ORDINARY FOLDER rather than in the Hub cache.
+ *
+ *  The same fields `ImageLocalModel` carries and one different meaning: `path`
+ *  is a DIRECTORY on this machine, not a repo id. `loadImage` takes either, so
+ *  a row from here loads the same way a cached one does — but there is no repo
+ *  to re-fetch it from, which is why the two lists are reported separately
+ *  rather than merged into one.
+ */
+export interface ImageDiscoveredModel {
+  /** The directory the weights were read from, and the string `loadImage`
+   *  takes for it. */
+  path: string;
+  family: string;
+  label: string;
+  known: boolean;
+  architecture: string;
+  capabilities: string[];
+  reason: string;
+  /** `null` is UNKNOWN — see `ImageLocalModel.size_bytes`. Never render it as
+   *  a size. */
+  size_bytes: number | null;
+  /** The same three states as `ImageLocalModel.complete`, and `!complete` is
+   *  the wrong test for all of them. */
+  complete: boolean | null;
+}
+
+export interface ImageDiscovered {
+  models: ImageDiscoveredModel[];
+  /** Every directory that was actually walked. RETURNED rather than assumed,
+   *  and it is the half of the answer that makes an empty list usable: "found
+   *  nothing" without "and here is where I looked" tells somebody their model
+   *  is missing when the truth may be that the directory holding it was never
+   *  searched. */
+  roots: string[];
+  /** The walk hit its budget, so the list is what was reached rather than
+   *  everything there is. A truncation nobody is told about reads as "this is
+   *  all there is". */
+  truncated: boolean;
+  means: string;
+}
+
+/** Image models in ordinary folders — the running directory included.
+ *
+ *  `getImageLocal` reads the Hub cache. This walks the same roots the text
+ *  picker walks, so a checkpoint cloned into the working directory turns up
+ *  here rather than nowhere. Reads files; asks the Hub nothing.
+ */
+export const getImageDiscovered = () =>
+  fetch("/api/image/discovered").then((r) => json<ImageDiscovered>(r));
 
 /** How big one named repo is, before a byte of it moves.
  *

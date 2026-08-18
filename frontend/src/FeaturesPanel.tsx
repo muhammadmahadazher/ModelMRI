@@ -346,9 +346,8 @@ export default function FeaturesPanel({
   // At "position" scope the candidate count is the number of features firing at
   // ONE token, which the panel cannot read — the summary carries only the top
   // 8. The SAE's calibrated mean L0 is the best available stand-in and it is a
-  // mean, not this token's count: measured on gpt2's 11-token prompt the mean
-  // was 60.55 while per-token counts ran 32..98 and the attributed token had
-  // 43. So this is an order-of-magnitude answer to "seconds or minutes", the
+  // mean, not this token's count — per-token counts spread widely around it.
+  // So this is an order-of-magnitude answer to "seconds or minutes", the
   // tooltip says exactly that, and the result reports what it really spent.
   //
   // At "prompt" scope there is no such stand-in — the candidate set is the
@@ -382,8 +381,8 @@ export default function FeaturesPanel({
         (cal
           ? ` The estimate uses this SAE's mean of ${cal.l0.toFixed(1)} features ` +
             `per token over the ${cal.n_tokens} tokens it was calibrated on — ` +
-            `this token's own count is what decides the real cost, and on the ` +
-            `measured gpt2 prompt per-token counts ran from 32 to 98.`
+            `this token's own count is what decides the real cost, and it can ` +
+            `sit well either side of that mean.`
           : "") +
         (estPasses !== null && secPerPass !== null
           ? ` About ${humanSeconds(estPasses * secPerPass)} on this model.`
@@ -438,7 +437,7 @@ export default function FeaturesPanel({
           <b>{cal.l0.toFixed(1)}</b> of {sae.d_sae?.toLocaleString()} features
           firing per token. Both are aggregates over those {cal.n_tokens}{" "}
           tokens; a ranking below reports what the SAE misses at the token you
-          asked about, which on gpt2 is 7x worse than this.
+          asked about, which can be a good deal worse than this.
         </div>
       )}
 
@@ -520,12 +519,12 @@ export default function FeaturesPanel({
             <div className="hint">
               <b>No feature ranking in {dtype}.</b> Removing a feature moves the
               residual stream by a small vector, and in {dtype} the model's own
-              arithmetic charges for that move: measured on gpt2 at
-              blocks.8.hook_resid_pre, an edit whose true effect is 4.9e-07 nats
-              reads 0.02836 in bfloat16 and outranks a feature with 100x its
-              activation — while writing the stream back unchanged is still
-              bit-exact and still scores 0.0, so the noise floor cannot catch
-              it. It works in float32, which ModelMRI selects for CPU and never
+              arithmetic charges for that move: an edit whose true effect is
+              vanishingly small can read as a large one and outrank a feature
+              with many times its activation — while writing the stream back
+              unchanged is still bit-exact and still scores 0.0, so the noise
+              floor cannot catch it. It works in float32, which ModelMRI
+              selects for CPU and never
               for a GPU: start the server with the GPU hidden (PowerShell{" "}
               <code>$env:CUDA_VISIBLE_DEVICES=''</code>) and load the model
               again. The list above is unaffected — it was never a causal claim.
@@ -565,13 +564,10 @@ export default function FeaturesPanel({
               Ranking across the prompt costs several times what ranking at one
               token does, and the panel cannot price it in advance: the
               candidates are every feature firing at any token up to this one,
-              and the list above carries only the top 8 per token. Measured on
-              gpt2's 11-token prompt — 43 features fire at the attributed token
-              and 494 at or before it; the server tested the 256 with the
-              highest peak activation and spent 518 passes, 49s on that CPU. It
-              is also the scope that finds features this panel cannot otherwise
-              show: 4 of its causal top 8 there fire only at earlier tokens and
-              reach the answer through attention.
+              and the list above carries only the top 8 per token. It is also
+              the scope that finds features this panel cannot otherwise show —
+              ones that fire only at earlier tokens and reach the answer
+              through attention.
             </div>
           )}
           <div className={`feat-list${measured ? " ranked" : ""}`}>
@@ -784,9 +780,8 @@ export default function FeaturesPanel({
  *  Everything below is either a field the server measured or is computed from
  *  two of them on this run. In particular the additivity caveat prints this
  *  run's own `sum_of_singles` against its own `joint_kl` rather than a
- *  remembered direction: features and heads miss opposite ways — measured on
- *  gpt2, the head panel's singles over-count 8x on layer 0 while these
- *  under-count 3.2x — so a copied sentence would be exactly backwards.
+ *  remembered direction: features and heads can miss opposite ways, so a
+ *  copied sentence would be exactly backwards.
  */
 function FeatureRanking({
   a,
@@ -799,9 +794,8 @@ function FeatureRanking({
   tokens: string[];
   /** The feature ids the bar chart above is plotting, in its own order. The
    *  comparison is against THAT list and not against a peak-activation list
-   *  the panel never showed — measured at prompt scope on gpt2, peak
-   *  activation over the prompt shares 0 of 8 with the causal top 8 while the
-   *  per-token list the chart plots shares 3, and quoting the wrong one would
+   *  the panel never showed — at prompt scope the two overlap the causal top
+   *  by different amounts, and quoting the one the reader never saw would
    *  overstate the finding. */
   plotted: number[];
   selected: number;
@@ -818,8 +812,7 @@ function FeatureRanking({
   // gets wrong over the window these edits landed in. Counted over the rows
   // that came back, and the sentence says which set that is — the server's
   // `n_scored` is the number tested, and the two are equal only when the
-  // response was not trimmed. Measured on gpt2: 2 of 43 at position scope,
-  // 1 of 256 at prompt scope, where the baseline is 2.85x larger.
+  // response was not trimmed.
   const clearing = a.ranked.filter((r) => r.kl > a.residual_kl).length;
   const resolution = a.resolution_kl.toExponential(0);
   // Rows this response did not carry. `a.ranked.length` is the response, not
@@ -951,8 +944,8 @@ function FeatureRanking({
               {!plotted.includes(r.feature_id) && " · not in the chart above"}
               {/* The control, on every row rather than in a footnote. A row
                   that does not clear it has a score explained by the size of
-                  its edit — measured on gpt2, 9 of 43, two of them plotted in
-                  the chart above. */}
+                  its edit, and rows like that can be plotted in the chart
+                  above. */}
               {!r.below_resolution &&
                 (!r.clears_control
                   ? ` · NOT above a same-size random edit (${fmtKL(r.control_kl)})`
@@ -1050,20 +1043,20 @@ function FeatureRanking({
       <div className="hint">{a.residual_means}</div>
 
       {/* What a score is worth against an edit of the same size that means
-          nothing. Not a footnote: on gpt2 the top feature clears its own
-          control by about 4x, not by everything, and 9 of 43 rows do not clear
+          nothing. Not a footnote: a top feature can clear its own control by a
+          modest factor rather than by everything, and some rows do not clear
           it at all.
 
           The count is one draw's verdict and the sentence now says so. With 8
-          draws per row the same 43 rows give 34 clearing one draw and 20
-          clearing all 8, and about half fall inside their own draw spread —
-          "move the answer more than a random direction does" was a claim about
-          the distribution, taken from one sample of it.
+          draws per row, the number of rows clearing one draw and the number
+          clearing all 8 come apart, and about half fall inside their own draw
+          spread — "move the answer more than a random direction does" was a
+          claim about the distribution, taken from one sample of it.
 
-          Replicated with a second, independent set of 8 draws: 37 / 24 rather
-          than 34 / 20. The shipped 34 reproduces exactly; every count derived
-          from a FRESH draw moves, which is the point rather than a caveat on
-          it, so the wording above avoids quoting one. */}
+          Replicated with a second, independent set of 8 draws, both counts
+          move. A shipped run reproduces exactly; every count derived from a
+          FRESH draw does not, which is the point rather than a caveat on it,
+          so the wording above avoids quoting one. */}
       <div className={a.n_clearing_control > 0 ? "hint" : "hint err"}>
         <b>
           {a.n_clearing_control} of the {a.n_scored} scored features beat the

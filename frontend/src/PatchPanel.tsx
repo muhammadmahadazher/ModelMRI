@@ -41,13 +41,13 @@ const CORRUPT_DEFAULT = "The Colosseum is located in the city of";
 
 /** Which senders are worth a row.
  *
- *  A path trace on gpt2 returns 143 of them and 130 sit at one representable
- *  step above zero, untested — measured, not guessed. Printing all of them
- *  buries the one that beat its controls under a hundred rows that say the
- *  same thing, and dropping them silently would claim the list is complete.
- *  So the default is the ones that carry a claim — anything tested against
- *  chance, plus anything the resolution can actually separate from zero — and
- *  the rest are folded behind a COUNTED button.
+ *  Most of what a path trace returns sits at one representable step above
+ *  zero, untested. Printing all of them buries the one that beat its controls
+ *  under rows that all say the same thing, and dropping them silently would
+ *  claim the list is complete. So the default is the ones that carry a claim
+ *  — anything tested against chance, plus anything the resolution can
+ *  actually separate from zero — and the rest are folded behind a COUNTED
+ *  button.
  */
 function shownSenders(path: PathTrace, all: boolean): PathTrace["senders"] {
   if (all) return path.senders;
@@ -385,11 +385,10 @@ export default function PatchPanel({
               {path && path.senders.length > 0 && (
                 <>
                   {/* Ties, not a ranking. Recovery is quantised by the
-                      model's dtype, and on gpt2 in bf16 one representable
-                      step is worth 0.25 of the gap — 23 senders came back
-                      within one step of the top, which as a ranked list would
-                      have read as a 1st, 2nd and 3rd place that the numbers
-                      cannot support. */}
+                      model's dtype, and senders come back within one
+                      representable step of the top, which as a ranked list
+                      would have read as a 1st, 2nd and 3rd place that the
+                      numbers cannot support. */}
                   <p className="meta">
                     {path.n_senders} components tested, {path.n_controlled}{" "}
                     against chance, in {path.passes} passes ({path.seconds}s).

@@ -133,8 +133,8 @@ def test_the_download_filename_survives_a_path_and_a_non_ascii_name():
         return name.strip("-") or "session"
 
     for raw in (
-        r"C:\Users\Пользователь\models\gpt2",
-        "/home/пользователь/models/gpt2",
+        r"C:\Users\Пользователь\models\Qwen3-1.7B",
+        "/home/пользователь/models/Qwen3-1.7B",
         "Qwen/Qwen2.5-0.5B-Instruct",
         "",
         "///",

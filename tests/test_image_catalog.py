@@ -32,6 +32,7 @@ import http.client
 import json
 import urllib.error
 from functools import partial
+from pathlib import Path
 
 import pytest
 from test_no_exception_leaks import CERT, WEIGHTS, leaked  # the same rule
@@ -585,3 +586,81 @@ def test_a_truncated_list_does_not_compare_equal_to_a_complete_one():
     # Against a plain list it still compares as a list, so a test may write
     # `rows == [...]` and mean it.
     assert complete == rows
+
+
+# ---------------------------------------------------------------------------
+# Models in ORDINARY folders.
+#
+# `local()` reads the Hub cache, which is the wrong question for somebody who
+# cloned a checkpoint into their project directory — exactly the models no
+# registry knows about, and so exactly the ones a browse list most needs to
+# find.
+# ---------------------------------------------------------------------------
+
+
+def _checkpoint(directory, *, weights=b"x" * 2048):
+    """A directory that looks like a diffusers pipeline, on disk.
+
+    Written rather than mocked: the thing under test is a filesystem walk, and
+    a walk stubbed at the filesystem is a test of the stub.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "model_index.json").write_text(
+        json.dumps({"_class_name": "StableDiffusionPipeline"}), encoding="utf-8"
+    )
+    unet = directory / "unet"
+    unet.mkdir(exist_ok=True)
+    (unet / "config.json").write_text(json.dumps({}), encoding="utf-8")
+    (unet / "diffusion_pytorch_model.bin").write_bytes(weights)
+    return directory
+
+
+def test_a_checkpoint_in_a_plain_folder_is_found(tmp_path):
+    here = _checkpoint(tmp_path / "workdir" / "my-sd-checkpoint")
+
+    out = image_catalog.discovered(roots=[tmp_path / "workdir"])
+
+    paths = [row["path"] for row in out["models"]]
+    assert any(Path(p) == here for p in paths), paths
+
+
+def test_the_roots_it_looked_in_are_reported(tmp_path):
+    """ "Nothing found" without "and here is where I looked" tells somebody
+    their model is missing when the truth may be that the directory holding it
+    was never searched."""
+    empty = tmp_path / "nothing-here"
+    empty.mkdir()
+
+    out = image_catalog.discovered(roots=[empty])
+
+    assert out["models"] == []
+    assert out["roots"] == [str(empty)]
+
+
+def test_a_folder_that_is_not_an_image_model_is_not_listed(tmp_path):
+    """A causal LM is a DETERMINATION, not a gap. Listing every text model as
+    an unidentified image model buries the one pipeline on the disk."""
+    text = tmp_path / "some-llm"
+    text.mkdir()
+    (text / "config.json").write_text(
+        json.dumps({"model_type": "llama", "architectures": ["LlamaForCausalLM"]}),
+        encoding="utf-8",
+    )
+    (text / "model.safetensors").write_bytes(b"x" * 512)
+
+    out = image_catalog.discovered(roots=[tmp_path])
+
+    assert [row["path"] for row in out["models"]] == []
+
+
+def test_a_walk_that_ran_out_of_budget_says_so(tmp_path, monkeypatch):
+    """A list capped by a clock and reported as complete is the silent-cap
+    defect. The flag is returned, not logged."""
+    _checkpoint(tmp_path / "one")
+
+    from modelmri import discover
+
+    monkeypatch.setattr(discover, "scan", lambda root, **kw: ([], True), raising=True)
+    out = image_catalog.discovered(roots=[tmp_path])
+
+    assert out["truncated"] is True

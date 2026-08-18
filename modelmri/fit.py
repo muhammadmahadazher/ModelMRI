@@ -22,12 +22,12 @@ Three terms, all shown:
 
 **The weights term is exact about the checkpoint, and an upper bound on the
 card.** It prices every tensor the header declares. Some checkpoints declare
-tensors a modern loader never materialises — gpt2 ships a `[1, 1, 1024, 1024]`
-causal-mask buffer per layer, and transformers stopped loading those. Measured
-on gpt2 (F32 on disk, bf16 on an RTX 4060): the header declares 137,022,720
-elements against the model's 124,439,808 parameters, and the difference is
-exactly 12 x 1024 x 1024 — those twelve masks. So the term reads 274.0 MB
-where the allocator reports 255.3 MB, 6.8% high.
+tensors a modern loader never materialises — an older architecture can ship a
+`[1, 1, N, N]` causal-mask buffer per layer, and transformers stopped loading
+those. Measured on such a checkpoint (F32 on disk, bf16 on an RTX 4060), the
+header declares more elements than the model has parameters by exactly the
+size of those masks, so the term reads a few percent above what the allocator
+reports.
 
 Left alone, deliberately. Skipping tensors by name would mean a hardcoded list
 of buffer names per architecture, which is the kind of special case that is
@@ -178,8 +178,8 @@ class Weights:
     """What the checkpoint holds, on disk and after a dtype conversion.
 
     These are two different numbers and conflating them is what the first
-    version of this module did. Measured on gpt2 (F32 on disk, loaded bf16 on
-    an RTX 4060): 548.1 MB of file payload against 255.3 MB actually allocated,
+    version of this module did. Measured (F32 on disk, loaded bf16 on
+    an RTX 4060), the file payload was twice what was actually allocated,
     because every float was halved on the way in. A calculator that quotes the
     disk figure as "what this needs on your card" is wrong by 2x on the most
     common case there is — a float32 checkpoint on a GPU that prefers bf16.

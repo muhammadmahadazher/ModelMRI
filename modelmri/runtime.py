@@ -90,8 +90,31 @@ def _require_causal_lm(hf_id: str) -> None:
     mode without this is a multi-screen HuggingFace traceback about
     sentencepiece for a model that has no tokenizer because it is a diffusion
     model. Reading the config first costs a few kilobytes.
+
+    Two questions are asked, in this order, because the architecture STRING is
+    the weaker answer and it used to be the only one. `load()` calls
+    `AutoModelForCausalLM.from_pretrained` a few lines below, so the authority
+    on "can the playground run this" is what that class actually builds, not
+    how the checkpoint spells its own class name. Every multimodal Gemma spells
+    it `...ForConditionalGeneration`, and `AutoModelForCausalLM` maps every one
+    of them straight back to that same class. Measured on transformers 5.14.1,
+    this guard refused google/gemma-4-E4B-it, gemma-4-E2B-it, gemma-4-12B-it,
+    both gemma-4 w4a16 QAT builds and gemma-3-4b-it -- models the very next
+    line loads without complaint. Two code paths were answering one question
+    differently. The single Gemma 4 build that did get through,
+    gemma-4-E4B-it-qat-mobile-transformers, got through by accident: its config
+    publishes no `architectures` key at all, so it fell into the "unknown
+    shape" arm rather than being judged.
+
+    The mapping is consulted for the DECLARED class, never as a bare "is this
+    model_type in the mapping" test. Those are different questions and the
+    loose one is wrong: bert-base-uncased declares `BertForMaskedLM` while the
+    mapping holds `BertLMHeadModel` for it, so `AutoModelForCausalLM` will
+    cheerfully build an encoder with an untrained LM head and generate fluent
+    nonsense from it. Checked against the repos above plus vit, SmolVLM2 and
+    bert: the strict form unblocks the Gemmas and loosens nothing else.
     """
-    from transformers import AutoConfig
+    from transformers import MODEL_FOR_CAUSAL_LM_MAPPING, AutoConfig
 
     try:
         cfg = AutoConfig.from_pretrained(hf_id)
@@ -103,6 +126,21 @@ def _require_causal_lm(hf_id: str) -> None:
         return
     if not archs:
         return  # unknown shape: don't block on a guess
+
+    try:
+        mapped = MODEL_FOR_CAUSAL_LM_MAPPING.get(type(cfg), None)
+    except Exception:
+        # `_LazyAutoMapping.get` imports the modeling module for this one
+        # model_type, so it fails on whatever an import fails on: a
+        # transformers built without that model, or an optional dependency the
+        # module needs at import time. None is the honest answer -- we could
+        # not establish that the loader builds this -- and refusing on that is
+        # the safe direction, because the suffix test above has already
+        # declined to vouch for it. A guard whose whole job is to replace a
+        # traceback must not raise one of its own.
+        mapped = None
+    if mapped is not None and mapped.__name__ in archs:
+        return
 
     kind = archs[0]
     raise BadRequest(
@@ -129,7 +167,8 @@ def _hub_error_message(hf_id: str, err: Exception) -> str:
             f"'{hf_id}' is a gated model: accept its license at "
             f"https://huggingface.co/{hf_id} while signed in, then run "
             f"`huggingface-cli login` so ModelMRI can download it. "
-            f"Ungated alternatives: Qwen/Qwen3-0.6B, Qwen/Qwen2.5-0.5B-Instruct, gpt2."
+            f"Ungated alternatives: Qwen/Qwen3-0.6B, Qwen/Qwen2.5-0.5B-Instruct, "
+            f"Qwen/Qwen3-1.7B."
         )
     if "not a local folder" in text or "Repository Not Found" in text or "404" in text:
         return (
@@ -287,9 +326,9 @@ ignore = [
 
 # `pytorch_model.bin` is byte-for-byte redundant when safetensors is present
 # -- transformers loads the safetensors and never opens the .bin -- so
-# fetching both doubles the transfer for nothing. Measured on gpt2: 523 MB
-# of safetensors, an identical 523 MB .bin, and a 523 MB rust_model.ot, for
-# 1.7 GB downloaded where 523 MB was needed.
+# fetching both doubles the transfer for nothing. A repo that also ships a
+# rust_model.ot pulls a third identical copy, for several times the bytes
+# that were needed.
 #
 # Only dropped when a root-level .safetensors actually exists to load
 # instead. A repo whose weights live only in .bin still gets its .bin, and
@@ -329,15 +368,16 @@ def _user_span(tokenizer: Any, prompt: str, text: str) -> tuple[int, int] | None
     The tokens a fast tokenizer adds for itself report a zero-width `(0, 0)`
     offset, and there is deliberately no separate rule for them: the overlap
     test is half-open at both ends, so `b <= start` already excludes `(0, 0)`
-    from a span starting at character 0 — which is gpt2's span, and the case the
+    from a span starting at character 0 — which is the span a base model with no
+    chat template gets, and the case the
     rule would have been written for. An explicit `b <= a: continue` was here
     and was removed after a mutation test showed it could not change any
     answer: it only ever fires on an index between two overlapping ones, and a
     middle index moves neither end of a range.
 
-    Verified against all three, prompt "The capital of France is" through the
-    same chat template `generate_stream` applies: gpt2 (0, 5) over the whole
-    5-token sequence, Qwen3-0.6B (3, 8) of 13, gemma-3-270m-it (5, 10) of 15 —
+    Verified against both, prompt "The capital of France is" through the
+    same chat template `generate_stream` applies: Qwen3-0.6B (3, 8) of 13,
+    gemma-3-270m-it (5, 10) of 15 —
     each covering exactly ['The', ' capital', ' of', ' France', ' is'], and
     gemma's two leading `<bos>` outside it.
     """
@@ -387,7 +427,7 @@ class ModelStatus:
     # The same signal `generate_stream` already branches on: a tokenizer with
     # a chat template was instruction-tuned, one without was not. It is worth
     # publishing because the difference explains most "why is it answering
-    # nonsense" — gpt2 continues your sentence, it does not answer your
+    # nonsense" — a base model continues your sentence, it does not answer your
     # question, and a UI that does not say so invites the reader to conclude
     # the tool is broken when the tool is working exactly as intended.
     instruct: bool | None = None
@@ -687,14 +727,31 @@ class ModelRuntime:
         hf_id: str = DEFAULT_MODEL,
         source: str = "hf",
         confirm: bool = False,
+        device: str = "",
     ) -> ModelStatus:
         """Load a model. source="hf" (full introspection) or "ollama" (text only).
 
         `confirm=True` overrides the size guard — the user has been told the
         numbers and chosen anyway.
 
+        `device` names where to put it — "cuda:1", "cpu", or "" to keep doing
+        what this has always done and let `devices.detect()` choose. Empty is
+        the default on purpose: a machine with one GPU behaves exactly as
+        before, and nobody has to learn a new argument to get the old
+        behaviour.
+
+        It is READ BACK rather than assumed. `devices.detect(prefer=...)`
+        returns the device it could actually honour, which is not always the
+        one asked for — "cuda:3" on a two-card box comes back as CPU with a
+        reason saying so. Storing the request instead of the result is how a
+        panel ends up reporting a card the model is not on.
+
         Blocking — call from a worker thread.
         """
+        if device:
+            chosen = devices.detect(prefer=device)
+            self.accel = chosen
+            self.device = chosen.torch_device
         if source not in ("hf", "ollama"):
             raise BadRequest(f"unknown source {source!r} (use 'hf' or 'ollama')")
 
@@ -1097,7 +1154,7 @@ class ModelRuntime:
                 messages, tokenize=False, add_generation_prompt=True
             )
         else:
-            text = prompt  # base models (e.g. GPT-2) have no chat template
+            text = prompt  # base models have no chat template
         inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
         # timeout: if the generate worker ever stalls or dies, the streamer
         # raises instead of blocking its consumer forever (a hang observed
@@ -1528,7 +1585,7 @@ class ModelRuntime:
         """Rank heads by how far removing one moves the next-token answer.
 
         `layer=None` sweeps every layer, which is n_layers x n_heads + 2
-        forward passes: 146 for gpt2, 450 for Qwen3-0.6B. That count is the
+        forward passes: 450 for Qwen3-0.6B. That count is the
         portable part of the cost.
 
         What a pass costs is not. On one RTX 4060 the same model measured
@@ -1690,7 +1747,8 @@ class ModelRuntime:
         """What would this sweep cost here? One probe pass, then arithmetic.
 
         Exists because `baseline="resample"` is `RESAMPLE_DRAWS` times the work
-        of the other two — 98 passes against 14 for one gpt2 layer — and the
+        of the other two — one layer goes from n_heads + 2 passes to
+        n_heads * RESAMPLE_DRAWS + 2 — and the
         panel should be able to say so before the user waits for it rather
         than after.
         """
@@ -2004,9 +2062,9 @@ class ModelRuntime:
         """Run every baseline on the same layer and report how much they differ.
 
         The panel has always shown one baseline at a time with nothing saying
-        the others existed. Measured on gpt2 layer 0 the three disagree badly —
-        Spearman 0.34 to 0.47, and the top five share only two or three heads —
-        so which one is selected has been quietly deciding the answer.
+        the others existed. The three can disagree badly — weak rank
+        correlation across a layer, and a top five sharing only two or three
+        heads — so which one is selected has been quietly deciding the answer.
         """
         rankings = {}
         for name in ablate.BASELINES:
@@ -2047,7 +2105,8 @@ class ModelRuntime:
         if self.model is None:
             raise Refusal("No model loaded — pick one first.")
 
-        # A padless tokenizer cannot batch, and gpt2's is the common case.
+        # A padless tokenizer cannot batch, and base-model tokenizers commonly
+        # ship without a pad token.
         # Set on the tokenizer we already hold rather than reloading it.
         if getattr(self.tokenizer, "pad_token", None) is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -2810,13 +2869,12 @@ class ModelRuntime:
 
         Cost is `tested tokens + 7` forward passes: six inside the ranking plus
         one here, to read the model's own answer at `position`. Measured through
-        the endpoint on this machine: 10 on gpt2 with "The capital of France is"
-        (3 tested), 20 on gemma-3-270m-it (13 tested), 23 on Qwen3-0.6B
-        attributing at token 17 (16 tested). The count is the portable part. The
-        seconds are not, and on one RTX 4060 they did not even transfer between
-        those three: warm and back to back, 0.12-0.14 s, 0.84-0.92 s and
-        1.00-1.04 s, or roughly 13, 44 and 44 ms a pass. The first call after a
-        load pays CUDA warm-up on top — 0.40 s for the same gpt2 work. So
+        the endpoint on this machine: 20 on gemma-3-270m-it (13 tested), 23 on
+        Qwen3-0.6B attributing at token 17 (16 tested). The count is the
+        portable part. The seconds are not: on one RTX 4060, warm and back to
+        back, those two ran 0.84-0.92 s and
+        1.00-1.04 s. The first call after a
+        load pays CUDA warm-up on top of that. So
         `passes` and `elapsed_s` both come back and the caller derives a rate on
         its own machine rather than trusting one from mine.
 
@@ -2949,7 +3007,8 @@ class ModelRuntime:
                 "claim that all of them are yours."
             )
         elif span == (0, self.last_n_prompt_tokens):
-            # gpt2's case: no chat template, so the prompt is the whole prompt.
+            # A base model's case: no chat template, so the prompt is the whole
+            # prompt.
             # Saying "the rest is the template" here would invent one.
             note = (
                 f"Tokens {span[0]}-{span[1] - 1} are the words you typed, and "
@@ -2992,8 +3051,8 @@ class ModelRuntime:
         `scope="position"` (the default) puts on trial the features firing at
         the attributed token; `scope="prompt"` removes each feature wherever it
         fires at or before it, which is a different and larger question —
-        measured on gpt2 at blocks.8.hook_resid_pre, 4 of that ranking's top-8
-        fire ONLY at earlier tokens and reach the prediction through attention,
+        features in that ranking's top-8 can fire ONLY at earlier tokens and
+        reach the prediction through attention,
         so the current panel cannot show them at all.
 
         `top_k` trims the ROWS IN THE RESPONSE and nothing else. A row it drops
@@ -3010,15 +3069,12 @@ class ModelRuntime:
         Cost is `2 x features tested + 6` forward passes. Two per row, not one:
         the feature's own edit and a random direction of the same norm at the
         same tokens, because part of a score is the SIZE of the edit — a
-        Gaussian direction at the top feature's norm costs about 0.09 nats
-        against that feature's own 0.417, and 9 of the 43 rows on the reference
-        prompt do not clear their own control. Measured through this module on
-        this machine, gpt2 in float32 on CPU — which the dtype gate below makes
-        the only configuration this answers in — "The Eiffel Tower is located
-        in the city of" attributed at position 10: 92 passes and 10.09 s at
-        position scope (43 candidates), 518 passes and 49.44 s at prompt scope
-        (494 candidates, 256 tested). The pass count is the portable part; the
-        seconds are this CPU's. `passes` and `elapsed_s` both come back so a
+        Gaussian direction at the top feature's norm can cost a sizeable
+        fraction of that feature's own score, and rows that fail to clear their
+        own control are routine rather than rare. Prompt scope tests several
+        times as many candidates as position scope and costs proportionally
+        more. The pass count is the portable part; the
+        seconds are the machine's. `passes` and `elapsed_s` both come back so a
         caller derives a rate on its own machine, the same contract the other
         two rankings carry.
 
@@ -3027,7 +3083,7 @@ class ModelRuntime:
         stream back unchanged, which is bit-exact in every dtype and scores 0.0
         in every dtype — so nothing inside the measurement can notice that in
         bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats on its
-        own. Measured on gpt2 here, an edit whose true effect is 4.9e-07 nats
+        own. Measured here, an edit whose true effect is 4.9e-07 nats
         reads 0.02836 in bfloat16 and outranks a feature with 100x its
         activation. The long version, with the numbers and with what float16
         does differently, is on the check itself.
@@ -3080,7 +3136,7 @@ class ModelRuntime:
             # below, which is why this one exists.
             #
             # Same ids, same SAE, same hook, same position; only the model's
-            # dtype differs. gpt2, cuda, eager, jbloom/GPT2-Small-SAEs-Reformatted
+            # dtype differs. cuda, eager, jbloom/GPT2-Small-SAEs-Reformatted
             # @ blocks.8.hook_resid_pre calibrated centered+b_dec, "The Eiffel
             # Tower is located in the city of Paris", position 10:
             #
@@ -3119,7 +3175,7 @@ class ModelRuntime:
                 raise Refusal(
                     f"this model is loaded in {name}, and a feature ranking "
                     f"taken in {name} is a ranking of rounding error below its "
-                    "top two or three rows. Measured here on gpt2 at "
+                    "top two or three rows. Measured here at "
                     "blocks.8.hook_resid_pre, the same 43 features scored in "
                     "both dtypes: feature 3841, activation 0.051, moves the "
                     "answer 4.9e-07 nats in float32 and 0.02836 in bfloat16 — "
@@ -3175,8 +3231,8 @@ class ModelRuntime:
         # cannot be negative, so each of these is float32 summation over the
         # vocabulary showing itself, and it is the evidence for why the line a
         # panel greys out on is `resolution_kl` and not `noise_floor_kl` —
-        # measured through this endpoint on gpt2/CPU/float32, the floor is
-        # exactly 0.0 while 4 of 43 rows came back below it.
+        # measured through this endpoint on CPU/float32, the floor is
+        # exactly 0.0 while rows still come back below it.
         n_negative = sum(1 for row in ranked if row["kl"] < 0)
         out["ranked"] = ranked[:top_k]
         out["n_returned"] = len(out["ranked"])
@@ -3456,8 +3512,8 @@ class ModelRuntime:
         NO EPOCH CHECK, alone among the export helpers here. Every other
         section describes the model in this file and dies when the model
         changes; a diff names its own two models and survives, because
-        unloading gpt2 does not make "these two checkpoints differ at layer 4"
-        untrue.
+        unloading a model does not make "these two checkpoints differ at layer
+        4" untrue.
 
         `means` and `receipt` are dropped for the same reason the grounding
         export drops them: the sentence is regenerated from the numbers and
@@ -3581,6 +3637,49 @@ class ModelRuntime:
         if self.sae is None:
             return SAEStatus(loaded=False)
         return self.sae.status()
+
+    def sae_releases(self, repo: str, layer: int | None = None) -> dict:
+        """What this repo publishes, so a picker can offer it rather than guess.
+
+        A Gemma Scope release is addressed by (layer, dictionary width, average
+        L0), and those are choices with consequences — four times the features
+        at width_65k, an order of magnitude of sparsity between average_l0 22
+        and 294. A panel that cannot show the alternatives cannot let anyone
+        make the choice, so this hands over the whole index.
+
+        `listed` is the honest half. False means the Hub could not be read, and
+        `layers` is then None rather than {} — "unknown" and "this repo
+        publishes nothing" are different answers and a picker must not render
+        the first as the second.
+        """
+        from . import saes
+
+        index = saes.release_index(repo)
+        if index is None:
+            return {
+                "repo": repo,
+                "listed": False,
+                "layers": None,
+                "note": (
+                    "The list of published releases lives on the HuggingFace "
+                    "Hub and could not be read just now. Naming a width and an "
+                    "average L0 still loads one without it."
+                ),
+            }
+        if layer is not None:
+            index = {layer: index[layer]} if layer in index else {}
+        return {
+            "repo": repo,
+            "listed": True,
+            # JSON has no integer keys; a picker reading "20" back as a layer
+            # index is doing string->int either way, and being explicit here
+            # beats a dict whose keys change type on the wire.
+            "layers": {str(n): index[n] for n in sorted(index)},
+            "note": (
+                "Widths and average-L0 values as published. Defaulting either "
+                "one is reported in the loaded SAE's release.chosen_by."
+            ),
+        }
 
     # ------------------------------------------------------------------ GGUF
 
@@ -3740,8 +3839,22 @@ class ModelRuntime:
             progress.TRACKER.finish()
             return result.to_dict()
 
-    def load_sae(self, repo: str, hook: str) -> SAEStatus:
-        """Load an SAE and validate it against the current model. Blocking."""
+    def load_sae(
+        self,
+        repo: str,
+        hook: str,
+        *,
+        width: str | None = None,
+        average_l0: int | None = None,
+    ) -> SAEStatus:
+        """Load an SAE and validate it against the current model. Blocking.
+
+        `width` and `average_l0` address a Gemma Scope release, which is
+        published per (layer, dictionary width, average L0) rather than per
+        hook point. Both default to None, meaning "choose by the rule and say
+        which rule" — the answer comes back in `status().release.chosen_by`,
+        so a defaulted coordinate is never a silent one.
+        """
         if self.backend == "ollama":
             raise Refusal(
                 "SAE features need model internals — unavailable via Ollama. "
@@ -3749,7 +3862,7 @@ class ModelRuntime:
             )
         if not self.loaded:
             raise Refusal("Load a model first.")
-        sae = SAEHandle.load(repo, hook)
+        sae = SAEHandle.load(repo, hook, width=width, average_l0=average_l0)
         d_model = self.model.config.hidden_size
         if sae.d_in != d_model:
             raise BadRequest(

@@ -21,7 +21,7 @@ Here the model stays exactly as loaded, the normalisation is frozen at the
 scale a hook recorded from the real forward pass, and the cost of that
 approximation is measured and printed: the RECONSTRUCTION RESIDUAL, the gap
 between every component's contribution summed and the logit the model really
-produced. On GPT-2 that gap is not zero. Showing it is mandatory -- without it
+produced. That gap is not zero. Showing it is mandatory -- without it
 the chart is a fabricated 100%, which is the failure mode this whole feature
 would otherwise have.
 
@@ -51,7 +51,7 @@ from .errors import Refusal
 # reconstruction may differ by before it is treated as a different function.
 #
 # RELATIVE TO THE DTYPE, not an absolute epsilon. The first version used
-# 1e-3 absolute and refused gpt2 on a bf16 load: the reconstruction differed by
+# 1e-3 absolute and refused a model on a bf16 load: the reconstruction differed by
 # 0.347 at a norm output of magnitude 199, which is 0.17% -- and bfloat16's
 # precision at 199 is 199 * 2^-8 = 0.78, so the two agreed to BETTER than one
 # representable step and the check was measuring the dtype rather than the
@@ -102,8 +102,8 @@ class Attribution:
     components: list[Contribution] = field(default_factory=list)
     # How many components were DECOMPOSED, against how many are carried here.
     # `top_k` sorts by magnitude and cuts, and both of these used to be read
-    # off the surviving list: on gpt2 that is 40 rows out of 157, so the
-    # count of unreadable components was taken over the 40 STRONGEST -- the
+    # off the surviving list, which is a small minority of the rows, so the
+    # count of unreadable components was taken over the STRONGEST few -- the
     # ones least likely to be unreadable -- and reported as though it were
     # the whole decomposition. The dropped rows are not gone from the sum
     # either; they are in `residual`.
@@ -245,8 +245,8 @@ def attribute(model, tokenizer, ids, *, position: int = -1, top_k: int = 0):
         length, because reading it the other way produced a confident wrong
         answer there too. Decomposing the POST-norm stream means every
         component is compared against a vector that has already been through
-        the transform being frozen, and the reconstruction misses by 0.716 on
-        gpt2. Measured: that is what this module's own norm check reported
+        the transform being frozen, and the reconstruction misses by a wide
+        margin. Measured: that is what this module's own norm check reported
         before this hook existed.
         """
         pre_norm["h"] = args[0].detach().clone()

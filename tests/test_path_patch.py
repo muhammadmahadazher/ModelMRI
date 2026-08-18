@@ -126,12 +126,12 @@ def test_the_scope_names_what_it_did_not_split(traced):
 
 
 def test_the_resolution_of_the_recovery_fraction_is_reported(traced):
-    """MEASURED on gpt2 in bfloat16, WHICH IS NOT EVERY MACHINE: there the
-    logits reach 128, one representable step is 1.0, every sender scored a
-    multiple of 0.125 and 23 tied exactly. Loaded in float32 the same pair
-    ties nothing. Both are correct readings of different precisions — which
-    is the point of reporting the number rather than a threshold. What is
-    asserted here is only that it is reported at all."""
+    """THE RESOLUTION IS NOT A PROPERTY OF EVERY MACHINE: in bfloat16 the
+    logits can be large enough that one representable step is coarse, every
+    sender scores a multiple of that step and several tie exactly. Loaded in
+    float32 the same pair ties nothing. Both are correct readings of different
+    precisions — which is the point of reporting the number rather than a
+    threshold. What is asserted here is only that it is reported at all."""
     resolution = traced["recovery_resolution"]
     assert resolution > 0
     assert "RESOLUTION" in traced["means"]
@@ -148,12 +148,12 @@ def test_the_tie_count_matches_the_precision_the_model_is_actually_in(traced, gp
     """The reason the field exists — asserted against the dtype in play.
 
     This used to assert `len(tied) > 1` unconditionally, and that is a
-    reading from ONE machine: gpt2 in bfloat16 on a CUDA card, where a logit
-    near 128 has a representable step of 1.0 and every sender lands on a grid
-    of 0.125, tying 23 of them. CI has no GPU, the same model loads in
-    float32, the grid is roughly 2e-5 — nothing ties, and the assertion
-    failed on ubuntu, both Windows cells and both macOS cells while passing
-    on the card it was written on.
+    reading from ONE machine: bfloat16 on a CUDA card, where a large logit has
+    a coarse representable step and every sender lands on the same grid, tying
+    several of them. CI has no GPU, the same model loads in float32, the grid
+    is far finer — nothing ties, and the assertion failed on ubuntu, both
+    Windows cells and both macOS cells while passing on the card it was
+    written on.
 
     A number measured once is a sample, not a property. `recovery_resolution`
     reads the model's own dtype, so it is right in either regime; the test is

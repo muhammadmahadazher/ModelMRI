@@ -154,8 +154,8 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
 
   // A probe is fitted to YOUR examples and does not depend on the current
   // generation — but it does depend on the loaded model, and the epoch moves
-  // on load and unload. Keeping a curve across that would put gpt2's layers
-  // under a different model's name.
+  // on load and unload. Keeping a curve across that would put Qwen3-1.7B's
+  // layers under a different model's name.
   useEffect(() => {
     setData(null);
     setErr("");

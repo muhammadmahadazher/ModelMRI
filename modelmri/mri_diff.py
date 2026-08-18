@@ -318,8 +318,8 @@ def _diff_ranking(a, b) -> Delta:
             NOT_COMPARABLE,
             f"these rankings used different baselines ({base_a} against "
             f"{base_b}), and the baselines disagree with each other — "
-            f"`ablate.py` measures Spearman 0.34-0.47 between them on gpt2 "
-            f"layer 0. Comparing across them would measure the baseline.",
+            f"`ablate.py` measures only a weak rank correlation between them. "
+            f"Comparing across them would measure the baseline.",
         )
 
     scores_a = {(r["layer"], r["head"]): r["kl"] for r in rows_a}

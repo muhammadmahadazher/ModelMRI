@@ -20,10 +20,9 @@ import { useScanOnData } from "./useScanOnData";
  *   random     the target prompt with a same-norm random vector
  *
  * A decode matching either is the TARGET PROMPT TALKING. And because a decode
- * can differ from a control as a string while using none of its own words —
- * measured on gpt2 at layer 8, 100% vocabulary overlap with a different
- * string — the vocabulary overlap is printed as a number rather than left to
- * a string comparison.
+ * can differ from a control as a string while using none of its own words, the
+ * vocabulary overlap is printed as a number rather than left to a string
+ * comparison.
  */
 
 const SOURCE_DEFAULT = "The Eiffel Tower is located in the city of Paris";

@@ -1152,6 +1152,66 @@ button.ghost.sm { padding: 6px 12px; font-size: var(--t-sm); }
 .model-row.static:hover { transform: none; }
 .model-row .mid { font-weight: 600; }
 .model-row .spacer { flex: 1; }
+
+/* A source inside the sheet. The sheet is a fixed-height flex column and the
+   list scrolls INSIDE it (see .sheet), so an unconstrained wrapper would take
+   its content height, the list's own overflow would never engage, and the
+   sheet would grow a second scrollbar around the first. `min-height: 0` is
+   the load-bearing half: a flex item's default min-height is `auto`, which
+   refuses to shrink below its content no matter what `overflow` says. */
+.sheet-tabpanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sheet-tabpanel > .model-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* `.model-list` is a grid, and a grid told to fill a tall box stretches its
+     rows to do it. With twenty models nobody sees that; with an empty source
+     and three sentences it spread them down 600px of glass with the gaps
+     between them larger than the text, which reads as a rendering fault
+     rather than as an answer. The rows keep their own heights and the leftover
+     space stays at the bottom, where it belongs. */
+  align-content: start;
+}
+
+/* A row whose second line is a SENTENCE rather than a value: an interrupted
+   download, an entry that could not be sized, a licence not yet accepted.
+
+   Its own line, spanning the row, at every width. The sentence takes the
+   place of the control rather than sitting beside it — a button that can only
+   fail teaches a reader that the tool is broken — and squeezing it into the
+   control's slot crushes the id it is a statement about, so the row that has
+   the most to explain becomes the least legible one on the list. That is the
+   measured failure `.image-partial` was written for; this is the same rule
+   inside the sheet, where the row is flex rather than grid. */
+.model-row.said { flex-wrap: wrap; row-gap: 6px; }
+.model-said {
+  flex: 1 0 100%;
+  font-family: var(--font-sans);
+  font-size: var(--t-xs);
+  color: var(--color-mute);
+  padding-top: 6px;
+  border-top: 1px solid var(--hair-soft);
+}
+
+/* One directory the walk actually entered. Several of these sit in one line,
+   so they are chips rather than a comma list: a Windows path is long enough
+   that a run of them reads as one unbroken string, and the reader's question
+   is "is MY folder in this list" — which needs the boundaries visible. */
+.looked-root {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+  border-radius: var(--r-chip);
+  padding: 1px 6px;
+  margin: 2px 0 2px 6px;
+  word-break: break-all;
+}
 .chip {
   font-size: var(--t-2xs);
   padding: 2px 8px;
@@ -5590,12 +5650,16 @@ main > [id^="sec-"] {
    is not: hiding here is `display: none`, so a panel that was mid-measurement
    when you switched is still mid-measurement when you switch back. Unmounting
    would silently cancel a forward pass somebody is waiting on. */
+/* The two rows are one control, so the space below them belongs to the pair
+   and not to the top row — which used to own it, back when it was alone. */
+.cat-nav { margin: 0 0 var(--sp-5); }
+
 .cat-bar {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
   align-items: center;
-  margin: 0 0 var(--sp-5);
+  margin: 0;
   padding: var(--sp-2);
   border: 1px solid var(--hair);
   border-radius: var(--r-pill);
@@ -5659,13 +5723,91 @@ main > [id^="sec-"] {
   color: var(--acc);
 }
 
+/* ── the second row · the sub-groups of the chosen category ──────────────
+   Material's primary/secondary tabs relationship, as chips: the row below
+   belongs to the selection above it and changes with it. It is drawn as
+   subordinate on every axis EXCEPT colour — one step smaller, one weight
+   lighter, sentence case against the primary row's tracked caps, indented and
+   hung off a hairline, and with no rail of its own. Colour is left alone on
+   purpose: the accent already means "this is the filter you are in", and a
+   second hue here would compete with the section dots it sits above.
+
+   Every value is a token. A literal here would be wrong in six of the twelve
+   [data-palette] × [data-theme] × [data-contrast] combinations, which is the
+   sort of bug nobody sees until someone else's screen. */
+
+/* Grows in place instead of shoving the page. The slot is always in the tree
+   with its track at 0fr; opening interpolates it to 1fr, so the row unfolds
+   and everything below glides down rather than jumping a row's height.
+
+   Only the OPENING carries a transition, and that is deliberate: CSS takes the
+   transition from the state being animated TO, so declaring it on the open
+   state alone gives a smooth open and an instant close. A close that animated
+   would shrink an empty box — React has already unmounted the chips by then —
+   and an empty gap collapsing after its contents left reads as a glitch. The
+   close is instant, in the same frame the panels below it re-filter. */
+.cat-subs-slot {
+  display: grid;
+  grid-template-rows: 0fr;
+}
+.cat-subs-slot[data-open="1"] {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-small) var(--ease);
+}
+/* The clip, not the row itself: the row's own top margin has to be inside the
+   thing being collapsed, or it survives the close as a stray 8px. */
+.cat-subs-clip {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.cat-subs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  /* Indented under the row it belongs to, and hung off a rule that drops from
+     it — so the pair reads as one control with a hierarchy rather than two
+     bars that happen to be stacked. */
+  margin: var(--sp-2) 0 0 var(--sp-4);
+  padding: 3px 0 3px var(--sp-3);
+  border-left: 1px solid var(--hair);
+}
+
+/* Reuses .cat-chip wholesale, which is what keeps the hover, press and focus
+   layers at the end of this file applying to both rows from one selector. */
+.cat-chip.cat-sub {
+  gap: var(--sp-1);
+  padding: 4px 10px;
+  font-size: var(--t-2xs);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+/* Chosen, but one level quieter: the rim without the drop shadow. A raised
+   plate sitting on a raised plate would read as a third level of hierarchy
+   that does not exist. */
+.cat-chip.cat-sub.on {
+  box-shadow: var(--rim);
+}
+
 /* Set by CategoryBar on each .panel. An attribute rather than a class so the
    filter never fights React over className. */
 .panel[data-mri-hidden="1"] { display: none; }
 
+/* Asked for less motion: the row still appears, it just stops travelling —
+   the same trade the rest of this file makes. */
+@media (prefers-reduced-motion: reduce) {
+  .cat-subs-slot[data-open="1"] { transition: none; }
+}
+
 @media (max-width: 560px) {
   .cat-bar { border-radius: var(--r-well); }
   .cat-chip { padding: 6px 10px; }
+  .cat-chip.cat-sub { padding: 4px 8px; }
+  /* The indent is a cue, not a layout: on a narrow screen it is width the
+     chips need more than the hierarchy does. */
+  .cat-subs { margin-left: var(--sp-2); padding-left: var(--sp-2); }
 }
 
 /* ── image models · words to pixels ──────────────────────────────────────
@@ -6099,11 +6241,99 @@ main > [id^="sec-"] {
 }
 
 /* ── the palette picker ───────────────────────────────────────────────── */
+/* ---------- advanced themes, behind a disclosure ----------
+   Mode (light/system/dark) stays in the topbar. Hue and contrast moved in
+   here, because fourteen controls beside a wordmark, an accelerator badge, a
+   model pill and two actions is a congested strip -- and mode is the only one
+   of the three anybody sets more than once. */
+.theme-more { position: relative; display: inline-flex; }
+.theme-more-btn {
+  all: unset;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 4px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--hair);
+  background: var(--sf-sunk);
+  color: var(--ink-3);
+  transition:
+    color var(--dur-micro) var(--ease-hover),
+    border-color var(--dur-micro) var(--ease-hover);
+}
+@media (hover: hover) and (pointer: fine) {
+  .theme-more-btn:hover { color: var(--ink); border-color: var(--line-ctrl); }
+}
+.theme-more-btn.open { color: var(--acc); border-color: var(--acc); }
+.theme-more-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--sf-sunk), 0 0 0 4px var(--acc);
+}
+.theme-more-arrow {
+  font-size: 9px;
+  line-height: 1;
+  transition: transform var(--dur-small) var(--ease-out);
+}
+.theme-more-btn.open .theme-more-arrow { transform: rotate(180deg); }
+/* The trigger carries the CURRENT palette, so shutting the panel does not
+   also hide which one is on. Smaller than the swatches inside it: this one
+   reports, those ones choose. */
+.palette-dot.mini {
+  width: 14px;
+  height: 14px;
+  cursor: inherit;
+  pointer-events: none;
+}
+
+.theme-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  /* Left-anchored, and clamped: the control sits left of centre on a desktop
+     topbar but wraps to the start of its own row on a phone, where a
+     right-anchored panel would hang off the screen. */
+  left: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  min-width: 210px;
+  max-width: min(280px, calc(100vw - 32px));
+  border-radius: var(--r-well);
+  border: 1px solid var(--hair);
+  background: var(--sf-plate);
+  box-shadow: var(--e3);
+  animation: theme-panel-in var(--dur-small) var(--ease-out) 1;
+}
+@keyframes theme-panel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: none; }
+}
+.theme-panel-head {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0;
+}
+/* The hue's NAME, because eight discs alone is a colour-only control and
+   forest and ocean are one green apart. */
+.theme-panel-now {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+  margin: 0;
+}
+.theme-panel-now.inline { margin-left: 6px; align-self: center; }
+.theme-panel .contrast-seg { align-self: flex-start; }
+
 .palette-pick {
   display: inline-flex;
   align-items: center;
   /* Eight swatches instead of five, so the group wraps rather than squeezing
-     when the topbar runs out of room. */
+     when the panel is at its narrowest. */
   flex-wrap: wrap;
   row-gap: 4px;
   gap: 5px;

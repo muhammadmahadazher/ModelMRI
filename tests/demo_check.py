@@ -100,9 +100,9 @@ EXEMPT = {
     # and `feature_ranking_is_not_offered` below is what keeps that true.
     "/api/features/ablate": (
         "ranks SAE features by removing one at a time, two forward passes per "
-        "feature against a live model (92 for one token on gpt2, 518 across a "
-        "prompt); the button is gated off in demo and viewer builds instead, "
-        "and demo.ts's /api/features/ prefix would otherwise answer it 200 "
+        "feature against a live model; the button is gated off in demo and "
+        "viewer builds instead, and demo.ts's /api/features/ prefix would "
+        "otherwise answer it 200 "
         "with a single feature's detail payload"
     ),
 }
@@ -447,9 +447,9 @@ def _bundle_checks(llm: dict, meta: dict) -> None:
     # What uint8 quantisation can cost a row sum, derived rather than guessed.
     # Each cell is stored as round(v / scale), so it can be off by scale/2, and
     # a row of n cells can accumulate n * scale/2. That bound grows with
-    # sequence length — which is why gpt2 (23 tokens) lands at 0.0196 and
-    # Qwen3-0.6B (31) at 0.0236 against the same encoder. Borrowing the live
-    # model's `< 0.02` here would have meant loosening a number until it
+    # sequence length — which is why Qwen3-0.6B (31 tokens) lands at 0.0236
+    # against the same encoder. Borrowing the live model's `< 0.02` here would
+    # have meant loosening a number until it
     # passed; deriving it checks that the encoder behaves as the arithmetic
     # says it must.
     bound = 0.0

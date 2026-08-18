@@ -16,12 +16,12 @@ measurement through it. If the two rankings agree, the panel says so, and what
 it says is that the measurement is uninformative on this model — not that the
 model is uninteresting.
 
-Measured on gpt2, bf16 on an RTX 4060, "The capital of France is", zero
-baseline, layer 0, seed 0 — the trained model ranks H7 0.898, H10 0.535, H9
-0.412, while the untrained twin ranks H3 0.016, H0 0.015, H1 0.015. Spearman
--0.50, sharing 1 of the top 5. Two things in that: the order does not survive
+Measured with bf16 on an RTX 4060, "The capital of France is", zero
+baseline, layer 0, seed 0 — the trained model's top heads and the untrained
+twin's are different heads, the rank correlation is negative, and the two top
+fives share one entry. Two things in that: the order does not survive
 (good — the ranking is about training), and the untrained twin's scores are
-roughly fifty times smaller and nearly uniform, which is what "this head did
+tens of times smaller and nearly uniform, which is what "this head did
 not do anything in particular" looks like when nothing has learned anything.
 
 That is the outcome you want and it is not the guaranteed one. The control is
@@ -87,8 +87,8 @@ def teardown(twin) -> None:
 
     `del twin` here only unbinds this function's own parameter — the caller's
     variable is still a live reference, so `gc.collect()` collects nothing and
-    `empty_cache()` has nothing to release. Measured: a gpt2 twin allocated
-    255.3 MB and 255.3 MB was still allocated after teardown returned. The
+    `empty_cache()` has nothing to release. Measured: every byte a twin
+    allocated was still allocated after teardown returned. The
     docstring claimed the memory came back immediately and it did not, which on
     an 8 GB card is the difference between the next analysis running and
     refusing.

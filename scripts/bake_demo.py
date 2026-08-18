@@ -30,25 +30,40 @@ VLA_EPISODE, VLA_FRAME = 3, 60
 VLA_LAYERS = [0, 3, 6, 9, 11]
 
 # Two recorded models, because one answers "does this work" and two answer
-# "does this work on a real model". gpt2 is the small, fast, famously wrong
-# one; Qwen3-0.6B is a current instruct model that thinks out loud, and its
-# 28 x 16 shape is where the whole-model sweep stops being instant.
+# "does this work at more than one size". Both are current instruct models
+# that think out loud, and both are 28 x 16 — the shape where the whole-model
+# sweep stops being instant.
+#
+# gpt2 used to be the first of these, on the argument that it is small, fast
+# and famously wrong. It is gone, and not because of the size: a demo is the
+# first thing anybody sees, and putting a 2019 model there says this tool is
+# about 2019 models. The numbers it produced were real, so they were DELETED
+# rather than relabelled — a Qwen3 name over a gpt2 measurement would have
+# been a fabrication, which is worse than an old model.
 #
 # The picker offers every model it discovers, so a demo with one recording
-# lets you select Qwen3 and then keeps replaying gpt2 underneath — the page
-# attributing one model's sentence to another. Either the scenario exists or
-# the load is refused; there is no third honest option.
+# lets you select the other and then keeps replaying the first underneath —
+# the page attributing one model's sentence to another. Either the scenario
+# exists or the load is refused; there is no third honest option.
 SCENARIOS = [
-    {"id": "gpt2", "slug": "gpt2", "max_new_tokens": 12},
     {"id": "Qwen/Qwen3-0.6B", "slug": "qwen3-0.6b", "max_new_tokens": 12},
+    {"id": "Qwen/Qwen3-1.7B", "slug": "qwen3-1.7b", "max_new_tokens": 12},
 ]
+
+# Which model the features/steering bundle is baked on. Separate from
+# SCENARIOS because it answers a different question — "has a published sparse
+# autoencoder this tool can open" — and the two lists have no reason to agree.
+# `modelmri/sae_registry.py` is the source of truth for what that means; if
+# this name has no supported entry there, the bake stops rather than writing a
+# features.json the demo would render as an empty panel.
+SAE_MODEL = "google/gemma-2-2b"
 
 # The LLM bundle bakes EVERY layer/head, not a sample. Three slices used to be
 # baked against a meta advertising 12 x 12, so 141 of 144 selections drew a
 # different head's arcs than the controls said — and the fallback was silent,
-# which is the only kind of wrong nobody reports. Completeness is also nearly
-# free here: gpt2's 144 slices of 23 x 23 cost about as much as the robot
-# bundle already does.
+# which is the only kind of wrong nobody reports. 28 x 16 is 448 slices per
+# model, which is what the bundle costs; a sampled bundle would be smaller and
+# would put a different head's arcs under most of the controls.
 #
 # How many ranked heads offer a "what changes?" button. AttentionPanel renders
 # `.slice(0, 5)`, so five is the reachable set, not a sample of it.
@@ -321,12 +336,32 @@ def main() -> int:
     # anything else can be refused by name rather than silently ignored.
     write("scenarios.json", {"default": SCENARIOS[0]["id"], "scenarios": baked})
 
-    # The features/steering bundle belongs to gpt2 — it is the only model here
-    # with a public SAE — so leave the server on it for the rest of the bake.
-    print(f"\nBack to {SCENARIOS[0]['id']} for the SAE bundle")
-    post(
-        "/api/model/load", {"hf_id": SCENARIOS[0]["id"], "confirm": True}, timeout=1800
-    )
+    # NAMED, not `SCENARIOS[0]`. The SAE bundle needs a model with a published
+    # sparse autoencoder, which is a different constraint from "a model worth
+    # demonstrating attention on" — and writing it as "whichever scenario is
+    # first" meant reordering that list silently pointed the SAE bake at a
+    # model that has no SAE. It would have loaded, produced nothing, and
+    # written a features.json the demo renders as an empty panel.
+    # Checked BEFORE the multi-gigabyte load, and against the registry rather
+    # than against a hope. An unsupported entry is listed there precisely so
+    # that "we know this SAE exists and cannot open it" is sayable — and the
+    # bake must not spend twenty minutes loading weights to discover it.
+    from modelmri import sae_registry
+
+    usable = [e for e in sae_registry.for_model(SAE_MODEL) if e.get("supported")]
+    if not usable:
+        listed = sae_registry.for_model(SAE_MODEL)
+        why = listed[0].get("note") if listed else "no release is registered for it"
+        raise SystemExit(
+            f"SAE_MODEL is {SAE_MODEL}, and this build cannot open an SAE for "
+            f"it: {why}\n"
+            f"Baking anyway would write a features.json the demo renders as an "
+            f"empty panel. Point SAE_MODEL at a model with a supported entry "
+            f"in modelmri/sae_registry.py, or make that entry supported."
+        )
+
+    print(f"\nLoading {SAE_MODEL} for the SAE bundle ({usable[0]['repo']})")
+    post("/api/model/load", {"hf_id": SAE_MODEL, "confirm": True}, timeout=1800)
     baseline = post(
         "/api/model/prompt",
         {"prompt": PROMPT, "max_new_tokens": 12, "temperature": 0},

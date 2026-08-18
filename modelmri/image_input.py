@@ -232,7 +232,7 @@ def _floats(value) -> list:
     return out
 
 
-def to_tensor(picture, processor, *, device: str = "", dtype=None):
+def to_tensor(picture, processor, *, device: str = ""):
     """The picture as `[1, C, H, W]`, prepared exactly as the model expects.
 
     The processor does the resize, the rescale and the normalisation, because
@@ -244,6 +244,13 @@ def to_tensor(picture, processor, *, device: str = "", dtype=None):
     places; in float16 the fill value itself is rounded and the last three of
     those decimals are quantisation. The model is cast back to its own dtype
     by the forward pass, so this costs a conversion and not a re-load.
+
+    There is deliberately no `dtype` argument. An earlier version took one and
+    ignored it, so a caller asking for float16 got float32 and no complaint —
+    the worst of both, since the parameter reads as a promise. Honouring it
+    would reintroduce the quantisation this function exists to avoid, so the
+    parameter is gone instead: a caller who passes one now gets a TypeError,
+    which is the answer.
     """
     import torch
 

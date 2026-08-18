@@ -39,10 +39,9 @@ interface Props {
   /** First index the ranking actually tested. Everything from index 1 up to
    *  here was a candidate the run had no budget for, and it is a THIRD state:
    *  not scored, but also not "outside the causal cone" the way `after-attr`
-   *  chips are. Left unmarked they were simply blank — measured on gpt2 with
-   *  a 73-token prompt, 64 of 71 candidates tested, indices 1..7 rendered
-   *  with no mark of any kind while the panel's caveat offered two reasons
-   *  for a blank chip and neither was the true one. */
+   *  chips are. Left unmarked they were simply blank — an untested candidate
+   *  rendered with no mark of any kind, while the panel's caveat offered two
+   *  reasons for a blank chip and neither was the true one. */
   testedFrom?: number;
 }
 
@@ -202,12 +201,12 @@ export default function ArcCanvas({
   // Bring the attributed chip on screen when a ranking arrives. The strip is
   // a horizontal scroller and the position being attributed is usually the
   // last prompt token, which on a long generation is far off the right edge:
-  // measured on a 96-token gpt2 run, the ringed chip sat 4872px into a 965px
-  // window at scrollLeft 0, so the panel opened on 19 chips of which the only
-  // one carrying a bar was the sink at index 0 — while the text above it
-  // pointed at the strip four times. FeaturesPanel.tsx does the same thing
-  // for its peak activation; this is that rule, applied to the one view whose
-  // whole claim is "at THIS token".
+  // at scrollLeft 0 the ringed chip can sit far outside the window, so the
+  // panel opened on a handful of chips of which the only one carrying a bar
+  // was the sink at index 0 — while the text above it pointed repeatedly at
+  // the strip. FeaturesPanel.tsx does the same thing for its peak activation;
+  // this is that rule, applied to the one view whose whole claim is "at THIS
+  // token".
   useEffect(() => {
     if (attrPos === undefined || attrPos < 0 || !scores) return;
     attrRef.current?.scrollIntoView({ block: "nearest", inline: "center" });

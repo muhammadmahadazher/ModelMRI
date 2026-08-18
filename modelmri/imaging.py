@@ -512,6 +512,118 @@ def scan_cache(
     return out
 
 
+SCAN_DIRS_LIMIT = 120
+
+# How far above a hit to look for the pipeline that owns it. Two covers
+# `pipeline/unet` and `pipeline/unet/nested`; more starts calling a parent
+# directory full of unrelated checkpoints "the model".
+PIPELINE_CLIMB = 2
+
+
+def _pipeline_root(path: Path) -> Path:
+    """The pipeline directory owning `path`, or `path` itself.
+
+    A walker that looks for `config.json` plus weights lands on `unet/`, which
+    is a component of a model rather than a model. `model_index.json` above it
+    is the pipeline's own declaration that it owns those components.
+    """
+    if (path / "model_index.json").is_file():
+        return path
+    for parent in list(path.parents)[:PIPELINE_CLIMB]:
+        try:
+            if (parent / "model_index.json").is_file():
+                return parent
+        except OSError:
+            break
+    return path
+
+
+def scan_dirs(
+    roots=None, budget_s: float | None = None, limit: int = SCAN_DIRS_LIMIT
+) -> tuple[list[ImageModel], bool]:
+    """Image models in ORDINARY folders, not only in the Hub cache.
+
+    `scan_cache` answers "what has huggingface_hub downloaded", which is the
+    wrong question for somebody who cloned a checkpoint into their working
+    directory, unpacked one from a zip, or keeps them on a second drive. Those
+    are the models a browse list most needs to find, because they are exactly
+    the ones no registry knows about.
+
+    WHY IT BORROWS THE TEXT SIDE'S WALKER
+
+    `discover.scan` already solves the hard half — a depth cap, a wall-clock
+    budget, a skip list for `node_modules` and friends, symlink loops, and the
+    HF-cache special case — and it has been through the OS-assumption audit.
+    A second walker written here would be a second set of those decisions,
+    free to drift, and the drift would show up as "the image picker cannot see
+    a model the text picker lists". One walk, two readings of it.
+
+    ## The climb, and why it is here rather than in the walker
+
+    The text walker's rule for "this is a model" is `config.json` plus
+    weights, which is a transformers folder. A DIFFUSERS pipeline is not one:
+    its root holds `model_index.json` and no weights at all, and the weights
+    sit one level down in `unet/`, `vae/`, `text_encoder/`. So the walker
+    descends past the pipeline and reports `my-checkpoint/unet` — a component,
+    not a model, and one nothing can load on its own.
+
+    Rather than teach the text walker about pipelines — which would make it
+    start offering diffusion checkpoints as loadable LANGUAGE models — each
+    hit climbs a couple of levels looking for a `model_index.json` above it.
+    The climb is bounded: an unbounded one walks to the drive root and calls
+    the whole disk a model.
+
+    Returns `(models, truncated)`. Truncation is RETURNED rather than logged
+    because a list capped at 120 that says nothing is a list claiming to be
+    complete.
+    """
+    from . import discover
+
+    looked = list(roots) if roots is not None else discover.roots()
+    out: list[ImageModel] = []
+    seen: set[str] = set()
+    truncated = False
+
+    for root in looked:
+        if len(out) >= limit:
+            truncated = True
+            break
+        kwargs = {} if budget_s is None else {"budget_s": budget_s}
+        try:
+            found, cut = discover.scan(root, **kwargs)
+        except OSError:
+            # One unreadable root out of several. Dropping it here is right —
+            # the others still get walked — and it is not silent: the caller
+            # is handed the roots it asked for, so a root that produced
+            # nothing is visible as such.
+            continue
+        truncated = truncated or cut
+        for entry in found:
+            if len(out) >= limit:
+                truncated = True
+                break
+            path = _pipeline_root(Path(entry.path))
+            if str(path) in seen:
+                continue
+            # A directory has to look visual before `detect` is paid for;
+            # a single weights FILE cannot be pre-screened that way, so it
+            # goes straight to `detect`, which reports unknown with a reason
+            # rather than guessing.
+            if path.is_dir() and not _looks_visual(path):
+                continue
+            seen.add(str(path))
+            model = detect(path)
+            # The folder's own name is what a reader recognises here. Unlike
+            # `scan_cache` there is no repo id to recover — this model may
+            # never have come from a Hub at all, and inventing an id for it
+            # would be inventing a place to re-download it from.
+            model.path = str(path)
+            out.append(model)
+
+    out.sort(key=lambda m: (not m.known, m.path.lower()))
+    return out, truncated
+
+
 def _looks_visual(snap: Path) -> bool:
     """Is there any evidence at all that this consumes or emits pixels?
 

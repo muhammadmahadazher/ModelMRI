@@ -135,7 +135,7 @@ class _OffsetTok:
 
 
 def test_user_span_leaves_out_an_added_token_at_index_zero():
-    """gpt2's span starts at character 0, where the (0, 0) offset a fast
+    """The user's span starts at character 0, where the (0, 0) offset a fast
     tokenizer gives its own added tokens also starts. The overlap test is
     half-open, so index 0 stays out and the span is the five words."""
     from modelmri.runtime import _user_span
@@ -283,11 +283,11 @@ def test_feature_ablation_refuses_a_model_that_is_not_float32():
 
     `feature_ablate` proves its floor by writing the captured stream back
     unchanged — bit-exact in every dtype, 0.0 in every dtype. So it cannot see
-    that in bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats by
-    itself. Measured on gpt2 at blocks.8.hook_resid_pre, position 10: feature
-    3841 (activation 0.051) moves the answer 4.9e-07 nats in float32 and
-    0.02836 in bfloat16, outranking a feature with 100x its activation, while
-    noise_floor_kl still reads 0.0 beside it.
+    that in bfloat16 a 1-ulp change to the stream is worth a real fraction of a
+    nat by itself. On a real run a feature whose float32 effect is
+    indistinguishable from zero moved the answer measurably in bfloat16 and
+    outranked features with far more activation, while noise_floor_kl still
+    read 0.0 beside it.
 
     Half-precision is the DEFAULT on a GPU — `devices.detect` picks bfloat16
     for any Ampere-or-newer NVIDIA card — so without this the ordinary path on
@@ -590,13 +590,12 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
     """ "No download needed" is decided from the directory's size at t=0, and
     a directory can be big for reasons that are not "we already have it".
 
-    Seen for real on gpt2: the cache held a legacy `pytorch_model.bin` beside
-    the safetensors, so the tree measured 1045 MB against an expected 551 MB
-    and was declared complete. The loader then downloaded `rust_model.ot` for
-    275 seconds behind a message reading "reading from local cache, no
-    download needed", with the byte counter climbing past 100%. Every number
-    on screen was wrong in the same direction, which is the only kind of
-    wrong nobody catches.
+    Seen for real: the cache held a legacy `pytorch_model.bin` beside the
+    safetensors, so the tree measured well past the expected total and was
+    declared complete. The loader then downloaded `rust_model.ot` for minutes
+    behind a message reading "reading from local cache, no download needed",
+    with the byte counter climbing past 100%. Every number on screen was wrong
+    in the same direction, which is the only kind of wrong nobody catches.
     """
     from modelmri import progress
 
@@ -835,8 +834,9 @@ def test_load_progress_never_raises_on_a_missing_cache(tmp_path, monkeypatch):
 
 
 def test_expected_bytes_counts_only_what_a_load_downloads(monkeypatch):
-    """gpt2 ships tflite/rust/h5/flax copies of itself. Counting them made a
-    fully-cached model report 26% forever."""
+    """Some repos ship tflite/rust/h5/flax copies of the same weights.
+    Counting them made a fully-cached model report a fraction of itself
+    forever."""
     from types import SimpleNamespace
 
     import huggingface_hub
@@ -1147,14 +1147,14 @@ def test_vla_snapshot_path_reads_non_main_ref(tmp_path):
 
 
 def test_local_models_endpoint(tmp_path, monkeypatch):
-    hub = tmp_path / "hub" / "models--openai-community--gpt2"
+    hub = tmp_path / "hub" / "models--Qwen--Qwen3-1.7B"
     hub.mkdir(parents=True)
     (hub / "w.bin").write_bytes(b"x" * 1000)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     r = client().get("/api/models/local")
     assert r.status_code == 200
     ids = [m["id"] for m in r.json()]
-    assert "openai-community/gpt2" in ids
+    assert "Qwen/Qwen3-1.7B" in ids
 
 
 def test_ollama_endpoint_down(monkeypatch):

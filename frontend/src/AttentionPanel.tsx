@@ -409,10 +409,10 @@ export default function AttentionPanel({
               </span>
             </button>
             {/* Only offered once one layer has been timed on THIS model. A
-                whole-model sweep is seconds on gpt2 and can be minutes on a
-                28-layer model, and the difference is not something the user
-                can guess — so the button does not exist until it can state
-                which one this is, from a measurement on this machine. */}
+                whole-model sweep can be minutes on a 28-layer model, and how
+                long it will take here is not something the user can guess —
+                so the button does not exist until it can say, from a
+                measurement on this machine. */}
             {secPerPass !== null && layers > 1 && (
               <button
                 className="ghost sm"
@@ -579,9 +579,8 @@ export default function AttentionPanel({
                         ? "below the noise floor"
                         : `KL ${r.kl.toFixed(3)}`}
                       {/* The median is not the measurement, the spread is.
-                          Head 10 on gpt2 layer 0 ranged 0.027 to 0.335 over
-                          eight draws: one donor could have reported any of
-                          those as this head's score. */}
+                          A single donor sentence could have reported any point
+                          inside that spread as this head's score. */}
                       {r.draws != null && (
                         <span className="meta">
                           {" "}
@@ -633,8 +632,7 @@ export default function AttentionPanel({
           </div>
           {/* The measurement the panel could never show: how much of this
               ranking is the model, and how much is the baseline that happened
-              to be selected. Measured on gpt2 layer 0 the three agree only
-              weakly (Spearman 0.34-0.47), so this is not a formality. */}
+              to be selected. */}
           {agree && (
             <div className="hint agreement">
               <strong>
@@ -775,12 +773,10 @@ export default function AttentionPanel({
               {/* Two claims, and the second used to be a closed list of two
                   reasons that did not cover the commonest one. When the
                   64-candidate cap bites, every candidate below the tested
-                  window renders bar-less as well — measured on gpt2 with a
-                  73-token prompt, 64 of 71 candidates were tested and indices
-                  1..7 came back unmarked while the sentence below told the
-                  reader they must be outside the causal cone. They are now
-                  dashed like `after-attr` and enumerated here only when there
-                  actually are any. */}
+                  window renders bar-less as well, and those came back unmarked
+                  while the sentence below told the reader they must be outside
+                  the causal cone. They are now dashed like `after-attr` and
+                  enumerated here only when there actually are any. */}
               {attr && (
                 <div className="hint">
                   The bar on a chip's left edge is that token's score against
@@ -788,9 +784,8 @@ export default function AttentionPanel({
                   on some models the tallest bar is the sink rather than a
                   word, and its row above says so. The ramp is linear in nats
                   and the scores span orders of magnitude, so most bars sit on
-                  the floor: measured on a 73-token gpt2 prompt, 60 of the 65
-                  bars were under 5% of the tallest and 34 under 2%. Read the
-                  strip for the ordering and the lists for the nats.
+                  the floor. Read the strip for the ordering and the lists for
+                  the nats.
                   <br />A chip with NO bar was never tested — everything after
                   token {attr.position} is outside the causal cone, and token{" "}
                   {attr.position} itself is excluded by rule rather than by its
@@ -813,9 +808,10 @@ export default function AttentionPanel({
  *  Normalised against the largest score in the run, INDEX 0 INCLUDED. The
  *  alternative — normalising over the ranked rows only and leaving index 0
  *  blank — would have the strip and the list disagreeing about what was
- *  measured, and a blank chip is this component's word for "never asked". On
- *  gpt2 that means the first chip carries the tallest bar; the row above the
- *  lists says why that is a property of the position rather than of the word.
+ *  measured, and a blank chip is this component's word for "never asked".
+ *  Where the sink is the largest score in the run, that means the first chip
+ *  carries the tallest bar; the row above the lists says why that is a
+ *  property of the position rather than of the word.
  */
 function strip(a: TokenAttribution, n: number): (number | null)[] {
   const rows = [a.index0, ...a.ranked];
@@ -886,8 +882,7 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
   // and is not "all of it is yours" either, so `unknown` rows go under a
   // heading that claims nothing; and rows past the prompt are the model's own
   // output, which used to be printed under "chat template scaffold" on gpt2 —
-  // a model whose span_note says two lines above that it has no chat
-  // template, and whose own words were the three highest scores in the run.
+  // a model whose span_note says two lines above that it has no chat template.
   const byGroup = (g: TokenScore["group"]) => a.ranked.filter((r) => r.group === g);
   // `typed`/`template` and `unknown` are mutually exclusive by construction —
   // the server emits the first pair when it located the user's words and the
@@ -917,9 +912,9 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
   /** Why a group is empty — and never "they were not candidates" when they
    *  were candidates that the cap simply did not reach. That distinction is
    *  the whole job of `coverage`, and the sentence here used to contradict
-   *  it: measured on gpt2 at position 100 of a 125-token generation, the
-   *  typed span was [0,5], all five were candidates, none was tested because
-   *  the window started at 36 — and the panel said they were not candidates. */
+   *  it: when the tested window opens after the typed span, every token in
+   *  that span was a candidate the run never reached — and the panel said
+   *  they were not candidates at all. */
   const whyEmpty = (heading: string) => {
     if (heading === "what you typed" && a.typed_span) {
       const [lo, hi] = a.typed_span;
@@ -998,9 +993,9 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
 
       {/* The caveat travels with the numbers, and the third clause is the one
           that cannot be copied from the head ranking above. Head ablation
-          over-counts 8x on gpt2 and under-counts on gemma; token masking is a
-          different phenomenon and misses in a direction that depends on the
-          model AND on which tokens you sum. So the panel prints this run's own
+          under-counts on gemma; token masking is a different phenomenon and
+          misses in a direction that depends on the model AND on which tokens
+          you sum. So the panel prints this run's own
           two numbers rather than a factor — the reader can see which way it
           goes on THEIR model instead of transferring a rule that does not
           hold. */}

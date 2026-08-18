@@ -15,6 +15,15 @@ trusted: SAEHandle.load refuses any SAE whose `d_in` does not equal the loaded
 model's `hidden_size`, so a wrong entry fails loudly at load rather than
 producing confident features describing the wrong model. That check is the
 reason it is safe to ship a hand-maintained list at all.
+
+**What this table does NOT hold is the release index.** Gemma Scope publishes
+312 residual-stream SAEs for gemma-2-2b — 26 layers crossed with the
+dictionary widths and average-L0 sparsities trained at each — and which ones
+exist differs per layer. Writing one of them down here would be picking a
+sparsity on the reader's behalf and calling it "the Gemma Scope SAE", which is
+the kind of invisible choice this project treats as a defect. `indexed_by`
+names the coordinates instead, and `saes.release_index` reads the real list off
+the Hub at load time so it cannot go stale in a source file.
 """
 
 from __future__ import annotations
@@ -31,9 +40,20 @@ class SAEEntry:
     layers: tuple[int, ...]
     point: str  # resid_pre | resid_post
     label: str
-    #: SAELens-format `.safetensors` with W_enc/W_dec is what the loader opens.
-    #: Anything else is listed so you know it exists, and marked unsupported
-    #: rather than offered and then failing.
+    #: Which on-disk layout `saes.SAEHandle.load` has to open. One of
+    #: `saes.LAYOUT_SAE_LENS` (cfg.json + sae_weights.safetensors per hook) or
+    #: `saes.LAYOUT_GEMMA_SCOPE` (params.npz per layer/width/average L0).
+    #: Advisory: the loader detects the layout from the repo rather than from
+    #: this field, so a wrong value here cannot open the wrong reader.
+    layout: str = "sae_lens"
+    #: Coordinates a release needs BEYOND the layer, in the order a picker
+    #: should present them. Empty means the hook name is the whole address.
+    #: The VALUES are not listed here on purpose — see the module docstring.
+    indexed_by: tuple[str, ...] = ()
+    #: Whether a release from this repo has been loaded and run here. Not
+    #: "whether the format is readable": the Gemma Scope reader is one code
+    #: path shared by every repo using that layout, so a `False` beside a
+    #: `gemma_scope` layout means unverified, and the note says so.
     supported: bool = True
     note: str = ""
 
@@ -44,6 +64,7 @@ class SAEEntry:
         d = asdict(self)
         d["models"] = list(self.models)
         d["layers"] = list(self.layers)
+        d["indexed_by"] = list(self.indexed_by)
         d["default_hook"] = self.hook(self.layers[len(self.layers) // 2])
         return d
 

@@ -154,6 +154,10 @@ class LoadRequest(BaseModel):
     source: str = "hf"  # "hf" | "ollama"
     # The user saw the size warning and chose to proceed anyway.
     confirm: bool = False
+    # Where to put it: "cuda:1", "cpu", or "" to let the tool choose as it
+    # always has. Empty by default so a machine with one GPU behaves exactly
+    # as before — the choice is offered, not imposed.
+    device: str = ""
 
 
 class GgufLoad(BaseModel):
@@ -769,7 +773,7 @@ def create_app(
 
         try:
             status = await asyncio.to_thread(
-                runtime.load, req.hf_id, req.source, req.confirm
+                runtime.load, req.hf_id, req.source, req.confirm, req.device
             )
             return status.to_dict()
         except LoadCancelled as err:
@@ -792,6 +796,36 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/model/load")
+
+    @app.get("/api/devices")
+    async def list_devices() -> dict:
+        """Every device on this machine, and which one a load goes to by default.
+
+        `/api/session` reports the ONE device in use. This reports the ones
+        that exist, which is a different question and the only one that makes
+        choosing possible — a second card kept free for something else, a card
+        another process is already filling, or a deliberate run on CPU to
+        compare against.
+
+        `free_bytes` is `null` where the backend has no way to report it
+        (Apple's unified memory, Intel XPU, and system RAM on every platform).
+        Null is UNKNOWN; rendering it as 0 would say the machine is out of
+        memory when nobody asked.
+        """
+        from . import devices as devices_mod
+
+        rows = await asyncio.to_thread(devices_mod.available)
+        usable = [r for r in rows if r["kind"] != "cpu"]
+        default = next((r["id"] for r in rows if r["is_default"]), "cpu")
+        return {
+            "devices": rows,
+            "default": default,
+            "means": (
+                f"{len(rows)} device(s) here — {len(usable)} accelerator(s) "
+                f"and the CPU. A load with no device named goes to {default}, "
+                f"which is what has always happened."
+            ),
+        }
 
     @app.post("/api/model/unload")
     async def unload_model():
@@ -1174,7 +1208,7 @@ def create_app(
         The features panel ranks by activation, which is what fired rather than
         what mattered. This is the same question `/api/attention/ablate` asks of
         heads and `/api/attention/attribute` asks of the prompt's tokens, and
-        the answers differ: measured on gpt2 at blocks.8.hook_resid_pre with
+        the answers differ: measured at blocks.8.hook_resid_pre with
         "The Eiffel Tower is located in the city of", the top-8 by activation
         and the top-8 by ablation KL at the attributed token share 6 of 8, and
         at `scope=prompt` they share 0 of 8.
@@ -1191,8 +1225,8 @@ def create_app(
         random direction of the same norm at the same tokens (`control_kl`),
         because a score is partly the size of the edit that produced it.
 
-        Measured on gpt2 float32 on this CPU: 10.09 s at position scope,
-        49.44 s at prompt scope.
+        Prompt scope tests several times as many candidates as position scope
+        and takes several times as long for it.
 
         `top_k` trims the returned rows only. A row it drops was tested and
         scored; `truncated: true` means something else and worse — a candidate
@@ -1439,8 +1473,8 @@ def create_app(
                 str(body.get("b") or ""),
                 [str(p) for p in prompts],
                 # OFF by default. The head half costs n_layers x n_heads
-                # forward passes per prompt PER SIDE -- 1,176 on gpt2 with
-                # four prompts, 5,412 on a 1.7B with six -- which is two
+                # forward passes per prompt PER SIDE -- 5,412 on a 1.7B with
+                # six prompts -- which is two
                 # orders of magnitude more than everything else in this
                 # comparison, so it is opted into rather than out of.
                 include_heads=bool(body.get("include_heads")),
@@ -1995,6 +2029,34 @@ def create_app(
             ),
         }
 
+    @app.get("/api/image/discovered")
+    async def image_discovered() -> dict:
+        """Image models in ordinary folders — the running directory included.
+
+        `/api/image/local` reads the Hub cache. This walks the same roots the
+        text picker walks, so a checkpoint cloned into the working directory
+        turns up here rather than nowhere. The roots are returned: "nothing
+        found" without "and here is where I looked" is not an answer.
+        """
+        from . import image_catalog
+
+        out = await asyncio.to_thread(image_catalog.discovered)
+        rows, roots = out["models"], out["roots"]
+        cap = (
+            " The walk hit its budget, so this list is what was reached "
+            "rather than everything there is."
+            if out["truncated"]
+            else ""
+        )
+        return {
+            **out,
+            "means": (
+                f"{len(rows)} image model(s) found in {len(roots)} "
+                f"director{'y' if len(roots) == 1 else 'ies'} outside the Hub "
+                f"cache.{cap}"
+            ),
+        }
+
     @app.get("/api/image/local")
     async def image_local() -> dict:
         """What is on this disk, what it weighs, and whether it finished.
@@ -2008,17 +2070,36 @@ def create_app(
         from . import image_catalog
 
         rows = await asyncio.to_thread(image_catalog.local)
-        whole = [r for r in rows if r["complete"]]
+        whole = [r for r in rows if r["complete"] is True]
+        # `is None` is a THIRD state, not a falsy one. An entry nobody could
+        # size is not an interrupted download, and the sentence below used to
+        # call it one — sending a reader to re-fetch a model that may be
+        # sitting there complete behind a permissions error.
+        unsized = [r for r in rows if r["complete"] is None]
         held = sum(r["size_bytes"] or 0 for r in whole)
+        partial = len(rows) - len(whole) - len(unsized)
+        # Each clause appears only when it has something to report. "0 hold
+        # configs and no weights" is a sentence about nothing, and a summary
+        # made of those is one nobody reads.
+        rest = ""
+        if partial:
+            rest += (
+                f" {partial} hold configs and no weights — an interrupted "
+                f"download rather than a model that is ready."
+            )
+        if unsized:
+            rest += (
+                f" {len(unsized)} could not be sized at all, so whether their "
+                f"weights arrived is unknown rather than answered."
+            )
         return {
             "models": rows,
             "bytes_on_disk": held,
+            "unsized": len(unsized),
             "means": (
                 f"{len(rows)} image model(s) on this machine, {len(whole)} of "
                 f"them with weights actually present, {held / 1e9:,.1f} GB in "
-                f"total. The rest are cache entries holding configs and no "
-                f"weights — an interrupted download rather than a model that "
-                f"is ready."
+                f"total.{rest}"
             ),
         }
 
@@ -4236,7 +4317,7 @@ def create_app(
         """Rank heads by how far removing one moves the next-token answer.
 
         `scope=layer` (default) does n_heads + 2 passes; `scope=all` does
-        n_layers x n_heads + 2 — 146 for gpt2, 450 for Qwen3-0.6B. The
+        n_layers x n_heads + 2 — 450 for Qwen3-0.6B. The
         default is the cheap one on purpose.
 
         The response carries `elapsed_s` and `passes` so a caller can derive
@@ -4264,7 +4345,8 @@ def create_app(
         The pass count is exact and portable; the seconds and the peak memory
         are projected from one probe pass here and are labelled as one sample.
         Matters most for `baseline=resample`, which is `RESAMPLE_DRAWS` times
-        the work — 98 passes against 14 for one gpt2 layer.
+        the work — one layer goes from n_heads + 2 passes to
+        n_heads * RESAMPLE_DRAWS + 2.
         """
         target = None if scope == "all" else (layer if layer is not None else 0)
         try:
@@ -4367,18 +4449,18 @@ def create_app(
 
         The score is SIGNED and so it is not KL, which every other panel uses.
         Patching has a direction and a patch can push the answer further away:
-        measured on gpt2 float32 with "The Eiffel Tower is located in the city
-        of" against "The Colosseum is located in the city of", 5 of 132 sites
-        moved it away, worst -0.157, and KL cannot tell those from a site that
-        recovered nothing. The two rankings also disagree — top-8 by recovery
-        against bottom-8 by KL-to-clean overlap on 5 of 8.
+        measured in float32 with "The Eiffel Tower is located in the city
+        of" against "The Colosseum is located in the city of", some sites
+        moved it away, and KL cannot tell those from a site that
+        recovered nothing. The two rankings also disagree — the best sites by
+        recovery are not the best by KL-to-clean.
 
         Cost is `n_layers * n_positions` passes for the grid plus
-        `draws + 1` for each of the top 24 sites: 350 passes in 9.66 s on gpt2
-        for a 12x11 grid. Controls are eight draws, not one, because one is a
-        coin flip — at a single site the draws ran -2.038 to +0.616 against a
-        real recovery of +0.427, and the gate moves from 76 of 132 sites on
-        one draw to 20 on all eight.
+        `draws + 1` for each of the top 24 sites. Controls are eight draws,
+        not one, because one is a
+        coin flip — at a single site the draws can straddle zero and span more
+        than the real recovery, and the gate passes several times as many sites
+        on one draw as on all eight.
 
         422 when the pair cannot be compared, which is most casually-written
         pairs and is never visible without being told: the two prompts must
@@ -4455,8 +4537,8 @@ def create_app(
         agreement check, one with reversed position_ids that gates on the
         answer MOVING, index 0, one joint mask, one check that masking empties
         the column) plus one to read the model's answer at `position`.
-        Measured through this endpoint: 11 on gpt2 with "The capital of France
-        is" (3 tested), 21 on gemma-3-270m-it (13 tested), 24 on Qwen3-0.6B at
+        Measured through this endpoint: 21 on gemma-3-270m-it (13 tested), 24
+        on Qwen3-0.6B at
         token 17 (16 tested). Tested tokens are capped at 64 and `truncated`
         says whether it bit. `passes_note` carries the same breakdown to the
         caller.

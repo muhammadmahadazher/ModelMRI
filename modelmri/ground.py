@@ -126,15 +126,15 @@ class Grounding:
     # materialise the score matrix, and transformers returns an EMPTY TUPLE
     # rather than None for `output_attentions=True` under them -- so the
     # naive loop over it completes, sums nothing, and reports 0.0 for every
-    # passage. Measured exactly that way on a plain gpt2 load.
+    # passage. Measured exactly that way on a plain from_pretrained load.
     attention_available: bool = True
     attention_note: str = ""
     # The repeat pass reproduced the answer BIT FOR BIT, so the floor is
     # exactly 0.0 and "cleared the floor" degrades to "moved the answer at
     # all" -- a much weaker claim wearing the same words.
     #
-    # MEASURED on gpt2 in float32 on CPU: floor 0.0, and all five passages
-    # cleared it, including one at 0.0107 nats against a top of 2.7627. On
+    # MEASURED in float32 on CPU: floor 0.0, and all five passages
+    # cleared it, including one two orders of magnitude below the top score. On
     # cuda/bf16 the same pass does not reproduce and the floor is real. The
     # degenerate case is named rather than papered over with an invented
     # threshold, for the same reason the probe names a saturated null.
@@ -410,7 +410,7 @@ def measure(
     # AN EMPTY TUPLE, not None. SDPA and FlashAttention never materialise the
     # score matrix, and `output_attentions=True` under them returns `()` --
     # which loops zero times, sums nothing, and hands back 0.0 for every
-    # passage. Measured on a plain `from_pretrained("gpt2")`, which picks sdpa
+    # passage. Measured on a plain `from_pretrained(...)` load, which picks sdpa
     # by default; ModelRuntime loads eager and does not hit this, but a caller
     # holding its own model does.
     layers = tuple(attn_out.attentions or ())
@@ -461,8 +461,8 @@ def measure(
     # there is no "not depended on" either: every passage that moved the
     # answer clears the gate, the flag can never fire, and leaving it False
     # reports a clean bill of health from a test that never ran. MEASURED —
-    # gpt2 on cuda/bf16 reproduces its own answer bit for bit, so a zero floor
-    # is the ordinary case here and not an edge one.
+    # a model on cuda/bf16 can reproduce its own answer bit for bit, so a zero
+    # floor is the ordinary case here and not an edge one.
     decidable = attention_available and floor > 0.0
     if not decidable:
         for s in scores:

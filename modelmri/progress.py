@@ -41,8 +41,9 @@ from pathlib import Path
 
 # What from_pretrained actually fetches: one weight format plus the small
 # config/tokenizer files. A whitelist, not a blacklist -- popular repos ship
-# tflite, rust, h5, flax and onnx variants nobody asked for, and gpt2 alone
-# carries four of them. Blacklisting them made a fully-cached gpt2 report 26%.
+# tflite, rust, h5, flax and onnx variants nobody asked for, and one repo can
+# carry four of them. Blacklisting them made a fully-cached model report
+# itself as barely started.
 _CONFIG = (".json", ".txt", ".model")
 
 # How long a download may sit at the same byte count before we call it stalled.
@@ -444,10 +445,10 @@ class _Tracker:
                     self._snap.stage = "weights"
                 # "Already cached" was decided from the tree's size before
                 # anything started, and a tree can be large for reasons other
-                # than holding what we need. Real case: a gpt2 cache with a
+                # than holding what we need. Real case: a cache with a
                 # legacy pytorch_model.bin beside the safetensors measured
-                # 1045 MB against an expected 551 MB, so the load announced
-                # "no download needed" and then downloaded for 275 seconds
+                # nearly twice the expected size, so the load announced
+                # "no download needed" and then downloaded for minutes
                 # under that message. Bytes arriving is proof it was wrong.
                 if cached and done > start_bytes + _CACHE_WRONG_AFTER:
                     cached = False
@@ -519,9 +520,10 @@ TRACKER = _Tracker()
 #
 # Sharing one tracker was tried and is exactly the bug this module already
 # documents fixing once. Measured: an Ollama pull of gemma3:1b was in flight,
-# a page load loaded gpt2, and `/api/model/progress` answered
+# a page load loaded Qwen/Qwen3-1.7B, and `/api/model/progress` answered
 #
-#     {"hf_id": "gpt2", "bytes_done": 394812192, "bytes_total": 815310432,
+#     {"hf_id": "Qwen/Qwen3-1.7B", "bytes_done": 394812192,
+#      "bytes_total": 815310432,
 #      "stage": "ready", "active": false}
 #
 # — one job's name against another job's byte counts, with the pull still

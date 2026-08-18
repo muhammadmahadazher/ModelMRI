@@ -277,7 +277,7 @@ def test_an_unreadable_config_falls_through_rather_than_concluding(tmp_path):
 def test_an_unknown_family_offers_no_capabilities(tmp_path):
     """An unknown family must offer nothing rather than everything — the
     capability list is what a panel asks before drawing."""
-    m = imaging.detect(_transformers(tmp_path, model_type="gpt2"))
+    m = imaging.detect(_transformers(tmp_path, model_type="qwen3"))
     assert m.capabilities == ()
     assert m.to_dict()["capabilities"] == []
 

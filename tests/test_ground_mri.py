@@ -64,10 +64,10 @@ def _ground(**over) -> dict:
 def _parsed(**over):
     return session.parse(
         session.build(
-            model_id="gpt2",
+            model_id="Qwen/Qwen3-1.7B",
             device="cuda:0",
             dtype="bfloat16",
-            n_params=124_000_000,
+            n_params=None,
             tokens=["The", " cat"],
             prompt="The",
             generation=" cat",
@@ -124,7 +124,7 @@ def test_a_file_with_no_grounding_and_no_receipt_produces_no_check():
     "not verifiable" on every file that never did one is noise."""
     plain = session.parse(
         session.build(
-            model_id="gpt2",
+            model_id="Qwen/Qwen3-1.7B",
             device="cpu",
             dtype="float32",
             n_params=1,
@@ -232,7 +232,7 @@ def test_a_reordered_document_is_refused_rather_than_read_as_a_model_change():
 def test_a_missing_section_is_unavailable_rather_than_clean():
     plain = session.parse(
         session.build(
-            model_id="gpt2",
+            model_id="Qwen/Qwen3-1.7B",
             device="cpu",
             dtype="float32",
             n_params=1,
@@ -300,7 +300,7 @@ def test_a_recording_without_a_grounding_refuses_and_says_why():
 
     plain = session.parse(
         session.build(
-            model_id="gpt2",
+            model_id="Qwen/Qwen3-1.7B",
             device="cpu",
             dtype="float32",
             n_params=1,

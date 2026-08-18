@@ -15,9 +15,9 @@ import ReceiptLine from "./ReceiptLine";
  * Two things this renders that a normal bar chart would not:
  *
  *   - The RECONSTRUCTION RESIDUAL, always. Direct attribution is exact only if
- *     the final normalisation is linear, and it is not. On GPT-2 the pieces
- *     sum to about 99% of the real logit, and a chart that did not say so
- *     would be claiming a decomposition it does not have.
+ *     the final normalisation is linear, and it is not. The pieces do not sum
+ *     to the real logit, and a chart that did not say so would be claiming a
+ *     decomposition it does not have.
  *   - Components under that residual as UNREADABLE rather than small. A bar
  *     shorter than the error the approximation already makes cannot be told
  *     from that error.

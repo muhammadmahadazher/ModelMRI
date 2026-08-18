@@ -97,7 +97,7 @@ class SessionError(BadRequest):
 
 MAX_PATCH_CELLS = 2_000_000
 
-# One row per head. A whole-model sweep is n_layers x n_heads: 144 on gpt2,
+# One row per head. A whole-model sweep is n_layers x n_heads:
 # 448 on Qwen3-1.7B, ~1,800 on a 70B. The bound is far above any real model
 # and far below what would make a browser lay out a table for a minute.
 MAX_RANKING_ROWS = 20_000
@@ -572,9 +572,8 @@ def _ranking(doc: dict) -> dict:
     # duplicating the tuple here would make a file written by a newer version
     # with a fourth baseline unreadable by this one. Requiring that the
     # ranking SAYS which baseline it used is the part that matters: `ablate.py`
-    # measures the three agreeing only weakly (Spearman 0.34-0.47 on gpt2
-    # layer 0), so a ranking that does not name its baseline cannot be
-    # compared against one that does.
+    # measures the three agreeing only weakly, so a ranking that does not name
+    # its baseline cannot be compared against one that does.
     if not (isinstance(baseline, str) and baseline.strip()):
         raise SessionError(
             "this session's ranking does not say which baseline produced it, "
