@@ -176,6 +176,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/v1/models` | V1 Models |
 | `GET` | `/v1/mri/{mri_id}` | V1 Mri |
 | `POST` | `/api/diff/models` | Diff Models |
+| `POST` | `/api/experiments/compare` | Experiments Compare |
 | `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/ground` | Ground Answer |
 | `POST` | `/api/image/attention` | Image Attention Capture |

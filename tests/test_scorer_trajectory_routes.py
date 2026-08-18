@@ -144,3 +144,115 @@ def test_an_empty_plan_is_a_fact_about_the_plan_not_the_run(client):
     )
     assert r.status_code == 422
     assert "no reference trajectory" in r.json()["error"]
+
+
+# -------------------------------------------------------------- experiments
+
+
+@pytest.fixture
+def two_runs(tmp_path):
+    """A dataset and two runs of it, one better on a case and worse on another."""
+    from modelmri import datasets
+
+    data = datasets.from_inputs("probe", ["2+2?", "capital of France?"])
+    datasets.write_dataset(data, tmp_path / "probe.jsonl")
+
+    def run(name, scores):
+        rows = [
+            datasets.Result(
+                case_id=case.case_id, output=str(s), scores={"faithfulness": s}
+            )
+            for case, s in zip(data.cases, scores, strict=True)
+        ]
+        experiment = datasets.Experiment(
+            name=name,
+            dataset_name=data.name,
+            dataset_fingerprint=data.fingerprint(),
+            results=rows,
+        )
+        path = tmp_path / f"{name}.jsonl"
+        datasets.write_experiment(experiment, path)
+        return str(path)
+
+    return {
+        "before": run("before", [0.80, 0.70]),
+        "after": run("after", [0.90, 0.55]),
+        "dataset": str(tmp_path / "probe.jsonl"),
+    }
+
+
+def test_a_comparison_counts_both_directions_rather_than_averaging(
+    client, two_runs, monkeypatch
+):
+    """The whole point of a per-case comparison. A mean would report these two
+    runs as roughly unchanged and hide that one case got materially worse —
+    which is the regression somebody needed to see."""
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    r = client.post(
+        "/api/experiments/compare",
+        json={
+            "before": two_runs["before"],
+            "after": two_runs["after"],
+            "metric": "faithfulness",
+            "higher_is_better": True,
+            "dataset": two_runs["dataset"],
+        },
+    )
+    assert r.status_code == 200
+    counts = r.json()["counts"]
+    assert counts["better"] == 1
+    assert counts["worse"] == 1
+    assert sum(counts.values()) == r.json()["n_cases"]
+
+
+def test_the_direction_of_good_has_to_be_stated(client, two_runs, monkeypatch):
+    """`higher_is_better` has NO default anywhere in this stack. There is no
+    way to tell from a metric's name which way is good — KL is better lower,
+    faithfulness better higher — and a wrong guess inverts every conclusion
+    while producing output that looks entirely reasonable."""
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    r = client.post(
+        "/api/experiments/compare",
+        json={
+            "before": two_runs["before"],
+            "after": two_runs["after"],
+            "metric": "faithfulness",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_no_dataset_supplied_is_null_and_not_zero(client, two_runs, monkeypatch):
+    """`references: null` means nothing looked. `0` means it looked and there
+    were none. Collapsing them would say a set has no expected answers when in
+    fact nobody opened it."""
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    body = {
+        "before": two_runs["before"],
+        "after": two_runs["after"],
+        "metric": "faithfulness",
+        "higher_is_better": True,
+    }
+    nothing_looked = client.post("/api/experiments/compare", json=body).json()
+    looked = client.post(
+        "/api/experiments/compare", json={**body, "dataset": two_runs["dataset"]}
+    ).json()
+    assert nothing_looked["references"] is None
+    assert looked["references"] == 0
+
+
+def test_reading_experiments_from_elsewhere_on_the_network_is_refused(client, two_runs):
+    """Three paths arrive in this body, and a path names a file on the disk
+    THIS server runs on — the same guard every other file-reading route
+    carries."""
+    r = client.post(
+        "/api/experiments/compare",
+        json={
+            "before": two_runs["before"],
+            "after": two_runs["after"],
+            "metric": "faithfulness",
+            "higher_is_better": True,
+        },
+    )
+    assert r.status_code == 403
+    assert "only possible from this machine" in r.json()["error"]

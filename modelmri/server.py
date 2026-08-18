@@ -261,6 +261,29 @@ class ImageKnockoutRequest(ImageRunRequest):
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
+class ExperimentCompareRequest(BaseModel):
+    """Two runs of one dataset, case by case.
+
+    `higher_is_better` has NO default and is required. There is no way to tell
+    from a metric's name which direction is good — KL divergence is better
+    lower, faithfulness is better higher — and a wrong guess inverts every
+    conclusion while producing output that looks entirely reasonable. Pydantic
+    rejecting the request is the right place for that to be caught.
+    """
+
+    before: str = Field(min_length=1)
+    after: str = Field(min_length=1)
+    metric: str = Field(min_length=1, max_length=120)
+    higher_is_better: bool
+    # The dataset the two runs share, so the comparison can quote what each
+    # case actually asked. Optional, and its absence is REPORTED rather than
+    # filled in: `references: null` means nothing looked, `0` means it looked
+    # and there were none.
+    dataset: str | None = Field(default=None)
+    floor: float | None = Field(default=None)
+    top_k: int = Field(default=12, ge=1, le=200)
+
+
 class ScorerRunRequest(BaseModel):
     """One scorer, one output, and whatever that scorer needs to compare to.
 
@@ -3901,6 +3924,63 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/scorers/run")
         return result.to_dict()
+
+    # --------------------------------------------------------- experiments
+    #
+    # The abstraction every observability platform in the competitor analysis
+    # shares, and the one this had built and could not reach. `sweep` runs one
+    # metric over many prompts; `diff` compares two `.mri` of the SAME prompt.
+    # Neither answers "did my edit help on the 40 cases I care about".
+
+    @app.post("/api/experiments/compare")
+    async def experiments_compare(req: ExperimentCompareRequest, request: Request):
+        """Two runs of one dataset, case by case. Counts and deltas, no verdict.
+
+        Every competitor's experiment row holds an output and a score. This one
+        holds the output, the score, AND the internals that produced it — so a
+        regression row can say the patching site flipped sign, rather than only
+        that a number moved.
+        """
+        from . import datasets
+
+        # Three paths from a request body, so the same guard the other
+        # file-reading routes carry. A path names a file on the disk THIS
+        # server runs on.
+        refusal = _not_from_this_machine(
+            request,
+            "reading experiment files",
+            because=(
+                "an experiment is a file on the disk this server is running "
+                "on, not on yours — run ModelMRI where the runs live"
+            ),
+        )
+        if refusal is not None:
+            return refusal
+
+        def _run():
+            before = datasets.read_experiment(req.before)
+            after = datasets.read_experiment(req.after)
+            # `None` is not "no dataset": it means nothing looked, and the
+            # comparison reports `references: null` rather than 0 so the two
+            # stay distinguishable downstream.
+            data = datasets.read_dataset(req.dataset) if req.dataset else None
+            return datasets.compare_experiments(
+                before,
+                after,
+                metric=req.metric,
+                higher_is_better=req.higher_is_better,
+                dataset=data,
+                floor=req.floor,
+                top_k=req.top_k,
+            )
+
+        try:
+            return (await asyncio.to_thread(_run)).to_dict()
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/experiments/compare")
 
     # ---------------------------------------------------------- trajectory
 
