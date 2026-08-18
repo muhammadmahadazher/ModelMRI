@@ -261,6 +261,34 @@ class ImageKnockoutRequest(ImageRunRequest):
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
+class ScorerRunRequest(BaseModel):
+    """One scorer, one output, and whatever that scorer needs to compare to.
+
+    `reference` is `None` rather than "" for the scorers that need nothing to
+    compare against — `json_valid` asks only whether the text parses — and the
+    two are different: an empty expected string is a real expectation.
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    output: str = Field(default="", max_length=200_000)
+    reference: object | None = Field(default=None)
+    # Per-scorer knobs: tolerances, normalisation, ignore_extra_keys. Bounded
+    # so a request cannot carry an arbitrary object graph into a metric.
+    options: dict | None = Field(default=None)
+
+
+class TrajectoryCompareRequest(BaseModel):
+    """What was supposed to happen, against what did.
+
+    Both sides are lists of recorded-step dicts, or of bare names, or a
+    mixture — `trajectory` normalises them and never opens a store itself, so
+    the caller does the fetching and this stays testable without one.
+    """
+
+    reference: list = Field(default_factory=list, max_length=2000)
+    candidate: list = Field(default_factory=list, max_length=2000)
+
+
 class ImageAttributionRequest(BaseModel):
     """One picture, covered up a window at a time.
 
@@ -3817,6 +3845,100 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/rubric/score")
+
+    # ------------------------------------------------------------- scorers
+    #
+    # 82 KB of tested module with no way to reach it. Every metric here needs
+    # NO model — which is the whole argument for them: a scorer that asks a
+    # language model whether an answer is good needs a calibration gate
+    # nobody ships, costs a key and a round trip per row, and gives a
+    # different answer next Tuesday. These are arithmetic and they are
+    # reproducible with the network off.
+
+    @app.get("/api/scorers")
+    def scorers_catalogue() -> dict:
+        """Every scorer, WITH the way each one lies.
+
+        `failure_mode` is not documentation garnish, it is the field that
+        makes the catalogue honest: `contains_all` finds `kill` inside
+        `skill`, `edit_similarity` counts characters rather than meaning, and
+        `json_valid` is happy with `{}`. A catalogue whose entries state how
+        they fail is a different product from one whose entries state what
+        they measure.
+        """
+        from . import scorers
+
+        rows = scorers.catalogue()
+        return {
+            "scorers": rows,
+            "means": (
+                f"{len(rows)} scorers, none of which asks a model anything. "
+                f"Each carries the way it FAILS as well as what it measures, "
+                f"because a number from a metric whose blind spot you do not "
+                f"know is a number you cannot act on."
+            ),
+        }
+
+    @app.post("/api/scorers/run")
+    async def scorers_run(req: ScorerRunRequest):
+        """One scorer over one output. Deterministic, and offline."""
+        from . import scorers
+
+        try:
+            result = await asyncio.to_thread(
+                scorers.run,
+                req.name,
+                output=req.output,
+                reference=req.reference,
+                **(req.options or {}),
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/scorers/run")
+        return result.to_dict()
+
+    # ---------------------------------------------------------- trajectory
+
+    @app.get("/api/trajectory/cost")
+    def trajectory_cost(reference: int = 0, candidate: int = 0):
+        """What aligning two trajectories of these lengths would build.
+
+        Priced first, like every other table in this tool: the alignment is a
+        `reference x candidate` grid, and a caller can shorten the span
+        themselves rather than discovering the cap by hitting it.
+        """
+        from . import trajectory
+
+        try:
+            return trajectory.plan_comparison(reference, candidate)
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+
+    @app.post("/api/trajectory/compare")
+    async def trajectory_compare(req: TrajectoryCompareRequest):
+        """What a run did against what it was supposed to do.
+
+        Everybody else scores this with a language-model judge. It is a
+        sequence alignment — exact, offline, milliseconds — and it reports
+        counts rather than a verdict: two steps missing, one extra, three with
+        changed arguments. Never "Plan Adherence 0.71", because a shorter path
+        is not a worse path and a number would say it was.
+        """
+        from . import trajectory
+
+        try:
+            found = await asyncio.to_thread(
+                trajectory.align, reference=req.reference, candidate=req.candidate
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/trajectory/compare")
+        return found.to_dict()
 
     @app.get("/api/rubric")
     def rubric_list():
