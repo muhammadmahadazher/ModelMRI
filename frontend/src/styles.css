@@ -2193,6 +2193,22 @@ input[type="range"]:focus-visible { outline: none; }
 .tl-block:hover { opacity: 1; }
 .tl-block.sel { opacity: 1; outline-color: var(--color-ink); }
 .tl-block.err { box-shadow: 0 0 12px color-mix(in oklab, var(--sem-error) 60%, transparent); }
+/* A step whose duration was never recorded. It is drawn at the same minimum
+   width as a genuinely instant call -- there is no honest width for an
+   unknown -- so the DIFFERENCE has to be carried by something other than
+   size: hollow rather than filled, so "nobody wrote this down" cannot be
+   read as "this took no time". The detail panel says the same thing in
+   words; this is the same fact in the same place you are already looking. */
+.tl-block.no-dur {
+  opacity: 0.75;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 2px,
+    color-mix(in oklab, var(--color-bg) 65%, transparent) 2px 4px
+  );
+  outline-color: color-mix(in oklab, var(--color-ink) 35%, transparent);
+}
+.tl-block.no-dur:hover { opacity: 0.95; }
 
 .tl-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
 .tl-legend i {

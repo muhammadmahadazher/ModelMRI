@@ -526,7 +526,15 @@ with trace("my-agent"):
                         the common case rather than a rarity. */}
                     {t.n_steps} step{t.n_steps === 1 ? "" : "s"} ·{" "}
                     {(t.total_ms / 1000).toFixed(1)}s
-                    {t.n_errors > 0 && <em> · {t.n_errors} error</em>}
+                    {/* Pluralised, like the step count two lines up. "3
+                        error" beside "3 steps" reads as a truncated word
+                        rather than a count. */}
+                    {t.n_errors > 0 && (
+                      <em>
+                        {" "}
+                        · {t.n_errors} error{t.n_errors === 1 ? "" : "s"}
+                      </em>
+                    )}
                   </span>
                 </button>
               ))}
@@ -560,14 +568,30 @@ with trace("my-agent"):
             {lanes.map(({ step, lane }) => (
               <button
                 key={step.id}
-                className={`tl-block ${step.error ? "err" : ""} ${sel?.id === step.id ? "sel" : ""}`}
+                // `no-dur` is not decoration. A step with no recorded
+                // duration used to be drawn at the 0.8% minimum width, which
+                // is exactly what a genuinely instant call looks like — so
+                // the bar said "this took no time" about a fact nobody wrote
+                // down. The detail panel beside it already refuses to do
+                // that, in its own words: "0ms reads as an instant call
+                // rather than as a fact nobody wrote down". Two views of one
+                // step disagreeing about what is known is the defect, not the
+                // width.
+                className={`tl-block ${step.error ? "err" : ""} ${
+                  sel?.id === step.id ? "sel" : ""
+                } ${step.duration_ms == null ? "no-dur" : ""}`}
                 style={{
                   left: `${(step.started_ms / maxMs) * 100}%`,
                   width: `${Math.max(((step.duration_ms ?? 0) / maxMs) * 100, 0.8)}%`,
                   top: lane * 36 + 4,
                   background: KIND_COLOR[step.kind],
                 }}
-                title={`${step.kind} · ${step.name}`}
+                title={
+                  `${step.kind} · ${step.name} · ` +
+                  (step.duration_ms == null
+                    ? "duration not recorded"
+                    : `${step.duration_ms}ms`)
+                }
                 onClick={() => {
                   setSel(step);
                   // Belongs to the step that produced it, not to the panel.
