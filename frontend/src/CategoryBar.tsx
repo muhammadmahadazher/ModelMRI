@@ -80,6 +80,7 @@ const CATEGORY_BY_DOT: Record<string, string> = {
   "d-base": "text",
   "d-custom": "text",
   "d-image": "image",
+  "d-vision": "vision",
   "d-vla": "robot",
   "d-agent": "agents",
 };
@@ -120,6 +121,7 @@ const LABELS: Record<string, string> = {
   all: "All",
   text: "Text → Text",
   image: "Text → Image",
+  vision: "Vision",
   robot: "Robot policy",
   agents: "Agents",
   other: "Other",
@@ -142,7 +144,7 @@ const SUB_LABELS: Record<string, string> = {
 /** The order they appear in, when present. Categories not listed here sort
  *  after these, alphabetically — so a new one shows up rather than vanishing
  *  because nobody added it to an order array. */
-const ORDER = ["all", "text", "image", "robot", "agents", "other"];
+const ORDER = ["all", "text", "image", "vision", "robot", "agents", "other"];
 
 /** Roughly the order you would actually work in: run something, look at where
  *  it looked, name what it was thinking, cut the path, check it against the

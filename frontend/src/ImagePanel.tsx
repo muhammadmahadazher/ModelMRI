@@ -194,7 +194,28 @@ function span(v: number): string {
   return v > 0 && v < 0.0001 ? v.toExponential(2) : v.toFixed(6);
 }
 
-export default function ImagePanel() {
+/** Which of the two image sections this instance is.
+ *
+ *  `diffusion` is text-to-image: a prompt goes in, pixels come out, and the
+ *  questions are about which words the picture attended to and when it
+ *  settled. `vision` is the other direction entirely -- pixels go in and a
+ *  label, a box or a mask comes out -- and the questions are what it said and
+ *  what supported it. Sharing one panel made the category bar offer "Text ->
+ *  Image" for a segmentation model.
+ */
+export type ImageKind = "diffusion" | "vision";
+
+/** The capabilities each section is the home for.
+ *
+ *  Read against the checkpoint's own capability list, never against its repo
+ *  id or family name — the same rule the individual controls already follow.
+ */
+const OWNED: Record<ImageKind, readonly string[]> = {
+  diffusion: ["cross_attention", "token_knockout", "step_commit", "latent_trace"],
+  vision: ["patch_attention", "attribution", "layer_readout"],
+};
+
+export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } = {}) {
   const [status, setStatus] = useState<ImageStatus | null>(null);
   // What is on this disk, sized. `null` is "the scan has not answered yet",
   // which is a different thing from an empty list — the second is a real
@@ -292,20 +313,27 @@ export default function ImagePanel() {
   // width of 0 says this particular checkpoint has no prompt to attend to, so
   // both have to hold before a map is offered — and the second is read off the
   // checkpoint rather than guessed from the first.
-  const canCapture = caps.has("cross_attention") && status?.cross_attention_dim !== 0;
-  const canKnock = caps.has("token_knockout") && status?.cross_attention_dim !== 0;
-  const canTrace = caps.has("latent_trace");
+  // Does the LOADED checkpoint belong to this section? One image model is
+  // resident at a time, so the other section shows its resting copy rather
+  // than a set of controls that would act on somebody else's model.
+  const mine = OWNED[kind].some((c) => caps.has(c));
+  const canCapture =
+    mine && caps.has("cross_attention") && status?.cross_attention_dim !== 0;
+  const canKnock =
+    mine && caps.has("token_knockout") && status?.cross_attention_dim !== 0;
+  const canTrace = mine && caps.has("latent_trace");
   // A ViT, a detector or a segmentation head has something to lose when a
   // region is covered. A diffusion pipeline has NO class logit to move, so it
   // never carries this capability and the whole block below is absent for it —
   // gated on what the server said, never on what the repo id looked like.
-  const canAttribute = caps.has("attribution");
+  const canAttribute = mine && caps.has("attribution");
   // A classifier, detector or segmenter can be ASKED what it thinks, which
   // is a different question from what supports the answer. Every family
   // that carries `attribution` or `patch_attention` has a prediction to
   // report; a diffusion pipeline has neither and gets no control.
-  const canPredict = caps.has("attribution") || caps.has("patch_attention");
-  const canReadout = caps.has("layer_readout");
+  const canPredict =
+    mine && (caps.has("attribution") || caps.has("patch_attention"));
+  const canReadout = mine && caps.has("layer_readout");
 
   // WHICH geometry the preflight prices, and the two are not interchangeable.
   //
@@ -554,21 +582,53 @@ export default function ImagePanel() {
 
   // ─────────────────────────────────────────────────────────────── resting
 
-  if (!status?.loaded) {
+  // `!mine` counts as resting for THIS section. One image model is resident at
+  // a time, and without this the other section rendered its full loaded state
+  // about a model that is not its kind: with a ViT held, the text-to-image
+  // panel reported "cross-attention width unknown", explained what the
+  // DENOISER's config failed to state, and offered a map "below" that its own
+  // capability gate had already removed. Several paragraphs about a model
+  // nobody loaded here.
+  if (!status?.loaded || !mine) {
     return (
       <div className="panel">
         <div className="sect">
-          <span className="dot d-image" />
-          <h2 className="h-image">IMAGE MODEL — WORDS TO PIXELS</h2>
+          <span className={`dot ${kind === "vision" ? "d-vision" : "d-image"}`} />
+          <h2 className={kind === "vision" ? "h-vision" : "h-image"}>{kind === "vision" ? "VISION MODEL — PIXELS TO AN ANSWER" : "IMAGE MODEL — WORDS TO PIXELS"}</h2>
           <span className="rule" />
         </div>
         <div className="resting">
           <RestingSketch kind="image" />
+          {/* Each section says what IT is for. The other one's sentence is
+              not a smaller version of this one — pixels-to-a-label and
+              words-to-pixels are opposite directions, and one paragraph
+              covering both is how they ended up in one panel. */}
           <p>
-            Which words a diffusion model is looking at, step by denoising step
-            — and what actually changes when one of them is removed. Nothing is
-            loaded yet.
+            {kind === "vision" ? (
+              <>
+                What a classifier, detector or segmenter says about a picture,
+                and which parts of it the answer actually rested on. Nothing is
+                loaded yet.
+              </>
+            ) : (
+              <>
+                Which words a diffusion model is looking at, step by denoising
+                step — and what actually changes when one of them is removed.
+                Nothing is loaded yet.
+              </>
+            )}
           </p>
+          {/* Says which model is in the way, rather than looking empty. One
+              image model is resident at a time, so "loaded, but not the kind
+              this section measures" is a real state and a common one. */}
+          {status?.loaded && !mine && (
+            <p className="meta">
+              {status.repo} is loaded, and it is a {status.family} model —
+              measured in the{" "}
+              {kind === "vision" ? "text-to-image" : "vision"} section rather
+              than this one. Loading something here replaces it.
+            </p>
+          )}
 
           {/* --- the picker ------------------------------------------
               One trigger and one Load button, the same pair the text
@@ -768,8 +828,8 @@ export default function ImagePanel() {
   return (
     <div ref={scanRef} className="panel image">
       <div className="sect">
-        <span className="dot d-image" />
-        <h2 className="h-image">IMAGE MODEL — WHICH WORDS THE PICTURE LOOKED AT</h2>
+        <span className={`dot ${kind === "vision" ? "d-vision" : "d-image"}`} />
+        <h2 className={kind === "vision" ? "h-vision" : "h-image"}>{kind === "vision" ? "VISION MODEL — WHAT IT SAW, AND WHAT IT SAID" : "IMAGE MODEL — WHICH WORDS THE PICTURE LOOKED AT"}</h2>
         <span className="rule" />
       </div>
 
@@ -790,13 +850,19 @@ export default function ImagePanel() {
             ? `${(status.bytes_resident / 1e9).toFixed(2)} GB resident`
             : "resident weights could not be sized"}
         </span>
-        <span className="pill">
-          {dim === null
-            ? "cross-attention width unknown"
-            : dim === 0
-              ? "unconditional — no cross-attention"
-              : `cross-attention ${dim} wide`}
-        </span>
+        {/* Cross-attention is a DENOISER's relationship to a prompt. A
+            classifier has no prompt, so this pill and the sentence below it
+            are absent in the vision section rather than reporting an unknown
+            width for a component that is not there. */}
+        {kind !== "vision" && (
+          <span className="pill">
+            {dim === null
+              ? "cross-attention width unknown"
+              : dim === 0
+                ? "unconditional — no cross-attention"
+                : `cross-attention ${dim} wide`}
+          </span>
+        )}
         <span className="spacer" />
         <button className="ghost sm" onClick={() => void onUnload()} disabled={busy !== ""}>
           {busy === "unload" ? "unloading…" : "unload"}
@@ -804,7 +870,7 @@ export default function ImagePanel() {
       </div>
 
       <p className="meta">{status.means}</p>
-      <p className="meta">{crossAttentionNote(dim)}</p>
+      {kind !== "vision" && <p className="meta">{crossAttentionNote(dim)}</p>}
 
       {status.capabilities.length === 0 && (
         <div className="hint">

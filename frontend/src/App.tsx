@@ -324,7 +324,12 @@ export default function App() {
               second modality rather than another view of the language model.
               Inside `!VIEWER` for the same reason VLAPanel is — a shared
               `.mri` has no machine to run a pipeline on. */}
-          <ImagePanel />
+          {/* Two sections, one implementation. A classifier is not a
+              text-to-image model, and the category bar was offering
+              "Text → Image" for a segmentation checkpoint. Each renders its
+              controls only when the resident model is one of its families. */}
+          <ImagePanel kind="diffusion" />
+          <ImagePanel kind="vision" />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to

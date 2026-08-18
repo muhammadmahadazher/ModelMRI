@@ -1516,6 +1516,13 @@ html[data-theme="dark"] .panel {
 .h-scope { color: var(--color-scope); } .d-scope { background: var(--color-scope); }
 .h-ground { color: var(--color-ground); } .d-ground { background: var(--color-ground); }
 .h-image { color: var(--color-image); } .d-image { background: var(--color-image); }
+/* Vision models get their own hue, not image's, because they are a
+   separate section in the category bar and two sections sharing a dot
+   colour is what made them look like one thing. Teal rather than
+   cobalt: cobalt is the paper palette's ACCENT, and a section dot in
+   the accent colour is the clash that made the segmented control read
+   as foreign in the first place. */
+.h-vision { color: var(--sem-base); } .d-vision { background: var(--sem-base); }
 
 /* ---------- VLA ---------- */
 .pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
@@ -1691,7 +1698,18 @@ button.green:disabled {
 }
 .seg button + button { border-left: 1px solid var(--hair); }
 .seg button:hover { color: var(--color-ink); }
-.seg button.on { color: var(--sf-plate); background: var(--color-cobalt); }
+/* Selected, not shouting. This was a full-strength accent fill with plate
+   text — the heaviest treatment anywhere in the UI, on a control that only
+   says which of three lists you are looking at. Beside warm cream body text
+   it read as a foreign element rather than as a selection. A tinted plate
+   with the accent as TEXT says the same thing at the weight the rest of the
+   page is drawn at, and keeps working in all eight palettes because both
+   halves come from the same accent. */
+.seg button.on {
+  color: var(--acc);
+  background: color-mix(in oklab, var(--acc) 14%, var(--sf-plate));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 30%, transparent);
+}
 
 .combo {
   font: var(--t-md) var(--font-mono);
