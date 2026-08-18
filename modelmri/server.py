@@ -1011,7 +1011,14 @@ def create_app(
             return {**found, "ok": False, "overridable": False, "warning": ""}
 
         target = _capacity.ollama_models_dir()
-        _, free = _capacity.free_space(target)
+        _, measured = _capacity.free_space(target)
+        # `free_space` returns 0 for a volume it could not read, which
+        # `capacity.guard` understands and correctly skips its refusal on.
+        # A CLIENT has no such context: `free_bytes: 0` on the wire says
+        # the disk is full, which is the one reading that would stop a
+        # download the tool did not mean to stop. Converted at the
+        # boundary rather than inside capacity, where 0 is load-bearing.
+        free = measured or None
         try:
             _capacity.guard(
                 found["bytes"],
@@ -1048,7 +1055,14 @@ def create_app(
 
         need = await asyncio.to_thread(_ollama.manifest_size, name)
         target = _capacity.ollama_models_dir()
-        _, free = _capacity.free_space(target)
+        _, measured = _capacity.free_space(target)
+        # `free_space` returns 0 for a volume it could not read, which
+        # `capacity.guard` understands and correctly skips its refusal on.
+        # A CLIENT has no such context: `free_bytes: 0` on the wire says
+        # the disk is full, which is the one reading that would stop a
+        # download the tool did not mean to stop. Converted at the
+        # boundary rather than inside capacity, where 0 is load-bearing.
+        free = measured or None
         try:
             _capacity.guard(
                 need,

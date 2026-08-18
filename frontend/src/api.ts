@@ -1826,7 +1826,10 @@ export const pullOllama = (name: string, confirm = false) =>
 export interface OllamaSize {
   name: string;
   bytes: number;
-  free_bytes: number;
+  /** `null` when the volume could not be read. NOT 0 — 0 on the wire says the
+   *  disk is full, which is the one reading that would stop a download the
+   *  tool did not mean to stop. */
+  free_bytes: number | null;
   ok: boolean;
   overridable: boolean;
   warning: string;
@@ -1847,7 +1850,9 @@ export interface OllamaResolved {
   found: boolean;
   name: string;
   bytes: number;
-  free_bytes?: number;
+  /** Absent before the disk is consulted; `null` when it was and could not be
+   *  read. Two different unknowns, and neither is 0. */
+  free_bytes?: number | null;
   ok: boolean;
   overridable: boolean;
   warning: string;
