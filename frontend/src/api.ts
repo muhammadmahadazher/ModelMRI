@@ -1740,6 +1740,78 @@ export const imageFilmstripCost = (q: { steps: number; every: number }) =>
     json<ImageFilmstripPlan>(r),
   );
 
+/** One class the model scored. */
+export interface ImageCvClass {
+  index: number;
+  /** The checkpoint's own `id2label` entry, or the index as text when it
+   *  publishes none. Never a name borrowed from another checkpoint that
+   *  happens to have the same number of classes. */
+  label: string;
+  logit: number;
+  probability: number;
+}
+
+export interface ImageCvBox {
+  index: number;
+  label: string;
+  score: number;
+  box: number[];
+}
+
+export interface ImageCvPrediction {
+  task: string;
+  task_label: string;
+  model_name: string;
+  dtype: string;
+  height: number;
+  width: number;
+  classes: number;
+  /** False when the checkpoint published no `id2label`. The labels are then
+   *  indices, and `labels_note` says so in the server's own words. */
+  labels_read: boolean;
+  labels_published: number | null;
+  labels_note: string;
+  classes_top: ImageCvClass[];
+  boxes?: ImageCvBox[];
+}
+
+export interface ImageCvLayer {
+  layer: number;
+  rows: number;
+  cols: number;
+  values: number[][];
+}
+
+export interface ImageCvReadout {
+  /** "attention" when there was something to read. Anything else means this
+   *  architecture has none — a convolutional backbone has no per-layer
+   *  attention — and `reason` says which. */
+  kind: string;
+  reason: string;
+  model_name: string;
+  dtype: string;
+  layers: ImageCvLayer[];
+  n_layers: number | null;
+  heads: number | null;
+  grid_rows: number | null;
+  grid_cols: number | null;
+  means: string;
+}
+
+export const imageCvPredict = (body: { image: string; top_k: number }) =>
+  fetch("/api/image/cv/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvPrediction>(r));
+
+export const imageCvReadout = (body: { image: string; top_k: number }) =>
+  fetch("/api/image/cv/readout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvReadout>(r));
+
 export interface ImageLocalModel {
   /** The repo id, and the string `loadImage` takes. */
   path: string;

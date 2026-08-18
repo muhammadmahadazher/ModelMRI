@@ -1,6 +1,7 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import RestingSketch from "./RestingSketch";
 import ImageModelPicker from "./ImageModelPicker";
+import ImageCV from "./ImageCV";
 import ImageSteps from "./ImageSteps";
 import { useScanOnData } from "./useScanOnData";
 import {
@@ -299,6 +300,12 @@ export default function ImagePanel() {
   // never carries this capability and the whole block below is absent for it —
   // gated on what the server said, never on what the repo id looked like.
   const canAttribute = caps.has("attribution");
+  // A classifier, detector or segmenter can be ASKED what it thinks, which
+  // is a different question from what supports the answer. Every family
+  // that carries `attribution` or `patch_attention` has a prediction to
+  // report; a diffusion pipeline has neither and gets no control.
+  const canPredict = caps.has("attribution") || caps.has("patch_attention");
+  const canReadout = caps.has("layer_readout");
 
   // WHICH geometry the preflight prices, and the two are not interchangeable.
   //
@@ -815,7 +822,8 @@ export default function ImagePanel() {
         !canCapture &&
         !canKnock &&
         !canAttribute &&
-        !canTrace && (
+        !canTrace &&
+        !canPredict && (
         <div className="hint">
           What this checkpoint offers is{" "}
           <b>{status.capabilities.join(", ")}</b>, and none of the map, the
@@ -1141,6 +1149,17 @@ export default function ImagePanel() {
           Gated on `attribution` alone. A diffusion pipeline has no class logit
           to move and never carries it, so this whole half of the panel is
           absent there rather than present and unable to answer. */}
+      {/* ─── what it says, and where it looked ──────────────────────────
+          Before the occlusion sweep below, deliberately: that block explains
+          a prediction, and until now the reader was never shown the
+          prediction it was explaining. */}
+      {canPredict && (
+        <div className="isect">
+          <h3 className="mid isect-head">prediction — what this model says</h3>
+          <ImageCV picture={picture} canReadout={canReadout} />
+        </div>
+      )}
+
       {canAttribute && (
         <div className="image-attr">
           <div className="image-subhead">

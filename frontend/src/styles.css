@@ -6784,3 +6784,36 @@ button:disabled,
 @media (max-width: 560px) {
   .istep-frame img { max-width: 120px; }
 }
+
+/* ---------- what a CV model says ---------- */
+.icv-classes { list-style: none; margin: 10px 0 6px; padding: 0; display: grid; gap: 5px; }
+.icv-classes li {
+  display: grid;
+  grid-template-columns: minmax(6ch, 20ch) 1fr 5ch;
+  align-items: center;
+  gap: 9px;
+}
+.icv-label { overflow-wrap: anywhere; font-size: var(--t-xs); }
+.icv-track {
+  height: 9px;
+  border-radius: var(--r-pill);
+  background: var(--sf-sunk);
+  overflow: hidden;
+}
+.icv-bar { display: block; height: 100%; background: var(--color-image); }
+.icv-p { font-size: var(--t-xs); text-align: right; font-feature-settings: var(--num); }
+.icv-note {
+  border-left: 2px solid color-mix(in oklab, var(--color-image) 45%, transparent);
+  padding-left: 9px;
+}
+/* Per-patch attention. One cell per image patch, shaded by this LAYER's own
+   peak — early and late layers differ by orders of magnitude and a shared
+   scale renders every early layer as uniformly blank. */
+.icv-grid {
+  display: grid;
+  gap: 1px;
+  max-width: 260px;
+  margin: 10px 0 6px;
+  aspect-ratio: 1;
+}
+.icv-grid i { background: var(--color-image); border-radius: 1px; }
