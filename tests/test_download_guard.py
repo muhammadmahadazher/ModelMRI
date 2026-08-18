@@ -559,3 +559,38 @@ def test_a_disk_that_could_not_be_measured_is_said_out_loud(caplog):
     assert "could not be measured" in said
     assert "some/model" in said
     assert "NOT" in said
+
+
+def test_a_crafted_model_name_cannot_forge_a_log_line(caplog):
+    """CodeQL's log-injection rule, and it is right about my own new code.
+
+    `label` is a repo id and `target` a path, and both arrive from a request.
+    A newline in either would end the real entry and start a forged one — so a
+    model called `x\nWARNING:root:ALL CLEAR` could write a reassuring line
+    into the log a reader is checking to find out what happened.
+
+    `%r` escapes it, and it also makes a trailing space or a zero-width
+    character visible rather than invisible.
+    """
+    import logging
+    from pathlib import Path
+
+    from modelmri import capacity
+
+    forged = "innocent/model" + chr(10) + "WARNING:root:ALL CLEAR"
+    with caplog.at_level(logging.WARNING, logger="modelmri.capacity"):
+        capacity.guard(
+            5_000_000_000,
+            Path("."),
+            label=forged,
+            vram_gb=8.0,
+            free_override=0,
+            confirm=True,
+        )
+
+    assert len(caplog.records) == 1
+    written = caplog.records[0].getMessage()
+    assert chr(10) not in written, "the newline reached the log unescaped"
+    # The name is still readable, escaped — dropping it would lose the one
+    # thing that says WHICH download was not checked.
+    assert "innocent/model" in written

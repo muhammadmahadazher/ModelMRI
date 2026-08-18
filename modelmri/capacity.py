@@ -156,12 +156,18 @@ def guard(
         # happen, so a download proceeded looking exactly like one that had
         # been cleared. The terminal is where this project already puts what a
         # reader needs and a response should not carry.
+        # `%r`, not `%s`. `label` is a repo id and `target` a path, and both
+        # arrive from a request — a newline in either forges a log line, which
+        # is what CodeQL's log-injection rule is about and it is right. `repr`
+        # escapes them, and it also makes a trailing space or a zero-width
+        # character visible rather than invisible in a log somebody is reading
+        # to work out what happened.
         log.warning(
-            "disk space could not be measured for %s (%s), so %s was NOT "
+            "disk space could not be measured for %r (%r), so %r was NOT "
             "checked against free space before downloading",
-            volume,
-            target,
-            label,
+            str(volume),
+            str(target),
+            str(label),
         )
 
     if free and need_bytes > free:
