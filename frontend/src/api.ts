@@ -1662,8 +1662,14 @@ export interface ImageHubModel {
   /** `null` is UNKNOWN and must never render as a size. */
   size_bytes: number | null;
   /** Answered by looking at this machine's cache, not guessed from the
-   *  listing. */
-  cached: boolean;
+   *  listing. `null` when the cache could not be walked at all — "nobody
+   *  could look" is a different answer from "we looked and it is not here",
+   *  and only one of them justifies quoting the reader a download. */
+  cached: boolean | null;
+  /** A cache entry holding configs and NO weights: an interrupted download.
+   *  It looks present to a directory listing and has its entire transfer
+   *  still ahead of it, which is why the server separates it. */
+  partial?: boolean | null;
 }
 
 export interface ImageSearch {
@@ -3948,6 +3954,12 @@ export interface PatchTrace {
   n_layers: number;
   n_positions: number;
   components: string[];
+  /** Components this architecture does not expose, each with the refusal that
+   *  named it — `"mlp: …"`. The trace catches a PatchError per component and
+   *  carries on so the rest is still measured, and `patch.py`'s own comment
+   *  says why this must be shown: without it "two grids would have arrived
+   *  looking like the whole answer". */
+  skipped?: string[];
   /** One grid per component. `resid` says where; `attn` and `mlp` say through
    *  what, and on the reference pair they disagree — MLP peaks at +0.365 on a
    *  subject token in layer 0, attention at +0.232 on the last token in

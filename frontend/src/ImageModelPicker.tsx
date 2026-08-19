@@ -259,9 +259,22 @@ function HubRow({
       <span className="meta">
         {m.task_label}
         {m.downloads > 0 ? ` · ${downloads(m.downloads)} downloads` : ""}
-        {/* Answered by looking at this disk, not guessed from the listing —
-            so it is worth saying. */}
-        {m.cached ? " · already on this machine" : ""}
+        {/* THREE STATES, THREE RENDERINGS. This printed the first and
+            collapsed the other two into silence:
+
+              true   the weights are here, nothing to download
+              false  we looked, and they are not
+              null   the local cache could not be walked at all
+
+            A `null` shown as blank tells the reader they do not have a model
+            when nobody managed to check — and the row beside it quotes the
+            full download. `partial` is the third real state the server
+            separates on purpose: a cache entry holding configs and no weights
+            looks present to a directory listing and has its ENTIRE transfer
+            still ahead of it. */}
+        {m.cached === true ? " · already on this machine" : ""}
+        {m.cached === null ? " · whether it is here could not be checked" : ""}
+        {m.partial ? " · an interrupted download is here, not the weights" : ""}
       </span>
       <span className="spacer" />
       <span className={`meta image-size${m.size_bytes === null ? " unknown" : ""}`}>

@@ -267,6 +267,27 @@ export default function PatchPanel({
             <span className="meta">{BLURB[comp]}</span>
           </div>
 
+          {/* WHAT THIS ARCHITECTURE DID NOT EXPOSE. The trace catches a
+              PatchError per component and carries on so the rest is still
+              measured — a Mixtral or an OLMoE names its sublayer
+              `block_sparse_moe` and has no `mlp` to patch. `patch.py` put
+              `skipped` in the payload with a comment saying why: without it
+              "two grids would have arrived looking like the whole answer".
+              The payload was fixed and the panel still did not read it, so
+              two grids still arrived looking like the whole answer. */}
+          {data.skipped && data.skipped.length > 0 && (
+            <p className="hint">
+              {data.skipped.length} component
+              {data.skipped.length === 1 ? " was" : "s were"} not traced on this
+              model, so the tabs above are not the whole picture:
+              <ul className="withheld">
+                {data.skipped.map((why) => (
+                  <li key={why}>{why}</li>
+                ))}
+              </ul>
+            </p>
+          )}
+
           <div className="patch-grid-wrap">
             <table className="patch-grid" aria-label="recovery by layer and position">
               <thead>
