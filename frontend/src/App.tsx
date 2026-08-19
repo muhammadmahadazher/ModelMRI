@@ -5,6 +5,7 @@ import {
   errorText,
   getAccelerator,
   getSession,
+  HeldModel,
   getSessionState,
   ModelStatus,
   SessionState,
@@ -30,6 +31,12 @@ import VLAPanel from "./VLAPanel";
 
 export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
+  // The OTHER two things this process can be holding. Same request as
+  // `model`, so the header cannot show a state no single answer produced.
+  const [held_, setHeld] = useState<{
+    image?: HeldModel;
+    vla?: HeldModel;
+  }>({});
   const [version, setVersion] = useState<string | null>(null);
   const [accel, setAccel] = useState<Accelerator | null>(null);
   // Sessions live on the server, so a reload must find one that is still open
@@ -69,9 +76,11 @@ export default function App() {
     try {
       const s = await getSession();
       setModel(s.model);
+      setHeld({ image: s.image, vla: s.vla });
       setVersion(s.version);
     } catch {
       setModel(null);
+      setHeld({});
     }
     // The server can close a shared session on its own — loading a model or
     // committing a generation both do — so re-read it rather than trusting
@@ -126,10 +135,24 @@ export default function App() {
     }
   }
 
+  // EVERYTHING THE PROCESS IS HOLDING, not just the text model. A 3.3 GB
+  // diffusion pipeline could be resident with every control in its panel live
+  // while this said "no model loaded" — the header and the panel answering
+  // one question two ways.
+  //
+  // Listed rather than picked between: the server will hold a text model and
+  // a pipeline together when asked twice, and naming only one of them would
+  // be the same omission in a smaller place.
+  const held = [
+    model?.loaded ? `${model.hf_id} · ${model.device}` : "",
+    held_.image?.loaded ? `${held_.image.repo} · ${held_.image.device}` : "",
+    held_.vla?.loaded ? `${held_.vla.repo} · ${held_.vla.device}` : "",
+  ].filter(Boolean);
+
   const pill = session.open
     ? `replay · ${session.meta?.model ?? "shared session"}`
-    : model?.loaded
-      ? `${model.hf_id} · ${model.device}`
+    : held.length
+      ? held.join("  +  ")
       : "no model loaded";
 
   // A model built from a GGUF is the QUANTISED weights, dequantised — so every

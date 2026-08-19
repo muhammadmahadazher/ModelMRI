@@ -23,10 +23,26 @@ export interface ModelStatus {
   n_layers?: number | null;
 }
 
+/** One held thing, trimmed to what a header needs. The full status of each
+ *  is on its own route; this is the answer to "is anything loaded". */
+export interface HeldModel {
+  loaded: boolean;
+  repo: string;
+  device: string;
+  family?: string;
+}
+
 export interface SessionInfo {
   app: string;
   version: string;
+  /** The TEXT model. Unchanged, and still the only one most panels care
+   *  about. */
   model: ModelStatus;
+  /** The image pipeline and the robot policy. The process can hold all three
+   *  at once, and the header used to know about one — so a resident 3.3 GB
+   *  pipeline sat under a badge reading "no model loaded". */
+  image?: HeldModel;
+  vla?: HeldModel;
 }
 
 export interface AttentionMeta {
@@ -1132,6 +1148,14 @@ export interface ImageModelInfo {
   cross_attention_dim: number | null;
   image_size: number | null;
   capabilities: string[];
+  /** {capability: why it cannot be measured on THIS checkpoint}. A control
+   *  that is simply absent reads as a missing feature; the reason says
+   *  whether another checkpoint would answer. */
+  unavailable?: Record<string, string>;
+  /** "text" | "class" | "none" — what steers it. A class-conditioned model
+   *  takes a number from a fixed list and has no prompt at all. */
+  conditioning?: string;
+  n_classes?: number | null;
   known: boolean;
   reason: string;
   means: string;
@@ -1164,6 +1188,16 @@ export interface ImageStatus {
    *  `token_knockout`, `step_commit`, `latent_trace`, `patch_attention`, …
    *  A capability that is absent is a control that is not shown. */
   capabilities: string[];
+  /** {capability: why it cannot be measured on THIS checkpoint} — checked
+   *  against the loaded pipeline, not guessed from the family. A control that
+   *  is simply absent reads as a missing feature; the reason says whether
+   *  another checkpoint would answer. */
+  unavailable?: Record<string, string>;
+  /** "text" | "class" | "none". A class-conditioned model takes a number from
+   *  a fixed list and has no prompt, so a prompt box asks it a question it
+   *  cannot be asked. */
+  conditioning?: string;
+  n_classes?: number | null;
   /** The same tri-state as `ImageModelInfo.cross_attention_dim`. */
   cross_attention_dim: number | null;
   image_size: number | null;

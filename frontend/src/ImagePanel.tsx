@@ -219,6 +219,21 @@ const OWNED: Record<ImageKind, readonly string[]> = {
   vision: ["patch_attention", "attribution", "layer_readout"],
 };
 
+/** The families each section is the home for.
+ *
+ *  Section membership is a question about WHAT THE MODEL IS; the individual
+ *  controls ask what can be measured on it, and those are different
+ *  questions. They were the same test until the capability list started being
+ *  checked against the real pipeline — at which point a checkpoint supporting
+ *  none of the four (a class-conditioned DiT) stopped belonging to any
+ *  section, and the panel showed its resting sketch with 3.3 GB of that model
+ *  resident. "I loaded it and the panel went blank" is worse than a refusal.
+ */
+const OWNED_FAMILIES: Record<ImageKind, readonly string[]> = {
+  diffusion: ["unet_diffusion", "dit_diffusion"],
+  vision: ["vit", "detector", "segmenter", "vlm"],
+};
+
 export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } = {}) {
   const [status, setStatus] = useState<ImageStatus | null>(null);
   // What is on this disk, sized. `null` is "the scan has not answered yet",
@@ -330,7 +345,22 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
   // Does the LOADED checkpoint belong to this section? One image model is
   // resident at a time, so the other section shows its resting copy rather
   // than a set of controls that would act on somebody else's model.
-  const mine = OWNED[kind].some((c) => caps.has(c));
+  // The FAMILY decides the section; the capabilities decide the controls.
+  // Falling back to the capability test keeps this working for a family this
+  // build does not have in the table above, which is the case a new
+  // architecture arrives as.
+  const mine =
+    (status?.loaded &&
+      (OWNED_FAMILIES[kind].includes(status.family) ||
+        OWNED[kind].some((c) => caps.has(c)))) ||
+    false;
+
+  // What this architecture offers that THIS checkpoint cannot do, with the
+  // server's reason for each. Absent controls with no explanation read as a
+  // missing feature; this reads as a fact about the model in front of you.
+  const withheld = Object.entries(status?.unavailable ?? {}).filter(([c]) =>
+    OWNED[kind].includes(c),
+  );
   const canCapture =
     mine && caps.has("cross_attention") && status?.cross_attention_dim !== 0;
   const canKnock =
@@ -961,11 +991,49 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
       <p className="meta">{status.means}</p>
       {kind !== "vision" && <p className="meta">{crossAttentionNote(dim)}</p>}
 
-      {status.capabilities.length === 0 && (
+      {/* TWO DIFFERENT NOTHINGS, and they used to share one sentence.
+          "The server could not name this architecture" was printed for
+          `facebook/DiT-XL-2-256`, which the server names exactly — a
+          class-conditioned DiT — and simply cannot measure anything on. A
+          reader told the tool did not recognise their model goes looking for
+          a newer build; a reader told WHICH measurements exist and why this
+          checkpoint cannot take them knows to try a different one. */}
+      {status.capabilities.length === 0 && withheld.length === 0 && (
         <div className="hint">
           This is an architecture the server could not name, so it offers no
           measurements at all rather than every measurement. Nothing below is
           shown because nothing below could be honest about this checkpoint.
+        </div>
+      )}
+
+      {withheld.length > 0 && (
+        <div className="hint">
+          <b>
+            {status.capabilities.length === 0
+              ? "None of this section's measurements can be taken on this checkpoint."
+              : "Some of this section's measurements are not available here."}
+          </b>{" "}
+          The architecture is recognised — it is {status.family.replace("_", " ")}
+          {status.conditioning === "class" && status.n_classes
+            ? `, class-conditioned on ${status.n_classes.toLocaleString()} labels`
+            : ""}
+          . What is missing is a way to reach the numbers, and that is a fact
+          about this pipeline rather than about the tool:
+          <ul className="withheld">
+            {withheld.map(([name, why]) => (
+              <li key={name}>
+                <span className="mid">{name.replace(/_/g, " ")}</span> — {why}
+              </li>
+            ))}
+          </ul>
+          {status.conditioning === "class" && (
+            <>
+              A class-conditioned model is steered by a number from its own
+              label list, not by words, so the word-to-pixel questions this
+              section asks do not apply to it. A text-to-image checkpoint —
+              anything with a text encoder — answers all of them.
+            </>
+          )}
         </div>
       )}
 

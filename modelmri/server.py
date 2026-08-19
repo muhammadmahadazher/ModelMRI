@@ -1000,10 +1000,42 @@ def create_app(
 
     @app.get("/api/session")
     def session() -> dict:
+        """What this process is holding — ALL of it.
+
+        It used to answer with `runtime.status()` alone, which is the text
+        model, and the header at the top of the page reads this route. So a
+        3.3 GB diffusion pipeline could be resident, with every control in its
+        panel live, under a badge reading "no model loaded" — the header and
+        the panel answering one question two ways.
+
+        The three handles are separate on purpose (a pipeline is several
+        models and the server refuses to hold one beside a text model without
+        being asked twice), but "is anything loaded" is one question and this
+        is where it is asked.
+
+        Additive: `model` is unchanged, so every existing reader — including
+        `RunsOn` in six panels — is untouched.
+        """
+        image = app.state.image.status()
+        vla = app.state.vla.status()
         return {
             "app": "modelmri",
             "version": __version__,
             "model": runtime.status().to_dict(),
+            # Trimmed to what a header needs. The full status of each is one
+            # request away on its own route, and duplicating it here would be
+            # two places to keep in step.
+            "image": {
+                "loaded": bool(image.loaded),
+                "repo": image.repo,
+                "device": image.device,
+                "family": image.family,
+            },
+            "vla": {
+                "loaded": bool(vla.loaded),
+                "repo": vla.repo,
+                "device": vla.device,
+            },
         }
 
     @app.post("/api/model/load")

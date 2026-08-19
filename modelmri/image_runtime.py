@@ -89,8 +89,17 @@ class ImageStatus:
     dtype: str = ""
     # From `imaging.detect`, so a panel asks rather than infers.
     capabilities: list = field(default_factory=list)
+    #: {capability: why it cannot be measured on this checkpoint}. Empty when
+    #: everything the family offers is actually available here.
+    unavailable: dict = field(default_factory=dict)
     cross_attention_dim: int | None = None
     image_size: int | None = None
+    #: What steers this checkpoint — "text", "class", "none", or "" when it
+    #: could not be read. A class-conditioned model takes a NUMBER from a
+    #: fixed list and has no prompt at all, so a panel showing it a prompt box
+    #: is asking a question it cannot be asked.
+    conditioning: str = ""
+    n_classes: int | None = None
     components: dict = field(default_factory=dict)
     bytes_resident: int = 0
     load_seconds: float | None = None
@@ -105,8 +114,11 @@ class ImageStatus:
             "device": self.device,
             "dtype": self.dtype,
             "capabilities": list(self.capabilities),
+            "unavailable": dict(self.unavailable),
             "cross_attention_dim": self.cross_attention_dim,
             "image_size": self.image_size,
+            "conditioning": self.conditioning,
+            "n_classes": self.n_classes,
             "components": dict(self.components),
             "bytes_resident": self.bytes_resident,
             "load_seconds": self.load_seconds,
@@ -121,23 +133,128 @@ class ImageStatus:
                 f"say what one attends to or when it commits. {self.reason}"
             ).strip()
 
-        cross = (
-            f" It attends to prompt tokens through a "
-            f"{self.cross_attention_dim}-wide cross-attention."
-            if self.cross_attention_dim
-            else (
+        # WHAT IT TAKES, first, because it decides what the reader can even
+        # ask. A class-conditioned checkpoint has no prompt: the panel used to
+        # show one, and the click failed on a pipeline whose `__call__` has no
+        # `prompt` parameter at all.
+        # A MEASURED ZERO FIRST. `cross_attention_dim == 0` is the denoiser's
+        # own config saying it attends to nothing — a stronger and different
+        # claim from `None`, which is "the config did not say". The first
+        # version of this ordering put the component-derived `conditioning`
+        # ahead of it, so a pipeline listing a text encoder beside a
+        # zero-width denoiser was described as taking a prompt. It does not,
+        # and the test that caught it exists because drawing word maps for one
+        # would be inventing them.
+        if self.cross_attention_dim == 0:
+            steer = (
                 " It is UNCONDITIONAL — no cross-attention to a prompt — so "
                 "there are no word-to-pixel maps here to draw."
-                if self.cross_attention_dim == 0
-                else ""
             )
-        )
+        elif self.conditioning == "class":
+            steer = (
+                f" It is CLASS-CONDITIONED on {self.n_classes or 'a fixed set of'} "
+                f"labels — you give it a class number, not a prompt, so there "
+                f"are no words here for a picture to have looked at."
+            )
+        elif self.conditioning == "none":
+            steer = (
+                " It is UNCONDITIONAL — nothing steers it, so there is neither "
+                "a prompt nor a class to vary."
+            )
+        elif self.cross_attention_dim:
+            steer = (
+                f" It attends to prompt tokens through a "
+                f"{self.cross_attention_dim}-wide cross-attention."
+            )
+        elif self.conditioning == "text":
+            steer = (
+                " It takes a text prompt; the denoiser's config does not state "
+                "a cross-attention width, so how wide it is is unknown rather "
+                "than absent."
+            )
+        else:
+            steer = ""
+
+        can = ", ".join(self.capabilities) or "nothing"
+        cannot = ""
+        if self.unavailable:
+            # NAMED, not silently omitted. A control that is simply absent
+            # leaves the reader wondering whether they missed it; this says
+            # which measurement, and the reason travels with it so they can
+            # tell whether another checkpoint would answer.
+            cannot = (
+                f" NOT available on this checkpoint: "
+                f"{', '.join(sorted(self.unavailable))} — see `unavailable` "
+                f"for why each one cannot be taken here."
+            )
         return (
             f"{self.repo} is held on {self.device or 'an unnamed device'} as "
             f"{self.dtype or 'an unstated dtype'}, "
-            f"{self.bytes_resident / 1e9:,.1f} GB of weights.{cross} What can "
-            f"be measured on it: {', '.join(self.capabilities) or 'nothing'}."
+            f"{self.bytes_resident / 1e9:,.1f} GB of weights.{steer} What can "
+            f"be measured on it: {can}.{cannot}"
         )
+
+
+def _measurable(pipe, offered: tuple) -> tuple[list, dict]:
+    """Which of `offered` this LOADED pipeline can actually support.
+
+    Returns `(kept, withheld)` where `withheld` maps each dropped capability
+    to the sentence explaining it.
+
+    `imaging` reads the checkpoint's JSON and can therefore say that a
+    pipeline with no text encoder has no words to attend to. It cannot say
+    whether the intermediate latents are reachable, because that is a fact
+    about the pipeline CLASS: diffusers exposes them only through
+    `callback_on_step_end`, and a pipeline whose `__call__` does not take it
+    has nothing to film.
+
+    MEASURED on facebook/DiT-XL-2-256: `DiTPipeline.__call__` takes
+    `class_labels`, `guidance_scale`, `generator`, `num_inference_steps`,
+    `output_type` and `return_dict` — no `callback_on_step_end` — and
+    `Transformer2DModel` has no `set_attn_processor`. All four advertised
+    measurements refused at the click, after the reader had configured them.
+
+    Every removal keeps its reason. "This cannot be measured" is a worse
+    answer than the same thing with the sentence that says whether a different
+    checkpoint would work.
+    """
+    import inspect
+
+    kept, withheld = [], {}
+    try:
+        params = inspect.signature(type(pipe).__call__).parameters
+    except (TypeError, ValueError):
+        # An exotic callable this cannot introspect. Nothing is withheld on
+        # that basis: a capability removed because we could not look is a
+        # guess, and the run itself refuses honestly if it turns out to be
+        # unsupported.
+        params = None
+
+    denoiser = getattr(pipe, "unet", None) or getattr(pipe, "transformer", None)
+
+    for cap in offered:
+        if cap in ("step_commit", "latent_trace") and params is not None:
+            if "callback_on_step_end" not in params:
+                withheld[cap] = (
+                    f"`{type(pipe).__name__}.__call__` does not accept "
+                    f"`callback_on_step_end`, which is the only place "
+                    f"diffusers exposes an intermediate latent. The run would "
+                    f"produce its final image and nothing in between, so there "
+                    f"is nothing here to measure between the steps."
+                )
+                continue
+        if cap in ("cross_attention", "token_knockout") and denoiser is not None:
+            if not hasattr(denoiser, "set_attn_processor"):
+                withheld[cap] = (
+                    f"`{type(denoiser).__name__}` does not expose "
+                    f"`set_attn_processor`, which is how the attention "
+                    f"probabilities are captured where they are computed. "
+                    f"Reconstructing them from hidden states afterwards would "
+                    f"be a different quantity from the one the model used."
+                )
+                continue
+        kept.append(cap)
+    return kept, withheld
 
 
 class ImageHandle:
@@ -288,6 +405,10 @@ class ImageHandle:
             # load. What must not happen is a measurement that needs it
             # proceeding without it — that is `require_processor`'s job.
             self.processor, self.processor_reason = _load_processor(local)
+            # CHECKED AGAINST THE OBJECT, not guessed from the family. See
+            # `_measurable` for the four measurements this caught being
+            # advertised on a checkpoint that supports none of them.
+            measurable, withheld = _measurable(pipe, tuple(found.capabilities))
             tracking.stage("ready")
             tracking.finish()
             self.status_ = ImageStatus(
@@ -297,9 +418,16 @@ class ImageHandle:
                 architecture=found.architecture,
                 device=chosen_device,
                 dtype=chosen_dtype,
-                capabilities=list(found.capabilities),
+                capabilities=measurable,
+                # WHAT CANNOT BE MEASURED, AND WHY. A panel that simply omits
+                # a control leaves the reader wondering whether they missed
+                # it; one that says "not on this checkpoint, because …" tells
+                # them whether another would work.
+                unavailable=withheld,
                 cross_attention_dim=found.cross_attention_dim,
                 image_size=found.image_size,
+                conditioning=found.conditioning,
+                n_classes=found.n_classes,
                 components=dict(found.components),
                 bytes_resident=resident,
                 load_seconds=round(seconds, 2),

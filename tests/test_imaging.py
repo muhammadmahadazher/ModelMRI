@@ -341,3 +341,115 @@ def test_an_unrecognised_family_is_not_echoed_back_at_the_reader():
     said = imaging.label("something_nobody_added_here")
     assert "something_nobody_added_here" not in said
     assert said == imaging.label(imaging.UNKNOWN)
+
+
+def test_a_class_conditioned_pipeline_is_not_offered_word_measurements(tmp_path):
+    """REPORTED with a screenshot: `facebook/DiT-XL-2-256` loaded, 3.33 GB
+    resident, the status bar advertising `cross_attention, token_knockout,
+    step_commit, latent_trace` — and every one refusing at the click, after
+    the reader had typed a prompt into a pipeline that has no `prompt`
+    parameter at all.
+
+    `DiTPipeline`'s components are `scheduler`, `transformer`, `vae`: no text
+    encoder, no tokenizer, and an `id2label` of 1000 ImageNet classes. It is
+    CLASS-conditioned. There are no words for a picture to have looked at.
+
+    `capabilities` was `_CAPABILITIES.get(self.family)` — a lookup from the
+    family NAME — so every DiT-shaped checkpoint was promised the word-based
+    measurements because some DiT-shaped checkpoints are text-conditioned.
+    A capability list is a promise about THIS checkpoint.
+    """
+    root = tmp_path / "dit"
+    (root / "transformer").mkdir(parents=True)
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "DiTPipeline",
+                "scheduler": ["diffusers", "DDIMScheduler"],
+                "transformer": ["diffusers", "Transformer2DModel"],
+                "vae": ["diffusers", "AutoencoderKL"],
+                "id2label": {str(i): f"class {i}" for i in range(1000)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "transformer" / "config.json").write_text(
+        json.dumps({"_class_name": "Transformer2DModel", "sample_size": 32}),
+        encoding="utf-8",
+    )
+
+    found = imaging.detect(root)
+
+    assert found.known
+    assert found.conditioning == "class"
+    assert found.n_classes == 1000
+    # The two word-shaped measurements are withheld; the latent-side ones are
+    # not, because a class-conditioned run still has steps and a latent.
+    assert "cross_attention" not in found.capabilities
+    assert "token_knockout" not in found.capabilities
+    assert "step_commit" in found.capabilities
+
+    # And the sentence says what to do instead of what is missing.
+    assert "class" in found.means().lower()
+
+
+def test_a_text_conditioned_pipeline_keeps_its_word_measurements(tmp_path):
+    """The other side of the same test: withholding must key on what the
+    checkpoint HAS, not on the family, or every DiT loses capabilities that
+    PixArt and Sana genuinely support."""
+    root = tmp_path / "pixart"
+    (root / "transformer").mkdir(parents=True)
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "PixArtAlphaPipeline",
+                "transformer": ["diffusers", "Transformer2DModel"],
+                "text_encoder": ["transformers", "T5EncoderModel"],
+                "tokenizer": ["transformers", "T5Tokenizer"],
+                "vae": ["diffusers", "AutoencoderKL"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "transformer" / "config.json").write_text(
+        json.dumps({"_class_name": "Transformer2DModel", "cross_attention_dim": 1152}),
+        encoding="utf-8",
+    )
+
+    found = imaging.detect(root)
+
+    assert found.conditioning == "text"
+    assert "cross_attention" in found.capabilities
+    assert "token_knockout" in found.capabilities
+
+
+def test_an_unconditional_denoiser_outranks_an_inferred_conditioning(tmp_path):
+    """A MEASURED zero beats a component list.
+
+    `cross_attention_dim: 0` is the denoiser's own config saying it attends to
+    nothing, which is a stronger and different claim from `null` ("the config
+    did not say"). A pipeline that lists a text encoder beside a zero-width
+    denoiser must still read as unconditional — the first version of this
+    ordering described it as taking a prompt, and drawing word maps for one
+    would be inventing them.
+    """
+    root = tmp_path / "uncond"
+    (root / "unet").mkdir(parents=True)
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "StableDiffusionPipeline",
+                "unet": ["diffusers", "UNet2DConditionModel"],
+                "text_encoder": ["transformers", "CLIPTextModel"],
+                "vae": ["diffusers", "AutoencoderKL"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "unet" / "config.json").write_text(
+        json.dumps({"_class_name": "UNet2DModel", "cross_attention_dim": 0}),
+        encoding="utf-8",
+    )
+
+    found = imaging.detect(root)
+    assert found.cross_attention_dim == 0

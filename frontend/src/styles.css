@@ -7659,3 +7659,10 @@ button:disabled,
    above it where every other pair has 14 -- three sections that look alike
    should also be spaced alike. */
 .vis-ask.image-attr { margin-top: 0; }
+
+/* The measurements an architecture offers that THIS checkpoint cannot take.
+   A list rather than a paragraph because each row is a separate fact with its
+   own reason, and running them together makes one long sentence nobody
+   finishes. */
+.hint ul.withheld { margin: 6px 0 0; padding-left: 18px; }
+.hint ul.withheld li { margin: 4px 0; }

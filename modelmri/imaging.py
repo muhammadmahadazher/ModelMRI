@@ -154,6 +154,11 @@ _FAMILY_LABEL = {
 }
 
 
+#: The measurements that need WORDS. Withheld from a checkpoint that has
+#: none — see `ImageModel.capabilities`.
+_WORD_CAPABILITIES = frozenset({"cross_attention", "token_knockout"})
+
+
 def label(family: str) -> str:
     """The family in prose, for anything that has a family but no `ImageModel`.
 
@@ -200,6 +205,16 @@ class ImageModel:
     # and a map drawn for one would be a picture of nothing.
     cross_attention_dim: int | None = None
     image_size: int | None = None
+    #: What this checkpoint is steered BY — "text", "class", "none", or "" when
+    #: it could not be determined. Not cosmetic: a class-conditioned model
+    #: takes a number from a fixed list and has no words to attend to, so
+    #: every word-shaped measurement is unaskable of it. Read from the
+    #: components rather than from the family, because both kinds are
+    #: DiT-shaped.
+    conditioning: str = ""
+    #: How many classes, when it is class-conditioned. The reader needs the
+    #: list to pick from; "class-conditioned" alone tells them nothing to do.
+    n_classes: int | None = None
     # Set when nothing here could be read.
     reason: str = ""
 
@@ -209,7 +224,25 @@ class ImageModel:
 
     @property
     def capabilities(self) -> tuple:
-        return _CAPABILITIES.get(self.family, ())
+        """What can be measured on THIS checkpoint.
+
+        Was `_CAPABILITIES.get(self.family)` — a lookup from the family NAME,
+        so every DiT-shaped checkpoint was promised the word-based
+        measurements because some DiT-shaped checkpoints are text-conditioned.
+
+        MEASURED: `facebook/DiT-XL-2-256` advertised `cross_attention` and
+        `token_knockout` and refused both at the click, after the reader had
+        typed a prompt. It has no text encoder and no tokenizer; it takes an
+        ImageNet class number. A capability list is a promise about this
+        checkpoint, and it was being made from a label.
+        """
+        caps = _CAPABILITIES.get(self.family, ())
+        if self.conditioning and self.conditioning != "text":
+            # No words, so nothing that measures words. The latent-side
+            # measurements are unaffected — a class-conditioned run still has
+            # steps and still has a latent.
+            caps = tuple(c for c in caps if c not in _WORD_CAPABILITIES)
+        return caps
 
     def to_dict(self) -> dict:
         return {
@@ -221,6 +254,8 @@ class ImageModel:
             "components": dict(self.components),
             "cross_attention_dim": self.cross_attention_dim,
             "image_size": self.image_size,
+            "conditioning": self.conditioning,
+            "n_classes": self.n_classes,
             "capabilities": list(self.capabilities),
             "known": self.known,
             "reason": self.reason,
@@ -242,17 +277,36 @@ class ImageModel:
         name = label(self.family)
         detail = ""
         if self.family in (UNET_DIFFUSION, DIT_DIFFUSION):
-            if self.cross_attention_dim:
-                detail = (
-                    f" It attends to prompt tokens through a "
-                    f"{self.cross_attention_dim}-wide cross-attention, so the "
-                    f"word-to-pixel maps apply."
-                )
-            elif self.cross_attention_dim == 0:
+            # A MEASURED zero first: the denoiser's own config saying it
+            # attends to nothing is a stronger claim than anything inferred
+            # from which components the pipeline lists.
+            if self.cross_attention_dim == 0:
                 detail = (
                     " It is UNCONDITIONAL — no cross-attention to a prompt — "
                     "so there are no word-to-pixel maps to draw, and drawing "
                     "any would be inventing them."
+                )
+            elif self.conditioning == "class":
+                # SAID HERE TOO, not only after loading. This sentence is what
+                # the picker shows, so a reader choosing a checkpoint learns
+                # what it takes BEFORE spending the download — which is the
+                # whole argument for pricing and identifying before loading.
+                detail = (
+                    f" It is CLASS-CONDITIONED on "
+                    f"{self.n_classes or 'a fixed set of'} labels: you give it "
+                    f"a class number, not a prompt, so the word-to-pixel "
+                    f"questions do not apply to it."
+                )
+            elif self.conditioning == "none":
+                detail = (
+                    " Nothing steers it — no prompt and no class — so there is "
+                    "no conditioning here to vary."
+                )
+            elif self.cross_attention_dim:
+                detail = (
+                    f" It attends to prompt tokens through a "
+                    f"{self.cross_attention_dim}-wide cross-attention, so the "
+                    f"word-to-pixel maps apply."
                 )
         return (
             f"{self.architecture or self.pipeline or 'This'} is {name}."
@@ -364,6 +418,26 @@ def _detect_pipeline(root: Path, index: dict, found: ImageModel) -> ImageModel:
     found.cross_attention_dim = int(dim) if isinstance(dim, int) else None
     size = sub.get("sample_size")
     found.image_size = int(size) if isinstance(size, int) else None
+
+    # WHAT STEERS IT, from the components rather than from the family. A
+    # pipeline with a text encoder or a tokenizer takes words; one with a
+    # label map takes a class number from a fixed list; one with neither is
+    # unconditional. `DiTPipeline` is the second kind and was being offered
+    # the first kind's measurements.
+    labels = index.get("id2label")
+    if any(k in components for k in ("text_encoder", "text_encoder_2", "tokenizer")):
+        found.conditioning = "text"
+    elif isinstance(labels, dict) and labels:
+        found.conditioning = "class"
+        found.n_classes = len(labels)
+    elif dim:
+        # No text component named, but the denoiser attends to SOMETHING of
+        # that width. Reported as text because that is what a cross-attention
+        # of a stated width is for, and the run will say if there was nothing
+        # to capture.
+        found.conditioning = "text"
+    else:
+        found.conditioning = "none"
     return found
 
 
