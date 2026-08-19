@@ -847,6 +847,18 @@ def read_dataset(path: str | Path) -> Dataset:
                 if obj is None:
                     continue
                 cases.append(_case_from(obj, p.name, number))
+    except UnicodeDecodeError:
+        # NOT an OSError, so the arm below never saw it. `UnicodeDecodeError`
+        # is a ValueError, and a binary file handed to a route expecting JSONL
+        # therefore escaped as a 500 — while a MISSING file, one line away,
+        # answered with a sentence. Same reader, two shapes of wrong file, two
+        # completely different experiences.
+        raise BadRequest(
+            f"{p.name} is not text. A dataset or an experiment is JSONL — one "
+            f"JSON object per line, UTF-8 — and this file has bytes in it that "
+            f"are not. If it is a `.mri` or an archive, it belongs to a "
+            f"different reader."
+        ) from None
     except OSError as err:
         raise BadRequest(
             f"{p.name} could not be read ({err.strerror or type(err).__name__})"
@@ -915,6 +927,18 @@ def read_experiment(path: str | Path) -> Experiment:
                 if obj is None:
                     continue
                 rows.append(_result_from(obj, p.name, number))
+    except UnicodeDecodeError:
+        # NOT an OSError, so the arm below never saw it. `UnicodeDecodeError`
+        # is a ValueError, and a binary file handed to a route expecting JSONL
+        # therefore escaped as a 500 — while a MISSING file, one line away,
+        # answered with a sentence. Same reader, two shapes of wrong file, two
+        # completely different experiences.
+        raise BadRequest(
+            f"{p.name} is not text. A dataset or an experiment is JSONL — one "
+            f"JSON object per line, UTF-8 — and this file has bytes in it that "
+            f"are not. If it is a `.mri` or an archive, it belongs to a "
+            f"different reader."
+        ) from None
     except OSError as err:
         raise BadRequest(
             f"{p.name} could not be read ({err.strerror or type(err).__name__})"

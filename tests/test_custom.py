@@ -659,3 +659,52 @@ def test_the_skip_list_still_applies_inside_the_scan_root(tmp_path):
 
     assert "real.pt" in names
     assert "cached.pt" not in names
+
+
+def test_the_candidate_walk_says_what_it_left_out(tmp_path, monkeypatch):
+    """MEASURED: 45 adapter-shaped `.py` files and 45 `.pt` files in one root
+    -> GET /api/custom/candidates returned 40 and 40, and the payload's keys
+    were `['adapters', 'roots', 'torchscript']`. Nothing said anything was
+    dropped, so five of the reader's own models were absent from the one panel
+    that exists to list what they have.
+
+    Both walks `return`ed at the limit, so like `scan_dir` before them they
+    could not have reported a cap even if asked — they never learned what was
+    past it. Counting is free; the expensive part is reading each file.
+    """
+    for i in range(45):
+        (tmp_path / f"adapter_{i:02d}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / f"model_{i:02d}.pt").write_bytes(b"\0" * 32)
+
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == 40
+    assert adapters.n_total == 45
+    assert adapters.truncated is True
+
+    scripts = custom.find_torchscript()
+    assert len(scripts) == 40
+    assert scripts.n_total == 45
+    assert scripts.truncated is True
+
+    # Still lists, so the CLI and the route keep indexing them unchanged.
+    assert isinstance(adapters, list) and isinstance(scripts, list)
+
+
+def test_a_walk_under_the_limit_is_not_reported_as_capped(tmp_path, monkeypatch):
+    """The flag has to mean something: it must be false when nothing was
+    dropped, or a panel that always warns is a panel nobody reads."""
+    for i in range(3):
+        (tmp_path / f"adapter_{i}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == adapters.n_total == 3
+    assert adapters.truncated is False

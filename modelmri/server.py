@@ -174,6 +174,33 @@ def _real(body: dict, field: str, default: float) -> float:
         ) from err
 
 
+#: Ceilings for the two image preflights. Not arbitrary: a denoising run of
+#: more than this is minutes per step on any consumer card, and a knockout of
+#: more than this many words is one arm per word — both are numbers a caller
+#: reaches by typo rather than by intent, and quoting a confident price for
+#: them is how a cost route stops being worth reading.
+MAX_DENOISE_STEPS = 1000
+MAX_KNOCKOUT_WORDS = 200
+
+
+def _bounded(value: int, field: str, *, low: int, high: int) -> int:
+    """One integer inside its range, or a refusal naming the range.
+
+    A preflight exists so the number arrives before anything is spent. One
+    that answers "-40 denoising passes" — measured — has inverted that: the
+    figure is what the reader decides on, and a confident impossible one is
+    worse than none.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise BadRequest(f"`{field}` must be a whole number, not {value!r}.")
+    if not low <= value <= high:
+        raise BadRequest(
+            f"`{field}` must be between {low} and {high:,}, and this asked for "
+            f"{value:,}. Nothing here will price a run it would refuse."
+        )
+    return value
+
+
 def _missing_reader_dep(err: ImportError) -> JSONResponse:
     """409 for a missing pyarrow / av, with the real ImportError in the log."""
     log.warning("LeRobot reader dependency missing", exc_info=err)
@@ -2142,10 +2169,18 @@ def create_app(
         adapters, scripts = await asyncio.to_thread(
             lambda: (custom_mod.find_adapters(), custom_mod.find_torchscript())
         )
+        # The caps, REPORTED. Both walks stop at 40, and a panel whose whole
+        # job is "here is what is on your disk" was showing 40 of 45 with
+        # nothing to say five were missing.
+        n_adapters = getattr(adapters, "n_total", len(adapters))
+        n_scripts = getattr(scripts, "n_total", len(scripts))
         return {
             "adapters": adapters,
             "torchscript": scripts,
             "roots": [str(r) for r in custom_mod.allowed_roots()],
+            "n_adapters_found": n_adapters,
+            "n_torchscript_found": n_scripts,
+            "truncated": n_adapters > len(adapters) or n_scripts > len(scripts),
         }
 
     @app.post("/api/custom/load")
@@ -2702,9 +2737,20 @@ def create_app(
 
     @app.get("/api/image/attention/cost")
     def image_attention_cost(steps: int = 20, words: int = 0):
-        """Renders and passes, before any are spent."""
+        """Renders and passes, before any are spent.
+
+        Bounded, because this route's entire job is to be trustworthy about
+        cost and it was answering "-40 denoising passes" with the same
+        confidence as a real plan. A preflight that prices an impossible run
+        is worse than no preflight: the number is what the reader decides on.
+        """
         from . import image_attention
 
+        try:
+            steps = _bounded(steps, "steps", low=1, high=MAX_DENOISE_STEPS)
+            words = _bounded(words, "words", low=0, high=MAX_KNOCKOUT_WORDS)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
         return image_attention.plan(int(steps), int(words))
 
     @app.post("/api/image/attention")
@@ -3136,6 +3182,29 @@ def create_app(
         be priced is not a run that costs nothing.
         """
         from . import image_steps
+
+        try:
+            steps = _bounded(steps, "steps", low=1, high=MAX_DENOISE_STEPS)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        # 0.0 is the query-string way of saying "not stated" and takes the
+        # module's own default. Anything else is a value the caller CHOSE, and
+        # a negative one used to be replaced by 0.95 and then reported as
+        # `"threshold": 0.95` — the payload stating a setting nobody asked
+        # for. The refusal written for `threshold > 1` names the same rule.
+        if threshold and not 0 < threshold <= 1:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"a commit threshold of {threshold:g} is not a share "
+                        f"of the movement. It must be greater than 0 and at "
+                        f"most 1: at 0 every run 'commits' at its first "
+                        f"measured step, which is a fact about the arithmetic "
+                        f"rather than about the image."
+                    )
+                },
+                status_code=422,
+            )
 
         shape = None
         if app.state.image.pipe is not None:

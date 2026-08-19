@@ -1061,7 +1061,25 @@ _MODULE_LEVEL_LOAD = re.compile(r"^def\s+load\s*\(\s*(?!self\b)", re.MULTILINE)
 _MODULE_LEVEL_EXAMPLE = re.compile(r"^def\s+example_input\s*\(", re.MULTILINE)
 
 
-def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]:
+class Candidates(list):
+    """Rows found, plus how many there were.
+
+    A `list` subclass so the CLI and the route keep indexing and iterating it
+    unchanged, while a caller that wants to be honest about the walk has
+    `n_total` to read. `len(self)` is what was returned; `n_total` is what was
+    there.
+    """
+
+    def __init__(self, rows=(), *, n_total: int = 0):
+        super().__init__(rows)
+        self.n_total = n_total
+
+    @property
+    def truncated(self) -> bool:
+        return self.n_total > len(self)
+
+
+def find_adapters(root: str | Path | None = None, limit: int = 40) -> Candidates:
     """Python files under the allowed roots that look like adapters.
 
     Cheap and text-only: reads at most 4 KB per candidate looking for a load()
@@ -1094,13 +1112,19 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
         ".pytest_cache",
     }
     found: list[dict] = []
+    n_total = 0
     seen: set[Path] = set()
     for base in roots:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.py")):
+            # COUNTED past the limit, not abandoned at it. Returning here meant
+            # the walk never learned what it skipped, so the panel could say
+            # "40" and never "40 of 45" — and five of the reader's own models
+            # were absent from the one view that exists to list them.
             if len(found) >= limit:
-                return found
+                n_total += 1
+                continue
             # Relative to the scan root, not the absolute path. `path.parts`
             # includes every ancestor above the root, so a repo that happens to
             # live under a directory named `build`, `dist`, `node_modules` or
@@ -1150,7 +1174,9 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
                 }
             )
     found.sort(key=lambda f: (not f["hint"], not f["has_example"], f["name"]))
-    return found
+    # `n_total` counts every adapter-shaped file the walk SAW; `len(found)` is
+    # how many it returned.
+    return Candidates(found, n_total=n_total + len(found))
 
 
 def checkpoint_kind(path: Path) -> str:
@@ -1207,7 +1233,7 @@ def checkpoint_kind(path: Path) -> str:
     return "unreadable"
 
 
-def find_torchscript(limit: int = 40) -> list[dict]:
+def find_torchscript(limit: int = 40) -> Candidates:
     """Loadable-looking checkpoints under the allowed roots.
 
     Named for history: it used to list only TorchScript. It lists every
@@ -1215,6 +1241,7 @@ def find_torchscript(limit: int = 40) -> list[dict]:
     the file is READ (its zip index) but never executed.
     """
     out: list[dict] = []
+    n_total = 0
     # ONE ROW PER FILE. The allowed roots overlap by design -- the working
     # directory, MODELMRI_MODELS_DIR and any folder added this session -- so
     # a checkpoint sitting under two of them was listed twice, with identical
@@ -1241,7 +1268,8 @@ def find_torchscript(limit: int = 40) -> list[dict]:
         for pattern in ("*.pt", "*.pth", "*.torchscript", "*.gguf"):
             for path in sorted(base.rglob(pattern)):
                 if len(out) >= limit:
-                    return out
+                    n_total += 1
+                    continue
                 # Relative to the scan root, not the absolute path -- the
                 # same fix `find_adapters` above already carries, in its own
                 # words: "`path.parts` includes every ancestor above the root,
@@ -1283,4 +1311,4 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                         "kind": checkpoint_kind(path),
                     }
                 )
-    return out
+    return Candidates(out, n_total=n_total + len(out))
