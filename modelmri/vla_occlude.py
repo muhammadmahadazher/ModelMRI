@@ -530,10 +530,32 @@ def estimate(
 
     A 32x32 sweep at stride 1 is 1,024 tower passes plus the controls. Nobody
     should discover that by waiting.
+
+    REFUSES WHAT `plan` REFUSES, and for the reason a preflight exists at all.
+    MEASURED: `GET /api/vla/occlude/cost?stride=-1` answered 200 with
+    `{"blocks": 1024, "passes": 1129, "stride": -1}` while
+    `POST /api/vla/occlude {"stride": -1}` answered 422 "stride must be at
+    least 1 patch". So the route whose whole job is pricing a run quoted a
+    firm figure for one the very next click would refuse.
+
+    And the figure did not describe what it priced: `max(1, stride)` clamped
+    the arithmetic to stride 1 while the payload echoed the caller's -1, so
+    "1,024 blocks at stride -1" was a price for a run nobody asked for. A
+    caller does not reach a negative stride by accident and then want a
+    number; they want to know it is not a stride.
+
+    0 never arrives here — `VLAHandle.occlusion_cost` reads it as the
+    query-string way of saying "not stated" and substitutes the default — so
+    anything below 1 at this point is a value somebody chose.
     """
-    blocks = len(range(0, int(grid[0]), max(1, stride))) * len(
-        range(0, int(grid[1]), max(1, stride))
-    )
+    if stride < 1:
+        raise OcclusionError(
+            f"a stride of {stride} is not a number of patches. It must be at "
+            f"least 1 — the same rule the run itself enforces, so this refuses "
+            f"rather than quoting a price for something the next click would "
+            f"turn down."
+        )
+    blocks = len(range(0, int(grid[0]), stride)) * len(range(0, int(grid[1]), stride))
     return {
         "blocks": blocks,
         "passes": blocks + scale_frames + 1 + min(controlled, blocks) * draws,

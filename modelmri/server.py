@@ -3840,6 +3840,13 @@ def create_app(
         metric: str = "attention_entropy",
         episode_stride: int = 1,
         frame_stride: int = 25,
+        # POST /api/vla/sweep accepts this and prices the run WITH it — an
+        # occlusion sweep at stride 1 is sixteen times the passes of one at
+        # stride 4. The cost route did not, so it quoted the default's figure
+        # for a run the reader had configured differently. `vla_sweep.estimate`
+        # has always taken the parameter; only the signature was missing it,
+        # which is the same gap `/api/image/filmstrip/cost` had with `at`.
+        occlusion_stride: int = 0,
     ):
         """Frames and passes before the sweep starts.
 
@@ -3863,6 +3870,7 @@ def create_app(
                 episode_stride=episode_stride,
                 frame_stride=frame_stride,
                 grid=status.grid or None,
+                occlusion_stride=occlusion_stride,
             )
         except BadRequest as err:
             return JSONResponse({"error": err.sentence}, status_code=422)

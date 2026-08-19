@@ -557,3 +557,35 @@ def test_blocks_that_got_different_numbers_of_nulls_report_a_range():
     said = made.means()
     assert "between 6 and 8" in said
     assert "landed on the block itself" in said
+
+
+def test_the_preflight_refuses_the_stride_the_run_refuses():
+    """MEASURED against a loaded policy:
+
+        GET  /api/vla/occlude/cost?stride=-1
+            -> 200 {"blocks": 1024, "passes": 1129, "stride": -1}
+        POST /api/vla/occlude {"stride": -1}
+            -> 422 "stride must be at least 1 patch"
+
+    The route whose entire job is pricing a run quoted a firm figure — 1,024
+    blocks, 1,129 tower passes — for one the very next click turns down.
+
+    And the figure did not describe what it priced: `max(1, stride)` clamped
+    the arithmetic to stride 1 while the payload echoed the caller's -1, so
+    "1,024 blocks at stride -1" was a price for a run nobody asked for.
+    """
+    with pytest.raises(occ.OcclusionError) as err:
+        occ.estimate([32, 32], -1)
+    assert "at least 1" in str(err.value)
+
+    # 0 never reaches here — `VLAHandle.occlusion_cost` reads it as the
+    # query-string way of saying "not stated" and substitutes the default —
+    # so anything below 1 at this point is a value somebody chose.
+    with pytest.raises(occ.OcclusionError):
+        occ.estimate([32, 32], 0)
+
+    # And a real stride still prices, with the echoed value describing the
+    # arithmetic that produced the number beside it.
+    priced = occ.estimate([32, 32], 4)
+    assert priced["stride"] == 4
+    assert priced["blocks"] == 64
