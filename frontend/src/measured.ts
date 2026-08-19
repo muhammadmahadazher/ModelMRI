@@ -153,3 +153,24 @@ export function scaled(v: number): string {
  */
 export const fmtKL = (kl: number) =>
   kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
+
+
+/** A byte count in the unit that keeps its significant digits.
+ *
+ *  The client half of `modelmri/fmt.py`'s `bytes_si`, and it exists because
+ *  the two halves disagreed on screen. `{n / 1e6} MB` alone is what turned a
+ *  real 400 kB checkpoint into "0 MB" on a row whose Load button was enabled,
+ *  and `{n / 1e9:,.1f} GB` did the same to a 4 MB cache in the sentence above
+ *  it — one quantity, two formatters, one screen.
+ *
+ *  The thresholds are `bytes_si`'s, exactly, so a size named here and the same
+ *  size named in a server sentence read identically rather than nearly. `gb`
+ *  in `LoadBar` delegates to this rather than keeping a second opinion.
+ */
+export function bytesSI(n: number): string {
+  if (!Number.isFinite(n)) return "unknown";
+  if (n >= 1e9) return `${(n / 1e9).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GB`;
+  if (n >= 1e6) return `${Math.round(n / 1e6).toLocaleString()} MB`;
+  if (n >= 1e3) return `${Math.round(n / 1e3).toLocaleString()} kB`;
+  return `${Math.max(0, Math.round(n)).toLocaleString()} bytes`;
+}

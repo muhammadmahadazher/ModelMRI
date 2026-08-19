@@ -1,4 +1,5 @@
 import { LoadProgress } from "./api";
+import { bytesSI } from "./measured";
 
 /**
  * The meter for any in-flight model load, text or image.
@@ -45,11 +46,12 @@ const STAGES: Record<string, string> = {
  *  (see `_expected_files`), but a formatter that can print a nonzero quantity
  *  as zero is a second bug hiding behind the first, and this project's rule is
  *  that a number the reader is waiting on may not round away to nothing. */
-export const gb = (n: number) => {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
-  return `${Math.max(0, Math.round(n)).toLocaleString()} bytes`;
-};
+// Delegated rather than duplicated. This had its own three arms and no kB
+// one, so 400,000 bytes printed as "400,000 bytes" here while the server's
+// `fmt.bytes_si` called the same number "400 kB". Kept as an export because a
+// dozen call sites name it; the rule itself lives in `measured.ts` beside
+// every other formatter that mirrors a server-side one.
+export const gb = (n: number) => bytesSI(n);
 
 /** A duration somebody can act on. Seconds under a minute, then minutes, then
  *  hours and minutes — "312 minutes" is a number you have to do arithmetic on

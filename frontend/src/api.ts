@@ -2052,6 +2052,15 @@ export interface ImageLocal {
   /** Summed over the COMPLETE rows only: an interrupted download's bytes are
    *  not a model on this disk. */
   bytes_on_disk: number;
+  /** How many entries could not be sized at all — a third state, not zero
+   *  bytes. Carried in `means` as a sentence; here as the fact. */
+  unsized: number;
+  /** The cache walk stopped at `scan_limit`. `/api/image/available` has
+   *  reported this on the same walk for months and this route did not — and
+   *  this is the one the panel renders. A list that silently stops at 200
+   *  reads as "everything on this disk", which is the one thing it is not. */
+  truncated: boolean;
+  scan_limit: number;
   means: string;
 }
 

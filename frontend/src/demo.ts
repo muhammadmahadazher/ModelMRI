@@ -855,6 +855,12 @@ export async function demoFetch(
     return ok({
       models: [],
       bytes_on_disk: 0,
+      unsized: 0,
+      // No walk ran, so it did not stop early either. Zero rather than the
+      // server's 200: copying that constant here would be a second home for
+      // a number that lives in `imaging.SCAN_CACHE_LIMIT`.
+      truncated: false,
+      scan_limit: 0,
       means:
         "This page is a static recording and cannot read a disk, so it lists " +
         "no image models and no bytes — not because none are here, but " +

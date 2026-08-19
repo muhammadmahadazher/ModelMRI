@@ -28,6 +28,8 @@ import os
 import shutil
 from pathlib import Path
 
+from . import fmt
+
 # Below this, an oversized model is nobody's emergency: even a wrong answer
 # costs a few minutes. The accelerator rule only starts mattering above it.
 MIN_INTERESTING_GB = 20.0
@@ -146,7 +148,24 @@ def ollama_models_dir() -> Path:
 
 
 def _human(gb: float) -> str:
-    return f"{gb / 1000:,.1f} TB" if gb >= 1000 else f"{gb:,.1f} GB"
+    """A size in the unit that keeps its significant digits.
+
+    The TB arm is this function's own — `fmt.bytes_si` stops at GB, because
+    nothing else in the project quotes a terabyte. Below a gigabyte it hands
+    over rather than keeping a second opinion: `{gb:,.1f} GB` printed a
+    measured 40 MB of free disk as "0.0 GB free", which is the same token this
+    module uses elsewhere for "could not measure". A refusal that says you have
+    nothing free when you have 40 MB, in the sentence telling you why the
+    download stopped, sends somebody to clear a disk that is not the problem.
+
+    The same floor hit the other side of that sentence: a 4 MB repo asked for
+    "0.0 GB". `policy.py` already renders this fragment through `bytes_si`.
+    """
+    if gb >= 1000:
+        return f"{gb / 1000:,.1f} TB"
+    if gb >= 1:
+        return f"{gb:,.1f} GB"
+    return fmt.bytes_si(gb * 1e9)
 
 
 def guard(

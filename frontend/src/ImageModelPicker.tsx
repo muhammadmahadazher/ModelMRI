@@ -13,6 +13,7 @@ import {
   ImageTasks,
   searchImageModels,
 } from "./api";
+import { bytesSI } from "./measured";
 import { ModelSkeleton } from "./ModelPicker";
 
 /** Choosing an image model, as a sheet rather than as a wall.
@@ -58,7 +59,13 @@ export function sizeText(bytes: number | null): string {
   if (bytes === null || bytes <= 0) return "size unknown";
   if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(2)} TB`;
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(bytes >= 1e10 ? 0 : 1)} GB`;
-  return `${Math.round(bytes / 1e6)} MB`;
+  // Through the shared rule below a gigabyte. The last arm was an unbounded
+  // `Math.round(bytes / 1e6)} MB`, so a real 400 kB checkpoint rendered as
+  // "0 MB" on a row whose Load button was enabled — a size of nothing beside
+  // an offer to load it. The TB and GB arms above keep their own precision
+  // deliberately: this column is scanned vertically and "1.2 TB" against
+  // "4.0 GB" is the comparison it exists to make.
+  return bytesSI(bytes);
 }
 
 /** Download counts, shortened. Six significant digits of popularity is noise

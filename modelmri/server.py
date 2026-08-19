@@ -2604,7 +2604,7 @@ def create_app(
         configs and no weights, which is an interrupted download and not a
         model that is ready.
         """
-        from . import image_catalog
+        from . import fmt, image_catalog, imaging
 
         rows = await asyncio.to_thread(image_catalog.local)
         whole = [r for r in rows if r["complete"] is True]
@@ -2629,13 +2629,32 @@ def create_app(
                 f" {len(unsized)} could not be sized at all, so whether their "
                 f"weights arrived is unknown rather than answered."
             )
+        # THE SAME CAP `/api/image/available` REPORTS, on the same walk. Both
+        # routes read `imaging.scan_cache`, which stops at SCAN_CACHE_LIMIT;
+        # `available` says so and this did not — and this is the one the panel
+        # renders, because `getImageAvailable` has no consumers. A list that
+        # silently stops at 200 reads as "this is everything on the disk",
+        # which is the one thing it is not.
+        capped = len(rows) >= imaging.SCAN_CACHE_LIMIT
+        if capped:
+            rest += (
+                f" That is as many as one pass of the cache reads "
+                f"({imaging.SCAN_CACHE_LIMIT}), so there may be more here that "
+                f"are not listed."
+            )
         return {
             "models": rows,
             "bytes_on_disk": held,
             "unsized": len(unsized),
+            "truncated": capped,
+            "scan_limit": imaging.SCAN_CACHE_LIMIT,
             "means": (
                 f"{len(rows)} image model(s) on this machine, {len(whole)} of "
-                f"them with weights actually present, {held / 1e9:,.1f} GB in "
+                # `fmt.bytes_si`, not `/1e9`. A cache holding only
+                # `tiny-stable-diffusion-torch` is about 4 MB, and this
+                # sentence called it "0.0 GB in total" in the same breath as
+                # saying the weights are present.
+                f"them with weights actually present, {fmt.bytes_si(held)} in "
                 f"total.{rest}"
             ),
         }

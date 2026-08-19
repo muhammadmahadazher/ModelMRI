@@ -510,3 +510,49 @@ def test_the_cache_walk_keeps_its_own_budget_and_they_are_not_shared(client):
         imaging.SCAN_CACHE_LIMIT
     )
     assert imaging.SCAN_CACHE_LIMIT != imaging.SCAN_DIRS_LIMIT
+
+
+def test_the_cache_listing_reports_the_cap_the_sibling_route_reports(client):
+    """One walk, two routes, and only the unread one disclosed its cap.
+
+    `/api/image/available` and `/api/image/local` both read
+    `imaging.scan_cache`, which stops at `SCAN_CACHE_LIMIT`. `available` has
+    said so for months; `local` did not — and `local` is the one the picker
+    renders, because `getImageAvailable` has no consumers. A list that
+    silently stops at 200 reads as "everything on this disk".
+    """
+    from modelmri import imaging
+
+    body = client.get("/api/image/local").json()
+    assert body["scan_limit"] == imaging.SCAN_CACHE_LIMIT
+    assert isinstance(body["truncated"], bool)
+    assert len(body["models"]) <= body["scan_limit"]
+    # The two routes agree about the limit they share.
+    assert body["scan_limit"] == client.get("/api/image/available").json()["scan_limit"]
+
+
+def test_a_small_cache_is_not_reported_as_zero_gigabytes(client, monkeypatch):
+    """`{held / 1e9:,.1f} GB` called a real 4 MB cache "0.0 GB in total" in the
+    same sentence that says the weights are present."""
+    from modelmri import image_catalog
+
+    def one_tiny_model():
+        return [
+            {
+                "path": "hf-internal-testing/tiny-stable-diffusion-torch",
+                "family": "stable-diffusion",
+                "label": "tiny",
+                "known": True,
+                "architecture": "StableDiffusionPipeline",
+                "capabilities": [],
+                "reason": "",
+                "size_bytes": 4_000_000,
+                "complete": True,
+            }
+        ]
+
+    monkeypatch.setattr(image_catalog, "local", one_tiny_model)
+    body = client.get("/api/image/local").json()
+    assert body["bytes_on_disk"] == 4_000_000
+    assert "4 MB in total" in body["means"], body["means"]
+    assert "0.0 GB" not in body["means"]

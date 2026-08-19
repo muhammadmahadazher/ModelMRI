@@ -60,3 +60,25 @@ def test_a_byte_count_keeps_its_significant_digits(n, expected):
     this one. Zero and "rounds to zero" are different failures that produce
     the same wrong words."""
     assert fmt.bytes_si(n) == expected
+
+
+def test_the_disk_refusal_names_a_size_it_can_see():
+    """`{gb:,.1f} GB` printed a measured 40 MB of free disk as "0.0 GB free" —
+    the same token this module uses elsewhere for "could not measure".
+
+    A refusal saying you have nothing free when you have 40 MB, inside the
+    sentence explaining why a download stopped, sends somebody to clear a disk
+    that is not the problem. The same floor hit the other side: a 4 MB repo
+    asked for "0.0 GB".
+    """
+    from modelmri.capacity import _human
+
+    assert _human(0.004) == "4 MB"
+    assert _human(0.04) == "40 MB"
+    assert _human(0.999) == "999 MB"
+    # A gigabyte and up keeps the GB form: this column is read by comparing
+    # its rows, and "4.0 GB" against "1.2 TB" is the comparison.
+    assert _human(1.0) == "1.0 GB"
+    assert _human(4.0) == "4.0 GB"
+    # The TB arm is this function's own — `bytes_si` stops at GB.
+    assert _human(1200.0) == "1.2 TB"
