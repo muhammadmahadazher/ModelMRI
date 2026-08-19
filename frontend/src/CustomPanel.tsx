@@ -15,6 +15,13 @@ import {
   GgufReport,
 } from "./api";
 import { useScanOnData } from "./useScanOnData";
+
+/** Why the measurement controls are off for a TorchScript archive.
+ *
+ *  Not a guess: `custom.py` raises this from the hook-registration loop and
+ *  its comment says the failure is universal — "torch installs a generated `fail()` over both hook APIs on RecursiveScriptModule, which is what `torch.jit.load` returns". */
+const TORCHSCRIPT_WHY =
+  "torch installs a generated `fail()` over both hook APIs on RecursiveScriptModule, which is what `torch.jit.load` returns — so every TorchScript archive on disk is un-hookable. Load the .py adapter that built this model to measure it.";
 import CustomAblate from "./CustomAblate";
 import GgufReader from "./GgufReader";
 import RestingSketch from "./RestingSketch";
@@ -430,7 +437,17 @@ export default function CustomPanel({
           onKeyDown={(e) => e.key === "Enter" && busy === "" && void onRun()}
           placeholder="8, 20"
         />
-        <button className="green" onClick={() => void onRun()} disabled={busy !== ""}>
+        {/* DISABLED FOR TORCHSCRIPT, because `custom.inspect` — which this
+            calls — registers a forward hook on every leaf module, and
+            custom.py's own comment says the failure is universal rather than
+            a corner case: "every TorchScript archive on disk is un-hookable,
+            all of them". The click answered 422 every time. */}
+        <button
+          className="green"
+          onClick={() => void onRun()}
+          disabled={busy !== "" || status.source === "torchscript"}
+          title={status.source === "torchscript" ? TORCHSCRIPT_WHY : undefined}
+        >
           {busy === "run" ? "Running…" : "Run forward pass"}
         </button>
         {status.input_reason && (
@@ -551,7 +568,7 @@ export default function CustomPanel({
           without it, and reading the second without having seen the first is
           how a reader ends up believing a dead layer was load-bearing. Shown
           only once a model is loaded — there is nothing to sweep before. */}
-      {status.loaded && <CustomAblate epoch={runId} />}
+      {status.loaded && <CustomAblate epoch={runId} source={status.source} />}
 
       <div className="hint">
         one real forward pass, hooked at every leaf module · dead = exactly

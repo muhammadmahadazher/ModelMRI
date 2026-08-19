@@ -1,6 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
 import { percent } from "./measured";
-import RunsOn from "./RunsOn";
+import RunsOn, { useModelReady } from "./RunsOn";
 import { errorText, LayerProbe, ProbeReport, runProbe } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -124,6 +124,10 @@ function verdict(p: LayerProbe): { text: string; cls: string } {
 }
 
 export default function ProbePanel({ epoch }: { epoch: number }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [a, setA] = useState(A_DEFAULT);
   const [b, setB] = useState(B_DEFAULT);
   const [name, setName] = useState("");
@@ -208,7 +212,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
         <button
           className="cta"
           onClick={() => void run()}
-          disabled={busy || !nA || !nB}
+          disabled={busy || !nA || !nB || ready === false}
         >
           {busy ? "Fitting every layer…" : "Fit the probe"}
         </button>

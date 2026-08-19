@@ -33,7 +33,26 @@ function verdict(site: AblationSite): { text: string; cls: string } {
   return { text: "a random edit did as much", cls: "ab-null" };
 }
 
-export default function CustomAblate({ epoch }: { epoch: number }) {
+/** Why both sweeps are off for a non-adapter load. */
+const NEEDS_ADAPTER =
+  "A causal sweep replaces layers inside the module the adapter built, and a " +
+  "TorchScript archive or a bare checkpoint does not carry one. Load the .py " +
+  "adapter for this model to sweep it.";
+
+export default function CustomAblate({
+  epoch,
+  /** The load's own source. A causal sweep needs the adapter that BUILT the
+   *  model — `custom.py` sets `module` to None for every non-.py load and
+   *  refuses the sweep on that — so both buttons here answered "a causal
+   *  sweep needs the adapter that built this model" for a TorchScript or a
+   *  checkpoint load, every time. */
+  source,
+}: {
+  epoch: number;
+  source?: string | null;
+}) {
+  // Only a .py adapter carries the module a causal sweep replaces layers in.
+  const needsAdapter = !!source && source !== "adapter";
   const [kind, setKind] = useState<"layers" | "inputs">("layers");
   const [data, setData] = useState<Ablation | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,14 +105,16 @@ export default function CustomAblate({ epoch }: { epoch: number }) {
         <button
           className={`pill sm ${kind === "layers" ? "on" : ""}`}
           onClick={() => void run("layers")}
-          disabled={busy}
+          disabled={busy || needsAdapter}
+          title={needsAdapter ? NEEDS_ADAPTER : undefined}
         >
           {busy && kind === "layers" ? "sweeping…" : "ablate each layer"}
         </button>
         <button
           className={`pill sm ${kind === "inputs" ? "on" : ""}`}
           onClick={() => void run("inputs")}
-          disabled={busy}
+          disabled={busy || needsAdapter}
+          title={needsAdapter ? NEEDS_ADAPTER : undefined}
         >
           {busy && kind === "inputs" ? "sweeping…" : "occlude each input region"}
         </button>

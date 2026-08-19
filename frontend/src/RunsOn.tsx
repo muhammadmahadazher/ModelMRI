@@ -37,6 +37,39 @@ function sessionFor(epoch: number): Promise<SessionInfo> {
   return cached.promise;
 }
 
+/**
+ * Is there a live model these panels can measure?
+ *
+ * Shares `RunsOn`'s cache, so asking costs no extra request — the badge and
+ * the button it disables are reading one answer.
+ *
+ * WHY THE BUTTONS NEEDED IT. `Playground` gates these panels on
+ * `introspectable = model?.device !== "ollama"`, which is TRUE when `model`
+ * is null: `undefined !== "ollama"`. So with nothing loaded at all, four
+ * measurement panels mounted with their forms filled in and their buttons
+ * live, and every click answered "No model loaded — pick one first".
+ *
+ * The panels stay mounted deliberately. Hiding them would make the tool look
+ * emptier and harder to learn, which is the opposite of what is wanted —
+ * `RunsOn` already prints the sentence, and this is what stops the control
+ * beneath it from being clickable anyway.
+ */
+export function useModelReady(epoch: number): boolean | null {
+  const [ready, setReady] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    void sessionFor(epoch)
+      // `null` while unknown, so a button is never disabled on a failed
+      // fetch — that would take a working control away over a network blip.
+      .then((s) => live && setReady(!!s.model?.loaded))
+      .catch(() => live && setReady(null));
+    return () => {
+      live = false;
+    };
+  }, [epoch]);
+  return ready;
+}
+
 export default function RunsOn({
   epoch,
   /** What the panel does when nothing is loaded. Some refuse outright; some

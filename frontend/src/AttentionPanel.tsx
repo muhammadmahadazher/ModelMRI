@@ -446,14 +446,28 @@ export default function AttentionPanel({
                 times the work of the other two. The number it produces is the
                 one the panel could never show — how much the answer depends
                 on which baseline happens to be selected. */}
+            {/* GATED ON A RANKING EXISTING, because its result is drawn
+                inside `{ranked && (…)}` further down. Without one the click
+                ran all three baselines — resample is eight times the work of
+                the other two, and this button prices itself at about ten
+                times a single ranking — the label returned to idle, and
+                NOTHING appeared. No result, no error, no explanation.
+
+                Worse, it was unreachable afterwards: `rank()` clears
+                `agree`, so ranking second did not surface it either. The only
+                order that ever showed anything was rank-then-compare, and
+                nothing on screen said so. */}
             <button
               className="ghost sm"
               onClick={() => void compareAllBaselines()}
-              disabled={ranking || comparing}
+              disabled={ranking || comparing || !ranked}
               title={
-                "Run all three baselines on this layer and report how far " +
-                "apart they rank the same heads. Costs about ten times a " +
-                "single ranking."
+                !ranked
+                  ? "Rank this layer first — the comparison is drawn against " +
+                    "that ranking, so there is nowhere to put it until one exists."
+                  : "Run all three baselines on this layer and report how far " +
+                    "apart they rank the same heads. Costs about ten times a " +
+                    "single ranking."
               }
             >
               {comparing ? "comparing…" : "compare baselines"}

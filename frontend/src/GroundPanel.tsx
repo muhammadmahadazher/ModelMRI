@@ -1,6 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
 import { measured, percent } from "./measured";
-import RunsOn from "./RunsOn";
+import RunsOn, { useModelReady } from "./RunsOn";
 import { errorText, GroundScore, Grounding, groundAnswer } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -84,6 +84,10 @@ export default function GroundPanel({
    *  measured and can never re-measure it. */
   recorded?: { available: boolean; question: string };
 }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [doc, setDoc] = useState(DOC_DEFAULT);
   const [file, setFile] = useState("");
   const [question, setQuestion] = useState(
@@ -188,7 +192,8 @@ export default function GroundPanel({
             onChange={(e) => setDoc(e.target.value)}
             spellCheck={false}
             rows={8}
-            disabled={!!file.trim()}
+            disabled={
+            ready === false ||!!file.trim()}
           />
         </label>
         <div className="ground-side">

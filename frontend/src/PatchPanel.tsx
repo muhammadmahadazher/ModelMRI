@@ -1,5 +1,5 @@
 import { CSSProperties, useState } from "react";
-import RunsOn from "./RunsOn";
+import RunsOn, { useModelReady } from "./RunsOn";
 import {
   errorText,
   pathTrace,
@@ -82,6 +82,10 @@ export default function PatchPanel({
    *  refuse. */
   recorded?: { clean: string; corrupt: string };
 }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [clean, setClean] = useState(recorded?.clean || CLEAN_DEFAULT);
   const [corrupt, setCorrupt] = useState(recorded?.corrupt || CORRUPT_DEFAULT);
   const [data, setData] = useState<PatchTrace | null>(null);
@@ -201,7 +205,19 @@ export default function PatchPanel({
       </div>
 
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className="cta" onClick={() => void run()} disabled={busy}>
+        <button
+          className="cta"
+          onClick={() => void run()}
+          // `ready === false` and not `!ready`: null means the session could
+          // not be read, and taking a working control away over a network
+          // blip is worse than letting the route refuse in its own words.
+          disabled={busy || ready === false}
+          title={
+            ready === false
+              ? "Load a model in Run at the top of the page first — this measurement runs it."
+              : undefined
+          }
+        >
           {busy ? "Patching every site…" : recorded ? "Show the recorded trace" : "Trace it"}
         </button>
         <span className="meta">

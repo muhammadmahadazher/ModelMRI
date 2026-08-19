@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import RunsOn from "./RunsOn";
+import RunsOn, { useModelReady } from "./RunsOn";
 import { errorText, getSession, Patchscope, runPatchscope } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -44,6 +44,10 @@ function overlapText(v: number): string {
 }
 
 export default function PatchscopePanel({ epoch }: { epoch: number }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [prompt, setPrompt] = useState(SOURCE_DEFAULT);
   const [layer, setLayer] = useState(0);
   const [position, setPosition] = useState(-1);
@@ -230,7 +234,16 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
       </label>
 
       <div className="row" style={{ margin: "10px 0" }}>
-        <button className="cta" onClick={() => void run()} disabled={busy}>
+        <button
+          className="cta"
+          onClick={() => void run()}
+          disabled={busy || ready === false}
+          title={
+            ready === false
+              ? "Load a model in Run at the top of the page first — this measurement runs it."
+              : undefined
+          }
+        >
           {busy ? "Decoding three times…" : "Describe the state"}
         </button>
         <span className="meta">
