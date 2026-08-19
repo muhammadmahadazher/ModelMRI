@@ -162,9 +162,23 @@ function explain(body: string): string {
     if (typeof parsed?.error === "string") return parsed.error;
     if (typeof parsed?.detail === "string") return parsed.detail;
     // FastAPI request-validation failures: [{loc, msg, type}, …]
+    //
+    // NAMED. `msg` alone is "Field required", and a call missing two of them
+    // rendered "Field required; Field required" — a sentence that tells the
+    // reader a field is missing without telling them which. `loc` carries the
+    // parameter, so it goes in front: "height: Field required".
     if (Array.isArray(parsed?.detail)) {
       const msgs = parsed.detail
-        .map((d: { msg?: string }) => d?.msg)
+        .map((d: { msg?: string; loc?: unknown[] }) => {
+          if (!d?.msg) return "";
+          // `loc` is ["query", "height"] or ["body", "steps"]; the last entry
+          // is the field, and the first is where it belongs.
+          const field =
+            Array.isArray(d.loc) && d.loc.length
+              ? String(d.loc[d.loc.length - 1])
+              : "";
+          return field && field !== "body" ? `${field}: ${d.msg}` : d.msg;
+        })
         .filter(Boolean);
       if (msgs.length) return msgs.join("; ");
     }
@@ -3913,6 +3927,10 @@ export interface PathInfo {
   hub_token: string;
   undelivered_traces: string;
   models_dirs: string[];
+  /** Where MODELMRI_MODELS_DIR points, or `null` when it was never set. */
+  models_home: string | null;
+  /** Every other cache root this process will read from. */
+  inherited_caches: string[];
   cwd: string;
   legacy: string | null;
   platform: string;

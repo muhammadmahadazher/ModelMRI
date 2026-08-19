@@ -23,11 +23,24 @@ const LABELS: Record<string, string> = {
   cwd: "started in",
   legacy: "older location, still read",
   override: "MODELMRI_HOME",
+  // Both were in the payload and in neither list, so they were dropped by the
+  // renderer without a word — and this is the panel somebody opens to answer
+  // "where did my download actually go".
+  models_home: "models kept in",
+  inherited_caches: "also read from",
 };
 
 const ORDER = [
   "hf_hub_cache",
   "hf_home",
+  // `models_home` is where MODELMRI_MODELS_DIR points and `inherited_caches`
+  // is every other root this process will read from. `paths.py` has published
+  // both all along; `ORDER` decides what is drawn, and neither was in it, so
+  // the one panel that answers "where do my models live" answered with two of
+  // its own fields missing. The renderer already joins a list and already
+  // skips an empty value, so nothing else had to change.
+  "models_home",
+  "inherited_caches",
   "models_dirs",
   "trace_db",
   "hub_token",
