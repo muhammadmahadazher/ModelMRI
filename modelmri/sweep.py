@@ -608,7 +608,9 @@ def _resumable(job: Job, rows: list[Row], runtime) -> str | None:
         if row.index >= len(job.prompts):
             return (
                 f"a saved row is index {row.index} and this set has only "
-                f"{len(job.prompts)} prompt(s), so the prompts have changed"
+                f"{len(job.prompts)} prompt(s), so the prompts have changed. "
+                f"Run this set as a new sweep — the saved rows measured a "
+                f"different set and cannot be carried into it"
             )
         # Only a MEASURED row's digest matters: an unmeasured one carries no
         # numbers to attach to the wrong prompt.
@@ -618,14 +620,17 @@ def _resumable(job: Job, rows: list[Row], runtime) -> str | None:
             return (
                 f"prompt {row.index} is not the text that was measured — the "
                 f"set has been edited, and reusing the old row would attach a "
-                f"measurement to a prompt it was never about"
+                f"measurement to a prompt it was never about. Restore that "
+                f"prompt to its original text to resume, or run the edited set "
+                f"as a new sweep"
             )
     if runtime is not None:
         live = getattr(runtime, "hf_id", "") or ""
         if live and job.model and live != job.model:
             return (
                 f"the saved run measured `{job.model}` and `{live}` is loaded "
-                f"now. Finishing it would put two models' numbers in one table"
+                f"now. Finishing it would put two models' numbers in one "
+                f"table. Load `{job.model}` to resume this one"
             )
     return None
 

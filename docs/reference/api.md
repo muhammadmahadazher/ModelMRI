@@ -18,6 +18,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/session/export` | Session Export |
 | `GET` | `/api/session/state` | Session State |
+| `GET` | `/api/session/trace` | Session Trace |
 | `POST` | `/api/session/close` | Session Close |
 | `POST` | `/api/session/open` | Session Open |
 

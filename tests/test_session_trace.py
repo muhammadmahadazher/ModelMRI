@@ -350,3 +350,24 @@ def test_reading_a_carried_run_does_not_file_it_in_this_machines_history():
         # is the check that would catch a future "just import it" shortcut.
         assert c.get(f"/api/traces/{carried['id']}").status_code == 404
         c.post("/api/session/close")
+
+
+def test_a_recording_without_attention_says_so_rather_than_going_quiet():
+    """`available: False` with no sentence is a panel that vanishes.
+
+    Every branch of `runtime.attention_meta` carries a `reason` and the replay
+    branch did not, so a bundle exported for the agent run it carries — which
+    has no attention slices — reached the panel as a bare unavailable. The
+    panel then removed itself from a page that is otherwise entirely about
+    that file, with nothing anywhere saying why.
+    """
+    empty = session.parse(_build(attention={}))
+    meta = empty.attention_meta()
+    assert meta["available"] is False
+    assert "no attention maps" in meta["reason"]
+
+    # And the ordinary case is untouched: a sentence there would be a caption
+    # on a panel that is about to draw the thing it describes.
+    full = session.parse(_build())
+    assert full.attention_meta()["available"] is True
+    assert "reason" not in full.attention_meta()

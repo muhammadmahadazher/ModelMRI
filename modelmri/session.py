@@ -1797,7 +1797,7 @@ class Session:
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
-        return {
+        out = {
             "available": bool(self.attention),
             "n_prompt": self.n_prompt,
             "n_layers": self.n_layers,
@@ -1805,6 +1805,18 @@ class Session:
             "n_tokens": len(self.tokens),
             "replay": True,
         }
+        if not self.attention:
+            # Every branch of `runtime.attention_meta` carries a `reason` and
+            # this one did not, so a bundle exported around an agent step —
+            # which carries the run and no attention slices — reached the panel
+            # as a bare "unavailable". The panel now prints the reason, and an
+            # empty sentence is a blank box.
+            out["reason"] = (
+                "this session carries no attention maps. A `.mri` stores the "
+                "slices that were captured, and this one was exported for what "
+                "it does carry rather than for a layer and head."
+            )
+        return out
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))

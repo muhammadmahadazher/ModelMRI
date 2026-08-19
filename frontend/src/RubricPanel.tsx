@@ -309,9 +309,28 @@ export default function RubricPanel({
               );
             })}
           </ol>
-          {!shown.length && (
-            <p className="meta">No run matched {only ? `“${only}”` : "any rule"}.</p>
-          )}
+          {/* TWO situations, and they wanted opposite things from the reader.
+              A filter that excluded everything is not the same as a rubric
+              that matched nothing: the first has runs behind it and one click
+              to see them, the second means the rules and the runs are looking
+              for different things. Both read "No run matched" and neither said
+              how many runs were scored. */}
+          {!shown.length &&
+            (only ? (
+              <p className="meta">
+                None of the {report.rows.length} scored run
+                {report.rows.length === 1 ? "" : "s"} matched “{only}”.{" "}
+                <button className="linkish" onClick={() => setOnly("")}>
+                  show all {report.rows.length}
+                </button>
+              </p>
+            ) : (
+              <p className="meta">
+                {report.rows.length === 0
+                  ? "No runs were scored — the store has nothing to match rules against yet."
+                  : `None of the ${report.rows.length} scored runs matched any rule. The rules and the runs are looking for different things: widen a pattern above, or check that these runs contain the text the rules search for.`}
+              </p>
+            ))}
         </div>
       )}
     </div>

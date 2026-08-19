@@ -50,6 +50,14 @@ export interface AttentionMeta {
   n_layers?: number;
   n_heads?: number;
   n_tokens?: number;
+  /** WHY there is none, when there is none. The server distinguishes five
+   *  cases — no model, nothing generated yet, the model changed since that
+   *  generation, Ollama, and an architecture that publishes no attention at
+   *  all — and they ask the reader for opposite things: "pick a model" versus
+   *  "press the button you are looking at" versus "nothing here can show you
+   *  this". Undeclared here, all five were dropped and the panel removed
+   *  itself from the page instead. */
+  reason?: string;
   /** True when these numbers came from an opened `.mri`, not a live model. */
   replay?: boolean;
 }

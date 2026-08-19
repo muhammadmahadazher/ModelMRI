@@ -279,3 +279,25 @@ def test_a_sweep_from_a_different_version_is_a_refusal_not_a_500(stopped, tmp_pa
 
     with pytest.raises(BadRequest, match="different version of ModelMRI"):
         sweep.load_sweep("s1")
+
+
+def test_a_block_the_reader_caused_names_the_action_that_clears_it(stopped):
+    """A refusal with no next step reads as a dead end.
+
+    There is deliberately no button beside a blocked resume — the three checks
+    make a resume WRONG rather than expensive, and a table of numbers from two
+    runs looks exactly like a table from one. That is the reason the sentence
+    has to carry the way out itself.
+
+    The two index-shape refusals are exempt on purpose: a row whose index is
+    not a position, or is negative, describes a damaged store rather than
+    anything the reader chose, and inventing an action for it would be advice
+    nobody can follow.
+    """
+
+    class _Other:
+        hf_id = "other/model"
+
+    blocked = sweep.resume_plan("s1", _Other())["blocked"]
+    # The model it wants back, named — not merely the one in the way.
+    assert "Load `m/x`" in blocked

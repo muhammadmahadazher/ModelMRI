@@ -36,6 +36,10 @@ export default function AttentionPanel({
 }) {
   const scanRef = useScanOnData(epoch);
   const [layers, setLayers] = useState(0);
+  // Why there is nothing to show, when the server said. `null` means it has
+  // not answered yet, which is not the same as "there is no reason" and must
+  // not draw a box.
+  const [why, setWhy] = useState<string | null>(null);
   const [heads, setHeads] = useState(0);
   const [layer, setLayer] = useState(0);
   const [head, setHead] = useState(0);
@@ -281,7 +285,19 @@ export default function AttentionPanel({
     let live = true;
     void (async () => {
       const meta = await getAttentionMeta().catch(() => null);
-      if (!live || !meta?.available) return;
+      if (!live) return;
+      // The server writes a DIFFERENT sentence for each way this can be
+      // unavailable — no model, nothing generated yet, the model changed since
+      // that generation, an architecture with no attention at all — and every
+      // one of them was dropped here, after which `layers === 0` removed the
+      // whole panel from the page. Generate with Mamba or RWKV and the section
+      // simply was not there, which reads as the tool being broken rather than
+      // as the architecture having no attention to read.
+      if (!meta?.available) {
+        setWhy(meta?.reason ?? null);
+        return;
+      }
+      setWhy(null);
       setErr("");
       setLayers(meta.n_layers!);
       setHeads(meta.n_heads!);
@@ -324,7 +340,22 @@ export default function AttentionPanel({
     };
   }, [layers, layer, head, epoch]);
 
-  if (layers === 0) return null;
+  if (layers === 0) {
+    // Nothing until the server has said why. A box that appears for the
+    // half-second before the first answer arrives is a flicker that teaches
+    // the reader to distrust it.
+    if (!why) return null;
+    return (
+      <div className="panel">
+        <div className="sect">
+          <span className="dot d-attn" />
+          <h2 className="h-attn">ATTENTION — WHERE EACH TOKEN LOOKED</h2>
+          <span className="rule" />
+        </div>
+        <div className="hint">{why}</div>
+      </div>
+    );
+  }
 
   const options = (n: number) =>
     Array.from({ length: n }, (_, i) => (

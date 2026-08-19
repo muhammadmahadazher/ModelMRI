@@ -277,7 +277,8 @@ export default function Playground({
   // generate. Showing those controls would be offering three buttons that
   // can only answer "install ModelMRI".
   if (VIEWER) {
-    return epoch > 0 ? <AttentionPanel epoch={epoch} replay /> : null;
+    // Same rule in the zero-install viewer, which only ever shows recordings.
+    return <AttentionPanel epoch={epoch} replay />;
   }
 
   return (
@@ -484,7 +485,14 @@ export default function Playground({
           a `.mri` carries no timings, and the numbers would belong to
           somebody else's machine. */}
       {epoch > 0 && !replay && <TelemetryBar epoch={epoch} />}
-      {epoch > 0 && introspectable && (
+      {/* `|| replay` is not redundant. A recording with no attention slices
+          leaves `epoch` at 0 — the meta call that sets it says `available:
+          false` — so the section vanished from a page that is otherwise all
+          about a file somebody sent, with nothing anywhere saying the file
+          carries no attention. It carries its own explanation now, and the
+          live side is unchanged: with no model and no generation the RUN
+          section above is the answer, and a second box saying so is noise. */}
+      {(epoch > 0 || replay) && introspectable && (
         <AttentionPanel epoch={epoch} replay={replay} />
       )}
       {/* Features need the model's activations, which a `.mri` does not carry
