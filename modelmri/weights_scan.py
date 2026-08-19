@@ -56,6 +56,7 @@ repository offers both, saying so is more useful than any finding here.
 from __future__ import annotations
 
 import json
+import os
 import pickletools
 import zipfile
 from dataclasses import dataclass, field
@@ -532,25 +533,74 @@ def _finish(report: Report, findings: list[Finding]) -> Report:
     return report
 
 
-def scan_dir(root: str | Path, *, limit: int = 200) -> list[Report]:
+class ScanTree(list):
+    """The reports, plus what the walk could not tell you.
+
+    A `list` subclass so every existing caller keeps working unchanged — they
+    index it, iterate it and take its length — while a caller that wants to be
+    honest about the walk has somewhere to read it from.
+
+    `readable=False` is NOT "no weight files here". A directory that could not
+    be opened has unknown contents, and a scanner whose job is to say whether
+    a file is safe to load is the last place an unearned "all clear" belongs.
+    """
+
+    def __init__(self, reports=(), *, n_total: int = 0, readable: bool = True):
+        super().__init__(reports)
+        #: How many weight-shaped files the walk SAW, including those past the
+        #: limit. `len(self)` is how many were scanned.
+        self.n_total = n_total
+        #: Whether the directory could be walked at all.
+        self.readable = readable
+
+    @property
+    def truncated(self) -> bool:
+        return self.n_total > len(self)
+
+
+def scan_dir(root: str | Path, *, limit: int = 200) -> ScanTree:
     """Every weight-shaped file under a directory, worst first.
 
-    `limit` bounds the walk and what it drops is reported by the caller —
-    a scan that silently stopped at 200 files reads as "200 files, all fine".
+    `limit` bounds how many are OPENED; the walk keeps counting past it, so
+    the result can say "3 of 84" rather than "3". Counting is free — the
+    expensive step is `scan`, which reads the file and walks pickle opcodes,
+    and `sorted(base.rglob("*"))` has already materialised the tree.
     """
     base = Path(root)
     if not base.is_dir():
-        return []
+        return ScanTree()
+
+    # PROBED, not assumed. `is_dir()` is true for a directory this account
+    # cannot open, and `rglob` then yields nothing — so an unreadable folder
+    # walked to an empty list and was reported as "nothing weight-shaped was
+    # found at that path", which is a claim about contents nobody saw.
+    try:
+        with os.scandir(base) as it:
+            next(it, None)
+    except OSError:
+        return ScanTree(readable=False)
+
     seen: list[Report] = []
+    n_total = 0
     interesting = PICKLE_SUFFIXES | INERT_SUFFIXES | UNREADABLE_MODEL_SUFFIXES | {".py"}
-    for path in sorted(base.rglob("*")):
-        if len(seen) >= limit:
-            break
-        if path.is_file() and path.suffix.lower() in interesting:
+    try:
+        entries = sorted(base.rglob("*"))
+    except OSError:
+        # The walk started and could not finish. Whatever was reached is real,
+        # but the tree is not fully known — say so rather than imply it is.
+        return ScanTree(readable=False)
+    for path in entries:
+        try:
+            if not (path.is_file() and path.suffix.lower() in interesting):
+                continue
+        except OSError:
+            continue
+        n_total += 1
+        if len(seen) < limit:
             seen.append(scan(path))
     order = {DANGEROUS: 0, UNSCANNED: 1, SAFE: 2}
     seen.sort(key=lambda r: (order.get(r.verdict, 3), r.path))
-    return seen
+    return ScanTree(seen, n_total=n_total)
 
 
 def guard(path: str | Path, *, confirm: bool = False) -> Report:

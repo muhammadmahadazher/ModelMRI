@@ -324,3 +324,66 @@ def test_a_weight_format_it_cannot_read_still_appears_in_a_directory_scan(tmp_pa
     assert h5.verdict == ws.UNSCANNED
     assert "cannot read" in h5.reason
     assert "rather than a reason for comfort" in h5.reason
+
+
+def test_a_capped_scan_says_what_it_skipped(tmp_path):
+    """`scan_dir`'s docstring has always said "what it drops is reported by
+    the caller — a scan that silently stopped at 200 files reads as '200
+    files, all fine'". It gave the caller nothing to report WITH: it broke at
+    the limit and so never learned what it skipped.
+
+    MEASURED: 84 scannable files, `limit: 3` → three reports and no field
+    anywhere in the payload naming a cap.
+    """
+    for i in range(9):
+        (tmp_path / f"w{i}.safetensors").write_bytes(b"\0" * 64)
+
+    capped = ws.scan_dir(tmp_path, limit=3)
+    assert len(capped) == 3
+    # The count is REAL, not "more than 3". Counting is free — the expensive
+    # step is `scan`, which opens the file and walks pickle opcodes, and the
+    # walk has already materialised the tree.
+    assert capped.n_total == 9
+    assert capped.truncated is True
+
+    whole = ws.scan_dir(tmp_path, limit=99)
+    assert len(whole) == 9 and whole.n_total == 9 and whole.truncated is False
+
+    # Still a list, so the four callers and three older tests that index it,
+    # iterate it and take its length are untouched.
+    assert isinstance(capped, list)
+
+
+def test_a_folder_that_cannot_be_opened_is_unknown_not_empty(tmp_path, monkeypatch):
+    """`is_dir()` is true for a directory this account cannot open, and rglob
+    then yields nothing — so it walked to an empty list and the route reported
+    "Nothing weight-shaped was found at that path" with three measured counts
+    of zero beside it.
+
+    A scanner exists to say whether a file is safe to load. It is the last
+    place an unearned all-clear belongs.
+    """
+    import os
+
+    (tmp_path / "hidden.safetensors").write_bytes(b"\0" * 64)
+
+    real_scandir = os.scandir
+
+    def denied(path, *a, **kw):
+        if str(path) == str(tmp_path):
+            raise PermissionError(13, "permission denied")
+        return real_scandir(path, *a, **kw)
+
+    monkeypatch.setattr(os, "scandir", denied)
+
+    out = ws.scan_dir(tmp_path)
+    assert list(out) == []
+    # Not "nothing here" — "nobody looked".
+    assert out.readable is False
+
+
+def test_an_absent_path_is_readable_and_simply_empty(tmp_path):
+    """The two states must not be confused in the other direction either: a
+    path that is not there was not blocked, it is just not there."""
+    out = ws.scan_dir(tmp_path / "nope")
+    assert list(out) == [] and out.readable is True

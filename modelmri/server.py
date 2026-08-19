@@ -800,7 +800,9 @@ def _from_this_machine(request) -> bool:
     return _not_from_this_machine(request, "this") is None
 
 
-def _scan_summary(reports, dangerous, unscanned) -> str:
+def _scan_summary(
+    reports, dangerous, unscanned, *, n_total: int | None = None, readable: bool = True
+) -> str:
     """One sentence that does not contradict itself.
 
     The first version said "N file(s) read and nothing executable found" and
@@ -809,6 +811,18 @@ def _scan_summary(reports, dangerous, unscanned) -> str:
     design, it printed both about all of them. A summary whose two halves
     disagree is worse than either half alone.
     """
+    if not readable:
+        # BEFORE the "nothing found" line, which would otherwise be a claim
+        # about the contents of a folder nobody managed to open. MEASURED: a
+        # directory this account had no rights to walked to an empty list and
+        # was reported as "Nothing weight-shaped was found at that path",
+        # with three measured counts of zero beside it.
+        return (
+            "That folder could not be opened, so what is in it is UNKNOWN "
+            "rather than nothing — this is not a clean bill of health. Check "
+            "the permissions on it, or point the scan at a path this server "
+            "can read."
+        )
     if dangerous:
         return dangerous[0].means()
     if not reports:
@@ -822,6 +836,13 @@ def _scan_summary(reports, dangerous, unscanned) -> str:
             f"in full when imported and cannot be made safe by a scan. This is "
             f"not a clean bill of health."
         )
+    capped = (
+        f" This is the first {len(reports)} of {n_total} weight-shaped file(s) "
+        f"found here — the rest were NOT scanned, so nothing below says "
+        f"anything about them."
+        if n_total is not None and n_total > len(reports)
+        else ""
+    )
     tail = (
         f" {len(unscanned)} could not be read and are reported as unscanned "
         f"rather than clean — a scanner that answers 'safe' for a file it "
@@ -829,7 +850,7 @@ def _scan_summary(reports, dangerous, unscanned) -> str:
         if unscanned
         else ""
     )
-    return f"{read} file(s) read and nothing executable found.{tail}"
+    return f"{read} file(s) read and nothing executable found.{tail}{capped}"
 
 
 def create_app(
@@ -1183,6 +1204,13 @@ def create_app(
         need = await asyncio.to_thread(_ollama.manifest_size, name)
         target = _capacity.ollama_models_dir()
         _, measured = _capacity.free_space(target)
+        # The SAME conversion the next four lines already do for `free_bytes`,
+        # applied to the field the comment was actually written about.
+        # `manifest_size` documents its own 0 as "the registry cannot answer —
+        # treated as unknown by the guard, never as small", and the guard does
+        # honour that. The payload did not: `bytes: 0, ok: true` for a name
+        # that does not exist reads as "this model is free and it fits".
+        unknown_size = need <= 0
         # `free_space` returns 0 for a volume it could not read, which
         # `capacity.guard` understands and correctly skips its refusal on.
         # A CLIENT has no such context: `free_bytes: 0` on the wire says
@@ -1209,11 +1237,23 @@ def create_app(
             }
         return {
             "name": name,
-            "bytes": need,
+            "bytes": None if unknown_size else need,
             "free_bytes": free,
+            # `ok` stays true: nothing here refused it, and turning an unknown
+            # size into a refusal would block a legitimate pull on the
+            # registry's silence. What changes is that the silence is SAID.
+            # The picker already renders `warning` beside the button, so this
+            # reaches the person about to click it.
             "ok": True,
             "overridable": False,
-            "warning": "",
+            "warning": (
+                f"the registry published no size for `{name}`, so whether it "
+                f"fits this machine is UNKNOWN rather than yes. Either the "
+                f"name is wrong or that model does not publish a manifest — "
+                f"nothing here will guess a number for it."
+                if unknown_size
+                else ""
+            ),
         }
 
     @app.post("/api/ollama/pull")
@@ -3245,12 +3285,28 @@ def create_app(
 
         dangerous = [r for r in reports if r.dangerous]
         unscanned = [r for r in reports if r.verdict == weights_scan.UNSCANNED]
+        # What the walk itself could not tell you, carried beside the counts.
+        # A single file scan has no walk, so it is neither capped nor unread.
+        n_total = getattr(reports, "n_total", len(reports))
+        readable = getattr(reports, "readable", True)
         return {
             "reports": [r.to_dict() for r in reports],
             "dangerous": len(dangerous),
             "unscanned": len(unscanned),
             "safe": len(reports) - len(dangerous) - len(unscanned),
-            "means": _scan_summary(reports, dangerous, unscanned),
+            # The cap, REPORTED rather than left to be inferred from a list
+            # length. `scan_dir`'s docstring has always said "what it drops is
+            # reported by the caller"; this is the caller finally doing it.
+            "n_found": n_total,
+            "truncated": n_total > len(reports),
+            # And whether the folder could be opened at all. `false` here is
+            # NOT "no weight files": it is "the contents are unknown", which
+            # in a scanner is the difference between a clean bill of health
+            # and never having looked.
+            "readable": readable,
+            "means": _scan_summary(
+                reports, dangerous, unscanned, n_total=n_total, readable=readable
+            ),
         }
 
     @app.get("/api/vla")
