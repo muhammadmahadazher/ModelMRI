@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured } from "./measured";
 import {
   errorText,
   occludeFrame,
@@ -421,6 +422,8 @@ export default function VLACausal({
                     className="vla-bar"
                     style={{
                       width: `${
+                        sweep.strip.high != null &&
+                        sweep.strip.low != null &&
                         sweep.strip.high > sweep.strip.low
                           ? ((r.value - sweep.strip.low) /
                               (sweep.strip.high - sweep.strip.low)) *
@@ -430,7 +433,7 @@ export default function VLACausal({
                     }}
                   />
                 </span>
-                <span className="mid">{r.value.toFixed(4)}</span>
+                <span className="mid">{measured(r.value, 4)}</span>
               </li>
             ))}
           </ol>

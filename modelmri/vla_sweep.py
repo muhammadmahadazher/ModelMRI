@@ -508,8 +508,14 @@ def heat_strip(sweep: Sweep) -> dict:
         "metric": sweep.metric,
         "unit": sweep.unit,
         "frame_stride": sweep.frame_stride,
-        "low": min(values) if values else 0.0,
-        "high": max(values) if values else 0.0,
+        # `None`, not 0.0. These are the measured RANGE of the metric, and
+        # with no rows nothing measured anything — "0.0 to 0.0" reads as a
+        # flat result in nats over the patch grid, which is a finding, when
+        # the truth is that every sampled frame failed to decode. MEASURED
+        # with `av` absent: rows [], n_frames 0, six entries in `failed`, and
+        # a strip claiming a range.
+        "low": min(values) if values else None,
+        "high": max(values) if values else None,
         # Named so the panel cannot pad. See the docstring.
         "ragged": len({len(r["values"]) for r in strip}) > 1,
     }

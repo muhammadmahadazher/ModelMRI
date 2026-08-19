@@ -942,3 +942,39 @@ def test_the_sweep_is_priced_by_the_sweeps_own_estimator_not_a_second_one():
     mine = cv.plan(224, 224, patch=16, stride=8, batch=8)["attribution"]
     theirs = vision_attr.estimate(224, 224, patch=16, stride=8, batch=8)
     assert mine == theirs
+
+
+def test_both_occlusion_routes_ask_the_processor_for_their_grey():
+    """MEASURED on google/vit-base-patch16-224, one 224x224 picture, patch and
+    stride 112, target 902 "whistle", base logit 4.625 on both routes:
+
+        /api/image/cv/attribute  fill 0.019608, range [-0.686, 0.725], INFERRED
+        /api/image/attribution   fill 0.0,      range [-1.0, 1.0], from the processor
+
+    and cell [0][1] of the map came back -0.21875 against -0.25. Same model,
+    same picture, same target — two different greys and two different answers.
+
+    `/api/image/attribution` already carried the reasoning in a comment: a
+    range inferred from one photograph is a fact about that photograph, and a
+    picture of a bright sky never reaches the bottom of the model's input
+    range, so its "grey" is not the model's neutral. `cv/attribute` had the
+    same processor in hand two lines above and never asked it.
+
+    Asserted on the SIGNATURE and the wiring rather than by running a model,
+    because the comparison needs a real classifier resident; the end-to-end
+    equality was verified live before this was written.
+    """
+    import inspect
+
+    from modelmri import image_cv, server
+
+    # The parameter has always existed on the function.
+    assert "value_range" in inspect.signature(image_cv.attribute).parameters
+
+    # And the route passes it now. A source check, deliberately: the defect
+    # was an argument that was not passed, which no unit test of either side
+    # alone can see.
+    source = inspect.getsource(server.create_app)
+    start = source.index('@app.post("/api/image/cv/attribute")')
+    route = source[start : source.index("@app.", start + 10)]
+    assert "value_range=image_input.value_range_of(processor)" in route

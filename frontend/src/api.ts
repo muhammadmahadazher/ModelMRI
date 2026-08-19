@@ -3149,8 +3149,10 @@ export interface VLASweep {
   means: string;
   strip: {
     rows: { episode: number; timesteps: number[]; values: number[] }[];
-    low: number;
-    high: number;
+    /** `null` when no row was measured — the RANGE of a metric nobody
+     *  observed. 0.0 there read as a flat result rather than as no result. */
+    low: number | null;
+    high: number | null;
     frame_stride: number;
     /** Episodes have different lengths, so the strip is ragged rather than
      *  padded with zeros that would read as measured lows. */

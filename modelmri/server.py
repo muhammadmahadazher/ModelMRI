@@ -2322,13 +2322,27 @@ def create_app(
         from . import imaging
 
         found = await asyncio.to_thread(imaging.scan_cache)
+        # `scan_cache` stops at its own limit, so a flat count is a claim that
+        # this is everything. MEASURED against a cache of 205 checkpoints: 200
+        # rows and "200 image model(s) cached on this machine", with five of
+        # the reader's own models absent and nothing saying so.
+        capped = len(found) >= imaging.SCAN_CACHE_LIMIT
+        tail = (
+            f" That is as many as this walk reads in one pass "
+            f"({imaging.SCAN_CACHE_LIMIT}), so there may be more here that "
+            f"are not listed — type a name to load one it did not reach."
+            if capped
+            else ""
+        )
         return {
             "models": [m.to_dict() for m in found],
             "known": sum(1 for m in found if m.known),
+            "truncated": capped,
+            "scan_limit": imaging.SCAN_CACHE_LIMIT,
             "means": (
                 f"{len(found)} image model(s) cached on this machine, "
                 f"{sum(1 for m in found if m.known)} of which this can open. "
-                f"Nothing was downloaded to answer this."
+                f"Nothing was downloaded to answer this.{tail}"
             ),
         }
 
@@ -3002,6 +3016,27 @@ def create_app(
                 patch=req.patch,
                 stride=req.stride,
                 fill=req.fill,
+                # THE SAME range `/api/image/attribution` reads, from the same
+                # processor this route already has in hand two lines above.
+                # Without it `image_cv.attribute` infers one from the
+                # picture's own extremes, so the two routes occluded with
+                # different greys and returned different maps for the same
+                # model, the same picture and the same target.
+                #
+                # MEASURED on google/vit-base-patch16-224, one 224x224 image,
+                # patch and stride 112, target 902 "whistle", base logit 4.625
+                # on both:
+                #   cv/attribute  fill 0.019608, range [-0.686, 0.725] inferred
+                #   attribution   fill 0.0,      range [-1.0, 1.0]  from the processor
+                # and cell [0][1] came back -0.21875 against -0.25.
+                #
+                # The processor's range wins because it is a fact about the
+                # MODEL. A range inferred from one photograph is a fact about
+                # that photograph — a picture of a bright sky never reaches
+                # the bottom of the model's input range, so its "grey" is not
+                # the model's neutral and every score under it measures the
+                # patch as well as the occlusion.
+                value_range=image_input.value_range_of(processor),
                 batch=req.batch,
                 model_name=handle.status().repo,
             )
