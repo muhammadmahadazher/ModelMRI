@@ -46,3 +46,26 @@ def measured(value: float, decimals: int = 4) -> str:
     if abs(value) < 0.5 * 10**-decimals:
         return f"{value:.1e}"
     return f"{value:,.{decimals}f}"
+
+
+def bytes_si(n: float) -> str:
+    """A byte count in the unit that keeps its significant digits.
+
+    `f"{n / 1e9:,.1f} GB"` alone is what turned a real 4 MB pipeline into
+    "0.0 GB of weights" — measured on
+    `hf-internal-testing/tiny-stable-diffusion-torch`, in the sentence that
+    had just been fixed for the `bytes_resident == 0` case and not for this
+    one. Zero and "rounds to zero" are different failures and both produce the
+    same wrong words.
+
+    The same rule and the same shape as `progress._si_bytes`, which was
+    written first for the download meter; this is its home now that more than
+    one place needs it.
+    """
+    if n >= 1e9:
+        return f"{n / 1e9:,.1f} GB"
+    if n >= 1e6:
+        return f"{n / 1e6:,.0f} MB"
+    if n >= 1e3:
+        return f"{n / 1e3:,.0f} kB"
+    return f"{max(0, int(n)):,} bytes"

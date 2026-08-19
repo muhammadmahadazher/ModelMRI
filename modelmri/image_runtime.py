@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import imaging
+from . import fmt, imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -193,7 +193,12 @@ class ImageStatus:
         # one line under it claiming "0.0 GB of weights": two statements about
         # one quantity, on one screen, disagreeing about whether it is known.
         weight = (
-            f"{self.bytes_resident / 1e9:,.1f} GB of weights"
+            # `fmt.bytes_si`, not `/1e9`. Zero means "no weight file could be
+            # read"; a small nonzero one is a real size that
+            # `{n / 1e9:,.1f} GB` rounds away — measured on a 4 MB pipeline
+            # that reported "0.0 GB of weights" from this very sentence, one
+            # edit after the zero case was fixed and this one was not.
+            f"{fmt.bytes_si(self.bytes_resident)} of weights"
             if self.bytes_resident > 0
             else "weights whose size could not be read"
         )
