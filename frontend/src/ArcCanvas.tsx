@@ -1,4 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { measured } from "./measured";
 import { useThemeVersion } from "./theme";
 
 interface Props {
@@ -48,6 +49,14 @@ interface Props {
 /** Canvas height in CSS pixels. The backing store is this times the DPR. */
 const CANVAS_H = 110;
 
+// The two truncations, named rather than inline. Neither number is changing:
+// an arc at 0.02 renders at lineWidth 1.14 and alpha 0.20, which is a
+// legitimate rendering decision, and twelve arcs into a token row is already
+// dense. The defect was that neither was reported, so they are constants a
+// sentence can quote rather than literals buried in a filter.
+const ARC_FLOOR = 0.02;
+const MAX_ARCS = 12;
+
 /** Token chips with hover/pin-driven attention arcs drawn on a canvas below. */
 export default function ArcCanvas({
   tokens,
@@ -63,6 +72,19 @@ export default function ArcCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const attrRef = useRef<HTMLSpanElement>(null);
   const [pinned, setPinned] = useState(-1);
+  // WHAT THE DRAWING LEFT OUT. Two truncations run on every row — a 0.02
+  // magnitude floor and a top-12 cut — and neither reached the screen, while
+  // the caption above the canvas says the arcs show what the token attended
+  // to. In signed mode the floor can reject EVERY edge, leaving a blank
+  // canvas directly under a header naming the largest value that moved: a
+  // truncation that does not merely under-report but contradicts the
+  // sentence beside it.
+  const [left, setLeft] = useState<{
+    shown: number;
+    aboveFloor: number;
+    candidates: number;
+    peak: number;
+  } | null>(null);
   // Through a ref so `pin` below keeps ONE identity for the life of the
   // component. The sizing effect calls it, and an owner that rebuilds its
   // handler every render would otherwise put that effect in the dependency
@@ -126,11 +148,20 @@ export default function ArcCanvas({
       // threshold on magnitude. Ranking on the raw value would show only
       // the increases and silently drop every place attention moved AWAY —
       // which is half of what a comparison is for.
-      const edges = matrix[i]
-        .map((w, j) => ({ w, j }))
-        .filter(({ w, j }) => j <= i && (signed ? Math.abs(w) : w) >= 0.02)
-        .sort((a, b) => (signed ? Math.abs(b.w) - Math.abs(a.w) : b.w - a.w))
-        .slice(0, 12);
+      const cand = matrix[i].map((w, j) => ({ w, j })).filter(({ j }) => j <= i);
+      const mag = ({ w }: { w: number }) => (signed ? Math.abs(w) : w);
+      const above = cand.filter((e) => mag(e) >= ARC_FLOOR);
+      const edges = above
+        .sort((a, b) => mag(b) - mag(a))
+        .slice(0, MAX_ARCS);
+      // Idempotent: re-setting an equal object is a no-op for React, and the
+      // sizing effects below already re-run `draw`.
+      setLeft({
+        shown: edges.length,
+        aboveFloor: above.length,
+        candidates: cand.length,
+        peak: cand.reduce((m, e) => Math.max(m, mag(e)), 0),
+      });
 
       // --model is not a variable this stylesheet defines. getPropertyValue
       // returned "", canvas ignores an unparseable strokeStyle, and the arcs
@@ -286,6 +317,27 @@ export default function ArcCanvas({
           })}
         </div>
         <canvas ref={canvasRef} style={{ display: "block" }} />
+        {/* WHAT IS NOT DRAWN, beside the drawing. The blank-canvas case gets
+            its own sentence and a next step, because a reader looking at
+            nothing under a header that names a value has no way to tell an
+            empty measurement from a broken panel. */}
+        {left && left.candidates > 0 && left.shown === 0 && (
+          <p className="hint">
+            Every edge at this token is below the {ARC_FLOOR} drawing floor —
+            the largest is {measured(left.peak, 3)}. Nothing is drawn rather
+            than drawn at a width you cannot see. The numbers are in the
+            ranking below, and a layer where more moved will show arcs.
+          </p>
+        )}
+        {left && left.shown > 0 && left.shown < left.candidates && (
+          <p className="meta">
+            {left.shown} of {left.candidates} arcs drawn
+            {left.aboveFloor > left.shown
+              ? ` — the ${MAX_ARCS} strongest of ${left.aboveFloor} at or above ${ARC_FLOOR}`
+              : ` — the rest are below the ${ARC_FLOOR} floor`}
+            .
+          </p>
+        )}
       </div>
     </div>
   );

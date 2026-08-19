@@ -160,9 +160,6 @@ export default function VLAActions({
     ? [...cmp.data.rows].sort((a, b) => b.distance - a.distance)
     : [];
   const shownRows = ranked.slice(0, 10);
-  // How many were ranked but not drawn. A knockout ranks every input; showing
-  // ten of them without the count reads as "these are the inputs".
-  const rowsNotShown = ranked.length - shownRows.length;
   const widestKnock = knock.data
     ? knock.data.rows.reduce((m, r) => Math.max(m, r.distance), 0) || 1
     : 1;
@@ -355,14 +352,18 @@ export default function VLAActions({
               </li>
             ))}
           </ol>
-          {rowsNotShown > 0 && (
-            <p className="meta">
-              {rowsNotShown} more input(s) were knocked out and moved the
-              action less. Every one was measured; this is the top ten.
-            </p>
-          )}
           {/* The list is capped, so it says it is capped. The top of a list is
-              read as "these are the ones". */}
+              read as "these are the ones".
+
+              THERE WERE TWO OF THESE, on the identical predicate, and the
+              first described a measurement this request never ran: "N more
+              input(s) were knocked out and moved the action less". Nothing was
+              knocked out — `ranked` is `cmp.data.rows`, which is the
+              predicted-versus-recorded comparison, and its rows are FRAMES.
+              The sentence was copied from the knockout block below, where it
+              is true, and it fired on the ordinary path: the server plans up
+              to MAX_FRAMES_PER_RUN = 64 frames, so any episode past ten
+              printed a fabricated experiment above the correct sentence. */}
           {ranked.length > shownRows.length && (
             <p className="meta">
               Showing the {shownRows.length} largest gaps of{" "}
