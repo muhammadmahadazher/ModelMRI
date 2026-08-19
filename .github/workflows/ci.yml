@@ -170,10 +170,26 @@ jobs:
           npm ci
           npm run build
           npm run build:viewer
+      # `--with-deps` used to be on this line. It shells out to apt-get for
+      # Chromium's shared libraries, and on 2026-08-19 that call stopped
+      # returning: two runs on two different runners sat in this step until
+      # the six-hour job timeout killed them, against a 22-second baseline.
+      # Every step around it ran at normal speed, so it was this apt call and
+      # nothing else. The job never reached the checks it exists to run.
+      #
+      # The flag was buying nothing here: the ubuntu-latest image already
+      # ships those libraries, which is why `tests/ui_check.py` and
+      # `tests/viewer_check.py` have always told contributors to run plain
+      # `playwright install chromium` and why that works. CI was the one
+      # place paying an apt round-trip for a dependency it already had.
+      #
+      # If a future runner image drops them, this step fails fast with a
+      # named missing .so rather than hanging -- a better failure than the
+      # one this replaces. Put the flag back then, and pin the image.
       - name: Install the browser
         run: |
           uv sync --dev
-          uv run playwright install --with-deps chromium
+          uv run playwright install chromium
 
       # The `.mri` format has two implementations — modelmri/session.py and
       # frontend/src/viewer.ts. Two implementations of one format drift, and
