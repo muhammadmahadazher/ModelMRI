@@ -168,13 +168,34 @@ async def model_box_section(browser, base: str) -> None:
     it to that shape.
     """
 
-    async def opened(routes: dict, *, wait: int = 2600):
+    async def opened(routes: dict, *, settles: bool = True):
+        """Open the page and wait for the button to stop changing.
+
+        `settles=True` waits for a SECOND value rather than for a fixed
+        stretch of time: a CI runner is slower than a laptop, and a fixed wait
+        long enough there is dead time everywhere else. It swallows its own
+        timeout, because "the button never got there" has to reach the
+        assertion as a red check that prints what the button actually did —
+        not as a traceback out of the probe.
+
+        `settles=False` is for the case that asserts the button does NOT move.
+        That one cannot wait for a change, so it waits a fixed 2.5s after the
+        scan it stubbed has already been answered.
+        """
         page = await browser.new_page(viewport={"width": 1280, "height": 900})
         await page.add_init_script(WATCH_MODEL_BOX)
         for pattern, handler in routes.items():
             await page.route(pattern, handler)
         await page.goto(base, wait_until="domcontentloaded")
-        await page.wait_for_timeout(wait)
+        if settles:
+            try:
+                await page.wait_for_function(
+                    "() => window.__box && window.__box.length > 1", timeout=20_000
+                )
+            except Exception:  # noqa: S110 - a timeout is the assertion's job
+                pass
+        else:
+            await page.wait_for_timeout(2500)
         return page
 
     def answers(payload):
@@ -229,7 +250,9 @@ async def model_box_section(browser, base: str) -> None:
     # Nothing cached is the CI runner's situation, and a very common one: the
     # baked name is the whole answer then, and it must not be replaced by a
     # blank or by a spinner.
-    page = await opened({"**/api/models/discovered": answers(EMPTY_SCAN)})
+    page = await opened(
+        {"**/api/models/discovered": answers(EMPTY_SCAN)}, settles=False
+    )
     box = await page.evaluate("() => window.__box")
     check(
         "with an empty cache the box keeps one name and does not blink",
@@ -289,7 +312,13 @@ async def model_box_section(browser, base: str) -> None:
             body=json.dumps(SCAN_WITH_A_TRAP),
         )
 
-    page = await opened({"**/api/models/discovered": slow_first_scan}, wait=600)
+    # Not `opened`: this one must reach the sheet WHILE the scan is in flight,
+    # so it waits for the button to exist rather than for it to settle.
+    page = await browser.new_page(viewport={"width": 1280, "height": 900})
+    await page.add_init_script(WATCH_MODEL_BOX)
+    await page.route("**/api/models/discovered", slow_first_scan)
+    await page.goto(base, wait_until="domcontentloaded")
+    await page.wait_for_selector(".model-btn", timeout=30_000)
     await page.click(".model-btn")
     await page.wait_for_selector(".model-row:not(.locked)", timeout=30_000)
     await page.click(".model-row:not(.locked)")  # the 15.2 GB one, deliberately
