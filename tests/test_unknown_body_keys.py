@@ -112,3 +112,42 @@ def test_the_right_key_is_untouched(client, monkeypatch):
     )
     r = client.post("/api/model/load", json={"hf_id": "Qwen/Qwen3-1.7B"})
     assert r.status_code != 422, r.text
+
+
+def test_an_empty_model_id_is_refused_by_name_rather_than_by_the_loader(client):
+    """`ImageLoadRequest.repo` has carried `min_length` for months; this had none.
+
+    An explicit `{"hf_id": ""}` went all the way to transformers and came back
+    "Could not load '', and this is not one of the failures ModelMRI knows how
+    to explain" — the sentence reserved for failures the tool genuinely does
+    not understand, printed about the one input it understands perfectly.
+
+    Two routes answering the same question about the same kind of input
+    differently is the defect, not the wasted load.
+    """
+    r = client.post("/api/model/load", json={"hf_id": ""})
+    assert r.status_code == 422
+    assert "hf_id" in r.text
+    assert "at least 1 character" in r.text
+    # And the tool's own fallback sentence is NOT what a reader gets.
+    assert "not one of the failures" not in r.text
+
+
+def test_omitting_the_model_id_still_takes_the_default(client, monkeypatch):
+    """The minimum applies to an empty string, not to an absent key.
+
+    That distinction is the whole reason the field keeps its default: the
+    client omits `hf_id` rather than sending an empty one (`api.ts` builds the
+    body conditionally), so requiring it outright would break the ordinary
+    call.
+    """
+    import transformers
+
+    def explode(*_a, **_k):
+        raise RuntimeError("reached the loader")
+
+    monkeypatch.setattr(
+        transformers.AutoModelForCausalLM, "from_pretrained", staticmethod(explode)
+    )
+    r = client.post("/api/model/load", json={"source": "hf"})
+    assert r.status_code != 422, r.text

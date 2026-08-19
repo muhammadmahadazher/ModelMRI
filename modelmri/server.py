@@ -286,7 +286,15 @@ class Body(BaseModel):
 
 
 class LoadRequest(Body):
-    hf_id: str = DEFAULT_MODEL
+    # `min_length`, which `ImageLoadRequest.repo` has carried for months and
+    # this did not. An explicit `{"hf_id": ""}` went all the way to
+    # transformers and came back "Could not load '', and this is not one of
+    # the failures ModelMRI knows how to explain" — the sentence reserved for
+    # failures the tool genuinely does not understand, about the one input it
+    # understands perfectly. The default still applies when the key is absent,
+    # which is how the client asks for it: `api.ts` omits `hf_id` rather than
+    # sending an empty one.
+    hf_id: str = Field(default=DEFAULT_MODEL, min_length=1, max_length=400)
     source: str = "hf"  # "hf" | "ollama"
     # The user saw the size warning and chose to proceed anyway.
     confirm: bool = False
