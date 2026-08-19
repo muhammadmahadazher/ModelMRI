@@ -235,12 +235,25 @@ export default function VLAPanel() {
             Blank uses <code>{DEFAULT_POLICY}</code>.
           </span>
         </div>
+        {/* THE EXTRA ONLY FOR THE ERROR THE EXTRA FIXES. This appended
+            `pip install modelmri[vla-lite]` to every failure, so a policy that
+            is not installed, a file that will not parse and a permission
+            error were all answered with "install the dataset readers" — advice
+            that cannot help, and in the policy case advice the server
+            explicitly warns against: its own hint says to run `modelmri policy
+            install` BECAUSE installing lerobot beside ModelMRI breaks both.
+            Every other refusal here already ends with its own next step, which
+            is why there is nothing to add to it. */}
         {err && (
           <div className="hint">
-            {/robot dataset|not cached|No such|FileNotFound/i.test(err)
-              ? "no robot dataset cached · install the extra and pull one: "
-              : `${err} · `}
-            <b>pip install modelmri[vla-lite]</b>
+            {/robot dataset|not cached|No such|FileNotFound/i.test(err) ? (
+              <>
+                no robot dataset cached · install the readers and pull one:{" "}
+                <b>pip install modelmri[vla-lite]</b>
+              </>
+            ) : (
+              err
+            )}
           </div>
         )}
       </div>

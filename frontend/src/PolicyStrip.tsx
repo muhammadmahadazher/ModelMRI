@@ -142,7 +142,13 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             <>
               a second process with its own environment — about {gb.toFixed(0)} GB,
               because lerobot pins torch hard enough that installing it beside
-              ModelMRI breaks ModelMRI. <code>modelmri policy install</code>
+              ModelMRI breaks ModelMRI.{" "}
+              {/* The SERVER's sentence, which it has been sending as
+                  `install_hint` and nobody read. The command was re-typed here
+                  instead, so renaming it would have left this cell confidently
+                  prescribing a command that no longer exists — and the copy on
+                  screen would still have looked right. */}
+              {policy.install_hint ?? <code>modelmri policy install</code>}
             </>
           ) : policy.reachable ? (
             // Up, with no policy in it. Telling somebody to START a sidecar

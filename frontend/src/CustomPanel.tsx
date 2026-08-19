@@ -222,9 +222,22 @@ export default function CustomPanel({
             <button className="green" onClick={() => void onFind()} disabled={busy !== ""}>
               {busy === "find" ? "Looking…" : "Find models here"}
             </button>
-            <span className="meta">
-              scans {status?.roots?.[0] ?? "the directory you launched in"} for
-              adapters and TorchScript · reads text, imports nothing
+            {/* EVERY root, not the first of them. The two "nothing found"
+                messages in this same panel already join the whole list — so
+                the sentence before the click promised one directory and the
+                sentence after it reported three, and a model sitting in the
+                second one looked like a model the scan had missed. */}
+            <span
+              className="meta"
+              title={status?.roots?.length ? status.roots.join(", ") : undefined}
+            >
+              scans{" "}
+              {!status?.roots?.length
+                ? "the directory you launched in"
+                : status.roots.length === 1
+                  ? status.roots[0]
+                  : `${status.roots.length} directories, starting with ${status.roots[0]}`}{" "}
+              for adapters and TorchScript · reads text, imports nothing
             </span>
 
             {/* The scan used to be limited to the directory the server was
