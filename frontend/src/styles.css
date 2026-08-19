@@ -2178,6 +2178,22 @@ input[type="range"]:focus-visible { outline: none; }
 }
 .trace-row:hover { background: color-mix(in oklab, var(--sem-agent) 7%, transparent); }
 .trace-row.sel { border-color: color-mix(in oklab, var(--sem-agent) 40%, transparent); background: color-mix(in oklab, var(--sem-agent) 9%, transparent); }
+/* The run carried inside the open `.mri`. Set apart from the store rows
+   beneath it because it behaves differently: it cannot be deleted, it is not
+   in this machine's history, and it goes away when the file is closed. The
+   dashed edge is the same "this is on loan" language the session chrome uses
+   elsewhere. */
+.trace-row.carried {
+  width: 100%;
+  box-sizing: border-box;
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--sem-agent) 34%, transparent);
+  margin-bottom: 8px;
+}
+.trace-row.carried.sel {
+  border-style: solid;
+}
+
 .trace-row .tname { color: var(--color-ink); font-weight: 600; }
 .trace-row .tmeta { color: var(--color-mute); }
 /* The selected row is painted with a 9% wash of its own hue, and --color-mute

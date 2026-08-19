@@ -3758,6 +3758,30 @@ class ModelRuntime:
                 "n_nodes": len(self.replay.patch_graph.get("nodes", [])),
                 "n_edges": len(self.replay.patch_graph.get("edges", [])),
             },
+            # And the fourth, which was missing while its three siblings were
+            # here. `session.py` parses an agent run out of a `.mri` and
+            # `mcp_server` already reports whether one is present; the web UI
+            # did not, so a bundle built around a failing step opened to an
+            # agents panel reading "0 recordings" with the run sitting inside
+            # the file. `step_ref` is the step the bundle was built around —
+            # the reason it was sent — and it is carried here so the panel can
+            # open on it rather than on step one.
+            "trace": {
+                "available": self.replay.has_trace(),
+                # The run's own id, so a panel showing one carried run can
+                # tell that the file underneath it has been swapped for
+                # another rather than merely re-read.
+                "id": self.replay.trace.get("id", ""),
+                "name": self.replay.trace.get("name", ""),
+                "n_steps": len(self.replay.trace.get("steps", [])),
+                # What the SENDER's run held, which is not what this file
+                # holds when the section was capped on the way in.
+                "n_steps_total": self.replay.trace.get(
+                    "n_steps_total", len(self.replay.trace.get("steps", []))
+                ),
+                "truncated": self.replay.trace.get("truncated", 0),
+                "step_ref": self.replay.trace.get("step_ref") or None,
+            },
         }
 
     # ---------------- SAE features ----------------

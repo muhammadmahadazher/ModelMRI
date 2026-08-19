@@ -228,3 +228,125 @@ def test_an_older_reader_ignores_the_section_rather_than_failing():
 def test_a_bundle_stays_small_enough_to_open():
     blob = _build(trace=_trace(n=200))
     assert len(blob) < 300_000, f"{len(blob):,} bytes"
+
+
+# ------------------------------------------- the run reaching a screen
+
+
+def _client():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    return TestClient(create_app())
+
+
+def test_a_carried_run_is_reported_on_the_session_state():
+    """The three siblings — patch, ground, patch_graph — were all here and
+    this one was not, so a bundle built around a failing step opened to a
+    panel reading "0 recordings" with the run inside the file."""
+    # `step_ref` is an argument to `build`, not a field the caller writes
+    # into the trace: the writer checks it names a step the file carries.
+    blob = _build(trace=_trace(3), step_ref="s1")
+    with _client() as c:
+        assert c.post("/api/session/open", content=blob).status_code == 200
+        state = c.get("/api/session/state").json()["trace"]
+        assert state["available"] is True
+        assert state["n_steps"] == 3
+        # `bundle.prepare` is the authority on these two, not the caller, so a
+        # complete run reports itself complete rather than taking a claim.
+        assert state["n_steps_total"] == 3
+        assert state["truncated"] == 0
+        # The step the bundle was built AROUND is the reason it was sent.
+        assert state["step_ref"] == "s1"
+        c.post("/api/session/close")
+
+
+def _hand_authored(trace: dict) -> bytes:
+    """A `.mri` written by something other than this library.
+
+    Which is the case the whole section exists for: a bundle is meant to be
+    forwarded, so `_trace` runs on bytes a stranger sent, and a sender whose
+    run was longer than the format holds says so in the file rather than
+    silently shipping a section as a whole.
+    """
+    import json
+
+    return json.dumps(
+        {
+            "format": session.FORMAT,
+            "format_version": session.FORMAT_VERSION,
+            "meta": {"model": "Qwen/Qwen3-1.7B"},
+            "prompt": "hello",
+            "generation": "world",
+            "tokens": ["a", "b"],
+            "attention": {},
+            "trace": trace,
+        }
+    ).encode("utf-8")
+
+
+def test_a_capped_run_reports_what_the_senders_run_held_not_what_fits():
+    """3 steps out of 9 is a section of a run, and reporting 3 for both counts
+    would present it as the whole of one. The cut is REPORTED, never silent."""
+    blob = _hand_authored(_trace(3, n_steps_total=9, truncated=6))
+    with _client() as c:
+        assert c.post("/api/session/open", content=blob).status_code == 200
+        state = c.get("/api/session/state").json()["trace"]
+        assert (state["n_steps"], state["n_steps_total"], state["truncated"]) == (
+            3,
+            9,
+            6,
+        )
+        doc = c.get("/api/session/trace").json()
+        assert len(doc["steps"]) == 3
+        assert doc["n_steps_total"] == 9
+        assert doc["truncated"] == 6
+        c.post("/api/session/close")
+
+
+def test_the_carried_run_is_served_with_the_same_rollup_the_store_gets():
+    """Two sources for one shape. A run read from a file and a run read from
+    the store go through the same `ledger.roll_up`, so they read identically
+    rather than nearly."""
+    blob = _build(trace=_trace(4))
+    with _client() as c:
+        c.post("/api/session/open", content=blob)
+        doc = c.get("/api/session/trace").json()
+        assert doc["available"] is True
+        assert len(doc["steps"]) == 4
+        assert set(doc["tokens_by_step"]) == {"s0", "s1", "s2", "s3"}
+        assert "counts" in doc["tokens"]
+        # Priced through the same biller, and a price file that cannot be read
+        # is a field rather than a 500.
+        assert "means" in doc["cost"]
+        c.post("/api/session/close")
+
+
+def test_no_session_and_no_run_are_both_the_same_ordinary_state():
+    """`available: False`, not an error. Most sessions carry no agent run, and
+    a panel that treats "nothing here" as a failure shows a red box on the
+    common case."""
+    with _client() as c:
+        assert c.get("/api/session/trace").json() == {"available": False}
+        c.post("/api/session/open", content=_build())
+        assert c.get("/api/session/trace").json() == {"available": False}
+        assert c.get("/api/session/state").json()["trace"]["available"] is False
+        c.post("/api/session/close")
+
+
+def test_reading_a_carried_run_does_not_file_it_in_this_machines_history():
+    """A recording is read, never adopted. Importing it would put a stranger's
+    run into the store as though it had been captured here."""
+    with _client() as c:
+        before = {t["id"] for t in c.get("/api/traces").json()}
+        c.post("/api/session/open", content=_build(trace=_trace(2, id="t-outside")))
+        carried = c.get("/api/session/trace").json()
+        assert carried["available"] is True
+        after = {t["id"] for t in c.get("/api/traces").json()}
+        assert after == before
+        # And it is not reachable through the store's own route either, which
+        # is the check that would catch a future "just import it" shortcut.
+        assert c.get(f"/api/traces/{carried['id']}").status_code == 404
+        c.post("/api/session/close")

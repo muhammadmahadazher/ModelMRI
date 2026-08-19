@@ -11,10 +11,14 @@ import {
   adoptStep,
   clearTraces,
   errorText,
+  getSessionState,
+  getSessionTrace,
   getTrace,
   getTraces,
   SearchResult,
   searchTraces,
+  SessionState,
+  SessionTraceDoc,
   TraceDoc,
   TraceStep,
   TraceSummary,
@@ -61,6 +65,14 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<SearchResult | null>(null);
   const [searchErr, setSearchErr] = useState("");
+  // The run carried INSIDE the open `.mri`, which is a different source from
+  // the store this panel lists. A bundle built around a failing step used to
+  // open here to "0 recordings" with the run sitting in the file.
+  const [carried, setCarried] = useState<SessionState["trace"] | null>(null);
+  // Whether what is on screen came from the file rather than the store. It
+  // changes what a refusal is allowed to say: a carried step is not adoptable
+  // for a reason that has nothing to do with where it ran.
+  const [fromSession, setFromSession] = useState(false);
   // Above every conditional return. This panel returns early for its empty
   // and loading states, so a hook placed after that ran on some renders and
   // not others — React error #310, and the whole page blank. Hooks are not
@@ -98,7 +110,35 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
     };
   }, []);
 
+  // A carried run belongs to the file that is open, so it must not outlive
+  // it. Close the session — or open a different one — while its run is on
+  // screen and the timeline used to stay exactly as it was, under a sentence
+  // reading "the session file you have open", about a file that is not.
+  useEffect(() => {
+    if (!fromSession) return;
+    if (!carried?.available) {
+      setDoc(null);
+      setSel(null);
+      setFromSession(false);
+      return;
+    }
+    // A DIFFERENT file, not merely a re-read of the same one. Compared by the
+    // run's id rather than by object identity, because the state is refetched
+    // on a timer and every poll produces a new object.
+    if (doc && doc.id !== carried.id) {
+      setDoc(null);
+      setSel(null);
+    }
+    // `doc` is in the deps and this sets it, which is only stable because the
+    // condition is false once it has run: the next pass sees `doc === null`.
+  }, [carried, fromSession, doc]);
+
   const load = useCallback(() => {
+    // Asked on the same schedule as the store list, because opening a `.mri`
+    // is exactly as much of an arrival as recording a run is.
+    void getSessionState()
+      .then((st) => live.current && setCarried(st.trace ?? null))
+      .catch(() => undefined);
     void getTraces()
       .then((l) => {
         if (!live.current) return;
@@ -205,7 +245,14 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
     return doc.steps.map((s) => ({ step: s, lane: depth.get(s.id) ?? 0 }));
   }, [doc]);
 
-  if (!list || list.length === 0) {
+  // The empty branch is for "there is nothing to look at", and a `.mri`
+  // carrying an agent run means there IS. Returning early on the store alone
+  // is the same mistake the drop zone below already had to be fixed for: this
+  // panel returns before the list renders, so anything mounted only in the
+  // populated branch is invisible to exactly the reader who has no store
+  // entries — here, somebody who was sent a bundle and opened it.
+  const empties = !list || list.length === 0;
+  if (empties && !carried?.available) {
     return (
       <div className="panel">
         <div className="sect">
@@ -254,7 +301,8 @@ with trace("my-agent"):
           <InspectDrop
             onImported={(id) => {
               void getTraces().then(setList);
-              void getTrace(id).then(setDoc);
+              setFromSession(false);
+          void getTrace(id).then(setDoc);
             }}
           />
         </div>
@@ -264,7 +312,8 @@ with trace("my-agent"):
 
   // Bundled samples in the list, so the panel can name them and offer to
   // remove them rather than leaving a red "1 error" nobody recognises.
-  const demos = list.filter((t) => t.demo).length;
+  const rows = list ?? [];
+  const demos = rows.filter((t) => t.demo).length;
 
   async function search(text: string) {
     setQ(text);
@@ -287,9 +336,27 @@ with trace("my-agent"):
   async function openHit(traceId: string, stepId: string) {
     const d = await getTrace(traceId);
     setDoc(d);
+    setFromSession(false);
     setSel(d.steps.find((s) => s.id === stepId) ?? null);
     setAdopted(null);
     setAdoptErr("");
+  }
+
+  /** Open the run the `.mri` carries, on the step it was built around. */
+  async function openCarried() {
+    const d = await getSessionTrace();
+    if (!d.available) {
+      // The file was closed between the list refresh and this click.
+      setCarried(null);
+      return;
+    }
+    setDoc(d);
+    setFromSession(true);
+    setAdopted(null);
+    setAdoptErr("");
+    // `step_ref` is the reason the bundle was sent. Landing on step one and
+    // making the reader hunt for it wastes the one thing the sender said.
+    setSel(d.step_ref ? (d.steps.find((x) => x.id === d.step_ref) ?? null) : null);
   }
 
   async function adopt(step: TraceStep) {
@@ -421,7 +488,7 @@ with trace("my-agent"):
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
-          {list.length} recording{list.length === 1 ? "" : "s"}
+          {rows.length} recording{rows.length === 1 ? "" : "s"}
           {demos > 0 && ` · ${demos} bundled sample${demos === 1 ? "" : "s"}`}
         </span>
         <span className="spacer" />
@@ -468,6 +535,7 @@ with trace("my-agent"):
           // scoped inside the polling effect, so this calls the same two
           // clients directly rather than reaching into it.
           void getTraces().then(setList);
+          setFromSession(false);
           void getTrace(id).then(setDoc);
         }}
       />
@@ -475,6 +543,7 @@ with trace("my-agent"):
       <RubricPanel
         onPick={(id) => {
           setSel(null);
+          setFromSession(false);
           void getTrace(id).then(setDoc);
         }}
       />
@@ -500,9 +569,39 @@ with trace("my-agent"):
         agents={groups.map((g) => ({ name: g.name, runs: g.runs.length }))}
         onPick={(id) => {
           setSel(null);
+          setFromSession(false);
           void getTrace(id).then(setDoc);
         }}
       />
+
+      {/* THE OTHER SOURCE. The list below is what this machine recorded or
+          imported; this is what arrived inside the `.mri` somebody sent. It
+          is deliberately outside the list rather than merged into it: a
+          carried run is not in the store, cannot be deleted from it, and
+          disappears when the file is closed, so showing it as an ordinary row
+          would promise three things that are not true of it. */}
+      {carried?.available && (
+        <button
+          className={`trace-row carried ${fromSession ? "sel" : ""}`}
+          onClick={() => void openCarried()}
+          title="the agent run inside the session file that is open"
+        >
+          <span className="tname">
+            {carried.name || "agent run"}
+            <span className="pill tiny" title="carried by the open .mri, not stored on this machine">
+              in this file
+            </span>
+          </span>
+          <span className="meta">
+            {carried.n_steps} step{carried.n_steps === 1 ? "" : "s"}
+            {/* Only when they differ. "4 of 4" is noise; "4 of 9" is the
+                whole point — the sender's run was longer than what fits. */}
+            {carried.n_steps_total > carried.n_steps &&
+              ` of ${carried.n_steps_total}`}
+            {carried.step_ref && " · opens on the step it was sent for"}
+          </span>
+        </button>
+      )}
 
       <div className="trace-list">
         {groups.map(({ name, runs }) => {
@@ -522,6 +621,7 @@ with trace("my-agent"):
                   }`}
                   onClick={() => {
                     setSel(null);
+                    setFromSession(false);
                     void getTrace(t.id).then(setDoc);
                   }}
                 >
@@ -591,6 +691,19 @@ with trace("my-agent"):
 
       {doc && (
         <>
+          {/* Beside the timeline, not only on the row that opened it. A
+              reader looking at four blocks is looking at a run that had nine
+              steps, and the cap is invisible from here — the timeline draws
+              what it was given and looks complete either way. */}
+          {fromSession && (doc as SessionTraceDoc).truncated > 0 && (
+            <div className="hint">
+              This is {doc.steps.length} of{" "}
+              {(doc as SessionTraceDoc).n_steps_total} steps.{" "}
+              {(doc as SessionTraceDoc).truncated} did not fit in the session
+              file, so the timeline below is a section of the run rather than
+              the run.
+            </div>
+          )}
           <div className="timeline" style={{ height: nLanes * 36 + 8 }}>
             {lanes.map(({ step, lane }) => (
               <button
@@ -646,11 +759,25 @@ with trace("my-agent"):
           {/* The share half. Sited under the run summary rather than beside
               the timeline: what leaves the machine is a decision about the
               whole run, not about whichever step happens to be selected. */}
-          <ShareRun
-            traceId={doc.id}
-            selected={sel}
-            ready={Boolean(sel?.adoptable)}
-          />
+          {/* Not for a carried run. `ShareRun` builds a `.mri` by asking the
+              STORE for the trace, and a run read out of an opened file is not
+              in the store — the preview call 404'd with "trace not found",
+              which reads as the run being broken rather than as the button
+              not applying to it. The reader is already holding the bundle
+              this would produce. */}
+          {fromSession ? (
+            <div className="hint">
+              This run arrived inside the session file you have open, so there
+              is nothing here to package — the bundle already exists and you
+              are reading it.
+            </div>
+          ) : (
+            <ShareRun
+              traceId={doc.id}
+              selected={sel}
+              ready={Boolean(sel?.adoptable)}
+            />
+          )}
 
           {sel && (
             <div className={`inspector ${sel.error ? "err" : ""}`}>
@@ -739,10 +866,26 @@ with trace("my-agent"):
                   )}
                 </div>
               ) : (
-                sel.kind === "llm_call" && (
-                  // A sentence, not a disabled button. A control that can only
-                  // ever refuse teaches the reader that the feature is broken
-                  // rather than that the weights are somewhere else.
+                sel.kind === "llm_call" &&
+                // A sentence, not a disabled button. A control that can only
+                // ever refuse teaches the reader that the feature is broken
+                // rather than that the weights are somewhere else.
+                //
+                // TWO different reasons, and saying the wrong one sends
+                // somebody to fix the wrong thing. A step from the store did
+                // not run here. A step from an opened `.mri` may well have run
+                // on the sender's machine with weights and all — the bundle
+                // simply does not carry token ids, by design, because they are
+                // the model's reading of somebody's private prompt.
+                (fromSession ? (
+                  <div className="hint">
+                    A session file carries this run's shape — its steps, timing
+                    and token counts — and not the token ids underneath them,
+                    so there is nothing here for the panels above to read. Open
+                    the run where it was recorded, or ask for a bundle exported
+                    from the step itself.
+                  </div>
+                ) : (
                   <div className="hint">
                     This call did not run on this machine, so there are no
                     weights here to look inside. Steps recorded through{" "}
@@ -750,7 +893,7 @@ with trace("my-agent"):
                     that make the panels above work on them; a hosted API
                     returns text and nothing underneath it.
                   </div>
-                )
+                ))
               )}
               {adopted && (
                 <div className="hint ok">

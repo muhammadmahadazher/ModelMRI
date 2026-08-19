@@ -136,6 +136,17 @@ export async function demoFetch(
     });
   }
   if (p === "/api/session/state") return ok((await bundle<any>("env")).session_state ?? {});
+  if (p === "/api/session/trace") {
+    // The run carried INSIDE an opened `.mri`. This page is a recording of a
+    // live session rather than a bundle somebody opened in it, so there is no
+    // carried run — which is the ordinary answer for most sessions, not a
+    // limitation of this page. The agent runs this demo does have are in the
+    // trace store and reachable from `/api/traces`, where the panel lists
+    // them. Saying `available: false` here and letting those show is the
+    // truthful split; claiming a carried run would put the demo's own traces
+    // under a label saying they arrived in a file.
+    return ok({ available: false });
+  }
   // Reading the HuggingFace cache means reading a disk, which this page does
   // not have. This used to answer with a model list written into this file --
   // an inventory of a machine nobody here can see, at a size nothing
@@ -818,6 +829,11 @@ export async function demoFetch(
     return ok({
       models: [],
       known: 0,
+      // The walk that did not happen did not stop early either. Both fields
+      // are on the live shape and were absent here, which is how a demo
+      // drifts from the tool it stands in for.
+      truncated: false,
+      scan_limit: 0,
       means:
         "This page is a static recording and cannot read a disk, so it lists " +
         "no image models — not because none are cached, but because there is " +

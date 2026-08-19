@@ -98,6 +98,29 @@ export interface SessionState {
    *  previews, deliberately, because a grounded document is usually the
    *  private half of the pair. */
   ground?: { available: boolean; question: string };
+  /** Whether the recording carries an AGENT RUN, and how much of one.
+   *
+   *  The three fields above all exist so a panel can show the recorded
+   *  finding instead of a button that can only refuse. This one was missing
+   *  while its siblings were here, so a bundle built around a failing step
+   *  opened to an agents panel reading "0 recordings" with the run sitting
+   *  inside the file.
+   *
+   *  `n_steps` is what the file holds; `n_steps_total` is what the sender's
+   *  run held, and they differ when the section was capped on the way in.
+   *  `step_ref` is the step the bundle was built AROUND — the reason it was
+   *  sent — so the panel can open on it rather than on step one. */
+  trace?: {
+    available: boolean;
+    /** The carried run's id, so a panel can tell a swapped file from a
+     *  re-read one. */
+    id: string;
+    name: string;
+    n_steps: number;
+    n_steps_total: number;
+    truncated: number;
+    step_ref: string | null;
+  };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -2530,6 +2553,29 @@ export interface TraceDoc {
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
+/** The agent run carried INSIDE the open `.mri`, rather than one in the store.
+ *
+ *  Two sources answer "what runs can I look at", and they are not the same
+ *  set: `getTraces` lists what this machine recorded or imported, and this is
+ *  what arrived in the file somebody sent. A carried run is read, never
+ *  written to the store — importing it would file a stranger's run in this
+ *  machine's history as though it had been captured here.
+ *
+ *  `available: false` is the ordinary answer. Most sessions carry no run.
+ */
+export interface SessionTraceDoc extends TraceDoc {
+  available: boolean;
+  /** What the sender's run held, against `steps.length` here. */
+  n_steps_total: number;
+  /** How many steps the file dropped to fit its cap. */
+  truncated: number;
+  /** The step the bundle was built around, if it names one. */
+  step_ref?: string | null;
+}
+
+export const getSessionTrace = () =>
+  fetch("/api/session/trace").then((r) => json<SessionTraceDoc>(r));
 
 /** What the last generation cost, including what watching it cost.
  *

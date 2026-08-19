@@ -5541,6 +5541,71 @@ def create_app(
     def session_state() -> dict:
         return runtime.session_info()
 
+    @app.get("/api/session/trace")
+    def session_trace() -> dict:
+        """The agent run carried by the open `.mri`, if it has one.
+
+        The store at `/api/traces` holds runs somebody IMPORTED. This is the
+        other source: a bundle built around a failing step carries the run
+        inside it, and until this existed that run was parsed, validated, and
+        then shown to nobody — the panel listed the store, found it empty, and
+        said "0 recordings" over a file containing the very thing it lists.
+
+        Nothing is written to the store. A recording is read, not adopted:
+        importing it would put somebody else's run into this machine's history
+        as though it had been captured here.
+
+        `available: False` is a state, not an error. Most sessions carry no
+        agent run, and the rolled-up tokens are computed by the same
+        `ledger.roll_up` the store's traces go through so the two read
+        identically rather than nearly.
+        """
+        from . import ledger as ledger_mod
+
+        replay = runtime.replay
+        if replay is None or not replay.has_trace():
+            return {"available": False}
+        doc = dict(replay.trace)
+        # ONE STEP SHAPE, whichever source it came from. The store fills these
+        # from its own columns; a `.mri` carries a deliberately smaller step,
+        # so the fields it omits have to arrive as the value that MEANS
+        # omitted. `null` is that value and the panel already reads it as "the
+        # recorder said nothing" — while a missing key reaches the same test as
+        # `undefined`, which is not null, and printed "undefined cache read"
+        # next to the real counts. `seq` is positional, so it is derived here
+        # rather than left blank: the inspector titles every step "step N".
+        steps = [
+            {
+                "truncated_in": 0,
+                "truncated_out": 0,
+                "tokens_cache_read": None,
+                "tokens_cache_write": None,
+                "tokens_reasoning": None,
+                # Never adoptable, and false rather than absent: the file
+                # carries a run's shape and not the token ids underneath it,
+                # so there is nothing for the panels to reopen.
+                "adoptable": False,
+                **step,
+                "seq": i,
+            }
+            for i, step in enumerate(doc.get("steps") or [])
+        ]
+        doc["steps"] = steps
+        doc["tokens"] = ledger_mod.roll_up(steps).to_dict()
+        doc["tokens_by_step"] = {
+            sid: roll.to_dict()
+            for sid, roll in ledger_mod.subtree_rollups(steps).items()
+        }
+        # Same treatment as `/api/traces/{id}`: an unreadable price file is a
+        # field on the answer, not an exception that takes the run down with
+        # it. The token counts above stand without prices.
+        try:
+            doc["cost"] = ledger_mod.bill(steps, ledger_mod.load_prices()).to_dict()
+        except BadRequest as err:
+            doc["cost"] = {"error": str(err), "means": str(err)}
+        doc["available"] = True
+        return doc
+
     @app.get("/api/graph")
     def graph() -> dict:
         """An attribution graph carried by the open `.mri`, if it has one.
