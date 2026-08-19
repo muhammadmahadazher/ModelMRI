@@ -6835,3 +6835,62 @@ button:disabled,
   aspect-ratio: 1;
 }
 .icv-grid i { background: var(--color-image); border-radius: 1px; }
+
+/* ---------- what a LoRA changes ---------- */
+.adapter-head { gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+.adapter-groups { width: 100%; border-collapse: collapse; margin: 8px 0 4px; }
+.adapter-groups caption {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: 6px;
+}
+.adapter-groups th,
+.adapter-groups td { padding: 4px 8px 4px 0; text-align: left; font-weight: inherit; }
+.adapter-groups th { white-space: nowrap; }
+.adapter-n { white-space: nowrap; }
+/* The bar column takes what is left, so the numbers stay aligned however long
+   a component name is. */
+.adapter-track {
+  width: 100%;
+  min-width: 60px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--sf-sunk);
+  overflow: hidden;
+  display: block;
+}
+.adapter-bar { display: block; height: 100%; background: var(--color-image); }
+.adapter-norm {
+  white-space: nowrap;
+  text-align: right;
+  font-feature-settings: var(--num);
+  font-size: var(--t-xs);
+}
+.adapter-modules { margin-top: 8px; }
+.adapter-modules summary { cursor: pointer; }
+.adapter-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 5px; }
+.adapter-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 8ch minmax(50px, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+/* A module path is long and the middle is the least informative part; letting
+   it overflow would push the numbers off the row. */
+.adapter-mod {
+  font-size: var(--t-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.adapter-means {
+  border-left: 2px solid color-mix(in oklab, var(--color-image) 45%, transparent);
+  padding-left: 9px;
+  margin-top: 8px;
+}
+@media (max-width: 560px) {
+  .adapter-list li { grid-template-columns: 1fr auto; }
+  .adapter-list .adapter-track { grid-column: 1 / -1; }
+}

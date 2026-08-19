@@ -1,6 +1,7 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import RestingSketch from "./RestingSketch";
 import ImageModelPicker from "./ImageModelPicker";
+import AdapterPanel from "./AdapterPanel";
 import ImageCV from "./ImageCV";
 import ImageSteps from "./ImageSteps";
 import { useScanOnData } from "./useScanOnData";
@@ -747,6 +748,12 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
             </span>
           </div>
         )}
+        {/* Needs no model: it reads an adapter file. So it belongs in the
+            RESTING state too, which is where somebody comparing two LoRAs
+            before committing to either actually is. Diffusion side only —
+            a LoRA targets a denoiser or a text encoder, and the vision
+            section has neither. */}
+        {kind !== "vision" && <AdapterPanel />}
       </div>
     );
   }
@@ -1219,6 +1226,13 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
           Before the occlusion sweep below, deliberately: that block explains
           a prediction, and until now the reader was never shown the
           prediction it was explaining. */}
+      {/* Same control in the loaded state, because "what does this LoRA
+          change" is asked just as often with a pipeline already resident —
+          and with one resident the reader can also fill in each module's size
+          RELATIVE to the weight it modifies, which is the number people
+          actually want. */}
+      {kind !== "vision" && <AdapterPanel />}
+
       {canPredict && (
         <div className="isect">
           <h3 className="mid isect-head">prediction — what this model says</h3>

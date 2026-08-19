@@ -1812,6 +1812,59 @@ export const imageCvReadout = (body: { image: string; top_k: number }) =>
     body: JSON.stringify(body),
   }).then((r) => json<ImageCvReadout>(r));
 
+/** One module a LoRA targets, and how far it moves it. */
+export interface AdapterModule {
+  name: string;
+  component: string;
+  role: string;
+  rank: number | null;
+  /** `alpha / rank`. `null` when the adapter published neither, in which case
+   *  `delta_norm` is UNSCALED and not comparable with the scaled rows. */
+  scale: number | null;
+  scaled: boolean;
+  /** Frobenius norm of the delta. A MAGNITUDE, never an effect: a large move
+   *  in a layer the sampler barely exercises can matter less than a small one
+   *  in a layer it leans on. */
+  delta_norm: number;
+  /** `||dW|| / ||W||`, or `null` when the base model was not resident. Never
+   *  approximated — the denominator is the point of the ratio. */
+  relative: number | null;
+}
+
+export interface AdapterGroup {
+  component: string;
+  role: string;
+  modules: number;
+  delta_norm: number;
+}
+
+export interface AdapterReport {
+  path: string;
+  /** A LIST: an adapter may mix ranks per module, and one number would be
+   *  picking which. */
+  ranks: number[];
+  modules_total: number;
+  modules_listed: number;
+  components: string[];
+  roles: string[];
+  groups: AdapterGroup[];
+  top: AdapterModule[];
+  all_scaled: boolean;
+  base_model: string | null;
+  notes: string[];
+  means: string;
+}
+
+/** Read a LoRA on THIS machine. A path, not an upload: the file is already on
+ *  the server's disk and pushing 400 MB through the page to read a header
+ *  would be absurd. The route refuses requests that did not come from here. */
+export const readAdapter = (path: string, top = 40) =>
+  fetch("/api/image/adapter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, top }),
+  }).then((r) => json<AdapterReport>(r));
+
 export interface ImageLocalModel {
   /** The repo id, and the string `loadImage` takes. */
   path: string;
