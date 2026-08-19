@@ -47,11 +47,14 @@ no torch. See [sharing what you found](guides/attention.md#sharing-what-you-foun
 
 ## Your first look inside a model
 
-1. **Pick a model.** The picker opens on **On this machine**, which lists
-   everything already on your disk: the HuggingFace cache, any folder with a
-   `config.json` and weights, and any `.gguf` file. Nothing there? Switch to
-   **HuggingFace** and search — `Qwen/Qwen3-1.7B` is a good first choice at
-   about 1.5 GB.
+1. **Pick a model.** The button already names one: the smallest model on your
+   disk that the playground can run, so on a machine with a populated cache
+   you can press Generate without opening anything. Open it to choose another
+   — the picker starts on **On this machine**, which lists everything already
+   on your disk: the HuggingFace cache, any folder with a `config.json` and
+   weights, and any `.gguf` file. Nothing there? The button falls back to a
+   name to download; switch to **HuggingFace** and search — `Qwen/Qwen3-1.7B`
+   is a good first choice at about 1.5 GB.
 
 2. **Type a prompt and press Generate.** The model loads automatically if it
    isn't already. A cold load shows real progress — stage, bytes, and a warning

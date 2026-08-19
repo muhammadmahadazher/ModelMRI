@@ -3,6 +3,7 @@ import {
   cancelLoad,
   errorText,
   getAttentionMeta,
+  getDiscovered,
   getLoadProgress,
   loadModel,
   LoadProgress,
@@ -40,7 +41,16 @@ interface Props {
   onGenerated?: () => void;
 }
 
-const CURATED = ["Qwen/Qwen2.5-0.5B-Instruct", "gpt2"];
+// What the model button says before anything has been measured. The button
+// has to name something on the first paint, and a machine with an empty cache
+// has nothing to name — so this is a starting point, not a claim about this
+// machine. `suggested` below replaces it with a model this machine actually
+// holds as soon as the scan answers.
+//
+// This was a two-element `CURATED` array whose second element nothing read
+// and whose name promised a list rendered somewhere. The list that exists is
+// the picker sheet, and it is built from the disk scan, not from here.
+const FALLBACK_MODEL = "Qwen/Qwen2.5-0.5B-Instruct";
 
 // Sent with every generation and echoed in the readout, so what you read is
 // what the run used. These were previously implicit server defaults, which
@@ -57,7 +67,7 @@ export default function Playground({
   onGenerated,
 }: Props) {
   const [source, setSource] = useState<"hf" | "ollama">("hf");
-  const [pick, setPick] = useState(CURATED[0]);
+  const [pick, setPick] = useState(FALLBACK_MODEL);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [prompt, setPrompt] = useState(
     "The Eiffel Tower is located in the city of",
@@ -89,6 +99,13 @@ export default function Playground({
 
   const isLoadedPick = model?.loaded && model.hf_id === pick;
 
+  // Has anything but the fallback decided what this button says? Set by every
+  // path that means a model was CHOSEN — adopting what the server already has,
+  // the picker sheet, the size guard's override. The scan below is the one
+  // writer that defers to it, because a suggestion must never overwrite a
+  // choice somebody made while it was still walking the disk.
+  const chosen = useRef(false);
+
   // The server keeps its model across page loads; the picker did not. You
   // came back to a tab that said one model in the badge and another in the
   // picker, and Generate quietly swapped to the second. Adopt what is
@@ -97,9 +114,53 @@ export default function Playground({
   useEffect(() => {
     if (adopted.current || !model?.loaded || !model.hf_id) return;
     adopted.current = true;
+    chosen.current = true;
     setPick(model.hf_id);
     setSource(model.device === "ollama" ? "ollama" : "hf");
   }, [model?.loaded, model?.hf_id, model?.device]);
+
+  // Nothing loaded, so nothing has named a model yet and the button is showing
+  // a baked guess. Ask the disk instead: `/api/models/discovered` is the same
+  // scan the picker's "On this machine" tab renders, so the suggestion and the
+  // list you check it against come from one answer rather than two.
+  //
+  // Why the scan and not `/api/models/local`, which is cheaper: the cache is
+  // not all language models. It also holds SAEs, embedders, diffusion and
+  // segmentation weights, and metadata-only directories with no weights at
+  // all. The scan reads each config and marks `loadable`, which is exactly
+  // the difference between suggesting a name and suggesting a name that will
+  // fail minutes later on a tokenizer traceback. Smallest first, because a
+  // suggestion is a starting point — the 70B on the same disk is one click
+  // away in the sheet, and the sheet sorts largest-first for that.
+  //
+  // Waits for the session answer rather than firing on mount: a loaded model
+  // outranks any suggestion, and racing the adoption above would flash a name
+  // this session is not using. The fallback stays the synchronous initial
+  // value, so the button never paints empty and never paints twice on a
+  // machine that has nothing cached.
+  const suggested = useRef(false);
+  useEffect(() => {
+    if (suggested.current || VIEWER || !model) return;
+    suggested.current = true;
+    if (model.loaded) return;
+    let live = true;
+    void getDiscovered()
+      .then((d) => {
+        if (!live || chosen.current) return;
+        const usable = d.models
+          .filter((m) => m.loadable && m.kind === "hf-cache")
+          // Ties on size are common — two quantisations of one repo — so the
+          // id breaks them and the button does not depend on scan order.
+          .sort((a, b) => a.size_gb - b.size_gb || a.id.localeCompare(b.id));
+        if (usable.length) setPick(usable[0].id);
+      })
+      // An empty cache, a refusing scan, no server: the fallback above is
+      // already on screen and is still a name you can load.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [model]);
 
   // Same bug as the picker above, one layer up: `epoch` is a client-side
   // counter, so a reload dropped it to 0 and unmounted the attention and
@@ -325,6 +386,7 @@ export default function Playground({
                   // Re-select as well as load. The override names its own
                   // model, so without this the picker would keep showing a
                   // different one while that model downloaded.
+                  chosen.current = true;
                   setPick(oversize.id);
                   setSource(oversize.source);
                   void ensureLoaded(true, { id: oversize.id, source: oversize.source });
@@ -457,6 +519,7 @@ export default function Playground({
         current={pick}
         onClose={() => setPickerOpen(false)}
         onPick={(id, src) => {
+          chosen.current = true;
           setPick(id);
           setSource(src);
           setPickerOpen(false);

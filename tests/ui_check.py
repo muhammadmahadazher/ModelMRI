@@ -14,6 +14,7 @@ Needs Playwright:  uv run playwright install chromium
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5900/"
@@ -76,6 +77,231 @@ def skip(section: str, why: str) -> None:
     """
     SKIP.append(f"{section}: {why}")
     print(f"  [SKIP] {section} — {why}")
+
+
+# Watches the model button from before the first paint and records every value
+# it takes, in order. A poll would miss the failure this exists to catch: a box
+# that is briefly EMPTY, or that lands on one name and then jumps to another,
+# is wrong for a few frames and correct by the time anyone asks it.
+#
+# Self-executing on purpose: `add_init_script` takes a SCRIPT, and a bare
+# `() => {...}` is an expression that evaluates a function and throws it away.
+# It fails silently — `window.__box` stays undefined, every assertion reading
+# it reports `took None`, and the one written as "no forbidden name appears"
+# passes, because no name appears at all.
+WATCH_MODEL_BOX = """(() => {
+  window.__box = [];
+  const tick = () => {
+    const el = document.querySelector('.model-btn-id');
+    if (el) {
+      const seen = el.textContent;
+      if (window.__box[window.__box.length - 1] !== seen) window.__box.push(seen);
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})()"""
+
+# A cache with a trap in it. The two smallest entries are the two the
+# playground cannot run — this is what the HuggingFace cache really looks
+# like for anyone who has used the features panel — so a suggestion that
+# sorted on size alone would offer the sparse autoencoder.
+SCAN_WITH_A_TRAP = {
+    "models": [
+        {
+            "id": "Qwen/Qwen2.5-7B-Instruct",
+            "name": "Qwen/Qwen2.5-7B-Instruct",
+            "path": "/cache/models--Qwen--Qwen2.5-7B-Instruct",
+            "kind": "hf-cache",
+            "size_gb": 15.2,
+            "loadable": True,
+            "note": "cached, loads offline",
+        },
+        {
+            "id": "openai-community/gpt2",
+            "name": "openai-community/gpt2",
+            "path": "/cache/models--openai-community--gpt2",
+            "kind": "hf-cache",
+            "size_gb": 0.55,
+            "loadable": True,
+            "note": "cached, loads offline",
+        },
+        {
+            "id": "EleutherAI/sae-llama-3-8b-32x",
+            "name": "EleutherAI/sae-llama-3-8b-32x",
+            "path": "/cache/models--EleutherAI--sae-llama-3-8b-32x",
+            "kind": "hf-cache",
+            "size_gb": 0.24,
+            "loadable": False,
+            "note": "a sparse autoencoder — load it from the features panel",
+        },
+        {
+            "id": "sentence-transformers/all-MiniLM-L6-v2",
+            "name": "sentence-transformers/all-MiniLM-L6-v2",
+            "path": "/cache/models--sentence-transformers--all-MiniLM-L6-v2",
+            "kind": "hf-cache",
+            "size_gb": 0.09,
+            "loadable": False,
+            "note": "BertModel is not a causal language model",
+        },
+    ],
+    "roots": ["/cache"],
+    "truncated": False,
+}
+
+EMPTY_SCAN = {"models": [], "roots": ["/cache"], "truncated": False}
+
+
+async def model_box_section(browser, base: str) -> None:
+    """The model button names something this machine actually holds.
+
+    It used to name a constant — the first element of a two-element `CURATED`
+    array whose second element nothing ever read. A baked name is a guess
+    about somebody else's disk, and in a tool whose premise is that what is
+    on screen was measured, the one control you touch first should not open
+    on a model you may not have.
+
+    Every case here stubs `/api/models/discovered`, because the assertion has
+    to be decidable: a CI runner has an empty cache, so against the real scan
+    the interesting cases would all quietly pass by doing nothing. The stub
+    is the shape the real route returns — `tests/test_smoke.py` is what holds
+    it to that shape.
+    """
+
+    async def opened(routes: dict, *, wait: int = 2600):
+        page = await browser.new_page(viewport={"width": 1280, "height": 900})
+        await page.add_init_script(WATCH_MODEL_BOX)
+        for pattern, handler in routes.items():
+            await page.route(pattern, handler)
+        await page.goto(base, wait_until="domcontentloaded")
+        await page.wait_for_timeout(wait)
+        return page
+
+    def answers(payload):
+        async def handler(route):
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        return handler
+
+    scanned: list[str] = []
+
+    async def counting_scan(route):
+        scanned.append(route.request.url)
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(SCAN_WITH_A_TRAP),
+        )
+
+    page = await opened({"**/api/models/discovered": counting_scan})
+    box = await page.evaluate("() => window.__box")
+    check(
+        "the box ends on a model this machine has",
+        box and box[-1] == "openai-community/gpt2",
+        f"took {box}",
+    )
+    check(
+        "and not on one the playground cannot run",
+        # `box and` matters: an empty recording satisfies "no forbidden name
+        # appears" by containing nothing, which is how a broken probe reads as
+        # a passing product.
+        bool(box)
+        and all(
+            name not in box
+            for name in (
+                "EleutherAI/sae-llama-3-8b-32x",
+                "sentence-transformers/all-MiniLM-L6-v2",
+            )
+        ),
+        f"took {box}",
+    )
+    check(
+        "it never shows an empty box on the way there",
+        box and all(name.strip() for name in box),
+        f"took {box}",
+    )
+    await page.close()
+
+    # Nothing cached is the CI runner's situation, and a very common one: the
+    # baked name is the whole answer then, and it must not be replaced by a
+    # blank or by a spinner.
+    page = await opened({"**/api/models/discovered": answers(EMPTY_SCAN)})
+    box = await page.evaluate("() => window.__box")
+    check(
+        "with an empty cache the box keeps one name and does not blink",
+        box and len(box) == 1 and box[0].strip(),
+        f"took {box}",
+    )
+    await page.close()
+
+    # A server that already holds a model outranks any suggestion — and the
+    # scan must not run at all, rather than run and be discarded.
+    loaded = {
+        "app": "modelmri",
+        "version": "test",
+        "model": {
+            "loaded": True,
+            "hf_id": "meta-llama/Llama-3.2-1B",
+            "device": "cpu",
+            "dtype": "float32",
+            "n_params": 1_235_814_400,
+            "instruct": False,
+        },
+    }
+    scanned.clear()
+    page = await opened(
+        {
+            "**/api/session": answers(loaded),
+            "**/api/models/discovered": counting_scan,
+        }
+    )
+    box = await page.evaluate("() => window.__box")
+    check(
+        "a model the server already holds wins over any suggestion",
+        box and box[-1] == "meta-llama/Llama-3.2-1B",
+        f"took {box}",
+    )
+    check(
+        "and nothing walks the disk to suggest one it would discard",
+        not scanned,
+        f"{len(scanned)} scans fired",
+    )
+    await page.close()
+
+    # The scan has a six-second budget per root, so on a real drive it is
+    # still walking while somebody reads the sheet. Whatever they choose
+    # while it walks has to survive it landing.
+    first = {"n": 0}
+
+    async def slow_first_scan(route):
+        # Only the page-load scan is slow; the sheet's own answers at once, so
+        # there are rows to pick from while the first one is still walking.
+        if first["n"] == 0:
+            first["n"] = 1
+            await asyncio.sleep(6)
+        await route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(SCAN_WITH_A_TRAP),
+        )
+
+    page = await opened({"**/api/models/discovered": slow_first_scan}, wait=600)
+    await page.click(".model-btn")
+    await page.wait_for_selector(".model-row:not(.locked)", timeout=30_000)
+    await page.click(".model-row:not(.locked)")  # the 15.2 GB one, deliberately
+    picked = (await page.text_content(".model-btn-id")).strip()
+    await page.wait_for_timeout(7000)  # let the slow scan land on top of it
+    after = (await page.text_content(".model-btn-id")).strip()
+    check(
+        "a model picked while the scan is still walking survives it",
+        picked == after == "Qwen/Qwen2.5-7B-Instruct",
+        f"picked {picked!r}, then {after!r}",
+    )
+    await page.close()
 
 
 async def main() -> int:
@@ -271,6 +497,12 @@ async def main() -> int:
             )
         else:
             skip("features panel refusals", "no enabled control on this server")
+
+        print("\nthe model box names a model that is actually here")
+        if demo:
+            skip("the model box", "the demo replays one recorded model")
+        else:
+            await model_box_section(browser, BASE)
 
         print("\nthe model picker does not resize under you")
         # Its list arrives async. A content-sized sheet opened ~200px tall
