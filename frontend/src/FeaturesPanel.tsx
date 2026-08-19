@@ -1,4 +1,5 @@
 import LensPanel from "./LensPanel";
+import { pair, scaled } from "./measured";
 import { useEffect, useRef, useState } from "react";
 import RunsOn from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
@@ -49,8 +50,7 @@ const DEFAULT_HOOK = "blocks.8.hook_resid_pre";
 /** FVU spans five orders of magnitude between a working SAE and a wrong one
  *  (0.0010 against 13579.24 on the default release), so one fixed number of
  *  decimals is either noise or a row of zeroes. */
-const fmtFVU = (v: number) =>
-  v >= 100 ? v.toFixed(0) : v >= 1 ? v.toFixed(2) : v.toFixed(4);
+const fmtFVU = scaled;
 
 /** Passes a feature ranking spends on top of TWO per tested feature.
  *
@@ -650,7 +650,7 @@ export default function FeaturesPanel({
                         title={
                           score.below_resolution
                             ? `KL ${fmtKL(score.kl)} nats — at or below this measurement's numerical resolution of ${measured.resolution_kl.toExponential(0)}, which is arithmetic rather than the model. The noise floor is a different and smaller number (${measured.noise_floor_kl}); greying out at the floor would grey out nothing.`
-                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${score.p_top_before.toFixed(3)} → ${score.p_top_after.toFixed(3)}${score.flips_top ? " · changes the top token" : ""} · ONE random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · that control is a single draw, and it moves: over 8 draws per row the median row's control spans a factor of about 2.5, and roughly half the rows fall between their own smallest and largest draw, so a score near its control is left undecided by this test rather than settled by it · after the edit the SAE still reads ${(score.encoder_residual * 100).toFixed(0)}% of this feature`
+                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${pair(score.p_top_before, score.p_top_after)[0]} → ${pair(score.p_top_before, score.p_top_after)[1]}${score.flips_top ? " · changes the top token" : ""} · ONE random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · that control is a single draw, and it moves: over 8 draws per row the median row's control spans a factor of about 2.5, and roughly half the rows fall between their own smallest and largest draw, so a score near its control is left undecided by this test rather than settled by it · after the edit the SAE still reads ${(score.encoder_residual * 100).toFixed(0)}% of this feature`
                         }
                       >
                         {score.below_resolution
@@ -940,8 +940,9 @@ function FeatureRanking({
             </span>
             <span className="meta">
               act {r.activation.toFixed(1)} · p(
-              {JSON.stringify(a.target_token)}) {r.p_top_before.toFixed(3)} →{" "}
-              {r.p_top_after.toFixed(3)}
+              {JSON.stringify(a.target_token)}){" "}
+              {pair(r.p_top_before, r.p_top_after)[0]} →{" "}
+              {pair(r.p_top_before, r.p_top_after)[1]}
               {r.flips_top && " · changes the top token"}
               {!plotted.includes(r.feature_id) && " · not in the chart above"}
               {/* The control, on every row rather than in a footnote. A row

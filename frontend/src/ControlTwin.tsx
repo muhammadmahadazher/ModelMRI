@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { measured } from "./measured";
 import {
   Ablation,
   ControlRanking,
@@ -58,10 +59,7 @@ import {
  * form instead. An exact 0 still prints as 0.000, because that one IS the
  * measurement — the same distinction this file keeps everywhere else.
  */
-function num(v: number): string {
-  if (v === 0) return v.toFixed(3);
-  return Math.abs(v) < 0.0005 ? v.toExponential(1) : v.toFixed(3);
-}
+const num = (v: number) => measured(v, 3);
 
 /** Both sides of the comparison carry their own noise floor, their own target
  *  token and their own pass count. Nothing is shared between the columns

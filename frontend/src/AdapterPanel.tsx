@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { measured } from "./measured";
 import { AdapterReport, errorText, readAdapter } from "./api";
 
 /**
@@ -153,7 +154,7 @@ export default function AdapterPanel() {
                     />
                   </span>
                   <span className="mid adapter-norm">
-                    {m.delta_norm.toFixed(3)}
+                    {measured(m.delta_norm, 3)}
                     {/* Shown only when it exists. Null means the base weights
                         were not resident, and a ratio against a stand-in
                         denominator is worse than no ratio. */}

@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured } from "./measured";
 import { diffModels, errorText, ModelDiffReport } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -211,8 +212,8 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
           {data.kl && (
             <div className={`mdiff-verdict ${stable ? "ok" : "wide"}`}>
               The answers differ by a median{" "}
-              <b>{data.kl.median.toFixed(4)}</b> nats per position, middle half{" "}
-              {data.kl.low.toFixed(4)} to {data.kl.high.toFixed(4)}.{" "}
+              <b>{measured(data.kl.median, 4)}</b> nats per position, middle half{" "}
+              {measured(data.kl.low, 4)} to {measured(data.kl.high, 4)}.{" "}
               {stable ? (
                 <>The prompts agree with each other about how much moved.</>
               ) : (

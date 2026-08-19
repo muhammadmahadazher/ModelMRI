@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { measured } from "./measured";
 import { GraphView, getGraph } from "./api";
 
 /** An attribution graph somebody else computed.
@@ -131,7 +132,7 @@ export default function GraphPanel() {
         )}
         {peakWeight !== null && (
           <span className="gguf-stat gguf-bpw">
-            <b>{peakWeight.toFixed(4)}</b>
+            <b>{measured(peakWeight, 4)}</b>
             <span className="meta">strongest edge</span>
           </span>
         )}
@@ -167,7 +168,7 @@ export default function GraphPanel() {
                     }}
                   />
                 </span>
-                <span className="graph-w">{e.weight.toFixed(4)}</span>
+                <span className="graph-w">{measured(e.weight, 4)}</span>
               </div>
             ))}
           </div>

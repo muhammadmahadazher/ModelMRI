@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured } from "./measured";
 import { Ablation, ablateCustom, AblationSite, errorText } from "./api";
 
 /**
@@ -170,7 +171,7 @@ export default function CustomAblate({ epoch }: { epoch: number }) {
                       />
                     )}
                   </span>
-                  <span className="mid ab-val">{site.effect.toFixed(4)}</span>
+                  <span className="mid ab-val">{measured(site.effect, 4)}</span>
                   <span className="meta ab-verd">{v.text}</span>
                 </li>
               );

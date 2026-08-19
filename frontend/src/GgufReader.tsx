@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { measured } from "./measured";
 import {
   compareQuantisation,
   GgufPlan,
@@ -465,11 +466,11 @@ function Damage({ d }: { d: QuantBehaviour }) {
     <div className="gguf-damage">
       <div className="gguf-head">
         <span className="gguf-stat">
-          <b>{s.median_kl.toFixed(4)}</b>
+          <b>{measured(s.median_kl, 4)}</b>
           <span className="meta">median KL (nats)</span>
         </span>
         <span className="gguf-stat">
-          <b>{s.max_kl.toFixed(4)}</b>
+          <b>{measured(s.max_kl, 4)}</b>
           <span className="meta">worst, at {s.max_kl_at.token.trim() || "▁"}</span>
         </span>
         <span className="gguf-stat gguf-bpw">
@@ -509,13 +510,13 @@ function Damage({ d }: { d: QuantBehaviour }) {
                   <code>{p.token}</code>
                 </td>
                 <td>
-                  <code>{p.top_b}</code> {p.p_b.toFixed(3)}
+                  <code>{p.top_b}</code> {measured(p.p_b, 3)}
                 </td>
                 <td>
-                  <code>{p.top_a}</code> {p.p_a.toFixed(3)}
+                  <code>{p.top_a}</code> {measured(p.p_a, 3)}
                 </td>
                 <td>
-                  {p.margin_b.toFixed(4)}
+                  {measured(p.margin_b, 4)}
                   <span className="meta">
                     {p.contested ? " · a tie" : " · decisive"}
                   </span>

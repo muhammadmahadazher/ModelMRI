@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { measured, pair } from "./measured";
 import { useScanOnData } from "./useScanOnData";
 import {
   Ablation,
@@ -347,7 +348,7 @@ export default function AttentionPanel({
       .sort((a, b) => b[1].kl - a[1].kl)
       .map(([h, score]) => (
         <option key={h} value={h}>
-          {h} · KL {score.kl < ranked.noise_floor_kl ? "—" : score.kl.toFixed(3)}
+          {h} · KL {score.kl < ranked.noise_floor_kl ? "—" : measured(score.kl, 3)}
           {score.flips_top ? " · flips" : ""}
         </option>
       ));
@@ -578,15 +579,15 @@ export default function AttentionPanel({
                     <span className="mid">
                       {noise
                         ? "below the noise floor"
-                        : `KL ${r.kl.toFixed(3)}`}
+                        : `KL ${measured(r.kl, 3)}`}
                       {/* The median is not the measurement, the spread is.
                           A single donor sentence could have reported any point
                           inside that spread as this head's score. */}
                       {r.draws != null && (
                         <span className="meta">
                           {" "}
-                          median of {r.draws}, {r.kl_min?.toFixed(3)}–
-                          {r.kl_max?.toFixed(3)}
+                          median of {r.draws}, {measured(r.kl_min ?? 0, 3)}–
+                          {measured(r.kl_max ?? 0, 3)}
                         </span>
                       )}
                     </span>
@@ -596,12 +597,13 @@ export default function AttentionPanel({
                         // there is no honest number to print here.
                         <>
                           p({JSON.stringify(ranked.target_token)}){" "}
-                          {r.p_top_before.toFixed(3)} → varies by draw
+                          {measured(r.p_top_before, 3)} → varies by draw
                         </>
                       ) : (
                         <>
                           p({JSON.stringify(ranked.target_token)}){" "}
-                          {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+                          {pair(r.p_top_before, r.p_top_after)[0]} →{" "}
+                          {pair(r.p_top_before, r.p_top_after)[1]}
                         </>
                       )}
                       {r.flips_top &&
@@ -754,7 +756,7 @@ export default function AttentionPanel({
                 </strong>
                 <span className="meta">
                   {diff.moved} of {diff.cells} cells moved · largest{" "}
-                  {diff.max_abs.toFixed(3)}
+                  {measured(diff.max_abs, 3)}
                 </span>
                 <span className="spacer" />
                 <span className="diff-key" aria-hidden="true">
@@ -888,7 +890,8 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
             </span>
             <span className="meta">
               #{r.index} · p({JSON.stringify(a.target_token)}){" "}
-              {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+              {pair(r.p_top_before, r.p_top_after)[0]} →{" "}
+              {pair(r.p_top_before, r.p_top_after)[1]}
               {r.flips_top && " · changes the top token"}
             </span>
           </li>
@@ -989,8 +992,8 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
         <span className="mid">KL {fmtKL(a.index0.kl)}</span>{" "}
         <span className="meta">
           #0 · p({JSON.stringify(a.target_token)}){" "}
-          {a.index0.p_top_before.toFixed(3)} →{" "}
-          {a.index0.p_top_after.toFixed(3)}
+          {pair(a.index0.p_top_before, a.index0.p_top_after)[0]} →{" "}
+          {pair(a.index0.p_top_before, a.index0.p_top_after)[1]}
           {a.index0.flips_top && " · changes the top token"}
         </span>
         <div className="hint">{a.index0.note}</div>

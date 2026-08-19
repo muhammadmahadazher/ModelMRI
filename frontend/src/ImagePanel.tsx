@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
+import { measured, signed } from "./measured";
 import DevicePicker from "./DevicePicker";
 import LoadBar from "./LoadBar";
 import RestingSketch from "./RestingSketch";
@@ -102,14 +103,15 @@ function crossAttentionNote(dim: number | null): string {
  */
 function masses(peak: number): (v: number) => string {
   const dp = peak >= 100 ? 0 : peak >= 1 ? 1 : 3;
-  return (v: number) => v.toFixed(dp);
+  // The DECIMALS follow the peak, because the scale of the whole map does;
+  // the small end still goes through `measured`, because a single cell can be
+  // far below the peak and a cell that holds 4e-4 of the mass holds some.
+  return (v: number) => measured(v, dp);
 }
 
 /** An RMS distance small enough that fixed decimals would print it as zero.
  *  A word that moved the image by 3e-5 moved it; "0.0000" says it did not. */
-function distance(d: number): string {
-  return d !== 0 && Math.abs(d) < 0.0001 ? d.toExponential(2) : d.toFixed(4);
-}
+const distance = (d: number) => measured(d, 4);
 
 /** The words a knockout will actually have arms for.
  *
@@ -177,11 +179,7 @@ function attrShade(v: number, mag: number): string {
  *  exponential rather than printing as "0.0000" — a window that moved the
  *  logit by 3e-5 moved it.
  */
-function drop(v: number): string {
-  if (v === 0) return "0";
-  const a = Math.abs(v);
-  return (v > 0 ? "+" : "-") + (a < 0.0001 ? a.toExponential(2) : a.toFixed(4));
-}
+const drop = (v: number) => signed(v, 4);
 
 /** Where one window sat, in the pixels of the tensor the model saw. */
 function box(w: { top: number; left: number; height: number; width: number }): string {
@@ -1736,7 +1734,7 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
                       <span className="pill">
                         {attr.fill} fill
                         {attr.fill_value.length > 0
-                          ? ` at ${attr.fill_value.map((v) => v.toFixed(3)).join(", ")}`
+                          ? ` at ${attr.fill_value.map((v) => measured(v, 3)).join(", ")}`
                           : ""}
                       </span>
                       <span className="pill">
@@ -1828,8 +1826,8 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
                         extremes</b>, not read from the checkpoint's processor — it
                         published too little to compute one. That changes what the
                         fill actually was: the range used was{" "}
-                        {attr.value_range[0].toFixed(4)} to{" "}
-                        {attr.value_range[1].toFixed(4)} as guessed from this picture,
+                        {measured(attr.value_range[0], 4)} to{" "}
+                        {measured(attr.value_range[1], 4)} as guessed from this picture,
                         and one picture's extremes are a lower bound on the model's
                         input range rather than the range. A photograph that never
                         reaches the bottom of it puts "{attr.fill}" somewhere that is

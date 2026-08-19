@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured } from "./measured";
 import RunsOn from "./RunsOn";
 import { errorText, GroundScore, Grounding, groundAnswer } from "./api";
 import ReceiptLine from "./ReceiptLine";
@@ -246,7 +247,7 @@ export default function GroundPanel({
         <>
           <div className="ground-answer meta">
             the model's next token here was{" "}
-            <b>{JSON.stringify(data.answer)}</b> at p={data.answer_p.toFixed(4)}{" "}
+            <b>{JSON.stringify(data.answer)}</b> at p={measured(data.answer_p, 4)}{" "}
             · {data.n_chunks} passages over {data.n_prompt_tokens} tokens ·{" "}
             {data.passes} passes, {data.seconds}s
           </div>
@@ -280,7 +281,7 @@ export default function GroundPanel({
               <>
                 {data.chunks.filter((c) => c.depended_on).length} of{" "}
                 {data.n_chunks} passages moved the answer further than this
-                model's own run-to-run spread ({data.noise_floor.toFixed(4)}{" "}
+                model's own run-to-run spread ({measured(data.noise_floor, 4)}{" "}
                 nats).
               </>
             )}
@@ -327,11 +328,11 @@ export default function GroundPanel({
           <div className="ground-heads meta" aria-hidden="true">
             <span />
             <span>
-              dependence · nats · longest {widestDep.toFixed(3)}
+              dependence · nats · longest {measured(widestDep, 3)}
             </span>
             <span>
               {data.attention_available
-                ? `attention · share · longest ${widestAttn.toFixed(3)}`
+                ? `attention · share · longest ${measured(widestAttn, 3)}`
                 : "attention · not measurable on this model"}
             </span>
             <span />
@@ -359,9 +360,9 @@ export default function GroundPanel({
                         units, announced identically. */}
                     <span
                       className="mid ground-num"
-                      aria-label={`dependence ${c.dependence.toFixed(4)} nats`}
+                      aria-label={`dependence ${measured(c.dependence, 4)} nats`}
                     >
-                      {c.dependence.toFixed(4)}
+                      {measured(c.dependence, 4)}
                     </span>
                   </span>
                   <span className="ground-track">
@@ -380,9 +381,9 @@ export default function GroundPanel({
                         />
                         <span
                           className="mid ground-num"
-                          aria-label={`attention share ${c.attention.toFixed(4)}`}
+                          aria-label={`attention share ${measured(c.attention, 4)}`}
                         >
-                          {c.attention.toFixed(4)}
+                          {measured(c.attention, 4)}
                         </span>
                       </>
                     )}
@@ -412,8 +413,8 @@ export default function GroundPanel({
               here is a share of the answer. */}
           <p className="meta ground-joint">
             Masking <b>every</b> passage at once moved the answer by{" "}
-            <b>{data.joint.toFixed(4)}</b> nats. The passages above sum to{" "}
-            {partsSum.toFixed(4)}. They are not the same number and they never
+            <b>{measured(data.joint, 4)}</b> nats. The passages above sum to{" "}
+            {measured(partsSum, 4)}. They are not the same number and they never
             will be — masking a whole passage is a large intervention and the
             effects are not additive, which is why nothing here is a
             percentage of the answer.

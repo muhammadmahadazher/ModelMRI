@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { measured } from "./measured";
 import {
   ApiError,
   errorText,
@@ -333,12 +334,12 @@ export default function JudgePanel({ step }: { step: TraceStep | null }) {
                     style={{ width: `${Math.min(100, p.p_yes * 100)}%` }}
                   />
                 </span>
-                <span className="mid">{p.p_yes.toFixed(3)}</span>
+                <span className="mid">{measured(p.p_yes, 3)}</span>
                 <span className="meta">
                   {p.answered ? (
                     <>
                       {pct(p.mass)} of its mass on a verdict token · p(no){" "}
-                      {p.p_no.toFixed(3)}
+                      {measured(p.p_no, 3)}
                     </>
                   ) : (
                     <>
