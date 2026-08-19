@@ -6,6 +6,28 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The model button opens on a model you actually have.** It opened on a
+  baked constant — the first element of a two-element `CURATED` array whose
+  second element nothing ever read, under a name that promised a list rendered
+  somewhere and was rendered nowhere. The playground now asks
+  `/api/models/discovered` — the same scan the picker's **On this machine**
+  tab draws — and names the smallest model on your disk the playground can
+  actually run, so the first control you touch is a measurement rather than a
+  guess about somebody else's cache.
+
+  Three things it deliberately does not do. It does not blank the button while
+  it waits: the baked name stays as the synchronous initial value, and a
+  machine with nothing cached keeps it, because a suggestion has to fall back
+  to *something* a person can load. It does not sort on size alone — the cache
+  also holds sparse autoencoders, embedders and vision weights, which are
+  routinely the smallest things in it, so it takes the `loadable` flag the
+  scan already computes from each `config.json`. And it never overwrites a
+  choice: a model the server already holds, a pick from the sheet, or a size
+  guard override all outrank it, including one made while the scan was still
+  walking a slow drive.
+
 ## [0.11.0] — 2026-08-16
 
 The release that finishes the roadmap. Every item on it is now built, and the
