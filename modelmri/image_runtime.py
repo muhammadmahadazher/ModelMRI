@@ -381,6 +381,14 @@ def _resolve(repo: str, *, local_ok: bool = True) -> Path:
     )
 
 
+#: How long a Hub METADATA check may take before the Hub is treated as
+#: unreachable. Deliberately short, and deliberately separate from the
+#: download budget: the check is a few hundred bytes and the fetch is
+#: gigabytes, so a single ceiling for both would either hang on the check or
+#: abort the fetch.
+ETAG_TIMEOUT_S = 8.0
+
+
 def _snapshot(repo: str, allow: list, *, local_ok: bool = True) -> Path:
     """One cache entry, fetched to whatever depth the caller asked for.
 
@@ -412,9 +420,46 @@ def _snapshot(repo: str, allow: list, *, local_ok: bool = True) -> Path:
                 repo_id=repo,
                 cache_dir=str(paths.hf_hub_cache()),
                 allow_patterns=list(allow),
+                # A CEILING on the metadata check, which is the part that
+                # hangs. `snapshot_download` revalidates against the Hub even
+                # when every file is already cached, and with no timeout a
+                # stalled HEAD blocks forever — measured: a load of a fully
+                # cached 6.3 GB pipeline that never returned, holding the
+                # handle lock so every later load queued behind it with no
+                # ceiling of its own. A check that cannot answer in seconds is
+                # not going to; the download it guards keeps its own budget.
+                etag_timeout=ETAG_TIMEOUT_S,
             )
         )
     except Exception as err:
+        # Already complete here? Then open it. The revalidation failing is a
+        # fact about the NETWORK, and declining to use files that are whole on
+        # this disk because a HEAD request timed out would be the tool
+        # refusing a job it can do offline.
+        try:
+            cached = Path(
+                snapshot_download(
+                    repo_id=repo,
+                    cache_dir=str(paths.hf_hub_cache()),
+                    allow_patterns=list(allow),
+                    local_files_only=True,
+                )
+            )
+        except Exception:
+            cached = None
+        if cached is not None:
+            # SAID, not silent. "Served from the cache without revalidating"
+            # is a different claim from "revalidated", and the difference is
+            # exactly staleness — which is the reader's to weigh, not this
+            # function's to hide.
+            log.warning(
+                "could not reach the Hub for %s (%s); using the complete copy "
+                "already in the cache, unrevalidated",
+                repo,
+                type(err).__name__,
+            )
+            return cached
+
         # A name that is not on the Hub is a fact about the REQUEST, and the
         # server was answering it with 500 "Something inside ModelMRI failed
         # rather than refusing" — which is this project telling on itself: an
