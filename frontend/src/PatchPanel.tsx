@@ -1,4 +1,5 @@
 import { CSSProperties, useState } from "react";
+import { measured } from "./measured";
 import RunsOn, { useModelReady } from "./RunsOn";
 import {
   errorText,
@@ -338,8 +339,8 @@ export default function PatchPanel({
                                 void trace(li, pi);
                               }
                             }}
-                            aria-label={`layer ${li}, token ${data.corrupt.tokens[pi]}, recovery ${v.toFixed(3)} — trace what wrote here`}
-                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${v.toFixed(3)}. Click to trace what wrote here.`}
+                            aria-label={`layer ${li}, token ${data.corrupt.tokens[pi]}, recovery ${measured(v, 3)} — trace what wrote here`}
+                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${measured(v, 3)}. Click to trace what wrote here.`}
                           >
                             {Math.abs(v) >= 0.1 ? v.toFixed(2) : ""}
                           </td>
@@ -370,8 +371,18 @@ export default function PatchPanel({
               <>
                 Blue recovered the clean answer, red pushed it further away. 1.0
                 is the clean answer and 0.0 the corrupted one. Outlined cells are
-                the {data.controlled} strongest sites, and they are the only ones
-                that were tested against chance — hover for the verdict.{" "}
+                the {controlled.size} strongest sites in THIS grid, and they are
+                the only ones that were tested against chance — hover for the
+                verdict.
+                {/* `controlled.size`, not `data.controlled`. The outlines are
+                    filtered to the component whose tab is open; the sentence
+                    quoted the total across ALL components, so the `attn` tab
+                    could show eight outlines under a sentence claiming
+                    twenty-four. The total is still worth saying — it just has
+                    to say that it is the total. */}
+                {data.controlled > controlled.size &&
+                  ` ${data.controlled} were controlled across all ` +
+                    `${data.components.length} components.`}{" "}
                 <b>Click any cell</b> to ask what wrote into it: a residual
                 stream carries everything that ever wrote there, so this grid
                 cannot say which component put it there.
