@@ -272,14 +272,30 @@ export default function ImageCV({
             {!picture && <span className="meta">pick a picture above first</span>}
           </div>
 
-          {readout && readout.kind !== "attention" && (
+          {/* "Nothing to draw" was said about a readout that HAS a grid. A
+              convolutional model returns `feature_map` — the mean absolute
+              activation across channels at each spatial position — in exactly
+              the same `rows x cols x values` shape as attention, and the panel
+              threw it away and printed a sentence about attention not
+              existing. Only `token_activation` is genuinely one-dimensional
+              and has no grid. */}
+          {readout && !readout.layers.length && (
             <p className="meta icv-note">
               {readout.reason ||
-                "This architecture has no per-layer attention to read, so there is nothing to draw."}
+                "This architecture has no per-layer map to read, so there is nothing to draw."}
             </p>
           )}
 
-          {readout && readout.kind === "attention" && readout.layers.length > 0 && (
+          {readout && readout.kind === "token_activation" && (
+            <p className="meta icv-note">
+              {readout.reason ||
+                "This readout is per token rather than per position, so it has no grid to draw."}
+            </p>
+          )}
+
+          {readout &&
+            readout.kind !== "token_activation" &&
+            readout.layers.length > 0 && (
             <div className="icv-readout">
               <div className="row istep-controls">
                 <label className="meta">
@@ -312,7 +328,11 @@ export default function ImageCV({
                   className="icv-grid"
                   style={{ gridTemplateColumns: `repeat(${grid.cols}, 1fr)` }}
                   role="img"
-                  aria-label={`Attention over image patches at layer ${grid.layer}`}
+                  aria-label={`${
+                    readout.kind === "feature_map"
+                      ? "Mean activation over image positions"
+                      : "Attention over image patches"
+                  } at layer ${grid.layer}`}
                 >
                   {grid.values.flatMap((row, r) =>
                     row.map((v, c) => (

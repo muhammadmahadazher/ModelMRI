@@ -982,7 +982,15 @@ function FeatureRanking({
           being built and never rendered, which is how the two counts above
           could contradict each other on screen. */}
       {a.truncated && <div className="hint">{a.coverage}</div>}
-      {trimmed && <div className="hint">{a.rows_note}</div>}
+      {/* `rows_note` also carries how many rows scored BELOW the measurement's
+          own resolution — a fact about the numbers on screen that has nothing
+          to do with whether the list was trimmed. Gating it on `trimmed` meant
+          an untrimmed ranking never said that some of its rows are arithmetic
+          rather than measurement, which is exactly the row a reader would
+          otherwise act on. */}
+      {(trimmed || (a.n_below_resolution ?? 0) > 0) && (
+        <div className="hint">{a.rows_note}</div>
+      )}
 
       {/* The caveat travels with the numbers, and the direction is READ OFF
           THIS RUN. Copying the head panel's sentence would state the opposite
