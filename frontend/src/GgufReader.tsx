@@ -542,6 +542,20 @@ function Damage({ d }: { d: QuantBehaviour }) {
           ))}
         </div>
       )}
+      {/* The bars had no caption. `attention_means` is the server's own
+          sentence saying what they are — a REDUCED statistic, because the two
+          full attention grids are never both resident — and it arrived on
+          every response with attention and was rendered nowhere. Without it a
+          row of bars is just a shape. The scale note is ours: heights are
+          relative to the tallest layer IN THIS RUN, so they rank layers and
+          cannot be compared against another pair's bars. */}
+      {d.attention_means && d.attention && (
+        <p className="meta gguf-note">
+          {d.attention_means} Bars are scaled to the largest of these{" "}
+          {d.attention.length} layers ({measured(peak)}), so they rank depth
+          within this pair and not across runs.
+        </p>
+      )}
 
       {d.notes.map((n) => (
         <div className="hint" key={n}>

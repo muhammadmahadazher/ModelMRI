@@ -478,3 +478,35 @@ def test_a_label_table_that_is_not_keyed_by_index_is_unknown_not_guessed():
             id2label = {"cat": "a cat", "dog": "a dog"}
 
     assert _label_names(_Weird()) is None
+
+
+def test_the_folder_walk_reports_the_budget_its_truncation_refers_to(client):
+    """`truncated` alone is a caveat nobody can size.
+
+    "The walk stopped at its budget" reads identically whether 12 of a
+    possible 20 were reached or 120 of a possible 120, and those are not the
+    same situation. The number travels with the flag so the panel can state
+    it rather than describe it.
+
+    It is the DIRECTORY walk's own limit. `SCAN_CACHE_LIMIT` is a different
+    number for a different walk, and quoting one for the other would print a
+    wrong figure with full confidence.
+    """
+    from modelmri import imaging
+
+    body = client.get("/api/image/discovered").json()
+    assert body["scan_limit"] == imaging.SCAN_DIRS_LIMIT
+    assert isinstance(body["truncated"], bool)
+    # Whatever this machine happens to hold, the list cannot exceed the budget
+    # that produced it.
+    assert len(body["models"]) <= body["scan_limit"]
+
+
+def test_the_cache_walk_keeps_its_own_budget_and_they_are_not_shared(client):
+    """The two walks answer different questions and are capped separately."""
+    from modelmri import imaging
+
+    assert client.get("/api/image/available").json()["scan_limit"] == (
+        imaging.SCAN_CACHE_LIMIT
+    )
+    assert imaging.SCAN_CACHE_LIMIT != imaging.SCAN_DIRS_LIMIT

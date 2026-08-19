@@ -718,8 +718,10 @@ export default function ImageModelPicker({
                   is", which is the one thing it is not. */}
               {disco?.truncated && (
                 <div className="meta pad">
-                  The walk stopped at its budget, so this is what was reached
-                  rather than everything there is. Set{" "}
+                  The walk stopped after {disco.scan_limit}{" "}
+                  {disco.scan_limit === 1 ? "directory" : "directories"}, so
+                  this is what was reached rather than everything there is.
+                  Set{" "}
                   <code>MODELMRI_MODELS_DIR</code> to point straight at your
                   models folder and it will not have to guess.
                 </div>

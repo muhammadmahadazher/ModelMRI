@@ -4031,6 +4031,15 @@ button.model-btn:hover:not(:disabled) {
   border-radius: 6px;
   background: color-mix(in oklab, var(--color-ink) 5%, transparent);
 }
+/* Caption for the bar row above it, tied to it by the same accent the bars
+   are drawn in. It carries a caveat, not decoration: the statistic is reduced
+   during capture and the heights are per-run. */
+.gguf-note {
+  border-left: 2px solid color-mix(in oklab, var(--color-feat) 45%, transparent);
+  padding-left: 9px;
+  margin: 0 0 10px;
+}
+
 .gguf-layer {
   flex: 1 1 0;
   min-width: 2px;

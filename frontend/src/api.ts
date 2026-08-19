@@ -2114,6 +2114,10 @@ export interface ImageDiscovered {
    *  everything there is. A truncation nobody is told about reads as "this is
    *  all there is". */
   truncated: boolean;
+  /** The budget `truncated` refers to. The walk's OWN limit, which is not the
+   *  cache walk's — they are separate numbers and quoting one for the other
+   *  states a wrong figure with full confidence. */
+  scan_limit: number;
   means: string;
 }
 

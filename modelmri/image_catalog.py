@@ -553,7 +553,16 @@ def discovered(roots=None) -> dict:
             }
         )
     out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
-    return {"models": out, "roots": looked, "truncated": truncated}
+    # The budget the walk was held to, alongside whether it hit it. "Stopped
+    # at its budget" without the number is a caveat a reader cannot size: 12
+    # reached out of a possible 20 and 120 out of a possible 120 are very
+    # different situations and the sentence read identically for both.
+    return {
+        "models": out,
+        "roots": looked,
+        "truncated": truncated,
+        "scan_limit": imaging.SCAN_DIRS_LIMIT,
+    }
 
 
 def _count(value):

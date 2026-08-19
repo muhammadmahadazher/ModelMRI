@@ -858,6 +858,12 @@ export async function demoFetch(
       models: [],
       roots: [],
       truncated: false,
+      // Zero because no walk ran, not because the limit is zero. Copying the
+      // server's 120 here would be a second home for a number that lives in
+      // `imaging.SCAN_DIRS_LIMIT`, and it would drift the day that changes.
+      // Never rendered either way: the sentence carrying it is behind
+      // `truncated`.
+      scan_limit: 0,
       means:
         "This page is a static recording and has no working directory to " +
         "walk, so it lists no folders and no models found in them. " +
