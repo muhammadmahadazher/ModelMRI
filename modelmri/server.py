@@ -1648,11 +1648,17 @@ def create_app(
                     },
                     status_code=422,
                 )
-            feature = body.get("feature")
+            # Through the same guard as every other field. This one read
+            # `int(feature)` off a LOCAL rather than off `body`, so the sweep
+            # that fixed the others went straight past it and
+            # `{"feature": "x"}` still answered 500.
+            feature_id = (
+                _whole(body, "feature", -1) if body.get("feature") is not None else None
+            )
             return await asyncio.to_thread(
                 runtime.feature_evidence,
                 [str(t) for t in texts],
-                feature_id=int(feature) if feature is not None else None,
+                feature_id=feature_id,
                 corpus_label=label,
                 top_k=_whole(body, "top_k", 10),
             )
@@ -1891,6 +1897,32 @@ def create_app(
             return JSONResponse({"error": "this request body is not JSON"}, 422)
         if (not_an_object := _body_object(body)) is not None:
             return not_an_object
+
+        # A DEFAULT THAT IS ALWAYS REFUSED IS NOT A DEFAULT. Both of these fell
+        # back to -1, and `patch.path_trace` rejects -1 for each — so calling
+        # this route without naming a receiver produced "layer -1 is outside
+        # this model's 24", which reads as though the caller sent -1. They did
+        # not; they left it out. Two different mistakes deserve two different
+        # sentences, and only one of them is about a range.
+        #
+        # There is no honest default here. A path trace asks what wrote into
+        # ONE receiver, and picking that receiver for somebody would be this
+        # tool choosing which cell of the patching grid they meant.
+        missing = [f for f in ("layer", "position") if body.get(f) is None]
+        if missing:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"a path trace needs a receiver to trace INTO, and "
+                        f"{' and '.join('`' + f + '`' for f in missing)} "
+                        f"{'were' if len(missing) > 1 else 'was'} not sent. "
+                        f"Pick a bright cell from the patching grid: its layer "
+                        f"is the receiver layer and its token is the receiver "
+                        f"position."
+                    )
+                },
+                status_code=422,
+            )
 
         try:
             return await asyncio.to_thread(

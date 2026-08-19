@@ -2687,9 +2687,11 @@ export interface CustomStatus {
   source: string | null;
   name: string | null;
   device: string;
-  n_params: number;
-  n_trainable: number;
-  n_modules: number;
+  /** `null` until something is loaded — nothing has been counted, and 0 is
+   *  a count. */
+  n_params: number | null;
+  n_trainable: number | null;
+  n_modules: number | null;
   input_shape: number[] | null;
   input_origin: string;
   input_reason: string;

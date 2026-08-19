@@ -380,6 +380,16 @@ def _epoch_ns(started_at: Any) -> int:
 # ---------------------------------------------------------------- ingest
 
 
+def _as_list(value) -> list:
+    """A list, or empty for anything that is not one.
+
+    OTLP bodies are written by other people's exporters, so a field holding
+    the wrong type is ordinary rather than hostile. `value or []` only covers
+    a missing key.
+    """
+    return value if isinstance(value, list) else []
+
+
 def from_otlp(body: dict) -> list[dict]:
     """OTLP spans back into recorded steps, over the same `FIELDS`.
 
@@ -390,11 +400,22 @@ def from_otlp(body: dict) -> list[dict]:
     two directions drifting apart as the table changes.
     """
     steps: list[dict] = []
-    for resource in body.get("resourceSpans") or []:
-        for scope in resource.get("scopeSpans") or []:
-            for span in scope.get("spans") or []:
+    # Same guard as the ingest path, and it belongs here too: this is a
+    # public function, and `or []` covers a MISSING key rather than a present
+    # one holding the wrong type. Fixing the route and leaving this is how the
+    # class survives — a caller reaching `from_otlp` directly got the same
+    # `TypeError: 'int' object is not iterable`.
+    for resource in _as_list(body.get("resourceSpans")):
+        if not isinstance(resource, dict):
+            continue
+        for scope in _as_list(resource.get("scopeSpans")):
+            if not isinstance(scope, dict):
+                continue
+            for span in _as_list(scope.get("spans")):
+                if not isinstance(span, dict):
+                    continue
                 step: dict = {}
-                for attr in span.get("attributes") or []:
+                for attr in _as_list(span.get("attributes")):
                     field = _BY_KEY.get(attr.get("key", ""))
                     if field is None:
                         continue
@@ -729,10 +750,21 @@ def ingest(payload: dict) -> dict:
             continue
         res_attrs = _flat((resource.get("resource") or {}).get("attributes"))
         service = service or str(res_attrs.get("service.name") or "")
-        for scope in resource.get("scopeSpans") or []:
+        # `or []` catches a MISSING key, not a present one holding the wrong
+        # type: `5 or []` is 5, and iterating an int is a TypeError. Each
+        # ELEMENT was already guarded with `isinstance(...): continue`; the
+        # containers around them were not, so an exporter that sent
+        # `"scopeSpans": 5` got a 500 from a route whose whole job is to
+        # accept a body written by somebody else's software.
+        #
+        # Skipped rather than refused on the spot, to match how a non-dict
+        # element is already treated — and a body with nothing usable left in
+        # it then lands on the authored "carries no spans" refusal below,
+        # which is the sentence this route's docstring promises.
+        for scope in _as_list(resource.get("scopeSpans")):
             if not isinstance(scope, dict):
                 continue
-            for span in scope.get("spans") or []:
+            for span in _as_list(scope.get("spans")):
                 if isinstance(span, dict):
                     spans.append(span)
 

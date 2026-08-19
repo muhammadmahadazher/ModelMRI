@@ -69,7 +69,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-from .errors import Refusal
+from .errors import BadRequest, Refusal
 
 # How many standard deviations above its own null a head has to score before a
 # label is attached. Three because the null is measured from a modest number of
@@ -362,6 +362,13 @@ def _patterns_from(profiles, sinks, seq_len: int) -> dict:
     }
 
 
+#: Shortest probe sequence that can carry a repeat. The labels are measured
+#: on the second copy of a repeated sequence, so anything shorter has no
+#: second half for a head to attend back into and the measurement is not
+#: merely noisy — it does not exist.
+MIN_SEQ_LEN = 4
+
+
 def label_heads(
     model,
     tokenizer,
@@ -376,6 +383,30 @@ def label_heads(
     passes over `2 * seq_len` tokens.
     """
     import torch
+
+    # The arguments arrive from a query string, and both of them index into
+    # tensors far below here. Unchecked, they came back as errors about
+    # torch's internals: `n_sequences=0` produced "stack expects a non-empty
+    # TensorList", and `seq_len=-4` asked the allocator for 735,830,067,168
+    # bytes — 735 GB, from a number in a URL.
+    #
+    # The zero case for `seq_len` was ALREADY answered properly, one branch
+    # further down, with "there were no positions to score". So this is one
+    # question that had two answers depending on whether the bad number
+    # happened to be zero or negative.
+    if n_sequences < 1:
+        raise BadRequest(
+            f"labelling heads needs at least one probe sequence to measure "
+            f"them on, and this asked for {n_sequences}. Each one is two "
+            f"forward passes — the cost is stated before you spend it."
+        )
+    if seq_len < MIN_SEQ_LEN:
+        raise BadRequest(
+            f"a probe sequence has to be at least {MIN_SEQ_LEN} tokens for "
+            f"the repeat half to exist at all, and this asked for {seq_len}. "
+            f"The labels are read from what a head does on the SECOND copy of "
+            f"a repeated sequence; there is no second copy below that length."
+        )
 
     config = getattr(model, "config", None)
     n_layers = int(getattr(config, "num_hidden_layers", 0) or 0)

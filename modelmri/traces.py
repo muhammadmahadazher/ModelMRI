@@ -485,6 +485,19 @@ class TraceStore:
         # `/api/traces/import` takes a bare dict — there is no model between
         # the wire and here — so these lines are the entire contract, and a
         # hand-written or third-party document has nothing else to go on.
+        meta = doc.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            # A trace whose meta is a string was ACCEPTED and then killed every
+            # reader of the store, permanently and across restarts, because it
+            # is stored verbatim and parsed on the way out. Refused on the way
+            # in, where the person who sent it is still listening.
+            raise BadRequest(
+                f"a trace's 'meta' is an object of your own keys, and this "
+                f"document sent a {type(meta).__name__}. It is stored verbatim "
+                f"and read back on every listing, so a shape nothing can parse "
+                f"would break the panel rather than this request."
+            )
+
         steps = doc.get("steps", [])
         if not isinstance(steps, list) or not steps:
             raise BadRequest("trace document needs a non-empty 'steps' list")
@@ -508,6 +521,16 @@ class TraceStore:
                 raise BadRequest(
                     f"invalid step kind: {s.get('kind')!r} — "
                     f"use one of {', '.join(sorted(VALID_KINDS))}"
+                )
+            parent = s.get("parent_id")
+            if parent is not None and not isinstance(parent, (str, int)):
+                # Goes straight into an sqlite bind parameter, so anything
+                # else raised InterfaceError from the driver — an error about
+                # a database binding, at somebody who sent a nested object.
+                raise BadRequest(
+                    f"step {i}'s 'parent_id' names another step, so it is a "
+                    f"string or a number; this one is a "
+                    f"{type(parent).__name__}."
                 )
             timings.append((_ms(s, "started_ms", i), _ms_or_none(s, "duration_ms", i)))
 
@@ -606,7 +629,11 @@ class TraceStore:
             ).fetchall()
         out = []
         for r in rows:
-            meta = json.loads(r[6] or "{}") or {}
+            # `_loads`, not `json.loads`. Its docstring names this exact
+            # hazard — one damaged row must not take down the whole trace
+            # view — and this line was the reason that sentence was
+            # written and then not honoured here.
+            meta = _loads(r[6])
             out.append(
                 {
                     "id": r[0],
@@ -800,7 +827,7 @@ class TraceStore:
             "id": t[0],
             "name": t[1],
             "started_at": t[2],
-            "meta": json.loads(t[3]),
+            "meta": _loads(t[3]),
             "steps": steps,
         }
 

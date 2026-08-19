@@ -390,12 +390,12 @@ export default function CustomPanel({
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="pill on">{status.name}</span>
-        <span className="pill">{status.n_params.toLocaleString()} params</span>
-        <span className="pill">{status.n_modules} modules</span>
+        <span className="pill">{(status.n_params ?? 0).toLocaleString()} params</span>
+        <span className="pill">{status.n_modules ?? 0} modules</span>
         <span className="pill">{status.source}</span>
         {status.n_trainable !== status.n_params && (
           <span className="pill">
-            {status.n_trainable.toLocaleString()} trainable
+            {(status.n_trainable ?? 0).toLocaleString()} trainable
           </span>
         )}
         <span className="spacer" />

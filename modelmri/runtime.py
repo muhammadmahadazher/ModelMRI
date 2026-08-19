@@ -1113,6 +1113,31 @@ class ModelRuntime:
         """The decoder block whose *input* is the residual stream at `layer`."""
         blocks = decoder_blocks(self.model)
         if blocks is not None:
+            # BOUNDS, here rather than at the routes. This is the only place
+            # that knows how many blocks the resident model actually has, and
+            # the layer arrives from several directions — a path parameter, a
+            # JSON field, and `variant=ablate:N` parsed out of a query string,
+            # which is the one that had no check at all.
+            #
+            # MEASURED: GET /api/attention?variant=ablate:9999.0 answered 500
+            # with `IndexError: index 9999 is out of range` from inside
+            # torch.nn.ModuleList — an error about a container, at somebody
+            # who typed a number into a URL.
+            #
+            # Negative indices are refused rather than quietly wrapping.
+            # Python would read -1 as the LAST block, and a reader who meant
+            # "layer -1" as "unset" would silently measure the top of the
+            # network and be told nothing about it.
+            if not isinstance(layer, int) or isinstance(layer, bool):
+                raise BadRequest(
+                    f"a layer index has to be a whole number, and this asked "
+                    f"for {layer!r}."
+                )
+            if not 0 <= layer < len(blocks):
+                raise BadRequest(
+                    f"layer {layer} is outside this model, which has "
+                    f"{len(blocks)} of them — 0 to {len(blocks) - 1}."
+                )
             return blocks[layer]
         # A refusal, not an internal error, and the same one lens.py gives for
         # a missing final norm: this architecture is not one of the layouts
@@ -2440,6 +2465,25 @@ class ModelRuntime:
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
 
+            # A patchscope makes THREE decodes and compares them, so a bad
+            # token budget is spent three times before anything raises.
+            # MEASURED: `max_new_tokens: -1` did not answer for 180 seconds
+            # and then returned a 500 — transformers' own
+            # "`max_new_tokens` must be greater than 0" arrived after the
+            # setup for a run that could never produce a sentence.
+            if max_new_tokens < 1:
+                raise BadRequest(
+                    f"a patchscope has to be allowed at least one token to "
+                    f"answer in, and this asked for {max_new_tokens}. The "
+                    f"whole reading is the SENTENCE the model produces when "
+                    f"handed the state; with no tokens there is nothing to "
+                    f"read."
+                )
+            if draws < 1:
+                raise BadRequest(
+                    f"a patchscope needs at least one draw, and this asked for {draws}."
+                )
+
             def decode(prompt: str) -> str:
                 # GREEDY, and commit=False. Three decodes are being compared,
                 # so sampling would put a second source of difference between
@@ -2680,6 +2724,33 @@ class ModelRuntime:
                     )
                 texts.append(text)
                 labels.append(label)
+
+            # REFUSED BEFORE A FORWARD PASS, and before torch sees an empty
+            # list. `POST /api/probe {"examples": []}` reached
+            # `torch.stack([])` and answered 500 with "stack expects a
+            # non-empty TensorList" — an error about a tensor library, at
+            # somebody who clicked Train with the box empty. The route's own
+            # per-row checks were thorough and never ran, because there were
+            # no rows to check.
+            if not texts:
+                raise BadRequest(
+                    "a probe is trained on YOUR labelled examples and none "
+                    "were sent. Give it at least one text for each class — "
+                    "label them 0 and 1 — and it will report where in the "
+                    "network those two become separable."
+                )
+            # And a set that cannot separate anything. `probe_mod.sweep` would
+            # fit a classifier on one class and report an accuracy of 1.0,
+            # which is a number that means nothing and looks like a result.
+            if len(set(labels)) < 2:
+                only = sorted(set(labels))[0]
+                raise BadRequest(
+                    f"every example here is labelled {only}, so there is no "
+                    f"second class to separate it from. A probe measures "
+                    f"where two classes become distinguishable; with one "
+                    f"class it would report perfect accuracy and mean "
+                    f"nothing by it."
+                )
 
             n_layers = int(text_config(self.model.config).num_hidden_layers)
             layers = list(range(n_layers))

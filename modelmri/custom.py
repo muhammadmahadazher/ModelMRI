@@ -121,9 +121,14 @@ class CustomStatus:
     source: str | None = None  # adapter | torchscript
     name: str | None = None
     device: str = "cpu"
-    n_params: int = 0
-    n_trainable: int = 0
-    n_modules: int = 0
+    # `None`, not 0, and this object already got that right for `path`,
+    # `source`, `name`, `input_shape` and `labels`. With `loaded: false`
+    # nothing has been measured, so "this model has 0 parameters" is a
+    # measurement nobody took — reported beside five fields correctly saying
+    # they do not know.
+    n_params: int | None = None
+    n_trainable: int | None = None
+    n_modules: int | None = None
     input_shape: list[int] | None = None
     input_origin: str = ""  # adapter | inferred | user
     input_reason: str = ""
