@@ -35,7 +35,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 
-from . import paths
+from . import fmt, paths
 from .errors import BadRequest
 
 # Cap on frames per sweep. Every frame is at least one tower pass and the
@@ -125,7 +125,7 @@ class Sweep:
             top = self.rows[0]
             parts.append(
                 f"The highest is episode {top.episode} at timestep "
-                f"{top.timestep} ({top.value:.4f}). That is a ranking by "
+                f"{top.timestep} ({fmt.measured(top.value, 4)}). That is a ranking by "
                 f"{self.metric}, not a diagnosis: nothing here has verified "
                 f"what happens in that frame, and no failure mode has been "
                 f"named for it."

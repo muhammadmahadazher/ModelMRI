@@ -37,6 +37,7 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import fmt
 from .errors import BadRequest
 from .step_kinds import VALID_KINDS
 
@@ -390,11 +391,19 @@ class Bill:
             missing = ", ".join(sorted(set(self.unpriced_models))[:4])
             return (
                 f"PARTIAL — {self.n_calls - self.n_priced} of {self.n_calls} "
-                f"call(s) unpriced ({missing}). The {self.total:,.4f} covers "
+                f"call(s) unpriced ({missing}). The "
+                f"{fmt.measured(self.total, 4)} covers "
                 f"only the {self.n_priced} with an exact price on file, so it "
                 f"is a floor and not the total."
             )
-        return f"{self.total:,.4f} across all {self.n_calls} call(s)."
+        # `fmt.measured`, not `:,.4f`. `Price.cost` and `bill` both keep
+        # six decimals deliberately so the small end survives, and
+        # `CostBanner` renders the same field through `measured()` — so a run
+        # costing $2.5e-5 showed "$2.5e-5" in bold with "0.0000 across all 1
+        # call(s)" on the line beside it. The branch above is worse: there the
+        # fabricated zero is explicitly called a floor, which is a claim about
+        # a measurement.
+        return f"{fmt.measured(self.total, 4)} across all {self.n_calls} call(s)."
 
 
 def bill(steps, prices: dict, *, kinds=TOKEN_KINDS, currency: str = "") -> Bill:

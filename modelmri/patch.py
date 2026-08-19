@@ -58,6 +58,8 @@ from typing import Any
 
 import torch
 
+from . import fmt
+
 # Same-norm Gaussian draws per site. Eight, because one is a sample: see the
 # module docstring for the 2.654 spread that decided it. The cost is why
 # controls run on the top sites rather than the whole grid.
@@ -434,7 +436,16 @@ def trace(
         # logits can reach a magnitude where one representable step is large,
         # so a recovery fraction lands on a coarse grid of `step / gap`.
         # Every score in `grids` and `sites` shares it.
-        "recovery_resolution": round(resolution, 6),
+        # NOT rounded. This is one step of the model's number format on the
+        # recovery scale, and in float32 it lives at 1e-6 and below: measured
+        # at |logit|max 22 over a gap of 4 it is 6.557e-07, which `round(_, 6)`
+        # turned into 1e-06 — most of the figure gone — and which becomes
+        # exactly 0.0 whenever the gap is wider. A tie threshold of 0.0 says
+        # nothing is tied, which is the opposite of what this number is for,
+        # and no formatter downstream can recover a value already flattened
+        # here. bfloat16 was the only dtype this survived, because there the
+        # resolution is ~1e-2.
+        "recovery_resolution": resolution,
         "passes": passes,
         "seconds": round(elapsed, 2),
         # Not decoration. Layer 0's input IS the embedding, so patching every
@@ -757,7 +768,8 @@ def path_trace(
         },
         "gap": round(gap, 6),
         # Differences below this are not a ranking. See `recovery_resolution`.
-        "recovery_resolution": round(recovery_resolution(model, clean_logits, gap), 6),
+        # Unrounded, for the reason written at the other call site.
+        "recovery_resolution": recovery_resolution(model, clean_logits, gap),
         "senders": scored,
         "n_senders": len(scored),
         "n_controlled": controlled,
@@ -794,7 +806,7 @@ def path_trace(
             f"neighbouring position — the first says the number is not the size "
             f"of the edit, the second that it is not just this layer being "
             f"loud. RESOLUTION "
-            f"{recovery_resolution(model, clean_logits, gap):.3f}: two senders "
+            f"{fmt.measured(recovery_resolution(model, clean_logits, gap), 3)}: two senders "
             f"closer than that are tied, not ranked — a recovery is a "
             f"difference of logits divided by the gap, and "
             f"{str(next(model.parameters()).dtype).removeprefix('torch.')} "

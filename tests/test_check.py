@@ -335,3 +335,90 @@ def test_the_json_flag_reports_an_unreadable_trace_as_json(tmp_path, capsys):
     assert check_trace(args) == check.NOTHING_CHECKED
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] is False and doc["error"]
+
+
+# ------------------------------------------- the gate that could not go red
+
+
+def _run(steps, **kw):
+    from modelmri import check as check_mod
+
+    result = check_mod.run({"name": "n", "steps": steps}, **kw)
+    return next(a for a in result.assertions if a.name == "max-ms")
+
+
+def test_max_ms_reads_a_duration_recorded_as_a_float():
+    """A MERGE GATE THAT COULD NOT GO RED.
+
+    This kept only `isinstance(_, int)`, so a step recorded as `1500.0` — what
+    `(t1 - t0) * 1000` produces in any recorder that does not round, and what
+    `modelmri-record` stores when the caller passes `duration_ms` directly —
+    was silently discarded. Seven of them, 10,500 ms of real work, summed to 0,
+    `0 <= 5000` passed, and the log read "0 ms across 0 timed step(s)".
+
+    The same document imported into the store is coerced by `traces._ms` and
+    exported by `otel._span_times` as 1500 ms, so three readers agreed about
+    this file and the gate disagreed with all of them.
+    """
+    steps = [
+        {"id": f"s{i}", "kind": "llm_call", "name": "call", "duration_ms": 1500.0}
+        for i in range(7)
+    ]
+    a = _run(steps, max_ms=5000)
+    assert a.ok is False, a.detail
+    assert "10500 ms across 7 timed step(s)" in a.detail
+
+    # And ints are untouched, so the fix is a widening rather than a swap.
+    ints = [dict(s, duration_ms=1500) for s in steps]
+    assert _run(ints, max_ms=5000).detail == a.detail
+
+
+def test_max_ms_passes_a_run_that_is_actually_under_the_limit():
+    """The guard must not fire on the ordinary case."""
+    a = _run(
+        [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": 1200.0}],
+        max_ms=5000,
+    )
+    assert a.ok is True
+    assert "1200 ms across 1 timed step(s)" in a.detail
+
+
+def test_a_duration_that_is_present_and_unreadable_fails_the_gate():
+    """Different from a step that recorded none, and it must not pass.
+
+    Something wrote a number-shaped field this cannot read. Folding that into
+    "recorded no duration" and going green is the same failure the float case
+    was: a build passing on the strength of measurements that were discarded.
+    `no-loops` already states the policy — "a green check from a scan that did
+    not run is worse than a red one".
+    """
+    for bad in ("1500", float("nan"), float("inf"), [1500], {"ms": 1500}):
+        a = _run(
+            [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": bad}],
+            max_ms=5000,
+        )
+        assert a.ok is False, f"{bad!r} was admitted: {a.detail}"
+        assert "cannot read" in a.detail
+
+
+def test_true_is_not_one_millisecond():
+    """`isinstance(True, int)` is True, so the bool guard has to come first.
+
+    `session.py` already writes `isinstance(value, int) and not
+    isinstance(value, bool)` for this same field; `check.py` was the one place
+    that skipped it, and admitted `"duration_ms": true` as a 1 ms step.
+    """
+    a = _run(
+        [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": True}],
+        max_ms=5000,
+    )
+    assert a.ok is False
+    assert "1 ms across" not in a.detail
+
+
+def test_a_step_that_recorded_no_duration_is_still_just_absent():
+    """Absent is not unreadable, and absent alone does not fail the build."""
+    a = _run([{"id": "s0", "kind": "llm_call", "name": "c"}], max_ms=5000)
+    assert a.ok is True
+    assert "recorded no duration" in a.detail
+    assert "cannot read" not in a.detail

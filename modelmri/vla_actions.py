@@ -71,6 +71,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # How many frames a predicted-vs-recorded run may cover before it must be
@@ -455,9 +456,15 @@ def _swap_means(
         else ""
     )
     return (
+        # `seed_spread` is the DENOMINATOR of the whole comparison, and ninety
+        # lines above this the code refuses to divide by it when it is exactly
+        # zero — "a ratio against zero is not a number". A near-deterministic
+        # policy spreading 3e-05 then had that same denominator printed as
+        # "0.0000": the reader is shown the one value the function just
+        # refused to accept, beside a ratio computed from it.
         f"{verdict} Measured on ONE frame: {n_instructions} distinct "
-        f"instructions spread {instruction_spread:,.4f}, against "
-        f"{n_seeds} seeds spreading {seed_spread:,.4f}, on "
+        f"instructions spread {fmt.measured(instruction_spread, 4)}, against "
+        f"{n_seeds} seeds spreading {fmt.measured(seed_spread, 4)}, on "
         f"{policy_repo or 'this policy'}.{lost} The reference is this "
         f"policy's own sampling variance rather than a threshold from "
         f"anywhere else, so the comparison holds for this policy and is not "
@@ -527,12 +534,13 @@ def knockout(
             f"Each bar is how far {policy_repo or 'the policy'}'s action moved "
             f"when that ONE input was replaced by its episode mean, on this "
             f"frame. {rows[0]['label']} moved it furthest "
-            f"({rows[0]['distance']:,.4f}).\n\n"
+            f"({fmt.measured(rows[0]['distance'], 4)}).\n\n"
             f"MEAN SUBSTITUTION IS A SPECIFIC BASELINE, NOT REMOVAL. The mean "
             f"frame of an episode is a real image the policy has opinions "
             f"about; it is not absence, and a different baseline gives "
             f"different bars.\n\n"
-            f"THESE DO NOT ADD UP. The bars sum to {total:,.4f}, and that "
+            f"THESE DO NOT ADD UP. The bars sum to {fmt.measured(total, 4)}, "
+            f"and that "
             f"number means nothing: the policy's inputs interact, so removing "
             f"two streams is not the sum of removing each. Read them as "
             f"separate one-at-a-time measurements."

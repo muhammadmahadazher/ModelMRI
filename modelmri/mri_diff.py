@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import fmt
 from . import session as session_mod
 from .errors import BadRequest
 from .verify import dequantise, max_abs_diff
@@ -545,8 +546,15 @@ def _diff_ground(a, b) -> Delta:
         return Delta(
             "grounding",
             CHANGED,
-            f"passage #{worst_index} moved by {worst_gap:.4f} nats against a "
-            f"floor of {floor:.6f}. #{top_a} still carries the answer, so the "
+            # TWO PRECISIONS ON ONE LINE, and the wrong way round. This
+            # branch is only entered when `worst_gap > floor`, and it printed
+            # the mover at four places and the floor it beat at six — so a
+            # passage moving 5e-06 against a floor of 3e-06 read "moved by
+            # 0.0000 nats against a floor of 0.000003", where the number that
+            # cleared the bar looks like zero and the bar looks larger than it.
+            f"passage #{worst_index} moved by {fmt.measured(worst_gap, 4)} nats "
+            f"against a floor of {fmt.measured(floor, 6)}. #{top_a} still "
+            f"carries the answer, so the "
             f"document is being read the same way and read to a different "
             f"degree.",
             magnitude=worst_gap,

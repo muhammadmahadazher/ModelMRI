@@ -443,7 +443,13 @@ export default function PatchPanel({
                     {path.n_senders} components tested, {path.n_controlled}{" "}
                     against chance, in {path.passes} passes ({path.seconds}s).
                     Two senders closer than{" "}
-                    <b>{path.recovery_resolution.toFixed(3)}</b> are{" "}
+                    {/* Through `measured`, not `toFixed(3)`. This is one step
+                        of the model's number format on the recovery scale, and
+                        in float32 it is around 1e-6 — so the sentence that
+                        exists to publish the tie threshold printed it as
+                        "0.000", which says nothing is tied. bfloat16 was the
+                        only dtype it read correctly on. */}
+                    <b>{measured(path.recovery_resolution, 3)}</b> are{" "}
                     <b>tied</b>, not ranked — that is what one step of this
                     model's number format is worth on this scale.
                   </p>
@@ -510,8 +516,9 @@ export default function PatchPanel({
                     >
                       show the other {path.senders.length -
                         shownSenders(path, allSenders).length}{" "}
-                      — all below the {path.recovery_resolution.toFixed(3)}{" "}
-                      resolution and none tested against chance
+                      — all below the{" "}
+                      {measured(path.recovery_resolution, 3)} resolution and
+                      none tested against chance
                     </button>
                   )}
                   {allSenders && (

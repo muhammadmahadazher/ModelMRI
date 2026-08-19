@@ -39,6 +39,7 @@ import statistics
 import time
 from dataclasses import asdict, dataclass, field
 
+from . import fmt
 from .errors import BadRequest
 
 # One prompt is not a sample. Below this the spread this module exists to
@@ -228,10 +229,18 @@ class ModelDiff:
         ]
         if self.kl:
             spread = "typical of the set" if self.kl.stable() else "NOT typical"
+            # Through `fmt.measured`, not `:.4f`. The panel renders these
+            # same three fields through `measured()` 180px above this
+            # sentence, so a light LoRA whose median KL is 2.0e-05 read
+            # "median 2.0e-5 nats" in the row and "a median 0.0000 nats
+            # (middle half 0.0000 to 0.0000), which is typical of the set"
+            # in the paragraph under it. One quantity, two formatters,
+            # contradicting each other on one screen — and `means` is also
+            # what an API or MCP consumer gets, with no row beside it.
             parts.append(
-                f"The answers differ by a median {self.kl.median:.4f} nats "
-                f"per position (middle half {self.kl.low:.4f} to "
-                f"{self.kl.high:.4f}), which is {spread}: "
+                f"The answers differ by a median {fmt.measured(self.kl.median, 4)} "
+                f"nats per position (middle half {fmt.measured(self.kl.low, 4)} to "
+                f"{fmt.measured(self.kl.high, 4)}), which is {spread}: "
                 + (
                     "the prompts agree with each other about how much moved."
                     if self.kl.stable()
@@ -276,9 +285,13 @@ class ModelDiff:
             top = self.heads[0]
             moved = [h for h in self.heads if h.top_a != h.top_b]
             parts.append(
+                # Same rule, and here it destroys the comparison the next
+                # sentence argues for: a head that went 2e-5 -> 6e-5 printed
+                # "a median 0.0000 nats in A against 0.0001 in B".
                 f"The head whose ablation score moved most is L{top.layer}"
-                f"H{top.head}: a median {top.median_a:.4f} nats in "
-                f"{self.model_a} against {top.median_b:.4f} in {self.model_b}. "
+                f"H{top.head}: a median {fmt.measured(top.median_a, 4)} nats in "
+                f"{self.model_a} against {fmt.measured(top.median_b, 4)} in "
+                f"{self.model_b}. "
                 f"BOTH sides are printed rather than the difference alone — a "
                 f"head that went from 0.02 to 0.06 and one that went from 4.00 "
                 f"to 4.04 moved by the same amount and are not the same "
