@@ -372,6 +372,20 @@ class ImageAttributionRequest(BaseModel):
     batch: int = Field(default=32, ge=1, le=64)
 
 
+class AdapterRequest(BaseModel):
+    """A LoRA on this machine, by path.
+
+    A PATH rather than an upload: an adapter is tens of megabytes and already
+    on the disk of whoever is asking. Unlike the image routes, this reads a
+    file the caller names — which is the same trust boundary
+    `/api/weights/scan` already sits behind, and it is refused from anywhere
+    but this machine for the same reason.
+    """
+
+    path: str = Field(min_length=1)
+    top: int = Field(default=40, ge=1, le=500)
+
+
 class CVPredictRequest(BaseModel):
     """One picture, and what the model says about it.
 
@@ -2197,6 +2211,57 @@ def create_app(
                 )
             ),
         }
+
+    @app.post("/api/image/adapter")
+    async def image_adapter(req: AdapterRequest, request: Request):
+        """What a LoRA changes, read off the adapter rather than guessed.
+
+        A weight diff, deliberately, and the cheap half of the question. The
+        text side answers "what did a finetune change" by RUNNING both models
+        over a prompt set, which for diffusion means two multi-gigabyte
+        pipelines resident at once — and the common case is an 80 MB LoRA that
+        states its own targets. `/api/image/filmstrip` is where you go to see
+        what it does to a picture; these are different questions.
+
+        Every norm here is a MAGNITUDE. The response says so, because a large
+        move in a layer the sampler barely exercises can matter less than a
+        small one in a layer it leans on.
+        """
+        from . import adapter_diff
+
+        # A path in the body names a file on the SERVER's disk, which is
+        # somebody else's machine as often as it is yours. Same trust boundary
+        # as the corpus reader and `/api/weights/scan`: loopback alone does not
+        # settle it, because any page on any site can POST to localhost.
+        refusal = _not_from_this_machine(
+            request, "Reading an adapter off this machine's disk"
+        )
+        if refusal is not None:
+            return refusal
+
+        # The base model is passed ONLY when one is already resident. The
+        # relative norm needs real weights, and loading a pipeline to produce a
+        # denominator would turn an 80 MB read into a 10 GB one — the response
+        # reports `relative: null` instead, which is the honest answer to
+        # "compared with what?".
+        base = None
+        try:
+            if app.state.image.status().loaded:
+                base = app.state.image.require()
+        except (Refusal, BadRequest):
+            base = None
+
+        try:
+            report = await asyncio.to_thread(
+                adapter_diff.read, req.path, base=base, top=req.top
+            )
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/image/adapter")
+
+        return report.to_dict()
 
     @app.get("/api/image/discovered")
     async def image_discovered() -> dict:

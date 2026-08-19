@@ -186,6 +186,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/experiments/compare` | Experiments Compare |
 | `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/ground` | Ground Answer |
+| `POST` | `/api/image/adapter` | Image Adapter |
 | `POST` | `/api/image/attention` | Image Attention Capture |
 | `POST` | `/api/image/attribution` | Image Attribution |
 | `POST` | `/api/image/cv/attribute` | Image Cv Attribute |
