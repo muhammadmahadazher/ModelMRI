@@ -336,10 +336,36 @@ def _diff_ranking(a, b) -> Delta:
     # The floor for a KL is whichever noise floor the files recorded, and the
     # LARGER of the two: a difference below the coarser measurement is not one
     # either file could distinguish from arithmetic.
-    floor = max(
-        float((a.ranking or {}).get("noise_floor_kl") or 0.0),
-        float((b.ranking or {}).get("noise_floor_kl") or 0.0),
-    )
+    #
+    # AN ABSENT FLOOR IS NOT A FLOOR OF ZERO. This read `... or 0.0` on both
+    # sides, which turned "this file never recorded what it could resolve"
+    # into "this file recorded that it could resolve everything" — and then
+    # labelled the invented number "the coarser of the two files' recorded
+    # noise floors". Because 0.0 is a legal recorded value, nothing downstream
+    # could tell the fabrication from a measurement.
+    #
+    # Measured on two files whose rankings carry rows and a baseline and no
+    # floor: `abs(gap) > 0.0` is true for any non-identical KL, so last-digit
+    # drift reported as "L0H0 moved 0.10000 → 0.10000. 1 of 2 heads moved past
+    # the 0.00e+00 noise floor", and `exit_code()` returned 1 — a CI failure
+    # attributed to a floor no file ever claimed.
+    #
+    # This module states the rule three times for other sections ("A missing
+    # section is not a zero") and broke it here.
+    floor_a = (a.ranking or {}).get("noise_floor_kl")
+    floor_b = (b.ranking or {}).get("noise_floor_kl")
+    if floor_a is None or floor_b is None:
+        which = "the first" if floor_a is None else "the second"
+        return Delta(
+            "head ranking",
+            NOT_COMPARABLE,
+            f"{which} file's ranking records no noise floor, so there is "
+            f"nothing to judge a difference against. An absent floor is not a "
+            f"floor of zero — with one, every last-digit difference counts as "
+            f"a change. Re-run `modelmri ablate` on that side to record one, "
+            f"or diff two files that both carry it.",
+        )
+    floor = max(float(floor_a), float(floor_b))
 
     moved = []
     for head in shared:
@@ -398,9 +424,21 @@ def _diff_ranking(a, b) -> Delta:
         )
     else:
         _, head, was, now = moved[0]
+        # THE MOVEMENT, not just the pair. `:.5f` on both sides printed a
+        # head that moved by 1e-06 as "moved 0.10000 → 0.10000" — the same
+        # number twice, in a sentence whose entire content is that it changed.
+        # `fmt.measured` does not fix that on its own: 0.100001 is not below
+        # five places' rounding floor, so it still renders "0.10000". Any
+        # fixed precision has a pair it cannot separate.
+        #
+        # The delta is the quantity this sentence is about and it is never
+        # ambiguous, so it is stated outright and the pair keeps its place as
+        # context.
+        step = now - was
         head_line = (
-            f"the top {top} are unchanged, but L{head[0]}H{head[1]} moved "
-            f"{was:.5f} → {now:.5f}."
+            f"the top {top} are unchanged, but L{head[0]}H{head[1]} moved by "
+            f"{'+' if step >= 0 else '−'}{fmt.measured(abs(step), 5)}, from "
+            f"{fmt.measured(was, 5)} to {fmt.measured(now, 5)}."
         )
     return Delta(
         "head ranking",
@@ -480,11 +518,22 @@ def _diff_ground(a, b) -> Delta:
 
     # The coarser of the two recorded floors, for the same reason the ranking
     # takes the larger one: a difference below the blunter measurement is not
-    # one either file could tell from arithmetic.
-    floor = max(
-        float((a.ground or {}).get("noise_floor") or 0.0),
-        float((b.ground or {}).get("noise_floor") or 0.0),
-    )
+    # one either file could tell from arithmetic. And the same guard, because
+    # this was the same substitution written twice — fixing one and leaving
+    # the other is how the ground path keeps fabricating.
+    g_floor_a = (a.ground or {}).get("noise_floor")
+    g_floor_b = (b.ground or {}).get("noise_floor")
+    if g_floor_a is None or g_floor_b is None:
+        which = "the first" if g_floor_a is None else "the second"
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            f"{which} file's grounding records no noise floor, so there is "
+            f"nothing to judge a passage's movement against. An absent floor "
+            f"is not a floor of zero. Re-run the grounding on that side to "
+            f"record one, or diff two files that both carry it.",
+        )
+    floor = max(float(g_floor_a), float(g_floor_b))
 
     worst_index, worst_gap = shared[0], 0.0
     for i in shared:
