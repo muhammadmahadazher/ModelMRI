@@ -1,5 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { percent } from "./measured";
+import { measured, percent } from "./measured";
 import {
   errorText,
   getLens,
@@ -209,6 +209,12 @@ export default function LensPanel({ epoch }: { epoch: number }) {
             <div className={`lens-row head${tuned ? " twin" : ""}`} role="row">
               <span>layer</span>
               <span>entropy</span>
+              {/* The lens's own error, in the same units as a head score —
+                  which is why `lens.py` computes it in that direction. It was
+                  measured on every row and rendered nowhere. */}
+              <span title="KL(truth ‖ lens), in nats: how much is lost by reading this layer instead of the model's answer.">
+                lost
+              </span>
               <span>would say{tuned ? " (plain)" : ""}</span>
               {tuned && <span>tuned · held-out KL change</span>}
             </div>
@@ -229,6 +235,9 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                   <span className="lens-h">
                     <i style={{ width: `${(r.entropy / maxH) * 100}%` }} />
                     {r.entropy.toFixed(2)}
+                  </span>
+                  <span className="lens-kl mid">
+                    {r.kl_to_final === undefined ? "—" : measured(r.kl_to_final, 3)}
                   </span>
                   <span className="lens-toks">
                     {r.tokens.map((t, i) => (

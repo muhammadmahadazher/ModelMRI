@@ -2745,7 +2745,12 @@ code {
 }
 .lens-row {
   display: grid;
-  grid-template-columns: minmax(52px, 0.5fr) minmax(96px, 0.8fr) minmax(200px, 3fr);
+  /* layer · entropy · lost · would say. The third track is the lens's own
+     error against the model's answer, in the same nats a head score uses —
+     narrow, because it is one number and the tokens beside it are the row. */
+  grid-template-columns:
+    minmax(52px, 0.5fr) minmax(96px, 0.8fr) minmax(58px, 0.4fr)
+    minmax(200px, 3fr);
   gap: 12px;
   align-items: center;
   padding: 5px 10px;
@@ -4470,7 +4475,7 @@ main > [id^="sec-"] {
 
 .lens-row.twin {
   /* One more track than the plain layout, for the tuned reading. */
-  grid-template-columns: 58px 92px 1fr 1fr;
+  grid-template-columns: 58px 92px 58px 1fr 1fr;
 }
 .tuned-col {
   border-left: 1px dashed var(--hair);
@@ -7666,3 +7671,7 @@ button:disabled,
    finishes. */
 .hint ul.withheld { margin: 6px 0 0; padding-left: 18px; }
 .hint ul.withheld li { margin: 4px 0; }
+
+/* The lens's own error, in nats. Right-aligned so the column reads as
+   numbers down the page rather than as a ragged label. */
+.lens-kl { text-align: right; font-size: var(--t-2xs); color: var(--color-mute); }

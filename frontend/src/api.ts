@@ -3144,6 +3144,14 @@ export interface LensRow {
   tokens: string[];
   probs: number[];
   entropy: number;
+  /** KL(truth ‖ lens) in nats: how much information is lost by reading THIS
+   *  layer instead of the model's own final answer.
+   *
+   *  `lens.py` computes it in "the same direction and same floor as
+   *  `ablate.kl_nats`, so a lens error and a head score on one screen are the
+   *  same quantity" — a deliberate choice that only pays off if the number
+   *  reaches the screen, and it was not in this type at all. */
+  kl_to_final?: number;
 }
 
 /** #44 — one occluded block of the camera frame. */
