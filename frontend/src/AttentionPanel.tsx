@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { measured, pair } from "./measured";
+import { fmtKL, measured, pair } from "./measured";
 import { useScanOnData } from "./useScanOnData";
 import {
   Ablation,
@@ -918,16 +918,6 @@ function strip(a: TokenAttribution, n: number): (number | null)[] {
   }
   return out;
 }
-
-/** A KL small enough that fixed decimals would print it as zero.
- *
- *  Not cosmetic. On Qwen3-0.6B every token the user typed scores between
- *  3.1e-05 and 7.9e-05 nats, and five decimal places render most of that list
- *  as 0.00003 or 0.00000 — a measured value displayed as nothing. The
- *  exponent keeps the reader looking at what was measured; whether a number
- *  that small MEANS anything is what the caveat below the lists is for. */
-const fmtKL = (kl: number) =>
-  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
 
 /** How many rows of each list are printed. Every tested token still carries
  *  its bar in the strip above, so nothing measured is hidden — this only

@@ -1,5 +1,5 @@
 import LensPanel from "./LensPanel";
-import { pair, scaled, percent } from "./measured";
+import { fmtKL, pair, scaled, percent } from "./measured";
 import { useEffect, useRef, useState } from "react";
 import RunsOn from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
@@ -9,7 +9,6 @@ import {
   FeatureAblation,
   FeatureScore,
   FeaturesSummary,
-  fmtKL,
   getFeatureDetail,
   getFeaturesSummary,
   getSAE,

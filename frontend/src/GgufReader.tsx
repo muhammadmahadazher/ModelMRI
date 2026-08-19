@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { measured } from "./measured";
+import { fmtKL, measured } from "./measured";
 import {
   compareQuantisation,
   GgufPlan,
@@ -521,7 +521,12 @@ function Damage({ d }: { d: QuantBehaviour }) {
                     {p.contested ? " · a tie" : " · decisive"}
                   </span>
                 </td>
-                <td>{p.kl.toFixed(5)}</td>
+                {/* Through the shared KL rule, not raw `toFixed(5)`.
+                    This is the per-position damage a quantisation did, and
+                    the small ones are the interesting ones — every KL under
+                    1e-5 printed as `0.00000`, in the table whose entire
+                    subject is how much the quantised model moved. */}
+                <td>{fmtKL(p.kl)}</td>
               </tr>
             ))}
           </tbody>

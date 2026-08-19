@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import {
   ApiError,
   errorText,
@@ -48,12 +48,22 @@ import {
  *  with total confidence.
  */
 function num(v: number | undefined, dp: number): string {
-  return v === undefined ? "unknown" : v.toFixed(dp);
+  // Through `measured`, not `toFixed`. The paragraph above is about
+  // `undefined` never becoming `0.000` — and `toFixed(3)` did exactly that to
+  // a p(yes) of 3e-5, printing the same three characters for "the model said
+  // yes, faintly" as for "the model said no with total confidence". Unknown
+  // and rounds-to-zero are different bugs and they produce identical wrong
+  // words; fixing the first left the second untouched. An exact 0 still
+  // prints as 0, because that one IS the measurement.
+  return v === undefined ? "unknown" : measured(v, dp);
 }
 
 /** How much of the model's whole vocabulary landed on a verdict token. */
 function pct(v: number): string {
-  return `${(v * 100).toFixed(v < 0.01 ? 2 : 1)}%`;
+  // Same rule, same reason, and through the shared formatter for the same
+  // reason `num` is: a verdict token holding 4e-5 of the mass is not a
+  // verdict token holding none, and "0.00%" says it is.
+  return percent(v, v < 0.01 ? 2 : 1);
 }
 
 export default function JudgePanel({ step }: { step: TraceStep | null }) {

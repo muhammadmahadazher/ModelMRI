@@ -761,16 +761,6 @@ export const fastestRate = (
   return prev === null ? rate : Math.min(prev, rate);
 };
 
-/** A KL small enough that fixed decimals would print it as zero.
- *
- *  Not cosmetic. Feature scores span from 0.4174529 down to -3e-08 on the one
- *  prompt this was measured on, and five decimal places render most of that
- *  list as 0.00000 — a measured value displayed as nothing. Whether a number
- *  that small MEANS anything is what `below_resolution` is for.
- */
-export const fmtKL = (kl: number) =>
-  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
-
 // ------------------------------------------------------- feature ablation
 
 /** One feature's causal effect, exactly as `modelmri/feature_ablate.py`

@@ -134,3 +134,22 @@ export function scaled(v: number): string {
   if (a >= 1) return v.toFixed(2);
   return measured(v, 4);
 }
+
+
+/** A KL small enough that fixed decimals would print it as zero.
+ *
+ *  Not cosmetic. Feature scores span from 0.4174529 down to -3e-08 on the one
+ *  prompt this was measured on, and five decimal places render most of that
+ *  list as 0.00000 — a measured value displayed as nothing. Whether a number
+ *  that small MEANS anything is what `below_resolution` is for.
+ *
+ *  A SEPARATE FLOOR from `measured`, deliberately. `measured(kl, 5)` escapes
+ *  only below 5e-6, where five places genuinely round to zero; this escapes at
+ *  1e-3, because a ranked list of KLs is read by comparing its entries and
+ *  0.00003 against 0.00007 loses the comparison that the list exists to make.
+ *  One rule for one quantity, in one place — it had two identical definitions,
+ *  in `api.ts` and inside `AttentionPanel`, which is a disagreement waiting to
+ *  happen rather than one that had happened yet.
+ */
+export const fmtKL = (kl: number) =>
+  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
