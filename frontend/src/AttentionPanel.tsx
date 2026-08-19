@@ -348,7 +348,12 @@ export default function AttentionPanel({
       .sort((a, b) => b[1].kl - a[1].kl)
       .map(([h, score]) => (
         <option key={h} value={h}>
-          {h} · KL {score.kl < ranked.noise_floor_kl ? "—" : measured(score.kl, 3)}
+          {/* `<=`, matching the ranked list and the attribution list.
+              This alone used `<`, so a head whose KL is EXACTLY the floor
+              showed a number here and "below the noise floor" one line
+              down — one head, two verdicts, from one character. A value
+              at the floor is not above it. */}
+          {h} · KL {score.kl <= ranked.noise_floor_kl ? "—" : measured(score.kl, 3)}
           {score.flips_top ? " · flips" : ""}
         </option>
       ));

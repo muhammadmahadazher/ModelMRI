@@ -186,7 +186,20 @@ export default function LensPanel({ epoch }: { epoch: number }) {
 
       {err && <div className="hint err">{err}</div>}
 
-      {rows && (
+      {/* AN EMPTY ARRAY IS TRUTHY. `rows = []` rendered the table header with
+          no body and no error — the reader clicked "Run the logit lens",
+          watched the label change and change back, and saw nothing appear.
+          A result with no rows is a finding and gets a sentence. */}
+      {rows && rows.length === 0 && (
+        <div className="hint">
+          The lens ran and read no layers. That is not an error and not an
+          empty answer to your prompt — it means this model exposes no
+          decoder blocks this can walk, so there was nothing to unembed at
+          each depth.
+        </div>
+      )}
+
+      {rows && rows.length > 0 && (
         <>
           {/* Rows settle in order, so the eye reads the stack the way the
               model runs it. No scan here: this panel is mounted inside the
@@ -229,7 +242,11 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                       </span>
                     ))}
                   </span>
-                  {tuned && (
+                  {/* `length > 0` for the same reason as the table above:
+                      an empty array is truthy, so a tuned lens that read no
+                      layers drew a second column with a header and nothing
+                      under it. */}
+                  {tuned && tuned.length > 0 && (
                     <span className="lens-toks tuned-col">
                       {tunedAt.has(r.layer) ? (
                         <>

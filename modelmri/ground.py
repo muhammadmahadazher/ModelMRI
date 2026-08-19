@@ -46,6 +46,7 @@ from typing import Any
 
 import torch
 
+from . import fmt
 from .ablate import distribution, kl_nats
 from .errors import BadRequest
 
@@ -159,7 +160,7 @@ class Grounding:
             f"Each of your {self.n_chunks} passages was masked out of the "
             f"model's attention and the answer re-read at the same position. "
             f"The numbers are NATS, and they do not add up: masking two "
-            f"passages together moved the answer by {self.joint:.4f}, not by "
+            f"passages together moved the answer by {fmt.measured(self.joint)}, not by "
             f"the sum of their separate scores, so none of this is a "
             f"percentage share of the answer.",
         ]
@@ -167,7 +168,7 @@ class Grounding:
             parts.append(
                 "NO PASSAGE CLEARED THE NOISE FLOOR. Removing any one of them "
                 "moved the answer no further than a pass that changed nothing "
-                f"({self.noise_floor:.4f} nats), so on this evidence the "
+                f"({fmt.measured(self.noise_floor)} nats), so on this evidence the "
                 "answer did not depend on the document you attached. That is "
                 "a measurement, not a verdict on whether it is correct."
             )

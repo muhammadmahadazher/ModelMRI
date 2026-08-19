@@ -187,10 +187,19 @@ class ImageStatus:
                 f"{', '.join(sorted(self.unavailable))} — see `unavailable` "
                 f"for why each one cannot be taken here."
             )
+        # 0 IS NOT A SIZE HERE, it is a failed measurement — no weight file
+        # could be read. The panel's own pill already says "resident weights
+        # could not be sized" for exactly this case, and this sentence sat
+        # one line under it claiming "0.0 GB of weights": two statements about
+        # one quantity, on one screen, disagreeing about whether it is known.
+        weight = (
+            f"{self.bytes_resident / 1e9:,.1f} GB of weights"
+            if self.bytes_resident > 0
+            else "weights whose size could not be read"
+        )
         return (
             f"{self.repo} is held on {self.device or 'an unnamed device'} as "
-            f"{self.dtype or 'an unstated dtype'}, "
-            f"{self.bytes_resident / 1e9:,.1f} GB of weights.{steer} What can "
+            f"{self.dtype or 'an unstated dtype'}, {weight}.{steer} What can "
             f"be measured on it: {can}.{cannot}"
         )
 

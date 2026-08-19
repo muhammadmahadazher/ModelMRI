@@ -47,6 +47,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
+from . import fmt
 from .errors import BadRequest, Refusal
 from .image_steps import public_model_name
 
@@ -479,7 +480,12 @@ def knockout(
         "means": (
             f"Each row is how far the image moved when that ONE word was "
             f"removed and the image regenerated at seed {seed}. "
-            f"'{arms[0]['word']}' moved it furthest ({arms[0]['distance']:,.4f}).\n\n"
+            # Through `fmt.measured`, because `:,.4f` floored a real distance
+            # to 0.0000 — so the sentence naming the word that moved the image
+            # FURTHEST reported it as having moved it by nothing, directly
+            # under a row that read 3.0e-5. One quantity, two formatters.
+            f"'{arms[0]['word']}' moved it furthest "
+            f"({fmt.measured(arms[0]['distance'])}).\n\n"
             f"THE SEED IS DOING THE WORK. Every arm ran at the identical seed, "
             f"so the difference is the word rather than the sampler. At a "
             f"different seed per arm these numbers would be sampling noise "

@@ -85,7 +85,12 @@ export default function AdapterPanel() {
         </button>
       </div>
 
-      {err && <p className="err">{err}</p>}
+      {/* `hint err`, not a bare `err`: there is NO `.err` rule in the
+          stylesheet, so this refusal rendered as ordinary body text —
+          the same colour and weight as the explanatory prose around
+          it, with nothing marking it as the answer to what was just
+          clicked. Every other panel uses `hint err`. */}
+      {err && <p className="hint err">{err}</p>}
 
       {report && (
         <>

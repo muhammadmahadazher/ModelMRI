@@ -229,6 +229,7 @@ from typing import Any
 
 import torch
 
+from modelmri import fmt
 from modelmri.ablate import distribution, kl_nats
 from modelmri.errors import BadRequest
 
@@ -804,7 +805,7 @@ def rank_features(
         "residual_means": (
             f"Substituting the SAE's reconstruction for the true stream over "
             f"the {len(window)} token(s) these edits land in, with NO feature "
-            f"removed, already moves the answer {residual_kl:.4f} nats. Across "
+            f"removed, already moves the answer {fmt.measured(residual_kl)} nats. Across "
             f"that window the SAE fails to model up to {worst_share:.1%} of a "
             f"token's norm{here}. "
             f"The calibration's fvu {cal.fvu:g} is an aggregate over every "

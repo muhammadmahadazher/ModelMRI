@@ -293,8 +293,18 @@ export default function ImageCV({
                     aria-label="Which layer to show"
                   />
                 </label>
+                {/* TWO DIFFERENT SPACES, compared as though they were one.
+                    `grid.layer` is the MODEL's own layer index; the slider
+                    value is a POSITION in `readout.layers`, and the readout
+                    can be shorter than the model when a layer could not be
+                    read. On such a model this printed "11 of 10". Both are
+                    named now, each against the thing it counts. */}
                 <span className="mid">
-                  {grid?.layer} of {readout.layers.length - 1}
+                  layer {grid?.layer}
+                  <span className="meta">
+                    {" "}
+                    · {layer + 1} of {readout.layers.length} read
+                  </span>
                 </span>
               </div>
               {grid && (

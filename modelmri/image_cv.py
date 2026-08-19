@@ -69,7 +69,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 
-from . import vision_attr
+from . import fmt, vision_attr
 from .errors import BadRequest, Refusal
 from .vision_attr import SCORE_DECIMALS
 
@@ -1331,7 +1331,7 @@ class Readout:
                     f"patches — a class token, and a distillation token where "
                     f"there is one — so they have no place on the grid and are "
                     f"excluded from it. They still take real attention mass: up "
-                    f"to {off:,.4f} of a row in the layers here, which is "
+                    f"to {fmt.measured(off)} of a row in the layers here, which is "
                     f"reported rather than normalised away."
                 )
         elif self.kind == FEATURE_MAP:
