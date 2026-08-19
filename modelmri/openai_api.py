@@ -39,8 +39,10 @@ anything else; there is no exception and no "it's fine on a LAN".
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
+from pathlib import Path
 
 from .errors import BadRequest, Refusal
 
@@ -91,10 +93,21 @@ UNSUPPORTED = {
     "functions": "no tool-calling surface",
     "response_format": "no constrained decoding on this path",
     "stop": "no stop-sequence handling on this path",
+    # In NEITHER dict until now, which this module's own docstring says is
+    # impossible: "SUPPORTED and UNSUPPORTED below are the whole contract".
+    # So it was accepted and applied to nothing — MEASURED, a completion with
+    # top_p 0.0 came back byte-identical to one with no top_p at all.
+    "top_p": "the generation path applies no nucleus sampling, so a "
+    "completion returned under it would have ignored it",
 }
 
 # OpenAI caps this at 20; matching keeps clients that validate happy.
 MAX_TOP_LOGPROBS = 20
+
+#: OpenAI's own upper bound for `temperature`. Matched for the same reason
+#: as MAX_TOP_LOGPROBS: a client that validates before sending should not
+#: find this server stricter than the API it is imitating.
+MAX_TEMPERATURE = 2.0
 
 DEFAULT_MAX_TOKENS = 256
 
@@ -201,6 +214,12 @@ def check_parameters(body: dict) -> None:
             continue
         if name in ("presence_penalty", "frequency_penalty") and value == 0:
             continue
+        # 1.0 is OpenAI's default and disables nucleus sampling entirely, so
+        # a client sending it is asking for exactly what this does. Turning
+        # those away would refuse most SDKs for describing their own default,
+        # which is the same mistake `n == 1` above exists to avoid.
+        if name == "top_p" and value == 1:
+            continue
         if isinstance(value, (list, dict)) and not value:
             continue
         raise BadRequest(
@@ -226,6 +245,59 @@ def check_parameters(body: dict) -> None:
                 f"'modelmri'. It understands: {known}. Refusing rather than "
                 f"returning a block without it — an extension key that is "
                 f"silently dropped reads as a measurement that found nothing."
+            )
+
+    # A TOKEN BUDGET, checked the way `top_logprobs` below already is.
+    #
+    # `int(body.get("max_completion_tokens") or body.get("max_tokens") or
+    # DEFAULT)` cannot tell an explicit 0 from an absent field, so a caller who
+    # asked for zero tokens received 256 and waited eighteen seconds for them.
+    # A negative one waited three minutes and got a 500.
+    for field in ("max_tokens", "max_completion_tokens"):
+        budget = body.get(field)
+        if budget is None:
+            continue
+        if isinstance(budget, bool) or not isinstance(budget, int):
+            raise BadRequest(
+                f"{field!r} must be a whole number of tokens, and this "
+                f"request sent {budget!r}."
+            )
+        if budget < 1:
+            raise BadRequest(
+                f"{field!r} must be at least 1, and this request sent "
+                f"{budget}. A completion of zero tokens is not a completion, "
+                f"and this used to answer it with {DEFAULT_MAX_TOKENS} — the "
+                f"default, silently, because an explicit 0 is indistinguishable "
+                f"from an absent field to `or`."
+            )
+
+    # TEMPERATURE, in OpenAI's own range.
+    #
+    # `null` is deliberately NOT an error: it is what an SDK emits for an
+    # optional field the caller left unset, and rejecting an SDK's normal
+    # output would make this surface unusable from the clients it exists for.
+    # A negative value is a different matter — it was accepted and silently
+    # became greedy decoding, because `generate_stream` branches on
+    # `if temperature > 0`. Three negative values returned identical text.
+    temperature = body.get("temperature")
+    if temperature is not None:
+        if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+            raise BadRequest(
+                f"'temperature' must be a number, and this request sent "
+                f"{temperature!r}."
+            )
+        if not 0.0 <= float(temperature) <= MAX_TEMPERATURE:
+            why = (
+                "A negative value is not colder than 0 — it was accepted and "
+                "quietly became greedy decoding, which is a completion "
+                "computed under a setting nobody asked for."
+                if float(temperature) < 0
+                else "Above 2 the sampler is not meaningfully hotter, and "
+                "OpenAI's own range stops there."
+            )
+            raise BadRequest(
+                f"'temperature' must be between 0 and {MAX_TEMPERATURE:g}, and "
+                f"this request sent {temperature}. {why}"
             )
 
     top = body.get("top_logprobs")
@@ -446,6 +518,35 @@ def internals(runtime, ask: dict, store: MriStore | None = None) -> dict:
     return out
 
 
+def _first_seen(name: str) -> int:
+    """When this checkpoint landed on this disk, or 0 for "not known".
+
+    `created` in `/v1/models` is a fact about the MODEL, and `_now()` made it
+    a fact about the request: every entry claimed to have been created at the
+    instant it was listed, and claimed something different six seconds later.
+    MEASURED — 29 entries, all stamped with the same moving number.
+
+    The cache directory's mtime is the closest thing to that fact this server
+    can actually observe: when the weights arrived here. `0` when even that
+    cannot be read, which is 1970 and therefore obviously not a real creation
+    date — unlike "now", which looks plausible and is wrong. The field stays
+    present either way, because clients index it.
+    """
+    from . import paths
+
+    safe = re.sub(r"[^A-Za-z0-9._-]", "--", name.replace("/", "--"))
+    for candidate in (
+        paths.hf_hub_cache() / f"models--{safe}",
+        Path(name).expanduser(),
+    ):
+        try:
+            if candidate.exists():
+                return int(candidate.stat().st_mtime)
+        except OSError:
+            continue
+    return 0
+
+
 def models_payload(runtime) -> dict:
     """`/v1/models`, plus what this server does and does not honour."""
     from . import discover
@@ -463,7 +564,13 @@ def models_payload(runtime) -> dict:
     return {
         "object": "list",
         "data": [
-            {"id": name, "object": "model", "created": _now(), "owned_by": "local"}
+            {
+                "id": name,
+                "object": "model",
+                # A per-MODEL fact, not a per-request one. See `_first_seen`.
+                "created": _first_seen(name),
+                "owned_by": "local",
+            }
             for name in ids
         ],
         # Not part of OpenAI's shape, and deliberately here: a client that

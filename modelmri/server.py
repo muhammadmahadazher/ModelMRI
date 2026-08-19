@@ -4538,6 +4538,19 @@ def create_app(
         from . import openai_api
 
         openai_api.check_parameters(body)
+        # BEFORE the stream branch, and that placement is the fix.
+        #
+        # `runtime.generate_stream` raises this same Refusal, but on the
+        # streaming path it does so inside the generator — which FastAPI only
+        # starts consuming after `StreamingResponse` has already sent 200 and
+        # `text/event-stream`. MEASURED with nothing loaded: `{"stream": true}`
+        # returned 200 with a body of ZERO BYTES — no `data:` frame, no
+        # `[DONE]` — which an OpenAI client reads as a successful empty
+        # completion. Without the flag the same request answered 409 with a
+        # sentence naming the fix. One question, two answers, decided by a
+        # field that has nothing to do with whether a model is resident.
+        if not runtime.loaded:
+            raise Refusal("No model loaded. POST /api/model/load first.")
         prompt = openai_api.build_prompt(runtime, body)
         model_name = str(body.get("model") or getattr(runtime, "hf_id", "") or "local")
         max_tokens = int(
