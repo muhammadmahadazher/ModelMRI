@@ -224,6 +224,17 @@ def hub_root(hf_home: str | Path | None = None) -> Path:
 
 
 def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
+    if "/" not in (repo or ""):
+        # The commonest way to get this wrong, and it used to crash on the
+        # unpacking below with "not enough values to unpack" — a message about
+        # this function's internals rather than about what was typed. The
+        # sibling case (a well-formed id that is not cached) has always
+        # answered with a sentence; this one now matches it.
+        raise Refusal(
+            f"`{repo.strip() or '(nothing)'}` is not a repository id. A "
+            f"HuggingFace id is `owner/name` — `lerobot/smolvla_base`, not "
+            f"`smolvla_base` — so there is no owner here to look under."
+        )
     owner, name = repo.split("/", 1)
     base = hub_root(hf_home) / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []

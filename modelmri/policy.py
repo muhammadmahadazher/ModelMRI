@@ -1368,6 +1368,36 @@ def stop(*, timeout: float = 15.0) -> bool:
 # ------------------------------------------------------------ asking it to act
 
 
+def _raw_base64(payload):
+    """A `data:` URL reduced to the base64 the sidecar's contract asks for.
+
+    `vla_data.encode_png` returns a DATA URL, and that is correct — the frame
+    server hands the same string to an `<img src>` and the browser needs the
+    prefix. The sidecar does not: its `decode_frame` calls
+    `base64.b64decode(payload, validate=True)`, which rejects
+    `data:image/png;base64,` as a non-base64 digit.
+
+    MEASURED: every call to /act carrying a frame from `reader.frame(...)`
+    failed on that, so `/api/vla/actions/{compare,swap,knockout}` could not
+    succeed on any dataset or any frame. The sidecar's refusal named the
+    camera and said the payload was not a base64 image, which was true and
+    unhelpful, because nothing upstream was listening.
+
+    Stripped HERE rather than at the four call sites, because this function is
+    the process boundary and a boundary is where a contract is owed. Anything
+    that is not a `data:` URL passes through untouched, so a caller already
+    sending raw base64 is unaffected.
+    """
+    if isinstance(payload, str) and payload.startswith("data:"):
+        head, _, body = payload.partition(",")
+        # Only for a base64 payload. A `data:` URL can also be percent-encoded
+        # text, and handing THAT to a base64 decoder would swap one wrong
+        # answer for another.
+        if "base64" in head:
+            return body
+    return payload
+
+
 def act(
     *,
     frames: dict,
@@ -1399,7 +1429,12 @@ def act(
             "robot would do — only where it looked. `modelmri policy start` "
             "brings one up."
         )
-    body: dict = {"frames": frames, "instruction": instruction}
+    # The sidecar wants raw base64; the browser wants a data URL. Both are
+    # served, and the conversion happens once, here.
+    body: dict = {
+        "frames": {cam: _raw_base64(v) for cam, v in (frames or {}).items()},
+        "instruction": instruction,
+    }
     if state is not None:
         body["state"] = list(state)
     # Present only when asked for, so the sidecar can tell "seed 0" from

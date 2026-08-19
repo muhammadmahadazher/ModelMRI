@@ -95,6 +95,85 @@ _INTERNAL = (
 # a 500. The module name comes from `err.name`, a field ImportError publishes
 # for exactly this, and not from `str(err)`: the message is ours, the name is a
 # lookup key, and nothing else from the exception is republished.
+def _body_object(body: object):
+    """`None` when the body is an object, or the 422 that says it is not.
+
+    RETURNS the response rather than raising it, and that is deliberate.
+    This check has to run before each handler's own `try`, because that
+    try is what defaults a MISSING body to `{}` — a refusal raised inside
+    it would be swallowed by the block meant to report it.
+
+    Eleven handlers read `await request.json()` and index the result.
+    Seven of them already refuse a body that is not JSON at all; none of
+    them refused a body that is valid JSON and not an object, so a bare
+    array reached `.get` and raised AttributeError into the generic 500.
+    """
+    if isinstance(body, dict):
+        return None
+    return JSONResponse(
+        {
+            "error": (
+                f"This endpoint takes a JSON object, and the request body "
+                f"was a {type(body).__name__}. There is nothing in it to "
+                f"read the measurement's arguments from."
+            )
+        },
+        status_code=422,
+    )
+
+
+def _whole(body: dict, field: str, default: int) -> int:
+    """One integer field, or a refusal naming the field and what it held.
+
+    `int(body.get(field, 0))` raised `ValueError: invalid literal for int()
+    with base 10: 'abc'` straight into a 500 — a sentence about CPython rather
+    than about the request. Several of these routes already answer a NUMERIC
+    bad value with an authored refusal, so this only makes the two paths
+    agree.
+
+    A missing key and an explicit `null` both take the default, which is the
+    behaviour `body.get(f) or default` already had and is what lets a panel
+    omit a control it is not showing.
+    """
+    raw = body.get(field)
+    if raw is None or raw == "":
+        return default
+    # Bools FIRST: `isinstance(True, int)` is True, so a JSON `true` would
+    # otherwise pass straight through as the number 1.
+    if isinstance(raw, bool):
+        raise BadRequest(
+            f"`{field}` must be a whole number, and this request sent "
+            f"{str(raw).lower()}."
+        )
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError) as err:
+        raise BadRequest(
+            f"`{field}` must be a whole number, and this request sent {raw!r}."
+        ) from err
+
+
+def _real(body: dict, field: str, default: float) -> float:
+    """One float field, on the same rule as `_whole`."""
+    raw = body.get(field)
+    if raw is None or raw == "":
+        return default
+    if isinstance(raw, bool):
+        raise BadRequest(
+            f"`{field}` must be a number, and this request sent {str(raw).lower()}."
+        )
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError) as err:
+        raise BadRequest(
+            f"`{field}` must be a number, and this request sent {raw!r}."
+        ) from err
+
+
 def _missing_reader_dep(err: ImportError) -> JSONResponse:
     """409 for a missing pyarrow / av, with the real ImportError in the log."""
     log.warning("LeRobot reader dependency missing", exc_info=err)
@@ -1542,6 +1621,8 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         from . import feature_corpus as fc
 
@@ -1573,7 +1654,7 @@ def create_app(
                 [str(t) for t in texts],
                 feature_id=int(feature) if feature is not None else None,
                 corpus_label=label,
-                top_k=int(body.get("top_k") or 10),
+                top_k=_whole(body, "top_k", 10),
             )
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -1599,6 +1680,8 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         prompts = body.get("prompts")
         # A path in the body names a file on the SERVER's disk. See
@@ -1672,11 +1755,13 @@ def create_app(
             body = await request.json()
         except Exception:
             body = {}
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
         try:
             return await asyncio.to_thread(
                 app.state.custom.ablate,
                 str(body.get("kind") or "layers"),
-                grid=int(body.get("grid") or 0),
+                grid=_whole(body, "grid", 0),
             )
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -1702,6 +1787,8 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         document = body.get("document")
         # A path in the body names a file on the SERVER's disk. See
@@ -1739,7 +1826,7 @@ def create_app(
                 runtime.ground_answer,
                 document,
                 str(body.get("question") or ""),
-                max_chunks=int(body.get("max_chunks") or 0),
+                max_chunks=_whole(body, "max_chunks", 0),
             )
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -1766,20 +1853,22 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             return await asyncio.to_thread(
                 runtime.patchscope,
                 str(body.get("prompt") or ""),
-                source_layer=int(body.get("layer", 0)),
-                source_position=int(body.get("position", -1)),
+                source_layer=_whole(body, "layer", 0),
+                source_position=_whole(body, "position", -1),
                 target_prompt=str(body.get("target") or ""),
                 target_layer=(
                     int(body["target_layer"])
                     if body.get("target_layer") is not None
                     else None
                 ),
-                max_new_tokens=int(body.get("max_new_tokens") or 12),
+                max_new_tokens=_whole(body, "max_new_tokens", 12),
             )
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -1800,14 +1889,16 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             return await asyncio.to_thread(
                 runtime.path_trace,
                 str(body.get("clean") or ""),
                 str(body.get("corrupt") or ""),
-                layer=int(body.get("layer", -1)),
-                position=int(body.get("position", -1)),
+                layer=_whole(body, "layer", -1),
+                position=_whole(body, "position", -1),
             )
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -1828,12 +1919,14 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             return await asyncio.to_thread(
                 runtime.probe_layers,
                 body.get("examples") or [],
-                n_permutations=int(body.get("n_permutations") or 0),
+                n_permutations=_whole(body, "n_permutations", 0),
                 save_as=str(body.get("save_as") or ""),
             )
         except Refusal as err:
@@ -1900,6 +1993,8 @@ def create_app(
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "this request body is not JSON"}, 422)
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         texts = body.get("texts")
         # A path in the body names a file on the SERVER's disk. See
@@ -1912,7 +2007,14 @@ def create_app(
                 return refusal
         source = body.get("file")
         label = str(body.get("label") or "")
-        steps = int(body.get("steps") or 250)
+        # Read INSIDE a try that converts a refusal. The first pass put
+        # these one line above the handler's own try, so the authored
+        # sentence was raised and then swallowed by the generic 500 —
+        # a guard that is unreachable is not a guard.
+        try:
+            steps = _whole(body, "steps", 250)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
         try:
             if source:
@@ -3571,6 +3673,8 @@ def create_app(
             body = await request.json()
         except Exception:
             body = {}
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             reader = _reader()
@@ -3586,9 +3690,9 @@ def create_app(
                 app.state.vla,
                 reader,
                 str(body.get("metric") or "attention_entropy"),
-                episode_stride=int(body.get("episode_stride") or 1),
-                frame_stride=int(body.get("frame_stride") or 25),
-                occlusion_stride=int(body.get("occlusion_stride") or 0),
+                episode_stride=_whole(body, "episode_stride", 1),
+                frame_stride=_whole(body, "frame_stride", 25),
+                occlusion_stride=_whole(body, "occlusion_stride", 0),
             )
             # Persisted so a sweep survives the process — the table is the
             # point of running one at all.
@@ -3599,6 +3703,15 @@ def create_app(
 
         try:
             return await asyncio.to_thread(run)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. The `_reader()` guard
+            # above opens only the parquet; `av` is imported the first time a
+            # frame is actually DECODED, which happens inside this worker. So
+            # without this arm a machine with pyarrow and no av gets an opaque
+            # 500 while the sentence naming the missing package sits
+            # unreachable — the same shape as the bug fixed on
+            # /api/vla/actions/* one commit ago.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
@@ -3623,6 +3736,8 @@ def create_app(
             body = await request.json()
         except Exception:
             body = {}
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             reader = _reader()
@@ -3640,10 +3755,10 @@ def create_app(
             payload = vla_mod.share_payload(
                 app.state.vla,
                 reader,
-                episode=int(body.get("episode", 0)),
-                timestep=int(body.get("t", 0)),
-                layer=int(body.get("layer", -1)),
-                head=int(body.get("head", -1)),
+                episode=_whole(body, "episode", 0),
+                timestep=_whole(body, "t", 0),
+                layer=_whole(body, "layer", -1),
+                head=_whole(body, "head", -1),
                 occlusion=body.get("occlusion") or None,
             )
             status = app.state.vla.status()
@@ -3669,6 +3784,15 @@ def create_app(
 
         try:
             blob = await asyncio.to_thread(run)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. The `_reader()` guard
+            # above opens only the parquet; `av` is imported the first time a
+            # frame is actually DECODED, which happens inside this worker. So
+            # without this arm a machine with pyarrow and no av gets an opaque
+            # 500 while the sentence naming the missing package sits
+            # unreachable — the same shape as the bug fixed on
+            # /api/vla/actions/* one commit ago.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
@@ -3697,6 +3821,8 @@ def create_app(
             body = await request.json()
         except Exception:
             body = {}
+        if (not_an_object := _body_object(body)) is not None:
+            return not_an_object
 
         try:
             reader = _reader()
@@ -3707,8 +3833,15 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/vla/occlude")
 
-        episode = int(body.get("episode", 0))
-        timestep = int(body.get("t", 0))
+        # Read INSIDE a try that converts a refusal. The first pass put
+        # these one line above the handler's own try, so the authored
+        # sentence was raised and then swallowed by the generic 500 —
+        # a guard that is unreachable is not a guard.
+        try:
+            episode = _whole(body, "episode", 0)
+            timestep = _whole(body, "t", 0)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
 
         def run():
             from . import vla_occlude
@@ -3726,9 +3859,9 @@ def create_app(
                 frame,
                 scale,
                 baseline=str(body.get("baseline") or "episode_mean"),
-                stride=int(body.get("stride") or 0),
-                layer=int(body.get("layer", -1)),
-                head=int(body.get("head", -1)),
+                stride=_whole(body, "stride", 0),
+                layer=_whole(body, "layer", -1),
+                head=_whole(body, "head", -1),
                 # So a cached attention map from a DIFFERENT frame is not
                 # silently ranked against this frame's causal map.
                 key=(episode, timestep),
@@ -3742,6 +3875,15 @@ def create_app(
 
         try:
             return await asyncio.to_thread(run)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. The `_reader()` guard
+            # above opens only the parquet; `av` is imported the first time a
+            # frame is actually DECODED, which happens inside this worker. So
+            # without this arm a machine with pyarrow and no av gets an opaque
+            # 500 while the sentence naming the missing package sits
+            # unreachable — the same shape as the bug fixed on
+            # /api/vla/actions/* one commit ago.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
@@ -4315,9 +4457,15 @@ def create_app(
             or body.get("max_tokens")
             or openai_api.DEFAULT_MAX_TOKENS
         )
-        temperature = float(body.get("temperature", 0.7))
+        # Somebody else's client sends this body, so a wrong type here is
+        # ordinary rather than exotic — and an OpenAI-compatible surface that
+        # answers 500 to a bad `temperature` is one nobody can debug against.
+        try:
+            temperature = _real(body, "temperature", 0.7)
+            top_k = _whole(body, "top_logprobs", 0)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
         want_logprobs = bool(body.get("logprobs"))
-        top_k = int(body.get("top_logprobs") or 0)
         ask = body.get("modelmri") if isinstance(body.get("modelmri"), dict) else None
 
         def generate() -> str:
@@ -4493,7 +4641,7 @@ def create_app(
                 tokenizer,
                 str(body.get("text") or ""),
                 str(body.get("rubric") or ""),
-                n_paraphrases=int(body.get("n_paraphrases") or 0),
+                n_paraphrases=_whole(body, "n_paraphrases", 0),
                 device=str(getattr(runtime, "device", "cpu")),
             )
             return out.to_dict()
@@ -4516,7 +4664,7 @@ def create_app(
             prompts = judge_mod.plan(
                 str(body.get("text") or ""),
                 str(body.get("rubric") or ""),
-                int(body.get("n_paraphrases") or 0),
+                _whole(body, "n_paraphrases", 0),
             )
         except BadRequest as err:
             return JSONResponse({"error": err.sentence}, status_code=422)
