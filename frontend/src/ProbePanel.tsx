@@ -291,6 +291,14 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                 style={{ left: `${data.majority * 100}%` }}
               >
                 majority {percent(data.majority, 0)}
+                {data.counts && (
+                  <span className="meta">
+                    {" "}
+                    ({Object.entries(data.counts)
+                      .map(([k, v]) => `${v} of class ${k}`)
+                      .join(", ")})
+                  </span>
+                )}
               </span>
               <span className="probe-axis-hi">100%</span>
             </span>

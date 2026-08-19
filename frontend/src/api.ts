@@ -3452,6 +3452,11 @@ export interface LayerProbe {
 export interface ProbeReport {
   layers: LayerProbe[];
   majority: number;
+  /** `{"0": nA, "1": nB}` — the class sizes the majority line is computed
+   *  FROM. Shown beside it, because "majority 62%" is a different reading
+   *  when it comes from 8 examples against 5 than from 800 against 500, and
+   *  the percentage alone cannot say which. */
+  counts?: Record<string, number>;
   n_train: number;
   n_test: number;
   n_permutations: number;

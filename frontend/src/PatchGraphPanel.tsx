@@ -393,6 +393,35 @@ export default function PatchGraphPanel({
             <span>
               <b>{(num(g.n_scored) ?? 0).toLocaleString()}</b> senders scored
             </span>
+            {/* WHAT THE WALK LEFT OUT, beside what it did. The graph prunes
+                and stops at a frontier, and the strip said only how many were
+                SCORED — so a graph that pruned three quarters of the network
+                and stopped two hops early looked like the whole circuit. The
+                server has published every one of these all along. */}
+            {(num(g.n_pruned) ?? 0) > 0 && (
+              <span>
+                <b>{(num(g.n_pruned) ?? 0).toLocaleString()}</b> pruned
+              </span>
+            )}
+            {(num(g.n_weak) ?? 0) > 0 && (
+              <span>
+                <b>{(num(g.n_weak) ?? 0).toLocaleString()}</b> too weak
+              </span>
+            )}
+            {(num(g.n_untested) ?? 0) > 0 && (
+              <span title="Reached, and never measured — the walk stopped here.">
+                <b>{(num(g.n_untested) ?? 0).toLocaleString()}</b> untested
+              </span>
+            )}
+            {Array.isArray(g.frontier) && g.frontier.length > 0 && (
+              <span
+                title={`The walk stopped at these: ${g.frontier.slice(0, 24).join(", ")}${
+                  g.frontier.length > 24 ? ` … and ${g.frontier.length - 24} more` : ""
+                }`}
+              >
+                <b>{g.frontier.length}</b> at the frontier
+              </span>
+            )}
             <span className="spacer" />
             <span>
               {num(g.passes) ?? 0} passes · {num(g.seconds) ?? 0}s
