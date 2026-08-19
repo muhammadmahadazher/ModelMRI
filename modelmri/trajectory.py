@@ -183,15 +183,30 @@ def _seq(step) -> int:
     return value
 
 
-def _ordered(steps) -> list:
-    """Steps in recorded order, which is `seq` where a document supplies one.
+def _ordered(steps) -> tuple[list, int]:
+    """Steps in recorded order, and how many entries were not steps.
 
     A written plan has no `seq` and must keep the order it was written in; a
     trace from the store arrives ordered already; a hand-written document need
     not. `sorted` is stable, so all-zero keys preserve list order and the
     three cases need no flag to tell them apart.
+
+    The COUNT is returned because the previous version dropped `null` entries
+    with a bare comprehension and told nobody: a candidate of `[null]` became
+    a run of zero steps, and the response reported the planned step as missing
+    — a finding about the run, reached by discarding the run.
     """
-    return sorted([s for s in steps if s is not None], key=_seq)
+    # WHAT `_normalise` CAN ACTUALLY TAKE, which is a mapping OR a bare
+    # string: `["search", "write"]` is a valid plan and the docstring above is
+    # about exactly that case. Filtering to dicts alone discarded every bare
+    # name and turned a written plan into an empty one — caught by the suite,
+    # and a reminder that "unusable" has to mean "the next function cannot
+    # read this", not "it is not the shape I had in mind".
+    #
+    # An empty string is left IN: `_normalise` refuses it by name, which is a
+    # better answer than silently dropping it and counting it here.
+    usable = [s for s in steps if isinstance(s, (str, dict))]
+    return sorted(usable, key=_seq), len(list(steps)) - len(usable)
 
 
 @dataclass
@@ -560,6 +575,14 @@ class Alignment:
     matched_on: str = "kind and name"
     n_reference: int = 0
     n_candidate: int = 0
+    # Entries that were not steps at all — `null`, a string, a number — and so
+    # could not be positioned. REPORTED rather than dropped: a caller who sent
+    # a one-step run and read "the run had zero steps and the planned step is
+    # missing" was given a finding about their run that was produced by
+    # discarding their run. This module already counts every other thing it
+    # leaves out; these two were the exception.
+    n_reference_unusable: int = 0
+    n_candidate_unusable: int = 0
     # Counted over the WHOLE alignment, before `rows` is capped. Computing
     # these from a trimmed list is the silent-truncation defect this module
     # spends a constant avoiding.
@@ -596,6 +619,8 @@ class Alignment:
             "n_reordered": self.n_reordered,
             "n_changed_arguments": self.n_changed_arguments,
             "n_arguments_not_compared": self.n_arguments_not_compared,
+            "n_reference_unusable": self.n_reference_unusable,
+            "n_candidate_unusable": self.n_candidate_unusable,
             "cells": self.cells,
             "rows_not_listed": self.rows_not_listed,
             "matched_rows_not_listed": self.matched_rows_not_listed,
@@ -625,6 +650,23 @@ class Alignment:
             "does not know what any step was FOR. The counts say what "
             "differs; whether that is a regression is yours."
         )
+
+        # BEFORE the "no recorded steps" line, which would otherwise be a
+        # claim about a run whose steps this discarded. A candidate of
+        # `[null]` used to read as a run of zero steps with the planned step
+        # reported missing.
+        if self.n_reference_unusable or self.n_candidate_unusable:
+            bits = []
+            if self.n_reference_unusable:
+                bits.append(f"{self.n_reference_unusable} in the plan")
+            if self.n_candidate_unusable:
+                bits.append(f"{self.n_candidate_unusable} in the run")
+            parts.append(
+                f"{' and '.join(bits)} could not be read as a step — an entry "
+                f"that is not an object has no name to align on — so "
+                f"{'they were' if sum((self.n_reference_unusable, self.n_candidate_unusable)) > 1 else 'it was'} "
+                f"left out of the counts above rather than counted as absent."
+            )
 
         if self.n_candidate == 0:
             parts.append(
@@ -816,8 +858,10 @@ def align(*, reference, candidate) -> Alignment:
     Every count it returns is a count. There is no score here on purpose, and
     `means()` says why where the reader will see it.
     """
-    ref = [_normalise(s, where="the plan") for s in _ordered(reference)]
-    cand = [_normalise(s, where="the run") for s in _ordered(candidate)]
+    ref_steps, ref_unusable = _ordered(reference)
+    cand_steps, cand_unusable = _ordered(candidate)
+    ref = [_normalise(s, where="the plan") for s in ref_steps]
+    cand = [_normalise(s, where="the run") for s in cand_steps]
 
     if not ref:
         raise TrajectoryError(
@@ -897,6 +941,8 @@ def align(*, reference, candidate) -> Alignment:
         matched_on=matched_on,
         n_reference=len(ref),
         n_candidate=len(cand),
+        n_reference_unusable=ref_unusable,
+        n_candidate_unusable=cand_unusable,
         cells=cells,
     )
 

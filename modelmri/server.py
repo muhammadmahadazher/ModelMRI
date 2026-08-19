@@ -13,8 +13,9 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -3016,6 +3017,13 @@ def create_app(
     def image_filmstrip_cost(
         steps: int = 20,
         every: int | None = None,
+        # `at` was named in this route's own refusal — "Pass `every=N` … or
+        # `at=[...]` for exactly the steps you want" — and was not in the
+        # signature, so FastAPI dropped it and a caller who did exactly what
+        # they were told received the identical refusal again.
+        # `image_steps.filmstrip_plan` has always taken it; only the wiring
+        # was missing.
+        at: Annotated[list[int] | None, Query()] = None,
         include_final: bool = True,
         frame_pixels: int = _steps_defaults.DEFAULT_FRAME_PIXELS,
     ):
@@ -3031,6 +3039,7 @@ def create_app(
             return image_steps.filmstrip_plan(
                 int(steps),
                 every=None if every is None else int(every),
+                at=at,
                 include_final=bool(include_final),
                 frame_pixels=int(frame_pixels),
             )

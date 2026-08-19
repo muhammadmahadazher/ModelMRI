@@ -701,3 +701,43 @@ def test_an_index_of_zero_is_a_position_and_not_an_absence():
     extra = next(r for r in out.rows if r.status == tj.EXTRA)
     assert missing.reference_index == 0 and missing.candidate_index is None
     assert extra.candidate_index == 0 and extra.reference_index is None
+
+
+def test_an_entry_that_is_not_a_step_is_counted_rather_than_dropped():
+    """MEASURED: `{"reference":[{"name":"x"}],"candidate":[null]}` answered
+    "the plan names x at position 0 and no step in the run aligned with it" —
+    a finding about the run, produced by discarding the run.
+
+    `_ordered` dropped nulls with a bare comprehension and told nobody, in a
+    module that counts every other thing it leaves out.
+    """
+    out = tj.align(reference=[{"name": "x"}], candidate=[None]).to_dict()
+    assert out["n_candidate"] == 0
+    assert out["n_candidate_unusable"] == 1
+    assert "could not be read as a step" in out["means"]
+
+    mixed = tj.align(
+        reference=[{"name": "x"}],
+        candidate=[None, 42, ["a"], {"name": "x"}],
+    ).to_dict()
+    assert mixed["n_candidate"] == 1
+    assert mixed["n_candidate_unusable"] == 3
+
+
+def test_a_plan_of_bare_names_is_still_a_plan():
+    """The regression the first version of the fix introduced, and the reason
+    it is pinned here.
+
+    `_normalise` takes a mapping OR a bare string — `["search", "write"]` is a
+    valid plan and the module is explicitly written for it. Filtering the
+    "unusable" entries to dicts alone discarded every bare name and turned a
+    written plan into an empty one, which `align` then refused outright.
+    "Unusable" has to mean "the next function cannot read this", not "it is
+    not the shape I had in mind".
+    """
+    run = [{"kind": "tool_call", "name": "search"}]
+    out = tj.align(reference=["search"], candidate=run).to_dict()
+
+    assert out["n_reference"] == 1
+    assert out["n_reference_unusable"] == 0
+    assert [r["status"] for r in out["rows"]] == ["matched"]

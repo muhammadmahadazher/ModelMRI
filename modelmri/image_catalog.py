@@ -627,6 +627,29 @@ def size_of(repo: str) -> dict:
             ),
             tok,
         )
+    except urllib.error.HTTPError as err:
+        # The Hub ANSWERED. `HTTPError` is a subclass of `URLError` and of
+        # `OSError`, so the arm below — written for "could not reach the
+        # network" — used to swallow a perfectly clear reply and report it as
+        # a network failure at 503, pointing the reader at a terminal for
+        # something this sentence can simply say.
+        if err.code == 404:
+            raise BadRequest(
+                f"The Hub has no repository called `{name}`. Check the "
+                f"spelling, or the owner — a private or gated repo also reads "
+                f"as absent until you are signed in."
+            ) from None
+        if err.code in (401, 403):
+            raise BadRequest(
+                f"The Hub refused to describe `{name}` ({err.code}). It is "
+                f"gated or private; accept its terms on the model page, or "
+                f"sign in with a token that can see it."
+            ) from None
+        log.warning("image size lookup failed", exc_info=err)
+        raise Refusal(
+            f"The Hub answered {err.code} when asked how big `{name}` is. The "
+            f"full error is in the terminal running `modelmri serve`."
+        ) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException) as err:
         log.warning("image size lookup failed", exc_info=err)
         raise Refusal(
