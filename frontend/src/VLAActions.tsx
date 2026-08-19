@@ -160,6 +160,9 @@ export default function VLAActions({
     ? [...cmp.data.rows].sort((a, b) => b.distance - a.distance)
     : [];
   const shownRows = ranked.slice(0, 10);
+  // How many were ranked but not drawn. A knockout ranks every input; showing
+  // ten of them without the count reads as "these are the inputs".
+  const rowsNotShown = ranked.length - shownRows.length;
   const widestKnock = knock.data
     ? knock.data.rows.reduce((m, r) => Math.max(m, r.distance), 0) || 1
     : 1;
@@ -352,6 +355,12 @@ export default function VLAActions({
               </li>
             ))}
           </ol>
+          {rowsNotShown > 0 && (
+            <p className="meta">
+              {rowsNotShown} more input(s) were knocked out and moved the
+              action less. Every one was measured; this is the top ten.
+            </p>
+          )}
           {/* The list is capped, so it says it is capped. The top of a list is
               read as "these are the ones". */}
           {ranked.length > shownRows.length && (

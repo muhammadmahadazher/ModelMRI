@@ -1,4 +1,5 @@
 import { TokenCount, TokenRollup, TraceCost } from "./api";
+import { measured } from "./measured";
 
 /**
  * Token counts a provider reported — and a cost column only when the user
@@ -98,10 +99,12 @@ export function CostBanner({ cost }: { cost?: TraceCost }) {
       {cost.total !== null && (
         <b className="mid">
           {cost.currency}
-          {cost.total.toLocaleString(undefined, {
-            minimumFractionDigits: 4,
-            maximumFractionDigits: 4,
-          })}
+          {/* Through `measured`, because a run that really cost money printed a
+              bold "0.0000": `minimumFractionDigits: 4` floors every total
+              under 0.00005, and the server keeps six decimals
+              (`round(out.total, 6)`) precisely so the small end survives. A
+              few hundred input tokens on a cheap model is about $0.000025. */}
+          {measured(cost.total, 4)}
         </b>
       )}{" "}
       {/* The sentence is authored server-side beside the arithmetic, so the

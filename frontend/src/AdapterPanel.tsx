@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import { AdapterReport, errorText, readAdapter } from "./api";
 
 /**
@@ -159,7 +159,7 @@ export default function AdapterPanel() {
                         were not resident, and a ratio against a stand-in
                         denominator is worse than no ratio. */}
                     {m.relative !== null && (
-                      <em className="meta"> · {(m.relative * 100).toFixed(1)}% of base</em>
+                      <em className="meta"> · {percent(m.relative, 1)} of base</em>
                     )}
                   </span>
                 </li>

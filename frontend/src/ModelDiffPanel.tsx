@@ -1,5 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import { diffModels, errorText, ModelDiffReport } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -304,7 +304,7 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
             ) : (
               <>
                 The cosine falls furthest at <b>layer {data.consensus_layer}</b>{" "}
-                on {(data.consensus_share * 100).toFixed(0)}% of prompts.{" "}
+                on {percent(data.consensus_share, 0)} of prompts.{" "}
                 {majority ? (
                   <>That is a majority, so it is where this finetune starts to differ on this set.</>
                 ) : (
@@ -327,6 +327,8 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
                 finding
               </p>
               <ol className="mdiff-heads stagger">
+                {/* Capped at ten, and the count follows below — a list that
+                    stops without saying so reads as the whole finding. */}
                 {data.heads.slice(0, 10).map((h, i) => (
                   <li key={`${h.layer}-${h.head}`} style={{ "--i": i } as CSSProperties}>
                     <span className="mid">
@@ -349,6 +351,12 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
                   </li>
                 ))}
               </ol>
+              {data.heads.length > 10 && (
+                <p className="meta">
+                  {data.heads.length - 10} more head(s) were compared and moved
+                  less. Every one was measured; this is the top ten.
+                </p>
+              )}
             </>
           )}
 

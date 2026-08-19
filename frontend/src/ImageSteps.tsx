@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import {
   errorText,
   imageFilmstrip,
@@ -163,7 +163,7 @@ export default function ImageSteps({ steps }: { steps: number }) {
                     ? `step ${s.step} · no previous latent to move from, so the change is unknown`
                     : `step ${s.step} · moved ${measured(s.rms_change, 4)} RMS` +
                       (s.cumulative !== null
-                        ? ` · ${(s.cumulative * 100).toFixed(1)}% of the run's total by here`
+                        ? ` · ${percent(s.cumulative, 1)} of the run's total by here`
                         : "")
                 }
               />

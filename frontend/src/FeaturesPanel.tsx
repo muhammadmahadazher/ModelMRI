@@ -1,5 +1,5 @@
 import LensPanel from "./LensPanel";
-import { pair, scaled } from "./measured";
+import { pair, scaled, percent } from "./measured";
 import { useEffect, useRef, useState } from "react";
 import RunsOn from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
@@ -435,7 +435,7 @@ export default function FeaturesPanel({
           <b>{cal.center ? "centered" : "not centered"}</b> along d_model,{" "}
           <b>b_dec {cal.subtract_b_dec ? "subtracted" : "left in"}</b>, leaving{" "}
           <b>{fmtFVU(cal.fvu)}</b> of the variance unexplained (
-          {(cal.rel_err * 100).toFixed(1)}% of the stream's norm) with{" "}
+          {percent(cal.rel_err, 1)} of the stream's norm) with{" "}
           <b>{cal.l0.toFixed(1)}</b> of {sae.d_sae?.toLocaleString()} features
           firing per token. Both are aggregates over those {cal.n_tokens}{" "}
           tokens; a ranking below reports what the SAE misses at the token you
@@ -650,7 +650,7 @@ export default function FeaturesPanel({
                         title={
                           score.below_resolution
                             ? `KL ${fmtKL(score.kl)} nats — at or below this measurement's numerical resolution of ${measured.resolution_kl.toExponential(0)}, which is arithmetic rather than the model. The noise floor is a different and smaller number (${measured.noise_floor_kl}); greying out at the floor would grey out nothing.`
-                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${pair(score.p_top_before, score.p_top_after)[0]} → ${pair(score.p_top_before, score.p_top_after)[1]}${score.flips_top ? " · changes the top token" : ""} · ONE random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · that control is a single draw, and it moves: over 8 draws per row the median row's control spans a factor of about 2.5, and roughly half the rows fall between their own smallest and largest draw, so a score near its control is left undecided by this test rather than settled by it · after the edit the SAE still reads ${(score.encoder_residual * 100).toFixed(0)}% of this feature`
+                            : `KL ${fmtKL(score.kl)} nats · p(${JSON.stringify(measured.target_token)}) ${pair(score.p_top_before, score.p_top_after)[0]} → ${pair(score.p_top_before, score.p_top_after)[1]}${score.flips_top ? " · changes the top token" : ""} · ONE random direction of the same size at the same tokens cost ${fmtKL(score.control_kl)}${score.clears_control ? "" : ", MORE than this feature's own edit — this score is not distinguished from the size of the edit"} · that control is a single draw, and it moves: over 8 draws per row the median row's control spans a factor of about 2.5, and roughly half the rows fall between their own smallest and largest draw, so a score near its control is left undecided by this test rather than settled by it · after the edit the SAE still reads ${percent(score.encoder_residual, 0)} of this feature`
                         }
                       >
                         {score.below_resolution
@@ -1024,19 +1024,19 @@ function FeatureRanking({
           model's own units.
         </b>{" "}
         Calibrated as <code>{a.convention}</code> (FVU {fmtFVU(a.fvu)}), the SAE
-        leaves <b>{(a.rel_err * 100).toFixed(1)}%</b> of the stream's norm
+        leaves <b>{percent(a.rel_err, 1)}</b> of the stream's norm
         unmodelled averaged over every token
         {a.residual_share !== null && (
           <>
             {" "}
             — but up to{" "}
-            <b>{(a.residual_share * 100).toFixed(1)}%</b> at a token{" "}
+            <b>{percent(a.residual_share, 1)}</b> at a token{" "}
             {a.scope === "position"
               ? "these edits land in"
               : `in the window they land in (tokens ${a.residual_window[0]}–${a.residual_window[1]})`}
             {a.residual_share_at_position !== null &&
               a.scope !== "position" &&
-              `, and ${(a.residual_share_at_position * 100).toFixed(1)}% at the token being attributed`}
+              `, and ${percent(a.residual_share_at_position, 1)} at the token being attributed`}
           </>
         )}
         . Substituting the reconstruction over that same window with no feature

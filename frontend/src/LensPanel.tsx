@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { percent } from "./measured";
 import {
   errorText,
   getLens,
@@ -224,7 +225,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                         title={`p = ${r.probs[i]}`}
                       >
                         {t.replace(/ /g, "·") || "␀"}
-                        <em>{(r.probs[i] * 100).toFixed(0)}%</em>
+                        <em>{percent(r.probs[i], 0)}</em>
                       </span>
                     ))}
                   </span>
@@ -240,7 +241,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                             >
                               {t.replace(/ /g, "·") || "␀"}
                               <em>
-                                {(tunedAt.get(r.layer)!.probs[i] * 100).toFixed(0)}%
+                                {percent(tunedAt.get(r.layer)!.probs[i], 0)}
                               </em>
                             </span>
                           ))}

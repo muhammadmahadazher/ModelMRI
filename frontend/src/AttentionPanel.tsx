@@ -623,6 +623,24 @@ export default function AttentionPanel({
                 );
               })}
           </ol>
+          {/* THE CAP, SAID. A whole-model sweep on a 28x16 model computes 448
+              scores, prices itself at minutes of GPU, and showed five rows
+              with nothing to say five of how many. This file already gets it
+              right for the token ranking four hundred lines down — "{n} more
+              were tested and scored lower" — so the rule was stated here and
+              broken for the more expensive of the two measurements. */}
+          {(() => {
+            const all = wholeModel
+              ? ranked.ranked
+              : ranked.ranked.filter((r) => r.layer === layer);
+            return all.length > 5 ? (
+              <p className="meta">
+                {all.length - 5} more head{all.length - 5 === 1 ? " was" : "s were"}{" "}
+                ranked and scored lower. Every one was measured; this list is
+                the top five.
+              </p>
+            ) : null;
+          })()}
           {/* The caveat travels with the numbers. An ordered list reads as
               truth, and two of these scores are not what a reader assumes. */}
           <div className="hint">

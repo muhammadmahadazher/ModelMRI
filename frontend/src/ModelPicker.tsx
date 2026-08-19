@@ -20,7 +20,12 @@ import {
   pullOllama,
   resolveOllama,
 } from "./api";
-import { remaining } from "./LoadBar";
+// `gb` as well as `remaining`. This file took the duration helper from
+// LoadBar and re-implemented the byte one, reproducing the bug LoadBar's own
+// comment records as fixed: a pull under half a megabyte, and the whole first
+// stretch of any live download, read "0 MB". Two meters for the same download
+// cannot disagree if there is one formatter.
+import { gb, remaining } from "./LoadBar";
 
 /** What a pull is doing, right now. Bytes, a bar, and a time — the three
  *  things somebody watching a download wants and the picker used to answer
@@ -28,8 +33,6 @@ import { remaining } from "./LoadBar";
 function PullProgress({ p }: { p: LoadProgress | null }) {
   if (!p || !p.active) return null;
   const pct = p.bytes_total > 0 ? (100 * p.bytes_done) / p.bytes_total : null;
-  const gb = (n: number) =>
-    n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
   return (
     <div className="pull-progress" role="status" aria-live="polite">
       <div className={`pull-track ${pct === null ? "indeterminate" : ""}`}>

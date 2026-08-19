@@ -1,5 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import RunsOn from "./RunsOn";
 import { errorText, GroundScore, Grounding, groundAnswer } from "./api";
 import ReceiptLine from "./ReceiptLine";
@@ -422,7 +422,7 @@ export default function GroundPanel({
               <>
                 {" "}
                 The attention shares cover{" "}
-                {(data.attention_share * 100).toFixed(1)}% of the answer
+                {percent(data.attention_share, 1)} of the answer
                 position's mass; the rest went to the question, the template
                 and any position not inside a passage.
               </>

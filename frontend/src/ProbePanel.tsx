@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { percent } from "./measured";
 import RunsOn from "./RunsOn";
 import { errorText, LayerProbe, ProbeReport, runProbe } from "./api";
 import ReceiptLine from "./ReceiptLine";
@@ -285,7 +286,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                 className="probe-majority-key"
                 style={{ left: `${data.majority * 100}%` }}
               >
-                majority {(data.majority * 100).toFixed(0)}%
+                majority {percent(data.majority, 0)}
               </span>
               <span className="probe-axis-hi">100%</span>
             </span>
@@ -313,7 +314,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                           left: `${p.null_low * 100}%`,
                           width: `${Math.max(0, p.null_high - p.null_low) * 100}%`,
                         }}
-                        title={`shuffled labels reached ${(p.null_low * 100).toFixed(0)}–${(p.null_high * 100).toFixed(0)}%`}
+                        title={`shuffled labels reached ${(p.null_low * 100).toFixed(0)}–${percent(p.null_high, 0)}`}
                       />
                       <span
                         className="probe-majority"
@@ -325,7 +326,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                       />
                     </span>
                     <span className="mid probe-acc">
-                      {(p.accuracy * 100).toFixed(0)}%
+                      {percent(p.accuracy, 0)}
                     </span>
                     <span className="meta probe-verd">{v.text}</span>
                   </li>

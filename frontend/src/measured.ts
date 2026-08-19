@@ -64,6 +64,29 @@ export function signed(v: number, decimals = 4): string {
   return (v > 0 ? "+" : "-") + body;
 }
 
+
+/**
+ * A FRACTION rendered as a percentage, without rendering a real share as 0%.
+ *
+ * The same failure as `measured`, one multiplication along, and it was in
+ * twenty-odd places: `(x * 100).toFixed(1)` prints "0.0%" for every share
+ * below 0.0005. MEASURED on Qwen3-1.7B, whose context window is 40,960
+ * tokens — every prompt under about twenty tokens rendered
+ * "context 20 / 40,960 (0.0%)", a measured fraction of a real window shown
+ * as none of it.
+ *
+ * Ordinary values are untouched: 0.5 is still "50.0%". Only a share that is
+ * nonzero and would round away escapes to exponent form, and an exact zero
+ * still prints "0.0%" because that one IS the measurement.
+ */
+export function percent(fraction: number, decimals = 1): string {
+  if (!Number.isFinite(fraction)) return "—";
+  const scaled = fraction * 100;
+  if (fraction === 0) return `${scaled.toFixed(decimals)}%`;
+  return Math.abs(scaled) < floorFor(decimals)
+    ? `${scaled.toExponential(1)}%`
+    : `${scaled.toFixed(decimals)}%`;
+}
 /**
  * A before-and-after pair, at enough precision to show that it moved.
  *

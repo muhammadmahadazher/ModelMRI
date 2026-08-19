@@ -1,5 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { measured } from "./measured";
+import { measured, percent } from "./measured";
 import { DirectAttribution, errorText, getDirectAttribution } from "./api";
 import ReceiptLine from "./ReceiptLine";
 
@@ -131,7 +131,7 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
             <b>{measured(data.real_logit - data.residual, 3)}</b> against the
             model's real <b>{measured(data.real_logit, 3)}</b> — a reconstruction
             residual of <b>{measured(data.residual, 4)}</b> (
-            {(data.residual_share * 100).toFixed(2)}%), which is what freezing
+            {percent(data.residual_share, 2)}), which is what freezing
             the {data.norm_kind} scale cost on this run. The model was not
             modified to make this exact.
           </div>

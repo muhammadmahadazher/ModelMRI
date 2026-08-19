@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { percent } from "./measured";
 import {
   errorText,
   imageCvAttribute,
@@ -198,7 +199,7 @@ export default function ImageCV({
                     />
                   </span>
                   <span className="mid icv-p">
-                    {(c.probability * 100).toFixed(1)}%
+                    {percent(c.probability, 1)}
                   </span>
                 </li>
               ))}
