@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   errorText,
+  imageCvAttribute,
+  imageCvCost,
   imageCvPredict,
   imageCvReadout,
+  ImageCvAttribution,
+  ImageCvCost,
   ImageCvPrediction,
   ImageCvReadout,
 } from "./api";
@@ -41,22 +45,42 @@ export default function ImageCV({
 }) {
   const [pred, setPred] = useState<ImageCvPrediction | null>(null);
   const [readout, setReadout] = useState<ImageCvReadout | null>(null);
+  const [attr, setAttr] = useState<ImageCvAttribution | null>(null);
+  const [cost, setCost] = useState<ImageCvCost | null>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
   const [topK, setTopK] = useState(5);
   const [layer, setLayer] = useState(0);
 
-  async function run(what: "predict" | "readout") {
+  /** Attribute a NAMED class, not just the argmax.
+   *
+   *  The prediction list raises the question this answers — "why that one?"
+   *  and "then what supports the second one?" are different questions, and
+   *  the server reports which of the two a given map is by setting
+   *  `region_chosen_by` to "model" or "caller". Passing the index the reader
+   *  clicked is what makes it the second kind.
+   */
+  async function run(what: "predict" | "readout" | "attribute", target?: number) {
     if (!picture) return;
     setBusy(what);
     setErr("");
     try {
       if (what === "predict") {
         setPred(await imageCvPredict({ image: picture, top_k: topK }));
-      } else {
+      } else if (what === "readout") {
         const got = await imageCvReadout({ image: picture, top_k: topK });
         setReadout(got);
         setLayer(0);
+      }
+      else {
+        setAttr(
+          await imageCvAttribute({
+            image: picture,
+            // `undefined` means "the model's own top answer" and the response
+            // says so. Not defaulted to 0 here: index 0 is a real class.
+            target: target ?? null,
+          }),
+        );
       }
     } catch (e) {
       setErr(errorText(e));
@@ -64,6 +88,22 @@ export default function ImageCV({
       setBusy("");
     }
   }
+
+  // Priced before any button is pressed, like every other sweep here. The
+  // occlusion pass is the expensive one — hundreds of forward passes — and a
+  // reader who is told afterwards was told too late.
+  useEffect(() => {
+    if (!pred) return;
+    let live = true;
+    void imageCvCost(pred.height, pred.width)
+      .then((c) => live && setCost(c))
+      // A preflight that cannot be fetched must not block the measurement it
+      // was going to describe; the cost line simply does not appear.
+      .catch(() => live && setCost(null));
+    return () => {
+      live = false;
+    };
+  }, [pred]);
 
   const grid = readout?.layers?.[layer];
   /** The strongest cell in THIS layer, so the shading has a scale.
@@ -119,7 +159,18 @@ export default function ImageCV({
           <ol className="icv-classes">
             {pred.classes_top.map((c) => (
               <li key={c.index}>
-                <span className="mid icv-label">{c.label}</span>
+                {/* A BUTTON, because the list raises the question. "Why that
+                    one?" and "then what supports the second one?" are
+                    different questions, and until now only the first was
+                    reachable — the sweep always took the argmax. */}
+                <button
+                  className="mid icv-label icv-pick"
+                  onClick={() => void run("attribute", c.index)}
+                  disabled={busy !== ""}
+                  title={`Cover the picture and measure what supports "${c.label}"`}
+                >
+                  {c.label}
+                </button>
                 <span className="icv-track">
                   <span
                     className="icv-bar"
@@ -136,6 +187,12 @@ export default function ImageCV({
               re-worded here: this panel must not be the thing that decides
               whether a class name is trustworthy. */}
           <p className="meta icv-note">{pred.labels_note}</p>
+          {cost && (
+            <p className="meta">
+              Click a class to see what supports it.{" "}
+              {String(cost.attribution?.means ?? "")}
+            </p>
+          )}
           {pred.boxes && pred.boxes.length > 0 && (
             <p className="meta">
               {pred.boxes.length} box{pred.boxes.length === 1 ? "" : "es"} above
@@ -189,6 +246,21 @@ export default function ImageCV({
             </div>
           )}
           <p className="meta">{readout.means}</p>
+        </div>
+      )}
+
+      {attr && (
+        <div className="icv-attr">
+          {/* The server's own sentence. It states WHICH answer the map is of
+              and whether the tool or the reader chose it — "explaining the
+              answer given" and "auditing one you supplied" are different
+              claims and only the response knows which this was. */}
+          <p className="meta icv-note">{attr.means}</p>
+          {attr.attribution === null && (
+            <p className="meta">
+              The occluder produced no map for that choice.
+            </p>
+          )}
         </div>
       )}
 

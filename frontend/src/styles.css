@@ -6894,3 +6894,31 @@ button:disabled,
   .adapter-list li { grid-template-columns: 1fr auto; }
   .adapter-list .adapter-track { grid-column: 1 / -1; }
 }
+
+/* A class row that is also the control for attributing that class. Styled as
+   text rather than a button: it sits in a list of results, and eight buttons
+   in a row would read as a toolbar rather than as the model's answers. */
+.icv-pick {
+  all: unset;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  font-size: var(--t-xs);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--color-image) 40%, transparent);
+  text-underline-offset: 3px;
+  transition: color var(--dur-micro) var(--ease-hover);
+}
+@media (hover: hover) and (pointer: fine) {
+  .icv-pick:hover { color: var(--color-image); }
+}
+.icv-pick:focus-visible {
+  outline: none;
+  /* `--sf-sunk`, not `--sf`. The latter does not exist, and an undefined
+     custom property with no fallback invalidates the WHOLE declaration — so
+     this ring would not have rendered at all. Made that exact mistake once
+     already this week; tests/test_css_vars.py caught it both times. */
+  box-shadow: 0 0 0 2px var(--sf-sunk), 0 0 0 4px var(--acc);
+  border-radius: 3px;
+}
+.icv-pick:disabled { cursor: default; opacity: 0.6; }
+.icv-attr { margin-top: 8px; }

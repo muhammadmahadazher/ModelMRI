@@ -1740,6 +1740,63 @@ export const imageFilmstripCost = (q: { steps: number; every: number }) =>
     json<ImageFilmstripPlan>(r),
   );
 
+/** Occlusion over a prediction this model actually made.
+ *
+ *  Richer than `/api/image/attribution`, which can only attribute a class
+ *  logit: this also takes a detector's box (`query`) and a segmenter's mask
+ *  area (`region`), and it says WHICH of the model's answers the map is of.
+ */
+export interface ImageCvAttribution {
+  attribution: ImageAttribution | null;
+  task: string;
+  task_label: string;
+  /** "model" when the tool took the top answer, "caller" when you named one.
+   *  The difference between explaining the answer given and auditing one you
+   *  supplied — and they are different questions. */
+  region_chosen_by: string;
+  what: string;
+  query: number | null;
+  region: number[] | null;
+  target_label: string;
+  map_height: number;
+  map_width: number;
+  dtype: string;
+  names_dropped_by_the_sweep: boolean;
+  means: string;
+}
+
+export interface ImageCvCost {
+  predict: { forward_passes: number };
+  readout: Record<string, number | null>;
+  attribution: Record<string, unknown>;
+}
+
+/** What the three CV measurements cost, before any is spent. */
+export const imageCvCost = (
+  height: number,
+  width: number,
+  patch = 16,
+  stride: number | null = null,
+  batch = 32,
+) =>
+  fetch(
+    `/api/image/cv/cost?height=${height}&width=${width}&patch=${patch}` +
+      `${stride === null ? "" : `&stride=${stride}`}&batch=${batch}`,
+  ).then((r) => json<ImageCvCost>(r));
+
+export const imageCvAttribute = (body: {
+  image: string;
+  target?: number | null;
+  query?: number | null;
+  patch?: number;
+  batch?: number;
+}) =>
+  fetch("/api/image/cv/attribute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvAttribution>(r));
+
 /** One class the model scored. */
 export interface ImageCvClass {
   index: number;
