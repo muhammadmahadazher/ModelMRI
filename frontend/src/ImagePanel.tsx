@@ -1,7 +1,7 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { measured, signed } from "./measured";
 import DevicePicker from "./DevicePicker";
-import LoadBar from "./LoadBar";
+import LoadBar, { gb } from "./LoadBar";
 import RestingSketch from "./RestingSketch";
 import ImageModelPicker from "./ImageModelPicker";
 import AdapterPanel from "./AdapterPanel";
@@ -965,8 +965,13 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
             size: it means no weight file could be measured, which is a
             different fact from a pipeline that weighs nothing. */}
         <span className="pill">
+          {/* THE SAME FORMATTER THE SERVER USES. This read "0.69 GB
+              resident" while the sentence two lines down said "693 MB of
+              weights" — one quantity, two units, on one screen. `gb` is
+              LoadBar's, and it is the same GB/MB/bytes rule as the server's
+              `fmt.bytes_si`. */}
           {status.bytes_resident > 0
-            ? `${(status.bytes_resident / 1e9).toFixed(2)} GB resident`
+            ? `${gb(status.bytes_resident)} resident`
             : "resident weights could not be sized"}
         </span>
         {/* Cross-attention is a DENOISER's relationship to a prompt. A
