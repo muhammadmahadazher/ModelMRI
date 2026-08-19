@@ -27,6 +27,8 @@ own reasons, and `progress._si_bytes` already covers the byte case.
 
 from __future__ import annotations
 
+import math
+
 
 def measured(value: float, decimals: int = 4) -> str:
     """`value` at `decimals` places, escaping rather than rounding to zero.
@@ -38,7 +40,13 @@ def measured(value: float, decimals: int = 4) -> str:
     >>> measured(0.4271)
     '0.4271'
     """
-    if value != value or value in (float("inf"), float("-inf")):  # NaN / inf
+    # `math.isfinite`, which is false for NaN and for both infinities — one
+    # call for what this actually means. It was `value != value or value in
+    # (inf, -inf)`: the first half is the classic NaN idiom, correct and
+    # obscure enough that CodeQL flagged it as a comparison of identical
+    # values, and the second half was a second check for what the first was
+    # already reaching toward.
+    if not math.isfinite(value):
         return "not a number"
     if value == 0:
         return f"{value:.{decimals}f}"
