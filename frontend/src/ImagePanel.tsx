@@ -725,6 +725,7 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
             covers. Every list of models lives in here: the Hub cache, the
             directories this process was started from, and the Hub itself. */}
         <ImageModelPicker
+          kind={kind}
           open={pickerOpen}
           current={repo.trim()}
           onClose={() => setPickerOpen(false)}

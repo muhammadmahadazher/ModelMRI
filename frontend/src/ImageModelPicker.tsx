@@ -130,6 +130,9 @@ function moveWithin(e: KeyboardEvent<HTMLDivElement>) {
 type Source = "cache" | "folder" | "hub";
 
 interface Props {
+  /** The section asking. Its families are the ones listed; the rest are
+   *  counted, not hidden. */
+  kind?: "diffusion" | "vision";
   open: boolean;
   onClose: () => void;
   /** A pick fills the trigger. It does NOT load: opening a diffusion pipeline
@@ -268,7 +271,43 @@ function HubRow({
   );
 }
 
-export default function ImageModelPicker({ open, onClose, onPick, current }: Props) {
+/** Which section is asking, and therefore what it can actually measure.
+ *
+ *  `imaging.py` is the source of these groupings — the same split the panel
+ *  uses to decide which controls to draw — so a family added there shows up
+ *  in the right picker without anybody editing this list twice.
+ */
+const FAMILIES: Record<string, readonly string[]> = {
+  diffusion: ["unet_diffusion", "dit_diffusion"],
+  vision: ["vit", "clip", "detection", "segmentation", "vlm"],
+};
+
+export default function ImageModelPicker({
+  open,
+  onClose,
+  onPick,
+  current,
+  kind = "diffusion",
+}: Props) {
+  /** The rows this section can measure, and how many it is not showing.
+   *
+   *  Counted rather than dropped: a list that silently shrinks reads as "you
+   *  only have three image models", when the truth is the other seven are in
+   *  the sibling section. */
+  const split = <T extends { family: string }>(rows: T[] | undefined) => {
+    const all = rows ?? [];
+    const ours = all.filter((r) => mine(r.family));
+    return { ours, hidden: all.length - ours.length };
+  };
+
+  /** Does this row belong to the section that opened the picker?
+   *
+   *  An UNKNOWN family is kept rather than hidden. `imaging.detect` reports
+   *  unknown-with-a-reason for a checkpoint it cannot place, and hiding those
+   *  would mean the one model a reader cannot identify is also the one the
+   *  picker refuses to show them. */
+  const mine = (family: string) =>
+    !family || family === "unknown" || (FAMILIES[kind] ?? []).includes(family);
   const [tab, setTab] = useState<Source>("cache");
   // `null` is "not answered yet", which is a different thing from an empty
   // list. The second is a real finding and gets the server's own sentence
@@ -473,7 +512,7 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
               className={tab === "cache" ? "on" : ""}
               onClick={() => openTab("cache")}
             >
-              On this machine{local ? ` · ${local.models.length}` : ""}
+              On this machine{local ? ` · ${split(local.models).ours.length}` : ""}
             </button>
             <button
               role="tab"
@@ -483,7 +522,7 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
               className={tab === "folder" ? "on" : ""}
               onClick={() => openTab("folder")}
             >
-              In this folder{disco ? ` · ${disco.models.length}` : ""}
+              In this folder{disco ? ` · ${split(disco.models).ours.length}` : ""}
             </button>
             <button
               role="tab"
@@ -529,7 +568,7 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
                   download is under <b>Find one</b>.
                 </div>
               )}
-              {local?.models.map((m, i) => (
+              {split(local?.models).ours.map((m, i) => (
                 <DiskRow
                   key={m.path}
                   m={m}
@@ -542,6 +581,15 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
               {/* The server's own sentence: how many are here, how many hold
                   weights, and what the whole lot weighs. A count re-typed here
                   could drift from the list above it. */}
+              {split(local?.models).hidden > 0 && (
+                <div className="meta pad">
+                  {split(local?.models).hidden} more {split(local?.models).hidden === 1 ? "is" : "are"} for the{" "}
+                  {kind === "vision" ? "text-to-image" : "vision"} section. They are
+                  counted rather than dropped — a list that quietly shrinks reads
+                  as "this machine has fewer models than it does", and loading one
+                  here would land on a panel that cannot measure it.
+                </div>
+              )}
               {local && <div className="meta pad">{local.means}</div>}
               {localErr && <div className="hint err">{localErr}</div>}
             </div>
@@ -566,7 +614,7 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
                   somewhere ordinary rather than downloaded into the Hub cache.
                 </div>
               )}
-              {disco?.models.map((m, i) => (
+              {split(disco?.models).ours.map((m, i) => (
                 <DiskRow
                   key={m.path}
                   m={m}
@@ -603,6 +651,15 @@ export default function ImageModelPicker({ open, onClose, onPick, current }: Pro
                   rather than everything there is. Set{" "}
                   <code>MODELMRI_MODELS_DIR</code> to point straight at your
                   models folder and it will not have to guess.
+                </div>
+              )}
+              {split(disco?.models).hidden > 0 && (
+                <div className="meta pad">
+                  {split(disco?.models).hidden} more {split(disco?.models).hidden === 1 ? "is" : "are"} for the{" "}
+                  {kind === "vision" ? "text-to-image" : "vision"} section. They are
+                  counted rather than dropped — a list that quietly shrinks reads
+                  as "this machine has fewer models than it does", and loading one
+                  here would land on a panel that cannot measure it.
                 </div>
               )}
               {disco && <div className="meta pad">{disco.means}</div>}
