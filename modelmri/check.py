@@ -30,6 +30,7 @@ structurally identical, and this file cannot tell them apart either.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -307,7 +308,17 @@ def run(
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 unreadable += 1
                 continue
-            if value != value or value in (float("inf"), float("-inf")):
+            # `math.isfinite`, which is false for NaN and for both
+            # infinities — one call for what this actually means. It was
+            # `value != value or value in (inf, -inf)`: the first half is the
+            # classic NaN idiom, correct and obscure enough that CodeQL reads
+            # it as a comparison of identical values, and the second half was a
+            # second check for what the first was already reaching toward.
+            # `fmt.measured` was written the same way and corrected the same
+            # way; this reintroduced it three weeks later, which is the
+            # argument for the rule living in one place rather than in the
+            # habits of whoever is typing.
+            if not math.isfinite(value):
                 unreadable += 1
                 continue
             timed.append(int(value))
