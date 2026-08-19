@@ -285,10 +285,28 @@ def detect(path: str | Path) -> ImageModel:
     if weights:
         return _detect_from_tensors(weights[0], found)
 
-    found.reason = (
-        "It has no model_index.json, no config.json and no safetensors to "
-        "read tensor names from, so there is nothing here that says what it is."
-    )
+    # WHICH of the three is missing, and which is merely unreadable. Saying
+    # "it has no model_index.json" about a directory that visibly contains one
+    # sends the reader looking for a file they are staring at; the fault is
+    # that the file does not parse as an object, and that is what they can
+    # act on.
+    present = [
+        name for name in ("model_index.json", "config.json") if (p / name).is_file()
+    ]
+    if present:
+        which = " and ".join(f"`{n}`" for n in present)
+        found.reason = (
+            f"It has {which}, but that is not a JSON object — a file that "
+            f"parses as a list, a string or a number cannot describe a model. "
+            f"There are no safetensors here to read tensor names from either, "
+            f"so there is nothing that says what this is."
+        )
+    else:
+        found.reason = (
+            "It has no model_index.json, no config.json and no safetensors to "
+            "read tensor names from, so there is nothing here that says what "
+            "it is."
+        )
     return found
 
 
@@ -454,16 +472,31 @@ def read_tensor_names(path: str | Path, limit: int = 4000) -> list[str]:
     return [k for k in list(header)[:limit] if k != "__metadata__"]
 
 
-def _read_json(path: Path):
-    """`None` for absent OR unreadable, and the caller distinguishes.
+def _read_json(path: Path) -> dict | None:
+    """`None` for absent, unreadable, OR not an object.
 
-    Both mean "this source cannot answer", and every caller falls through to
-    the next source rather than concluding anything from the absence.
+    All three mean "this source cannot answer", and every caller falls through
+    to the next source rather than concluding anything from the absence.
+
+    THE THIRD CASE IS NOT PEDANTRY. `json.loads` succeeds on `[1, 2, 3]`, on
+    `"text"` and on `42` — all valid JSON, none of them a mapping — so before
+    this returned None for them, a non-object sailed past every caller's
+    `is None` check and into `.get()` or `.items()`. MEASURED: one cache entry
+    whose `model_index.json` held `[1, 2, 3]` raised AttributeError out of
+    `scan_cache`, through `/api/image/available` and `/api/image/local`, and
+    both routes answered 500 — so a single malformed directory made the whole
+    "what image models are on this disk" listing unusable, with a message
+    naming nothing the reader could fix.
+
+    Guaranteed here rather than at the four call sites, because every caller
+    in this module wants a mapping and cannot use anything else. Four checks
+    is three chances to omit one.
     """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 # How many cache entries `scan_cache` will walk. Named rather than inline so a

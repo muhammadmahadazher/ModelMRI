@@ -664,3 +664,89 @@ def test_a_walk_that_ran_out_of_budget_says_so(tmp_path, monkeypatch):
     out = image_catalog.discovered(roots=[tmp_path])
 
     assert out["truncated"] is True
+
+
+def test_one_unreadable_cache_entry_does_not_take_down_the_listing(tmp_path):
+    """MEASURED: a cache holding one healthy ViT plus one `model_index.json`
+    whose contents were the JSON array `[1, 2, 3]` made GET
+    /api/image/available and GET /api/image/local both answer 500.
+
+    `json.loads` succeeds on an array, so a non-mapping sailed past every
+    caller's `is None` check into `.get()`. One malformed directory therefore
+    made the whole "what image models are on this disk" listing unusable, with
+    a message naming nothing the reader could fix.
+    """
+    from modelmri import imaging
+
+    good = tmp_path / "models--google--vit-base-patch16-224" / "snapshots" / "abc"
+    good.mkdir(parents=True)
+    (good / "config.json").write_text(
+        json.dumps({"architectures": ["ViTForImageClassification"], "image_size": 224}),
+        encoding="utf-8",
+    )
+    (good / "model.safetensors").write_bytes(b"\0" * 1024)
+
+    bad = tmp_path / "models--auditco--badpipe" / "snapshots" / "abc"
+    bad.mkdir(parents=True)
+    # Valid JSON. Not an object. That is the whole test.
+    (bad / "model_index.json").write_text("[1, 2, 3]", encoding="utf-8")
+
+    found = imaging.scan_cache(hub=tmp_path)
+    by_path = {m.path: m for m in found}
+
+    # The walk completes. The healthy checkpoint identifies.
+    assert by_path["google/vit-base-patch16-224"].known is True
+
+    # The malformed one is LISTED, not hidden — `detect` returns a row
+    # carrying a reason for anything it cannot read, and a directory that
+    # silently vanishes from the listing is a worse answer than one that
+    # explains itself.
+    bad_row = by_path["auditco/badpipe"]
+    assert bad_row.known is False
+    # And the reason names the file that is actually there. Saying "it has no
+    # model_index.json" about a directory that visibly contains one sends the
+    # reader looking for a file they are staring at.
+    assert "model_index.json" in bad_row.reason
+    assert "not a JSON object" in bad_row.reason
+
+
+def test_json_that_is_not_an_object_reads_as_unreadable(tmp_path):
+    """Every caller of `_read_json` in that module wants a mapping and cannot
+    use anything else, so the guarantee lives in the function rather than at
+    four call sites — three of which would eventually be missed."""
+    from modelmri import imaging
+
+    for text in ("[1, 2, 3]", '"a string"', "42", "null", "true"):
+        p = tmp_path / "x.json"
+        p.write_text(text, encoding="utf-8")
+        assert imaging._read_json(p) is None, f"{text!r} did not read as unreadable"
+
+    p = tmp_path / "x.json"
+    p.write_text('{"a": 1}', encoding="utf-8")
+    assert imaging._read_json(p) == {"a": 1}
+
+
+def test_a_cache_nobody_could_read_is_unknown_not_absent(monkeypatch):
+    """The walk failing is a fact about the DISK. "You do not have this model"
+    is a claim about the reader's machine, and only one of them was true.
+
+    `_cached_ids` used to swallow the exception and return empty sets, so
+    `/api/image/size` published `cached: false` — telling somebody to spend a
+    download of a model sitting on their own disk.
+    """
+    from modelmri import image_catalog, imaging
+
+    def boom(*a, **kw):
+        raise OSError("the cache is gone")
+
+    monkeypatch.setattr(imaging, "scan_cache", boom)
+    with_weights, configs_only, _capped, readable = image_catalog._cached_ids()
+
+    assert readable is False
+    assert not with_weights and not configs_only
+
+    # And the sentence says so, rather than leaving it to a log line the
+    # reader never sees.
+    means = image_catalog._size_means("acme/thing", 350_000_000, None, None, readable)
+    assert "unknown rather than no" in means
+    assert "could not be read" in means

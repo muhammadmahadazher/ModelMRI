@@ -216,7 +216,7 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             "is on this machine."
         ) from err
 
-    here, partial, cache_capped = _cached_ids()
+    here, partial, cache_capped, cache_readable = _cached_ids()
     spec = TASKS[tag]
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
@@ -250,11 +250,14 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
                 # "here" means the WEIGHTS are here. A repo whose cache entry
                 # holds a config and nothing else still has its whole download
                 # ahead of it.
-                "cached": repo in here,
+                # `None` when the cache could not be walked at all, because
+                # `false` there is this page claiming the reader does not have
+                # a model it never managed to look for.
+                "cached": (repo in here) if cache_readable else None,
                 # The third state, reported rather than folded into either:
                 # an interrupted download looks cached to a directory listing
                 # and costs the full size to finish.
-                "partial": repo in partial,
+                "partial": (repo in partial) if cache_readable else None,
             }
         )
     # Both caps ride on the rows, because a caller that cannot see them
@@ -389,8 +392,8 @@ class _Rows(list):
 
 
 def _cached_ids() -> tuple:
-    """`(with_weights, configs_only, capped)` — what is here, and whether the
-    walk hit its own limit.
+    """`(with_weights, configs_only, capped, readable)` — what is here, whether
+    the walk hit its own limit, and whether it ran at all.
 
     Returns two sets, and the split is the whole point. `imaging.scan_cache`
     admits an entry the moment a snapshot directory identifies, which a lone
@@ -405,8 +408,12 @@ def _cached_ids() -> tuple:
     differently, and the one whose entire job is pricing a download before it
     is spent was the one that was wrong.
 
-    Never raises. A cache that cannot be read means "not cached" for every
-    row — the listing is still useful and the load will answer for itself.
+    Never raises, and never turns its own failure into a measurement. The
+    fourth element is whether the walk actually ran: a cache nobody could read
+    makes "is this already here" UNKNOWN, not "no". Reporting it as "no" was
+    the same error this docstring's first paragraph is about, arriving from
+    the exception path instead of the shape rule — and it cost the reader a
+    0.35 GB download of a model that was sitting on their disk.
     """
     from . import image_runtime
 
@@ -416,7 +423,9 @@ def _cached_ids() -> tuple:
         found = imaging.scan_cache()
     except Exception:
         log.warning("could not read the image cache", exc_info=True)
-        return with_weights, configs_only, False
+        # `readable=False`. NOT an empty result: the caller has to be able to
+        # tell "we looked and it is not there" from "nobody could look".
+        return with_weights, configs_only, False, False
 
     # `scan_cache` stops at its own limit, and a repo past that point is
     # reported as NOT cached — which reads as "you do not have this" for a
@@ -434,7 +443,7 @@ def _cached_ids() -> tuple:
             log.warning("could not size %s", model.path, exc_info=True)
             weighs = 0
         (with_weights if weighs > 0 else configs_only).add(model.path)
-    return with_weights, configs_only, capped
+    return with_weights, configs_only, capped, True
 
 
 def local() -> list[dict]:
@@ -629,20 +638,43 @@ def size_of(repo: str) -> dict:
         raise Refusal(f"The Hub did not describe `{name}` in a shape this reads.")
 
     weighs = hub.weight_bytes(raw)
-    here, partial, _capped = _cached_ids()
-    cached = name in here
-    incomplete = name in partial
+    here, partial, _capped, cache_readable = _cached_ids()
+    # `None`, not `False`, when the walk could not run. "We looked and it is
+    # not there" and "nobody could look" are different answers, and only one
+    # of them justifies telling somebody to spend the download.
+    cached = (name in here) if cache_readable else None
+    incomplete = (name in partial) if cache_readable else None
     return {
         "id": name,
         "size_bytes": weighs or None,
         "gated": bool(raw.get("gated", False)),
         "cached": cached,
         "partial": incomplete,
-        "means": _size_means(name, weighs, cached, incomplete),
+        "cache_readable": cache_readable,
+        "means": _size_means(name, weighs, cached, incomplete, cache_readable),
     }
 
 
-def _size_means(name: str, weighs: int, cached: bool, partial: bool = False) -> str:
+def _size_means(
+    name: str,
+    weighs: int,
+    cached: bool | None,
+    partial: bool | None = False,
+    cache_readable: bool = True,
+) -> str:
+    if not cache_readable:
+        # Said, not logged. The reader is deciding whether to spend a
+        # download; "I could not check" changes that decision and a warning in
+        # somebody's terminal does not reach them.
+        size = f"{weighs / 1e9:,.2f} GB" if weighs else "an unpublished amount"
+        return (
+            f"`{name}` publishes {size} of weights. Whether it is ALREADY on "
+            f"this machine is unknown rather than no: the local cache could "
+            f"not be read, so this number is what a download would cost if "
+            f"you do not have it, and nothing here can tell you whether you "
+            f"do. The terminal running `modelmri serve` says why the cache "
+            f"could not be walked."
+        )
     if cached:
         where = f"`{name}` is already on this machine, so nothing would be downloaded."
     elif partial:
