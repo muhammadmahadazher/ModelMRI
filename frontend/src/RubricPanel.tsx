@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { errorText, RubricReport, RubricRow, RubricRule, scoreRubric } from "./api";
+import { howLong } from "./measured";
 
 /**
  * Score every recorded run against exact predicates.
@@ -63,13 +64,9 @@ function when(iso: string): string {
  *  `null` is not zero. A run whose length the store never recorded did not
  *  finish instantly, and printing "0ms" for it would invent the fastest run
  *  in the list. */
-function howLong(ms: number | null): string {
-  if (ms === null) return "";
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60_000);
-  return `${m}m ${Math.round((ms % 60_000) / 1000)}s`;
-}
+// Lives in `measured.ts` now, beside every other formatter this app shares.
+// It was the better of two duration formatters here and the agents list had
+// the worse one; keeping a local copy is how they drift apart again.
 
 /** What KIND of thing this run is, in the store's own terms.
  *

@@ -174,3 +174,24 @@ export function bytesSI(n: number): string {
   if (n >= 1e3) return `${Math.round(n / 1e3).toLocaleString()} kB`;
   return `${Math.max(0, Math.round(n)).toLocaleString()} bytes`;
 }
+
+
+/** How long something took, in the unit a reader can act on.
+ *
+ *  Moved here from `RubricPanel`, where it was the better of two duration
+ *  formatters this app had. The agents list used `(ms / 1000).toFixed(1)}s`,
+ *  which prints a real 1 ms step as "0.0s" — the rounds-to-zero rule, in a
+ *  column read as a measurement — and a five-minute run as "312.4s", which is
+ *  a number you have to do arithmetic on before it means anything.
+ *
+ *  `null` is UNKNOWN and returns "", never "0ms": a duration nobody recorded
+ *  is not a duration of nothing, which is the whole reason `duration_ms` is
+ *  nullable in the store.
+ */
+export function howLong(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  return `${m}m ${Math.round((ms % 60_000) / 1000)}s`;
+}

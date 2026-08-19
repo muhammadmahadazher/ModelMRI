@@ -304,3 +304,109 @@ def test_recording_adds_no_network_path(tmp_path):
     source = pathlib.Path(traces_mod.__file__).read_text(encoding="utf-8")
     for outbound in ("urllib", "requests", "httpx", "socket"):
         assert outbound not in source, f"traces.py grew an outbound path: {outbound}"
+
+
+# ------------------------------- a floor is not a total, and 0 is not unknown
+
+
+def _store(tmp_path):
+    from modelmri.traces import TraceStore
+
+    return TraceStore(tmp_path / "t.db")
+
+
+def test_the_list_says_how_many_steps_carried_a_duration(tmp_path):
+    """`total_ms` is `MAX(started_ms + COALESCE(duration_ms, 0))`, so a step
+    whose duration was never recorded contributes nothing to it.
+
+    Measured on four runs, all rendered as plain totals before this:
+
+        one step, no duration    total_ms=0     panel: "0.0s"
+        four steps, none timed   total_ms=3000  panel: "3.0s"
+        last step untimed        total_ms=1000  panel: "1.0s"
+
+    Every one is a FLOOR, and the first is a claim that a run took no time.
+    `duration_ms` is nullable on purpose — "not recorded" and "took no
+    measurable time" are different facts — and the COALESCE folds the first
+    into the second. The count travels so the panel can tell them apart.
+    """
+    st = _store(tmp_path)
+    st.import_trace(
+        {
+            "name": "none timed",
+            "steps": [
+                {"id": f"a{i}", "kind": "llm_call", "name": "x", "started_ms": i * 1000}
+                for i in range(4)
+            ],
+        }
+    )
+    st.import_trace(
+        {
+            "name": "last untimed",
+            "steps": [
+                {
+                    "id": "b0",
+                    "kind": "llm_call",
+                    "name": "x",
+                    "started_ms": 0,
+                    "duration_ms": 1000,
+                },
+                {"id": "b1", "kind": "llm_call", "name": "y", "started_ms": 1000},
+            ],
+        }
+    )
+    st.import_trace(
+        {
+            "name": "fully timed",
+            "steps": [
+                {
+                    "id": "c0",
+                    "kind": "llm_call",
+                    "name": "x",
+                    "started_ms": 0,
+                    "duration_ms": 1500,
+                }
+            ],
+        }
+    )
+    by_name = {r["name"]: r for r in st.list_traces()}
+
+    assert by_name["none timed"]["n_timed"] == 0
+    assert by_name["none timed"]["n_steps"] == 4
+
+    assert by_name["last untimed"]["n_timed"] == 1
+    assert by_name["last untimed"]["n_steps"] == 2
+
+    # The ordinary run is complete, so the panel prints a total rather than a
+    # floor — the marker must not appear on every row.
+    assert by_name["fully timed"]["n_timed"] == by_name["fully timed"]["n_steps"] == 1
+    assert by_name["fully timed"]["total_ms"] == 1500
+
+
+def test_the_meta_column_is_still_read_from_the_right_place(tmp_path):
+    """The duration count was inserted BEFORE `t.meta` in the SELECT, which
+    moves every index after it along one.
+
+    Asserted through `demo`, which is decoded from that JSON: if the offset is
+    wrong this reads a bare integer as a document and the flag silently goes
+    false, which is exactly the "sample data indistinguishable from your own
+    run" defect the column exists to prevent.
+    """
+    st = _store(tmp_path)
+    st.import_trace(
+        {
+            "name": "flagged",
+            "meta": {"demo": True},
+            "steps": [
+                {
+                    "id": "d0",
+                    "kind": "llm_call",
+                    "name": "x",
+                    "started_ms": 0,
+                    "duration_ms": 5,
+                }
+            ],
+        }
+    )
+    row = st.list_traces()[0]
+    assert row["demo"] is True, row

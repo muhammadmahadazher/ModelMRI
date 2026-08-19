@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { howLong } from "./measured";
 import { useScanOnData } from "./useScanOnData";
 import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
 import ShareRun from "./ShareRun";
@@ -651,8 +652,32 @@ with trace("my-agent"):
                   <span className="tmeta">
                     {/* A generation is exactly one step, so "1 steps" is now
                         the common case rather than a rarity. */}
-                    {t.n_steps} step{t.n_steps === 1 ? "" : "s"} ·{" "}
-                    {(t.total_ms / 1000).toFixed(1)}s
+                    {t.n_steps} step{t.n_steps === 1 ? "" : "s"}
+                    {/* NOT A TOTAL when a step carries no duration. The store
+                        sums `started_ms + COALESCE(duration_ms, 0)`, so an
+                        untimed step contributes nothing — measured on four
+                        runs, a single untimed step rendered "0.0s", four
+                        untimed steps rendered the last one's start, and a run
+                        whose final step was untimed lost that step entirely.
+                        A floor printed as a total is the same defect as an
+                        unknown printed as a zero. */}
+                    {t.n_timed === 0 ? (
+                      <span title="no step in this run recorded a duration">
+                        {" "}
+                        · not timed
+                      </span>
+                    ) : (
+                      <>
+                        {" "}
+                        ·{" "}
+                        {t.n_timed < t.n_steps && (
+                          <span title={`${t.n_steps - t.n_timed} of ${t.n_steps} steps recorded no duration, so this is a floor`}>
+                            ≥
+                          </span>
+                        )}
+                        {howLong(t.total_ms)}
+                      </>
+                    )}
                     {/* Pluralised, like the step count two lines up. "3
                         error" beside "3 steps" reads as a truncated word
                         rather than a count. */}

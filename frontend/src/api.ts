@@ -2344,7 +2344,14 @@ export interface TraceSummary {
   name: string;
   started_at: string;
   n_steps: number;
+  /** A FLOOR when `n_timed < n_steps`, not a total: the store sums
+   *  `started_ms + COALESCE(duration_ms, 0)`, so a step whose duration was
+   *  never recorded contributes nothing to it. */
   total_ms: number;
+  /** How many steps carry a duration. `duration_ms` is nullable on purpose —
+   *  "not recorded" and "took no measurable time" are different facts — and
+   *  without this the panel cannot tell a real 0.0s from a run nobody timed. */
+  n_timed: number;
   n_errors: number;
 }
 

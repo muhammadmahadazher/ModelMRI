@@ -624,6 +624,21 @@ class TraceStore:
                 " (SELECT COALESCE(MAX(s.started_ms + COALESCE(s.duration_ms,0)),0) FROM step s"
                 "   WHERE s.trace_id=t.id),"
                 " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
+                # HOW MANY STEPS CARRY A DURATION. `duration_ms` is nullable
+                # on purpose — "not recorded" and "took no measurable time"
+                # are different facts — and the COALESCE above folds the first
+                # into the second. Measured on four runs:
+                #
+                #   one step, no duration   -> 0     rendered "0.0s"
+                #   four steps, none timed  -> 3000  rendered "3.0s"
+                #   last step untimed       -> 1000  rendered "1.0s"
+                #
+                # Every one of those is a FLOOR, and the first is a claim that
+                # a run took no time at all. The count travels so the panel can
+                # say which it is looking at rather than printing a total it
+                # does not have.
+                " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id"
+                "   AND s.duration_ms IS NOT NULL),"
                 " t.meta"
                 " FROM trace t ORDER BY t.started_at DESC"
             ).fetchall()
@@ -633,7 +648,9 @@ class TraceStore:
             # hazard — one damaged row must not take down the whole trace
             # view — and this line was the reason that sentence was
             # written and then not honoured here.
-            meta = _loads(r[6])
+            # r[7], not r[6]: the duration count above was inserted
+            # BEFORE `t.meta` in the SELECT, which moves it along one.
+            meta = _loads(r[7])
             out.append(
                 {
                     "id": r[0],
@@ -642,6 +659,7 @@ class TraceStore:
                     "n_steps": r[3],
                     "total_ms": r[4],
                     "n_errors": r[5],
+                    "n_timed": r[6],
                     # Scripted sample data must never be indistinguishable
                     # from a run you actually recorded.
                     # examples/record_demo.py writes a deliberately failing
