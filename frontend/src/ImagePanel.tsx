@@ -1234,31 +1234,22 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
           actually want. */}
       {kind !== "vision" && <AdapterPanel />}
 
-      {canPredict && (
+      {/* ── the picture, once, before anything that measures it ────────
+          Every vision measurement here is about ONE image: what the model
+          says about it, where it looked in it, and which parts supported the
+          answer. That subject used to live inside the occlusion block, which
+          is the third of the three — so "What does it say?" rendered disabled
+          beside the words "pick a picture first" while the picker sat in a
+          different section further down. A control that names its own
+          precondition should be next to the thing that satisfies it.
+
+          Read in the browser and carried in the request body as a data URL.
+          There is deliberately no box to type a path into: a path in a request
+          names a file on the SERVER's disk, which is somebody else's machine
+          as often as it is yours. */}
+      {(canPredict || canAttribute) && (
         <div className="isect">
-          <h3 className="mid isect-head">prediction — what this model says</h3>
-          <ImageCV picture={picture} canReadout={canReadout} />
-        </div>
-      )}
-
-      {canAttribute && (
-        <div className="image-attr">
-          <div className="image-subhead">
-            <h3 className="h-image">OCCLUSION — WHERE THE EVIDENCE ACTUALLY WAS</h3>
-            <span className="rule" />
-          </div>
-          <p className="meta">
-            Cover one window of a picture with a flat fill, run the model again,
-            and record what the class logit did. Do it for every window and the
-            result is a map of where the evidence for the answer was — measured
-            by removing it, rather than inferred from a gradient.
-          </p>
-
-          {/* ── the picture ─────────────────────────────────────────────
-              Read in the browser and carried in the request body as a data
-              URL. There is deliberately no box to type a path into: a path in
-              a request names a file on the SERVER's disk, which is somebody
-              else's machine as often as it is yours. */}
+          <h3 className="mid isect-head">the picture</h3>
           <input
             ref={pickRef}
             type="file"
@@ -1293,6 +1284,37 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
               </span>
             )}
           </div>
+          {picture && (
+            <img className="image-shot" src={picture} alt="the picture being measured" />
+          )}
+        </div>
+      )}
+
+      {canPredict && (
+        <div className="isect">
+          <h3 className="mid isect-head">prediction — what this model says</h3>
+          <ImageCV picture={picture} canReadout={canReadout} />
+        </div>
+      )}
+
+      {canAttribute && (
+        <div className="image-attr">
+          <div className="image-subhead">
+            <h3 className="h-image">OCCLUSION — WHERE THE EVIDENCE ACTUALLY WAS</h3>
+            <span className="rule" />
+          </div>
+          <p className="meta">
+            Cover one window of a picture with a flat fill, run the model again,
+            and record what the class logit did. Do it for every window and the
+            result is a map of where the evidence for the answer was — measured
+            by removing it, rather than inferred from a gradient.
+          </p>
+
+          {/* ── the picture ─────────────────────────────────────────────
+              Read in the browser and carried in the request body as a data
+              URL. There is deliberately no box to type a path into: a path in
+              a request names a file on the SERVER's disk, which is somebody
+              else's machine as often as it is yours. */}
 
           <div className="row image-controls">
             <label className="meta" htmlFor="image-patch">
