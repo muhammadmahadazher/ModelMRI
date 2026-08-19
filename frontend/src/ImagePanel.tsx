@@ -229,9 +229,24 @@ const OWNED: Record<ImageKind, readonly string[]> = {
  *  section, and the panel showed its resting sketch with 3.3 GB of that model
  *  resident. "I loaded it and the panel went blank" is worse than a refusal.
  */
+//
+//  THE NAMES ARE `imaging.py`'S, and two of them were not. This listed
+//  "detector" and "segmenter"; the server emits `detection` and
+//  `segmentation`, and those two strings appear nowhere in it. So a detector
+//  or a segmenter matched no section, fell through to the capability test,
+//  and — for a checkpoint offering none of the three vision measurements —
+//  showed the resting sketch with the model resident. That is precisely the
+//  failure the paragraph above says this constant exists to prevent,
+//  reintroduced by a typo for two of the four families it names.
+//
+//  `clip` and `unknown` are deliberately claimed by nobody: an embedding
+//  model has no section here, and an unrecognised architecture must not be
+//  routed into one on a guess. `tests/test_image_families.py` asserts every
+//  family the server can emit is either claimed exactly once or on that
+//  explicit list, so a family added later cannot go quietly homeless.
 const OWNED_FAMILIES: Record<ImageKind, readonly string[]> = {
   diffusion: ["unet_diffusion", "dit_diffusion"],
-  vision: ["vit", "detector", "segmenter", "vlm"],
+  vision: ["vit", "detection", "segmentation", "vlm"],
 };
 
 export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } = {}) {

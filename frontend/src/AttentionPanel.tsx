@@ -632,12 +632,33 @@ export default function AttentionPanel({
                         : `KL ${measured(r.kl, 3)}`}
                       {/* The median is not the measurement, the spread is.
                           A single donor sentence could have reported any point
-                          inside that spread as this head's score. */}
+                          inside that spread as this head's score.
+
+                          WHICH IS WHY `?? 0` WAS WRONG HERE. `session.py`
+                          copies `kl_min`, `kl_max` and `draws` independently,
+                          and its own comment says why: "an absent field must
+                          not become 0 — that would state a measured spread of
+                          nothing where none was taken". A row carrying draws
+                          without bounds then rendered "median of 8,
+                          0.000–0.000" — a zero-width spread, presented as a
+                          measurement, directly under the sentence saying the
+                          spread IS the measurement. */}
                       {r.draws != null && (
                         <span className="meta">
                           {" "}
-                          median of {r.draws}, {measured(r.kl_min ?? 0, 3)}–
-                          {measured(r.kl_max ?? 0, 3)}
+                          {r.kl_min != null && r.kl_max != null ? (
+                            <>
+                              median of {r.draws}, {measured(r.kl_min, 3)}–
+                              {measured(r.kl_max, 3)}
+                            </>
+                          ) : (
+                            <>
+                              median of {r.draws}, spread not recorded — this
+                              file carries the draws without their bounds, so
+                              how far the score moved between them is unknown
+                              rather than zero
+                            </>
+                          )}
                         </span>
                       )}
                     </span>
