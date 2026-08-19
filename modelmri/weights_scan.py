@@ -557,6 +557,35 @@ class ScanTree(list):
     def truncated(self) -> bool:
         return self.n_total > len(self)
 
+    def __eq__(self, other: object) -> bool:
+        """Rows AND `n_total`, `readable`, against another ScanTree.
+
+        Inheriting `list.__eq__` made two of these compare equal while
+        disagreeing about `n_total`, `readable` — which is the entire reason this
+        class exists rather than a plain list. CodeQL flags the shape;
+        the bug it describes is real here.
+
+        Against anything that is NOT one of these, the rows decide. A
+        plain list carries no claim about the walk, so there is nothing
+        for it to disagree with, and `scan_dir(absent) == []` stays
+        true — as it should.
+        """
+        if isinstance(other, ScanTree):
+            return (
+                list(self) == list(other)
+                and self.n_total == other.n_total
+                and self.readable == other.readable
+            )
+        return list(self) == other
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    #: Unhashable, like the `list` it extends. Spelled out because
+    #: defining `__eq__` sets this to None anyway and a reader should
+    #: not have to remember that rule.
+    __hash__ = None  # type: ignore[assignment]
+
 
 def scan_dir(root: str | Path, *, limit: int = 200) -> ScanTree:
     """Every weight-shaped file under a directory, worst first.

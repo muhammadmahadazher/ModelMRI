@@ -708,3 +708,16 @@ def test_a_walk_under_the_limit_is_not_reported_as_capped(tmp_path, monkeypatch)
     adapters = custom.find_adapters(tmp_path)
     assert len(adapters) == adapters.n_total == 3
     assert adapters.truncated is False
+
+
+def test_two_candidate_walks_that_disagree_about_the_total_are_not_equal():
+    """CodeQL flagged `Candidates` for adding `n_total` without overriding
+    `__eq__`, and it is right: the class exists so the total travels, and
+    inheriting `list.__eq__` made "40 of 40" compare equal to "40 of 45"."""
+    complete = custom.Candidates([{"name": "a"}], n_total=1)
+    capped = custom.Candidates([{"name": "a"}], n_total=45)
+    assert complete != capped
+    assert complete == custom.Candidates([{"name": "a"}], n_total=1)
+
+    # A plain list carries no claim about the walk, so the rows decide.
+    assert complete == [{"name": "a"}]

@@ -68,9 +68,34 @@ def _inflate(data: bytes) -> bytes:
     engine = zlib.decompressobj(31)  # 31 = gzip wrapper
     raw = engine.decompress(data, MAX_INFLATED)
     if not engine.eof:
+        # TWO REASONS `eof` IS FALSE, and they are opposite facts about the
+        # file. The old message assumed the first and named it for both.
+        #
+        #   * the stream is still going and we stopped listening -> too big,
+        #     and `unconsumed_tail` holds what we refused to read
+        #   * the input ran out mid-stream -> TRUNCATED, and there is no tail
+        #     because there was nothing left to consume
+        #
+        # MEASURED: the first half of a genuine `.mri`, and a two-byte body,
+        # both answered "this file expands to more than 512 MB" — the wrong
+        # cause, given for the likeliest real failure of this route. Somebody
+        # whose download was interrupted was told their file was too big and
+        # sent to shrink something that is already incomplete.
+        if engine.unconsumed_tail:
+            raise SessionError(
+                f"this file expands to more than "
+                f"{MAX_INFLATED // 1024 // 1024} MB. A session holds an "
+                f"observation, not a model — that is not one."
+            )
+        # The INPUT length, not the output length. A half-stream of
+        # compressible data often yields 0 bytes before it runs out, and
+        # "ends after 0 bytes" reads like a second bug rather than a
+        # description of the file the reader is holding.
         raise SessionError(
-            f"this file expands to more than {MAX_INFLATED // 1024 // 1024} MB. "
-            f"A session holds an observation, not a model — that is not one."
+            f"this file is incomplete: its {len(data):,} bytes end part-way "
+            f"through the gzip stream. That is an interrupted download or a "
+            f"partial copy rather than a file this cannot read — fetch it "
+            f"again."
         )
     return raw
 

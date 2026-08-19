@@ -387,3 +387,34 @@ def test_an_absent_path_is_readable_and_simply_empty(tmp_path):
     path that is not there was not blocked, it is just not there."""
     out = ws.scan_dir(tmp_path / "nope")
     assert list(out) == [] and out.readable is True
+
+
+def test_two_scans_that_disagree_about_the_walk_are_not_equal():
+    """Flagged by CodeQL, and a real defect rather than a style note: these
+    classes exist SO THAT `n_total` and `readable` travel, and inheriting
+    `list.__eq__` compared only the rows.
+
+    The sharpest case is the one this class was added for — an empty result
+    that was WALKED compared equal to an empty result nobody could open, which
+    is the exact distinction the `readable` flag carries.
+    """
+    walked = ws.ScanTree([], n_total=0, readable=True)
+    unopenable = ws.ScanTree([], n_total=0, readable=False)
+    assert walked != unopenable
+    assert not (walked == unopenable)
+
+    capped = ws.ScanTree([1, 2, 3], n_total=84)
+    whole = ws.ScanTree([1, 2, 3], n_total=3)
+    assert capped != whole
+
+    assert walked == ws.ScanTree([], n_total=0, readable=True)
+
+    # Against a PLAIN list the rows decide, because a plain list carries no
+    # claim about the walk and so has nothing to disagree with. The existing
+    # `scan_dir(absent) == []` assertion depends on this and is correct.
+    assert walked == []
+    assert capped == [1, 2, 3]
+
+    # Unhashable, like the list it extends.
+    with pytest.raises(TypeError):
+        hash(walked)
