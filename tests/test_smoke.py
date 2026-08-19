@@ -511,7 +511,7 @@ def test_load_progress_reports_stages_and_bytes(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 4096)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 8192))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 8192))
 
     tracker = progress._Tracker()
     tracker.start("acme/tiny")
@@ -542,7 +542,7 @@ def test_load_progress_flags_a_stalled_download(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 128)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 3000))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 3000))
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)  # stall immediately
 
     tracker = progress._Tracker()
@@ -570,7 +570,7 @@ def test_load_progress_does_not_cry_stall_over_a_cached_model(tmp_path, monkeypa
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 1000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 1000))
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)
 
     tracker = progress._Tracker()
@@ -604,7 +604,7 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
     # Bigger than expected, exactly like a cache holding a second format.
     (blobs / "old").write_bytes(b"x" * 2000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 1000))
 
     tracker = progress._Tracker()
     tracker.start("acme/stale")
@@ -675,7 +675,7 @@ def test_the_previous_loads_watcher_cannot_write_into_the_next_one(
     from modelmri import progress
 
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 4242))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 4242))
 
     tracker = progress._Tracker()
     tracker.start("acme/first")

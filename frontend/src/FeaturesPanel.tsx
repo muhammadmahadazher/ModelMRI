@@ -1,5 +1,6 @@
 import LensPanel from "./LensPanel";
 import { useEffect, useRef, useState } from "react";
+import RunsOn from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
 import {
   errorText,
@@ -268,6 +269,7 @@ export default function FeaturesPanel({
           <h2 className="h-feat">FEATURES — THE CONCEPTS INSIDE</h2>
           <span className="rule" />
         </div>
+          <RunsOn epoch={epoch} />
         {opts?.usable.length ? (
           <>
             {opts.usable.map((o) => (

@@ -1,4 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import RunsOn from "./RunsOn";
 import {
   errorText,
   patchGraph,
@@ -304,6 +305,7 @@ export default function PatchGraphPanel({
         <h2 className="h-patch">PATCHING GRAPH — WHAT WROTE THE THING THAT WROTE IT</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         The grid above says where the answer is carried; clicking one cell says
         what wrote into that site. This asks that second question again of the

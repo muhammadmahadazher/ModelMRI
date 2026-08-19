@@ -41,6 +41,8 @@ function vec(xs: number[]): string {
 }
 
 import VLACausal from "./VLACausal";
+import VLAAudit from "./VLAAudit";
+import VLAActions from "./VLAActions";
 
 export default function VLAPanel() {
   const [vla, setVla] = useState<VLAStatus | null>(null);
@@ -372,6 +374,18 @@ export default function VLAPanel() {
         layer={layer}
         ready={Boolean(vla?.loaded)}
       />
+
+      {/* What the policy would DO, which needs the other half of a VLA — the
+          action expert, in its own process. Sited under the causal map because
+          it is the same question one step further out: the map says what the
+          representation depended on, these say what came out of it. */}
+      <VLAActions episode={episode} timestep={t} />
+
+      {/* Last, and it needs neither half. It reads the files on disk and
+          proves — or disproves — that the episodes above are what they claim
+          to be. Nothing is downloaded and no GPU is touched, which is why it
+          is the one control here that costs nothing to press. */}
+      <VLAAudit />
 
       {err && <div className="hint">{err}</div>}
       <div className="hint">

@@ -160,12 +160,76 @@ def test_safetensors_and_bin_are_counted_the_same_way(tmp_path):
 def test_the_download_asks_for_bin_as_well_as_safetensors():
     """Excluding `.bin` fetched a directory of configs with no weights in it,
     and `from_pretrained` then failed about a missing file rather than saying
-    the honest thing."""
-    import inspect
+    the honest thing.
 
-    source = inspect.getsource(ir._resolve)
-    assert '"*.bin"' in source
-    assert '"*/*.bin"' in source
+    Asserted on the patterns and on `_one_copy`'s behaviour rather than by
+    grepping `_resolve`'s source, which is what this did until the de-dup step
+    moved the literals out of that function. A grep cannot tell a refactor from
+    a regression; these three cases can.
+    """
+    assert "*.bin" in ir._WEIGHT_PATTERNS
+    assert "*/*.bin" in ir._WEIGHT_PATTERNS
+
+    # A pipeline that publishes ONLY pickles keeps every one of them. This is
+    # the case the test was written for: segmind/tiny-sd and DiT-XL-2-256 both
+    # ship `.bin` and no safetensors at all.
+    pickles = [
+        "unet/diffusion_pytorch_model.bin",
+        "vae/diffusion_pytorch_model.bin",
+        "text_encoder/pytorch_model.bin",
+        "model_index.json",
+    ]
+    assert sorted(ir._one_copy(pickles)) == sorted(pickles)
+
+
+def test_one_copy_of_each_component_and_never_none(tmp_path):
+    """A repo publishing both formats was downloaded twice, or four times.
+
+    MEASURED on nota-ai/bk-sdm-tiny: 10.01 GB asked for against a pipeline
+    diffusers opens as about 3.3 GB, because every component shipped `.bin`,
+    `.safetensors`, and an fp16 twin of each.
+    """
+    both = [
+        "unet/diffusion_pytorch_model.bin",
+        "unet/diffusion_pytorch_model.safetensors",
+        "unet/diffusion_pytorch_model.fp16.bin",
+        "unet/diffusion_pytorch_model.fp16.safetensors",
+        "unet/config.json",
+    ]
+    kept = ir._one_copy(both)
+    assert kept == ["unet/config.json", "unet/diffusion_pytorch_model.safetensors"]
+
+    # transformers names the two copies differently -- `pytorch_model.bin` and
+    # `model.safetensors` -- so grouping by filename stem finds no duplicate at
+    # all. Grouped by component directory, it does.
+    mixed = ["safety_checker/pytorch_model.bin", "safety_checker/model.safetensors"]
+    assert ir._one_copy(mixed) == ["safety_checker/model.safetensors"]
+
+    # A component that ships ONLY an fp16 build keeps it. The rule removes
+    # duplicates; it must never remove the only copy and leave a component
+    # with no weights, which would be the original bug in a new place.
+    only16 = ["unet/diffusion_pytorch_model.fp16.safetensors"]
+    assert ir._one_copy(only16) == only16
+
+    # A shard set is one component's weights and stays whole.
+    shards = [
+        "transformer/model-00001-of-00002.safetensors",
+        "transformer/model-00002-of-00002.safetensors",
+        "transformer/pytorch_model.bin",
+    ]
+    assert ir._one_copy(shards) == shards[:2]
+
+
+def test_an_unreachable_hub_fetches_everything_rather_than_guessing(monkeypatch):
+    """Too much is a slow load. Too little is a load that dies on a missing
+    file. Those are not the same cost, so a listing failure drops nothing."""
+
+    class Broken:
+        def model_info(self, *a, **k):
+            raise OSError("no network")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: Broken())
+    assert ir._allow_for("anything/at-all") == list(ir._WEIGHT_PATTERNS)
 
 
 def test_a_component_holding_only_json_does_not_break_the_count(tmp_path):

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import RunsOn from "./RunsOn";
 import { errorText, getSession, Patchscope, runPatchscope } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -119,6 +120,7 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
         <h2 className="h-scope">PATCHSCOPE — THE STATE, DESCRIBED IN WORDS</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Take a hidden state from one run and splice it into a second prompt
         built to make the model describe whatever it is holding. Everything

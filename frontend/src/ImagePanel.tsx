@@ -1,4 +1,6 @@
 import { CSSProperties, useEffect, useRef, useState } from "react";
+import DevicePicker from "./DevicePicker";
+import LoadBar from "./LoadBar";
 import RestingSketch from "./RestingSketch";
 import ImageModelPicker from "./ImageModelPicker";
 import AdapterPanel from "./AdapterPanel";
@@ -25,6 +27,9 @@ import {
   ImageLocal,
   ImageSize,
   ImageStatus,
+  LoadProgress,
+  getImageProgress,
+  cancelImageLoad,
   ImageTraceCost,
   loadImage,
   unloadImage,
@@ -272,6 +277,16 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
   const [attr, setAttr] = useState<ImageAttribution | null>(null);
   const pickRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState("");
+  // Which device the NEXT load goes to. "" is Automatic, which sends nothing
+  // and lets the server detect — see DevicePicker for why that is not the
+  // same as preselecting the card it would have chosen.
+  const [device, setDevice] = useState("");
+  const [prog, setProg] = useState<LoadProgress | null>(null);
+  // What a STOPPED load said. Deliberately not `err`: nothing went
+  // wrong, somebody pressed Stop, and the red box that `err` renders
+  // would contradict both the 200 the route answers and the
+  // `cancelled` stage the tracker publishes.
+  const [stopped, setStopped] = useState("");
   const [err, setErr] = useState("");
   // Set when a load was refused. Some of those refusals are overridable and
   // some are not, and the wire carries only the sentence — so this offers to
@@ -408,13 +423,49 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
     };
   }, [loaded, canAttribute, pricedH, pricedW, aPatch, aStride, aBatch]);
 
+  // A cold image load is minutes long — 6.3 GB of pickle weights off a synced
+  // drive was the case that prompted this — and with no heartbeat a slow load
+  // and a hung one look identical. They were reported as the same bug.
+  useEffect(() => {
+    if (busy !== "load") {
+      setProg(null);
+      return;
+    }
+    let live = true;
+    const tick = () =>
+      void getImageProgress()
+        .then((q) => live && setProg(q))
+        .catch(() => {});
+    tick();
+    const id = window.setInterval(tick, 700);
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, [busy]);
+
+  async function onStopLoad() {
+    try {
+      await cancelImageLoad();
+    } catch {
+      /* the load reports its own outcome either way */
+    }
+  }
+
   async function onLoad(which: string, confirm = false) {
     setBusy("load");
     setErr("");
+    setStopped("");
     setRefused(false);
     setTried(which);
     try {
-      const s = await loadImage(which, confirm);
+      const s = await loadImage(which, confirm, device);
+      // Stopped on request. NOT an error: leave every reading on screen
+      // exactly as it was, because nothing about the loaded model changed.
+      if ("cancelled" in s) {
+        setStopped(s.message);
+        return;
+      }
       setStatus(s);
       // A new pipeline makes every reading on screen a claim about a model
       // that is no longer here.
@@ -660,7 +711,25 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
             >
               {busy === "load" && tried === repo ? "Loading pipeline…" : "Load"}
             </button>
+            {/* Renders nothing on a machine with one device — see
+                DevicePicker. Disabled during a load because it describes the
+                NEXT one, and a control that appears to change a job already
+                running is a lie about what the click did. */}
+            <DevicePicker
+              value={device}
+              onChange={setDevice}
+              disabled={busy !== ""}
+            />
           </div>
+
+          {/* Only while something is loading. The report that produced this
+              was "its not loading the model its been a long time", against a
+              checkpoint that was loading correctly and slowly — a wait with
+              no heartbeat cannot be told apart from a hang. The same bar the
+              text side uses, so the two cannot drift. */}
+          {busy === "load" && (
+            <LoadBar p={prog} id={tried || repo} onStop={() => void onStopLoad()} />
+          )}
 
           {/* The same selection, typed. The box and the trigger are ONE
               state on purpose: two that can disagree is how somebody prices
@@ -730,9 +799,23 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
           current={repo.trim()}
           onClose={() => setPickerOpen(false)}
           onPick={onPickRepo}
+          /* A typed directory has no row to click, so its button both
+             chooses and commits. It still routes through the same two
+             steps every other load here takes: the pick fills the trigger
+             and the name box, then the load starts — which is what leaves
+             `tried` set, so the "ask again with confirm" retry underneath
+             has something to retry. */
+          onLoadPath={(chosen) => {
+            onPickRepo(chosen);
+            void onLoad(chosen);
+          }}
+          busy={busy !== ""}
         />
 
         {err && <div className="hint err">{err}</div>}
+        {/* Plain, above the error slot, because it is the outcome of a
+            deliberate act and reads as a report rather than a fault. */}
+        {stopped && <div className="hint">{stopped}</div>}
         {err && refused && (
           <div className="row">
             <button
@@ -1213,20 +1296,6 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
         </div>
       )}
 
-      {/* ─── occlusion attribution ──────────────────────────────────────
-          The interventional saliency map, and the only one this project was
-          ever going to draw. A gradient or an attention weight says a region
-          CORRELATES with the answer; this covers the region up, runs the model
-          again and measures what the class actually lost — the same argument
-          `patch.py` makes on the text side.
-
-          Gated on `attribution` alone. A diffusion pipeline has no class logit
-          to move and never carries it, so this whole half of the panel is
-          absent there rather than present and unable to answer. */}
-      {/* ─── what it says, and where it looked ──────────────────────────
-          Before the occlusion sweep below, deliberately: that block explains
-          a prediction, and until now the reader was never shown the
-          prediction it was explaining. */}
       {/* Same control in the loaded state, because "what does this LoRA
           change" is asked just as often with a pipeline already resident —
           and with one resident the reader can also fill in each module's size
@@ -1234,529 +1303,562 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
           actually want. */}
       {kind !== "vision" && <AdapterPanel />}
 
-      {/* ── the picture, once, before anything that measures it ────────
-          Every vision measurement here is about ONE image: what the model
-          says about it, where it looked in it, and which parts supported the
-          answer. That subject used to live inside the occlusion block, which
-          is the third of the three — so "What does it say?" rendered disabled
-          beside the words "pick a picture first" while the picker sat in a
-          different section further down. A control that names its own
-          precondition should be next to the thing that satisfies it.
+      {/* ─── ONE INSTRUMENT OVER ONE PICTURE ─────────────────────────────
+          Pick a picture, then ask things of it: what it says, where it
+          looked, and what actually supported the answer. Each ask carries
+          its own answer directly beneath it.
 
-          Read in the browser and carried in the request body as a data URL.
-          There is deliberately no box to type a path into: a path in a request
-          names a file on the SERVER's disk, which is somebody else's machine
-          as often as it is yours. */}
+          They used to be three unrelated blocks with the subject buried in
+          the third, which is how "What does it say?" came to render
+          disabled beside the words "pick a picture first" while the picker
+          sat in a different section entirely. The subject is ONE thing, so
+          it is stated once at the top; the asks are several, so they are
+          sections that look alike.
+
+          Which of them appear is unchanged and still comes from the loaded
+          checkpoint's own capability list, read from the server. Nothing
+          here infers what a model can do from its name. */}
       {(canPredict || canAttribute) && (
-        <div className="isect">
-          <h3 className="mid isect-head">the picture</h3>
-          <input
-            ref={pickRef}
-            type="file"
-            accept="image/*"
-            hidden
-            onChange={(e) => {
-              onPick(e.target.files?.[0]);
-              e.target.value = ""; // so re-picking the same file fires again
-            }}
-          />
-          <div className="row image-pick">
-            <button
-              className="ghost sm"
-              onClick={() => pickRef.current?.click()}
-              disabled={busy !== ""}
-            >
-              {picture ? "pick another picture" : "pick a picture"}
-            </button>
-            {picture ? (
-              <span className="meta">
-                <b>{pictureName}</b>
-                {pictureDims
-                  ? ` — ${pictureDims.w}x${pictureDims.h} as it sits on your disk`
-                  : " — its dimensions did not decode in the browser"}
-              </span>
-            ) : (
-              <span className="meta">
-                A file from this machine, read here and sent in the body. There
-                is no path box on purpose: a path in a request names a file on
-                the server's disk rather than on yours, and a browser cannot
-                produce one for a file you picked in any case.
-              </span>
+        <div className="vis">
+          <div className="vis-subject">
+            <h3 className="mid isect-head">the picture</h3>
+            <input
+              ref={pickRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                onPick(e.target.files?.[0]);
+                e.target.value = ""; // so re-picking the same file fires again
+              }}
+            />
+            <div className="row image-pick">
+              <button
+                className="ghost sm"
+                onClick={() => pickRef.current?.click()}
+                disabled={busy !== ""}
+              >
+                {picture ? "pick another picture" : "pick a picture"}
+              </button>
+              {picture ? (
+                <span className="meta">
+                  <b>{pictureName}</b>
+                  {pictureDims
+                    ? ` — ${pictureDims.w}x${pictureDims.h} as it sits on your disk`
+                    : " — its dimensions did not decode in the browser"}
+                </span>
+              ) : (
+                <span className="meta">
+                  A file from this machine, read here and sent in the body. There
+                  is no path box on purpose: a path in a request names a file on
+                  the server's disk rather than on yours, and a browser cannot
+                  produce one for a file you picked in any case.
+                </span>
+              )}
+            </div>
+            {picture && (
+              <img className="image-shot" src={picture} alt="the picture being measured" />
             )}
           </div>
-          {picture && (
-            <img className="image-shot" src={picture} alt="the picture being measured" />
-          )}
-        </div>
-      )}
 
-      {canPredict && (
-        <div className="isect">
-          <h3 className="mid isect-head">prediction — what this model says</h3>
-          <ImageCV picture={picture} canReadout={canReadout} />
-        </div>
-      )}
+          <div className="vis-asks">
+            {/* Asks one and two live in `ImageCV`: what it says, and where
+                it looked. Each is its own section in there, with its own
+                answer under it. */}
+            {canPredict && <ImageCV picture={picture} canReadout={canReadout} />}
 
-      {canAttribute && (
-        <div className="image-attr">
-          <div className="image-subhead">
-            <h3 className="h-image">OCCLUSION — WHERE THE EVIDENCE ACTUALLY WAS</h3>
-            <span className="rule" />
-          </div>
-          <p className="meta">
-            Cover one window of a picture with a flat fill, run the model again,
-            and record what the class logit did. Do it for every window and the
-            result is a map of where the evidence for the answer was — measured
-            by removing it, rather than inferred from a gradient.
-          </p>
+            {/* Ask three. The interventional one, and the only kind of
+                saliency this project was ever going to draw: a gradient
+                or an attention weight says a region CORRELATES with the
+                answer, this covers the region up, runs the model again
+                and measures what the class actually lost — the same
+                argument `patch.py` makes on the text side.
 
-          {/* ── the picture ─────────────────────────────────────────────
-              Read in the browser and carried in the request body as a data
-              URL. There is deliberately no box to type a path into: a path in
-              a request names a file on the SERVER's disk, which is somebody
-              else's machine as often as it is yours. */}
-
-          <div className="row image-controls">
-            <label className="meta" htmlFor="image-patch">
-              patch
-            </label>
-            <input
-              id="image-patch"
-              type="number"
-              min={1}
-              max={512}
-              value={aPatch}
-              onChange={(e) => {
-                setAttr(null);
-                setAPatch(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
-              }}
-            />
-            <label className="meta" htmlFor="image-stride">
-              stride
-            </label>
-            <input
-              id="image-stride"
-              type="number"
-              min={1}
-              max={512}
-              value={aStride}
-              onChange={(e) => {
-                setAttr(null);
-                setAStride(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
-              }}
-            />
-            <label className="meta" htmlFor="image-fill">
-              fill
-            </label>
-            <select
-              id="image-fill"
-              className="combo"
-              value={aFill}
-              onChange={(e) => {
-                setAttr(null);
-                setAFill(e.target.value);
-              }}
-            >
-              {FILLS.map((f) => (
-                <option key={f} value={f}>
-                  {f}
-                </option>
-              ))}
-            </select>
-            <label className="meta" htmlFor="image-batch">
-              batch
-            </label>
-            <input
-              id="image-batch"
-              type="number"
-              min={1}
-              max={64}
-              value={aBatch}
-              onChange={(e) => {
-                setAttr(null);
-                setABatch(Math.max(1, Math.min(64, Number(e.target.value) || 1)));
-              }}
-            />
-            <label className="meta" htmlFor="image-target">
-              class
-            </label>
-            <input
-              id="image-target"
-              className="image-attr-class"
-              type="number"
-              min={0}
-              placeholder="the model's own"
-              value={aTarget}
-              onChange={(e) => {
-                setAttr(null);
-                setATarget(e.target.value);
-              }}
-            />
-          </div>
-
-          <p className="meta">
-            <b>There is no neutral fill.</b> Nothing here can delete a region,
-            only replace it with something else, so a flat square is a specific
-            baseline and a different one gives a different map — which is why
-            all four of {FILLS.join(", ")} are offered rather than one. A
-            stride below the patch overlaps the windows for a smoother map at a
-            quadratic price. Leave <b>class</b> empty to attribute whatever the
-            model itself predicted; naming one audits a label you supplied
-            instead, which is a different question with the same picture.
-          </p>
-
-          {/* ── the preflight, BEFORE any run ───────────────────────────
-              This route needs no model, so the number arrives as early as a
-              geometry is known — and it is the number that decides whether to
-              run at all. */}
-          <div className="image-cost">
-            {attrCost ? (
-              <>
-                <p className="meta">
-                  <b>this sweep</b> · {attrCost.means}
+                Gated on `attribution` alone. A diffusion pipeline has no
+                class logit to move and never carries that capability, so
+                this ask is absent there rather than present and unable to
+                answer. */}
+            {canAttribute && (
+              <section className="vis-ask image-attr">
+                <h4 className="vis-ask-h">what supported the answer?</h4>
+                <p className="meta vis-ask-1l">
+                  Cover one window of the picture with a flat fill, run the model
+                  again, record what the class logit did — then do it for every
+                  window. Evidence measured by removing it, rather than inferred
+                  from a gradient.
                 </p>
-                <p className="meta">
-                  Priced at {pricedH}x{pricedW},{" "}
-                  {shotSize > 0
-                    ? "the input size this checkpoint states — which is what its own processor resizes your picture to before a single window is placed, so the file's own dimensions never reach the sweep."
-                    : "the dimensions of the file you picked, because this checkpoint states no input size of its own. Its processor may resize to something else entirely, and the run would then be over a geometry this preflight does not know — a weaker number than the one above it looks like."}
-                </p>
-                {attrCost.seconds === null && (
-                  <p className="meta">
-                    No per-pass time has been measured on this machine, so
-                    there is no forecast above. <b>That is "nobody measured",
-                    not "instant"</b> — a wait invented from a typed constant
-                    would be a number this tool made up.
-                  </p>
-                )}
-              </>
-            ) : attrCostErr ? null : pricedH < 1 ? (
-              <p className="meta">
-                This checkpoint states no input size, so nothing here knows a
-                geometry to price yet. Pick a picture and the sweep is costed
-                against its dimensions before you can run it.
-              </p>
-            ) : (
-              <p className="meta">pricing the sweep…</p>
-            )}
-            {attrCostErr && <p className="meta">{attrCostErr}</p>}
-          </div>
 
-          {/* Past the ceiling: the button is not offered, and the passes and
-              the ceiling are, because those two are what a reader needs to
-              pick a stride. `estimate` prices a run it would refuse on
-              purpose — being told only "no" leaves you guessing at the
-              parameter that caused it. */}
-          <div className="row">
-            {attrCost && !attrCost.within_ceiling ? (
-              <span className="meta">
-                <b>No run is offered at this setting.</b> It is{" "}
-                <b>{attrCost.passes}</b> forward passes against a ceiling of{" "}
-                <b>{attrCost.ceiling}</b>, and the sweep refuses it — a job
-                rather than a click, and finding that out by waiting is the
-                failure the ceiling exists to prevent. The preflight above
-                still priced it, and names a stride that fits.
-              </span>
-            ) : (
-              <>
-                <button
-                  className="cta"
-                  onClick={() => void onAttribute()}
-                  disabled={busy !== "" || picture === "" || !attrCost}
-                >
-                  {busy === "attribute"
-                    ? "Covering it up, a window at a time…"
-                    : "Cover it up and re-run"}
-                </button>
-                {picture === "" ? (
-                  <span className="meta">
-                    Pick a picture first. This measures what a model looked at
-                    in ONE image, so there is no default worth substituting.
-                  </span>
-                ) : !attrCost ? (
-                  <span className="meta">
-                    The preflight has no number for this setting, so there is
-                    nothing to run it against — its sentence above says why.
-                  </span>
-                ) : null}
-              </>
-            )}
-          </div>
-
-          {/* ── the map ─────────────────────────────────────────────────
-              Drawn over the picture in a DIVERGING scale with a neutral
-              midpoint at zero, because the scores are signed and the sign is
-              the finding. */}
-          {attr && (
-            <>
-              <div className="image-attr-panes">
-                <div
-                  className="image-attr-shot"
-                  style={{ aspectRatio: `${attr.grid.width} / ${attr.grid.height}` }}
-                >
-                  <img src={picture} alt={`the picture this sweep covered up: ${pictureName}`} />
-                  {/* Colour only, and hidden from the accessibility tree: the
-                      table below is the same map with the numbers in it, and
-                      196 unlabelled cells announced twice is worse than once. */}
-                  <div
-                    className="image-attr-over"
-                    aria-hidden="true"
-                    style={{
-                      gridTemplateColumns: `repeat(${attr.grid.map_cols}, 1fr)`,
-                      gridTemplateRows: `repeat(${attr.grid.map_rows}, 1fr)`,
+                <div className="row image-controls">
+                  <label className="meta" htmlFor="image-patch">
+                    patch
+                  </label>
+                  <input
+                    id="image-patch"
+                    type="number"
+                    min={1}
+                    max={512}
+                    value={aPatch}
+                    onChange={(e) => {
+                      setAttr(null);
+                      setAPatch(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
+                    }}
+                  />
+                  <label className="meta" htmlFor="image-stride">
+                    stride
+                  </label>
+                  <input
+                    id="image-stride"
+                    type="number"
+                    min={1}
+                    max={512}
+                    value={aStride}
+                    onChange={(e) => {
+                      setAttr(null);
+                      setAStride(Math.max(1, Math.min(512, Number(e.target.value) || 1)));
+                    }}
+                  />
+                  <label className="meta" htmlFor="image-fill">
+                    fill
+                  </label>
+                  <select
+                    id="image-fill"
+                    className="combo"
+                    value={aFill}
+                    onChange={(e) => {
+                      setAttr(null);
+                      setAFill(e.target.value);
                     }}
                   >
-                    {attr.map.map((row, r) =>
-                      row.map((v, c) => (
-                        <span
-                          key={`${r}:${c}`}
-                          className={
-                            [
-                              "image-attr-cell",
-                              !attrUnrankable &&
-                              attr.strongest &&
-                              attr.strongest.row === r &&
-                              attr.strongest.col === c
-                                ? "peak"
-                                : "",
-                              !attrUnrankable &&
-                              attr.most_negative &&
-                              attr.most_negative.row === r &&
-                              attr.most_negative.col === c
-                                ? "against"
-                                : "",
-                            ]
-                              .filter(Boolean)
-                              .join(" ") || undefined
-                          }
-                          style={{
-                            background: attrUnrankable ? "transparent" : attrShade(v, attrMag),
-                          }}
-                        />
-                      )),
-                    )}
-                  </div>
-                </div>
-
-                {/* The scale, spelled out. A reader who takes the two hues for
-                    "strong" and "weak" has read the map backwards in half of
-                    it, so both ends are named in words as well as numbers. */}
-                <div className="image-attr-key">
-                  <span className="meta">
-                    covering it <b>RAISED</b> the class — that region was
-                    arguing against the answer
-                  </span>
-                  <div className="image-attr-ramp" aria-hidden="true" />
-                  <div className="image-attr-ends">
-                    <span className="mid">{drop(attrLo)}</span>
-                    <span className="mid">0</span>
-                    <span className="mid">{drop(attrHi)}</span>
-                  </div>
-                  <span className="meta">
-                    covering it <b>COST</b> the class its evidence
-                  </span>
-                  <span className="meta">
-                    Zero sits at the middle of the scale and paints as nothing,
-                    so a window that changed the answer in neither direction
-                    reads as neither.
-                  </span>
-                </div>
-              </div>
-
-              <p className="meta image-read">
-                The overlay is over the tensor the model saw — this
-                checkpoint's own processor produced it from your file, doing
-                the resize the model was trained with. If that processor crops
-                as well as resizing, your picture underneath is stretched into
-                the same frame and the alignment is off by exactly that crop.
-                {attr.grid.overlap > 0 &&
-                  ` Neighbouring windows share ${attr.grid.overlap} pixels at this stride, so the cells above are drawn as a plain tiling of the frame while the windows they stand for overlapped.`}
-                {attrClamped !== "" &&
-                  ` The last ${attrClamped} had to be pulled back to the edge so that no strip of the image sat under no window at all, which makes that final overlap larger than the stride.`}
-              </p>
-
-              {/* The same map with the numbers in it. The colour is derived
-                  here; the number is the measurement. */}
-              <div className="image-grid-wrap">
-                <table
-                  className="image-grid image-attr-grid"
-                  aria-label="signed logit movement per occluded window, by map row and column"
-                >
-                  <thead>
-                    <tr>
-                      <th />
-                      {attr.map[0].map((_, c) => (
-                        <th key={c} className="mid">
-                          c{c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="stagger">
-                    {attr.map.map((row, r) => (
-                      <tr key={r} style={{ "--i": r } as CSSProperties}>
-                        <th className="mid">r{r}</th>
-                        {row.map((v, c) => {
-                          const w = attrWindows.get(`${r}:${c}`);
-                          return (
-                            <td
-                              key={c}
-                              className="image-cell"
-                              style={{
-                                background: attrUnrankable
-                                  ? "transparent"
-                                  : attrShade(v, attrMag),
-                              }}
-                              title={
-                                `row ${r}, column ${c}` +
-                                (w ? ` — ${box(w)}` : "") +
-                                ` — ${drop(v)} logits` +
-                                (w && w.prob_drop !== null
-                                  ? `, ${drop(w.prob_drop)} in softmax probability`
-                                  : ", no probability: this head has a single output")
-                              }
-                            >
-                              {drop(v)}
-                            </td>
-                          );
-                        })}
-                      </tr>
+                    {FILLS.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
                     ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <div className="row image-attr-facts">
-                <span className="pill">{attr.model_name}</span>
-                <span className="pill on">
-                  {attr.target_label || `class ${attr.target}`}
-                  {attr.target_chosen_by_model
-                    ? " · the model's own top prediction"
-                    : " · the class you named"}
-                </span>
-                <span className="pill">
-                  {attr.fill} fill
-                  {attr.fill_value.length > 0
-                    ? ` at ${attr.fill_value.map((v) => v.toFixed(3)).join(", ")}`
-                    : ""}
-                </span>
-                <span className="pill">
-                  {attr.seconds}s measured, batches of {attr.batch_used}
-                </span>
-              </div>
-
-              {/* ── what the map is allowed to claim ──────────────────
-                  Three verdicts, and the first two are not the same one. A
-                  spread of exactly zero is the model saying it did not use
-                  the picture; a spread inside the reported precision is a map
-                  of real differences that are all smaller than the last digit
-                  they are printed to. Neither may name a peak, and the reason
-                  they may not is different in each. */}
-              {attrIsFlat ? (
-                <div className="hint">
-                  <b>There is no strongest window: this map is exactly flat.</b>{" "}
-                  The model returned the same logit under every one of these
-                  occlusions, which is it telling you it did not use the image
-                  — nothing moved in either direction, so nothing argued for
-                  the class and nothing argued against it. Naming a peak here
-                  would be reading rank order out of a tie, and the cells above
-                  are unshaded rather than uniformly pale.
+                  </select>
+                  <label className="meta" htmlFor="image-batch">
+                    batch
+                  </label>
+                  <input
+                    id="image-batch"
+                    type="number"
+                    min={1}
+                    max={64}
+                    value={aBatch}
+                    onChange={(e) => {
+                      setAttr(null);
+                      setABatch(Math.max(1, Math.min(64, Number(e.target.value) || 1)));
+                    }}
+                  />
+                  <label className="meta" htmlFor="image-target">
+                    class
+                  </label>
+                  <input
+                    id="image-target"
+                    className="image-attr-class"
+                    type="number"
+                    min={0}
+                    placeholder="the model's own"
+                    value={aTarget}
+                    onChange={(e) => {
+                      setAttr(null);
+                      setATarget(e.target.value);
+                    }}
+                  />
                 </div>
-              ) : attrIsNoise ? (
-                <div className="hint">
-                  <b>This map is made of rounding.</b> Its entire span is{" "}
-                  {span(attr.spread)} logits, at or below the precision these
-                  scores are reported at — so ranking its windows is ranking
-                  the last digit, and no peak is named or drawn. The cells above
-                  are left unshaded for the same reason: a diverging scale
-                  normalised to a span that small paints noise as structure. The
-                  paragraph below is the server's own account of it.
-                </div>
-              ) : (
-                <>
-                  {attr.strongest !== null && (
-                    <p className="meta">
-                      <b>Strongest</b> — row {attr.strongest.row}, column{" "}
-                      {attr.strongest.col} ({box(attr.strongest)}): covering it
-                      moved the logit by <b>{drop(attr.strongest.logit_drop)}</b>
-                      {attr.strongest.prob_drop !== null
-                        ? `, and the softmax probability by ${drop(attr.strongest.prob_drop)}`
-                        : ""}
-                      . That is a peak <i>relative to the other windows of this
-                      picture</i>, and the whole map spans{" "}
-                      <b>{span(attr.spread)}</b> logits — the span is the scale
-                      the peak means anything on.
-                    </p>
-                  )}
 
-                  {attr.most_negative ? (
+                {/* The preflight, BEFORE any run, and now down to the lines a
+                    reader acts on. This route needs no model, so the number
+                    arrives as soon as a geometry is known, and it is the number
+                    that decides whether to run at all. The paragraphs that used
+                    to sit here — what a fill IS, and what the price is a price
+                    OF — are under the disclosure below the button. Still
+                    reachable; no longer three paragraphs standing between the
+                    controls and the button that spends them. */}
+                <div className="image-cost">
+                  {attrCost ? (
+                    <>
+                      <p className="meta">
+                        <b>this sweep</b> · {attrCost.means}
+                      </p>
+                      <p className="meta">
+                        Priced at {pricedH}x{pricedW} —{" "}
+                        {shotSize > 0
+                          ? "the input size this checkpoint states, not the dimensions of the file you picked."
+                          : "the dimensions of the file you picked, because this checkpoint states no input size of its own."}{" "}
+                        The note under the button says what that changes.
+                      </p>
+                      {/* `null` is UNKNOWN and is never rendered as 0. A wait
+                          invented from a typed constant would be this tool
+                          making a number up. */}
+                      {attrCost.seconds === null && (
+                        <p className="meta">
+                          No per-pass time has been measured on this machine, so
+                          there is no forecast — <b>that is "nobody measured",
+                          not "instant"</b> — and an invented one would be a
+                          number this tool made up.
+                        </p>
+                      )}
+                    </>
+                  ) : attrCostErr ? null : pricedH < 1 ? (
                     <p className="meta">
-                      <b>Arguing against the class</b> — row{" "}
-                      {attr.most_negative.row}, column {attr.most_negative.col}{" "}
-                      ({box(attr.most_negative)}) at{" "}
-                      <b>{drop(attr.most_negative.logit_drop)}</b>: covering it
-                      RAISED the logit, so that region was evidence against the
-                      answer rather than for it. An absolute value would have
-                      printed it as the same size of evidence <i>for</i>.
+                      This checkpoint states no input size, so nothing here knows a
+                      geometry to price yet. Pick a picture and the sweep is costed
+                      against its dimensions before you can run it.
                     </p>
                   ) : (
+                    <p className="meta">pricing the sweep…</p>
+                  )}
+                  {attrCostErr && <p className="meta">{attrCostErr}</p>}
+                </div>
+
+                {/* Past the ceiling: the button is not offered, and the passes and
+                    the ceiling are, because those two are what a reader needs to
+                    pick a stride. `estimate` prices a run it would refuse on
+                    purpose — being told only "no" leaves you guessing at the
+                    parameter that caused it. */}
+                <div className="row">
+                  {attrCost && !attrCost.within_ceiling ? (
+                    <span className="meta">
+                      <b>No run is offered at this setting.</b> It is{" "}
+                      <b>{attrCost.passes}</b> forward passes against a ceiling of{" "}
+                      <b>{attrCost.ceiling}</b>, and the sweep refuses it — a job
+                      rather than a click, and finding that out by waiting is the
+                      failure the ceiling exists to prevent. The preflight above
+                      still priced it, and names a stride that fits.
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        className="cta"
+                        onClick={() => void onAttribute()}
+                        disabled={busy !== "" || picture === "" || !attrCost}
+                      >
+                        {busy === "attribute"
+                          ? "Covering it up, a window at a time…"
+                          : "Cover it up and re-run"}
+                      </button>
+                      {picture === "" ? (
+                        <span className="meta">
+                          Pick a picture first. This measures what a model looked at
+                          in ONE image, so there is no default worth substituting.
+                        </span>
+                      ) : !attrCost ? (
+                        <span className="meta">
+                          The preflight has no number for this setting, so there is
+                          nothing to run it against — its sentence above says why.
+                        </span>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+
+                {/* Everything in here is load-bearing and none of it is
+                    deleted: a fill is a BASELINE rather than a deletion, and the
+                    price is a price of the tensor the model sees rather than of
+                    the file on your disk. Both are the kind of thing a reader
+                    needs once and then needs to be able to find again — which is
+                    what a disclosure is for, and what four paragraphs between the
+                    controls and the button is not. */}
+                <details className="vis-more">
+                  <summary>how the cover-up works, and what the price is a price of</summary>
+                  <p className="meta">
+                    <b>There is no neutral fill.</b> Nothing here can delete a
+                    region, only replace it with something else, so a flat square
+                    is a specific baseline and a different one gives a different
+                    map — which is why all four of {FILLS.join(", ")} are offered
+                    rather than one. A stride below the patch overlaps the windows
+                    for a smoother map at a quadratic price. Leave <b>class</b>
+                    empty to attribute whatever the model itself predicted; naming
+                    one audits a label you supplied instead, which is a different
+                    question with the same picture.
+                  </p>
+                  {pricedH > 0 && (
                     <p className="meta">
-                      <b>Nothing argued against the class.</b> No window raised
-                      the logit when it was covered — which is a different
-                      finding from a window that moved it by 0.0, and the reason
-                      there is a sentence here rather than an empty slot where a
-                      most-negative window would go.
+                      The sweep is priced at {pricedH}x{pricedW},{" "}
+                      {shotSize > 0
+                        ? "the input size this checkpoint states — which is what its own processor resizes your picture to before a single window is placed, so the file's own dimensions never reach the sweep."
+                        : "the dimensions of the file you picked, because this checkpoint states no input size of its own. Its processor may resize to something else entirely, and the run would then be over a geometry this preflight does not know — a weaker number than the one above it looks like."}
                     </p>
                   )}
-                </>
-              )}
+                </details>
 
-              {/* Rule of the module, not of this panel: a silent cap is a
-                  defect, so both numbers are shown whenever they differ. */}
-              {batchCut && (
-                <div className="hint">
-                  <b>The batch was reduced.</b> {attr.batch_requested} occluded
-                  copies per call were asked for and {attr.batch_used} were
-                  used. Both are shown because the smaller one is more forward
-                  calls and a different wall-clock time — the {attr.seconds}s
-                  above is the reduced run's, not the run you asked for.
-                </div>
-              )}
+                {/* ── the map ─────────────────────────────────────────────────
+                    Drawn over the picture in a DIVERGING scale with a neutral
+                    midpoint at zero, because the scores are signed and the sign is
+                    the finding. */}
+                {attr && (
+                  <>
+                    <div className="image-attr-panes">
+                      <div
+                        className="image-attr-shot"
+                        style={{ aspectRatio: `${attr.grid.width} / ${attr.grid.height}` }}
+                      >
+                        <img src={picture} alt={`the picture this sweep covered up: ${pictureName}`} />
+                        {/* Colour only, and hidden from the accessibility tree: the
+                            table below is the same map with the numbers in it, and
+                            196 unlabelled cells announced twice is worse than once. */}
+                        <div
+                          className="image-attr-over"
+                          aria-hidden="true"
+                          style={{
+                            gridTemplateColumns: `repeat(${attr.grid.map_cols}, 1fr)`,
+                            gridTemplateRows: `repeat(${attr.grid.map_rows}, 1fr)`,
+                          }}
+                        >
+                          {attr.map.map((row, r) =>
+                            row.map((v, c) => (
+                              <span
+                                key={`${r}:${c}`}
+                                className={
+                                  [
+                                    "image-attr-cell",
+                                    !attrUnrankable &&
+                                    attr.strongest &&
+                                    attr.strongest.row === r &&
+                                    attr.strongest.col === c
+                                      ? "peak"
+                                      : "",
+                                    !attrUnrankable &&
+                                    attr.most_negative &&
+                                    attr.most_negative.row === r &&
+                                    attr.most_negative.col === c
+                                      ? "against"
+                                      : "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" ") || undefined
+                                }
+                                style={{
+                                  background: attrUnrankable ? "transparent" : attrShade(v, attrMag),
+                                }}
+                              />
+                            )),
+                          )}
+                        </div>
+                      </div>
 
-              {attr.value_range_inferred && (
-                <div className="hint">
-                  <b>The input value range was inferred from this one image's
-                  extremes</b>, not read from the checkpoint's processor — it
-                  published too little to compute one. That changes what the
-                  fill actually was: the range used was{" "}
-                  {attr.value_range[0].toFixed(4)} to{" "}
-                  {attr.value_range[1].toFixed(4)} as guessed from this picture,
-                  and one picture's extremes are a lower bound on the model's
-                  input range rather than the range. A photograph that never
-                  reaches the bottom of it puts "{attr.fill}" somewhere that is
-                  not the midpoint the word implies.
-                </div>
-              )}
+                      {/* The scale, spelled out. A reader who takes the two hues for
+                          "strong" and "weak" has read the map backwards in half of
+                          it, so both ends are named in words as well as numbers. */}
+                      <div className="image-attr-key">
+                        <span className="meta">
+                          covering it <b>RAISED</b> the class — that region was
+                          arguing against the answer
+                        </span>
+                        <div className="image-attr-ramp" aria-hidden="true" />
+                        <div className="image-attr-ends">
+                          <span className="mid">{drop(attrLo)}</span>
+                          <span className="mid">0</span>
+                          <span className="mid">{drop(attrHi)}</span>
+                        </div>
+                        <span className="meta">
+                          covering it <b>COST</b> the class its evidence
+                        </span>
+                        <span className="meta">
+                          Zero sits at the middle of the scale and paints as nothing,
+                          so a window that changed the answer in neither direction
+                          reads as neither.
+                        </span>
+                      </div>
+                    </div>
 
-              {attr.class_names_dropped && (
-                <div className="hint">
-                  <b>The class names did not match this head's {attr.classes}{" "}
-                  outputs</b>, so they were dropped entirely rather than applied
-                  by position. The target is numbered above rather than named,
-                  which is the right way round: a picture captioned with the
-                  wrong class name is worse than one captioned with a number.
-                </div>
-              )}
+                    <p className="meta image-read">
+                      The overlay is over the tensor the model saw — this
+                      checkpoint's own processor produced it from your file, doing
+                      the resize the model was trained with. If that processor crops
+                      as well as resizing, your picture underneath is stretched into
+                      the same frame and the alignment is off by exactly that crop.
+                      {attr.grid.overlap > 0 &&
+                        ` Neighbouring windows share ${attr.grid.overlap} pixels at this stride, so the cells above are drawn as a plain tiling of the frame while the windows they stand for overlapped.`}
+                      {attrClamped !== "" &&
+                        ` The last ${attrClamped} had to be pulled back to the edge so that no strip of the image sat under no window at all, which makes that final overlap larger than the stride.`}
+                    </p>
 
-              {/* The server's own paragraph, verbatim — including the four
-                  sentences this panel is not allowed to soften: that a fill is
-                  a baseline and not a removal, that occlusion is out of
-                  distribution, that softmax confidence is not the probability
-                  of being right, and that one image is a sample rather than a
-                  property of the model. */}
-              <p className="meta image-means">{attr.means}</p>
-            </>
-          )}
+                    {/* The same map with the numbers in it. The colour is derived
+                        here; the number is the measurement. */}
+                    <div className="image-grid-wrap">
+                      <table
+                        className="image-grid image-attr-grid"
+                        aria-label="signed logit movement per occluded window, by map row and column"
+                      >
+                        <thead>
+                          <tr>
+                            <th />
+                            {attr.map[0].map((_, c) => (
+                              <th key={c} className="mid">
+                                c{c}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="stagger">
+                          {attr.map.map((row, r) => (
+                            <tr key={r} style={{ "--i": r } as CSSProperties}>
+                              <th className="mid">r{r}</th>
+                              {row.map((v, c) => {
+                                const w = attrWindows.get(`${r}:${c}`);
+                                return (
+                                  <td
+                                    key={c}
+                                    className="image-cell"
+                                    style={{
+                                      background: attrUnrankable
+                                        ? "transparent"
+                                        : attrShade(v, attrMag),
+                                    }}
+                                    title={
+                                      `row ${r}, column ${c}` +
+                                      (w ? ` — ${box(w)}` : "") +
+                                      ` — ${drop(v)} logits` +
+                                      (w && w.prob_drop !== null
+                                        ? `, ${drop(w.prob_drop)} in softmax probability`
+                                        : ", no probability: this head has a single output")
+                                    }
+                                  >
+                                    {drop(v)}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="row image-attr-facts">
+                      <span className="pill">{attr.model_name}</span>
+                      <span className="pill on">
+                        {attr.target_label || `class ${attr.target}`}
+                        {attr.target_chosen_by_model
+                          ? " · the model's own top prediction"
+                          : " · the class you named"}
+                      </span>
+                      <span className="pill">
+                        {attr.fill} fill
+                        {attr.fill_value.length > 0
+                          ? ` at ${attr.fill_value.map((v) => v.toFixed(3)).join(", ")}`
+                          : ""}
+                      </span>
+                      <span className="pill">
+                        {attr.seconds}s measured, batches of {attr.batch_used}
+                      </span>
+                    </div>
+
+                    {/* ── what the map is allowed to claim ──────────────────
+                        Three verdicts, and the first two are not the same one. A
+                        spread of exactly zero is the model saying it did not use
+                        the picture; a spread inside the reported precision is a map
+                        of real differences that are all smaller than the last digit
+                        they are printed to. Neither may name a peak, and the reason
+                        they may not is different in each. */}
+                    {attrIsFlat ? (
+                      <div className="hint">
+                        <b>There is no strongest window: this map is exactly flat.</b>{" "}
+                        The model returned the same logit under every one of these
+                        occlusions, which is it telling you it did not use the image
+                        — nothing moved in either direction, so nothing argued for
+                        the class and nothing argued against it. Naming a peak here
+                        would be reading rank order out of a tie, and the cells above
+                        are unshaded rather than uniformly pale.
+                      </div>
+                    ) : attrIsNoise ? (
+                      <div className="hint">
+                        <b>This map is made of rounding.</b> Its entire span is{" "}
+                        {span(attr.spread)} logits, at or below the precision these
+                        scores are reported at — so ranking its windows is ranking
+                        the last digit, and no peak is named or drawn. The cells above
+                        are left unshaded for the same reason: a diverging scale
+                        normalised to a span that small paints noise as structure. The
+                        paragraph below is the server's own account of it.
+                      </div>
+                    ) : (
+                      <>
+                        {attr.strongest !== null && (
+                          <p className="meta">
+                            <b>Strongest</b> — row {attr.strongest.row}, column{" "}
+                            {attr.strongest.col} ({box(attr.strongest)}): covering it
+                            moved the logit by <b>{drop(attr.strongest.logit_drop)}</b>
+                            {attr.strongest.prob_drop !== null
+                              ? `, and the softmax probability by ${drop(attr.strongest.prob_drop)}`
+                              : ""}
+                            . That is a peak <i>relative to the other windows of this
+                            picture</i>, and the whole map spans{" "}
+                            <b>{span(attr.spread)}</b> logits — the span is the scale
+                            the peak means anything on.
+                          </p>
+                        )}
+
+                        {attr.most_negative ? (
+                          <p className="meta">
+                            <b>Arguing against the class</b> — row{" "}
+                            {attr.most_negative.row}, column {attr.most_negative.col}{" "}
+                            ({box(attr.most_negative)}) at{" "}
+                            <b>{drop(attr.most_negative.logit_drop)}</b>: covering it
+                            RAISED the logit, so that region was evidence against the
+                            answer rather than for it. An absolute value would have
+                            printed it as the same size of evidence <i>for</i>.
+                          </p>
+                        ) : (
+                          <p className="meta">
+                            <b>Nothing argued against the class.</b> No window raised
+                            the logit when it was covered — which is a different
+                            finding from a window that moved it by 0.0, and the reason
+                            there is a sentence here rather than an empty slot where a
+                            most-negative window would go.
+                          </p>
+                        )}
+                      </>
+                    )}
+
+                    {/* Rule of the module, not of this panel: a silent cap is a
+                        defect, so both numbers are shown whenever they differ. */}
+                    {batchCut && (
+                      <div className="hint">
+                        <b>The batch was reduced.</b> {attr.batch_requested} occluded
+                        copies per call were asked for and {attr.batch_used} were
+                        used. Both are shown because the smaller one is more forward
+                        calls and a different wall-clock time — the {attr.seconds}s
+                        above is the reduced run's, not the run you asked for.
+                      </div>
+                    )}
+
+                    {attr.value_range_inferred && (
+                      <div className="hint">
+                        <b>The input value range was inferred from this one image's
+                        extremes</b>, not read from the checkpoint's processor — it
+                        published too little to compute one. That changes what the
+                        fill actually was: the range used was{" "}
+                        {attr.value_range[0].toFixed(4)} to{" "}
+                        {attr.value_range[1].toFixed(4)} as guessed from this picture,
+                        and one picture's extremes are a lower bound on the model's
+                        input range rather than the range. A photograph that never
+                        reaches the bottom of it puts "{attr.fill}" somewhere that is
+                        not the midpoint the word implies.
+                      </div>
+                    )}
+
+                    {attr.class_names_dropped && (
+                      <div className="hint">
+                        <b>The class names did not match this head's {attr.classes}{" "}
+                        outputs</b>, so they were dropped entirely rather than applied
+                        by position. The target is numbered above rather than named,
+                        which is the right way round: a picture captioned with the
+                        wrong class name is worse than one captioned with a number.
+                      </div>
+                    )}
+
+                    {/* The server's own paragraph, verbatim — including the four
+                        sentences this panel is not allowed to soften: that a fill is
+                        a baseline and not a removal, that occlusion is out of
+                        distribution, that softmax confidence is not the probability
+                        of being right, and that one image is a sample rather than a
+                        property of the model. */}
+                    <p className="meta image-means">{attr.means}</p>
+                  </>
+                )}
+              </section>
+            )}
+          </div>
         </div>
       )}
     </div>

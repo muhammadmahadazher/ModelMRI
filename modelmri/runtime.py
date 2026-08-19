@@ -890,7 +890,7 @@ class ModelRuntime:
                     attn_implementation="eager",  # materialises attention
                 )
             except LoadCancelled as err:
-                progress.TRACKER.finish(error=str(err))
+                progress.TRACKER.finish(error=str(err), cancelled=True)
                 raise
             except OSError as err:
                 # Gated repos, typos and private models all land here with a

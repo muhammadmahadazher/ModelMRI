@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -232,7 +233,17 @@ class ImageHandle:
 
         from . import imaging
 
-        with self._lock:
+        # ONE list, resolved once and handed to the tracker, the killable
+        # child and the in-process fetch alike. Three callers deriving it
+        # separately is three chances for the bar to be counting different
+        # files from the ones arriving.
+        allow = (
+            _allow_for(repo)
+            if not (local_ok and Path(repo).expanduser().is_dir())
+            else list(_WEIGHT_PATTERNS)
+        )
+        with self._lock, _tracked(repo, allow) as tracking:
+            tracking.stage("identify", "reading the checkpoint's own JSON")
             # Configs only. The family decides both whether this is loadable
             # at all and WHICH loader opens it, and both answers are in a few
             # kilobytes of JSON — so neither costs a download.
@@ -244,8 +255,17 @@ class ImageHandle:
                 # does not exist.
                 raise Refusal(found.means())
 
-            # Only now do the weights move.
-            local = _resolve(repo, local_ok=local_ok)
+            _stop_if_asked("before the weights were fetched")
+            tracking.stage("weights", "fetching whatever is not cached")
+            # Only now do the weights move. In a child process, so the Stop
+            # button works during the one step long enough for anyone to want
+            # it — see `_prefetch`. `_resolve` still runs afterwards and is
+            # what decides the load; by then the cache is usually full and it
+            # touches the network not at all.
+            _prefetch_weights(repo, allow, local_ok=local_ok)
+            local = _resolve(repo, allow, local_ok=local_ok)
+            _stop_if_asked("before the weights were scanned")
+            tracking.stage("scan", "reading opcodes — loading nothing")
             self._scan(local)
             resident = _weights_bytes(local)
             _guard(
@@ -255,6 +275,10 @@ class ImageHandle:
                 already_held_bytes=already_held_bytes,
             )
 
+            _stop_if_asked("before the pipeline was opened")
+            tracking.stage(
+                "open", "opening the pipeline — this step cannot be interrupted"
+            )
             pipe, chosen_device, chosen_dtype, seconds = _load_pipeline(
                 local, family=found.family, device=device, dtype=dtype
             )
@@ -264,6 +288,8 @@ class ImageHandle:
             # load. What must not happen is a measurement that needs it
             # proceeding without it — that is `require_processor`'s job.
             self.processor, self.processor_reason = _load_processor(local)
+            tracking.stage("ready")
+            tracking.finish()
             self.status_ = ImageStatus(
                 loaded=True,
                 repo=repo,
@@ -330,6 +356,19 @@ class ImageHandle:
 # pipeline's components.
 _CONFIG_PATTERNS = ["*.json", "*/*.json"]
 
+#: Configs plus the weight formats this stack can actually open. ONE list,
+#: because the killable child and the in-process fetch have to ask for exactly
+#: the same files — see `_prefetch_weights`.
+_WEIGHT_PATTERNS = [
+    *_CONFIG_PATTERNS,
+    "*.txt",
+    "*.safetensors",
+    "*.bin",
+    "*/*.txt",
+    "*/*.safetensors",
+    "*/*.bin",
+]
+
 
 def _resolve_configs(repo: str, *, local_ok: bool = True) -> Path:
     """Enough of `repo` to say WHAT it is, and nothing that weighs anything.
@@ -350,7 +389,95 @@ def _resolve_configs(repo: str, *, local_ok: bool = True) -> Path:
     return _snapshot(repo, _CONFIG_PATTERNS, local_ok=local_ok)
 
 
-def _resolve(repo: str, *, local_ok: bool = True) -> Path:
+def _one_copy(names: list[str]) -> list[str]:
+    """One copy of each component's weights, from a repo's full file list.
+
+    Grouped by DIRECTORY, which is what a diffusers component is. Grouping by
+    filename stem does not work: transformers writes `pytorch_model.bin` and
+    `model.safetensors` for the same tensors, so the two copies share no stem
+    at all. A shard set (`model-00001-of-00002.safetensors`) sits in one
+    directory and is kept whole.
+    """
+    from collections import defaultdict
+
+    weights: dict[str, list[str]] = defaultdict(list)
+    other: list[str] = []
+    for name in names:
+        if name.endswith((".safetensors", ".bin", ".pth")):
+            weights[name.rsplit("/", 1)[0] if "/" in name else ""].append(name)
+        else:
+            other.append(name)
+
+    keep: list[str] = []
+    for group in weights.values():
+        # Format first. `use_safetensors` defaults to preferring them, so a
+        # directory holding both had its pickle downloaded and never read.
+        safe = [n for n in group if n.endswith(".safetensors")]
+        chosen = safe or group
+        # Then precision. `_load_pipeline` never asks for a variant, so an
+        # fp16 twin cannot be opened by this tool — but if it is the ONLY
+        # thing published for that component, dropping it would leave the
+        # component with no weights at all.
+        plain = [n for n in chosen if ".fp16." not in n]
+        keep.extend(plain or chosen)
+    return sorted(keep + other)
+
+
+def _allow_for(repo: str) -> list[str]:
+    """Exactly what to fetch for `repo`, or the full pattern set if unknown.
+
+    The return value is handed to BOTH the downloader and the progress
+    tracker, which is what keeps the bar's denominator equal to the bytes
+    that are actually going to move.
+    """
+    from fnmatch import fnmatchcase
+
+    try:
+        from huggingface_hub import HfApi
+
+        # `model_info`, not `list_repo_files`, for one reason: the latter takes
+        # no timeout, and this call sits in front of the download on the load's
+        # critical path. An unbounded listing here would reintroduce, one line
+        # earlier, exactly the hang `ETAG_TIMEOUT_S` exists to stop.
+        #
+        # `files_metadata=False` — the sizes are not wanted here. The tracker
+        # asks for them separately, and requesting them makes the Hub do more
+        # work for an answer this function throws away.
+        info = HfApi().model_info(repo, files_metadata=False, timeout=ETAG_TIMEOUT_S)
+        names = [f.rfilename for f in (info.siblings or [])]
+    except Exception as err:
+        # No listing, no de-duplication — fetch everything rather than guess.
+        # Too much is a slow load; too little is a load that dies on a missing
+        # file, and those are not the same cost.
+        log.info(
+            "could not list %s (%s); fetching every published weight format",
+            repo,
+            type(err).__name__,
+        )
+        return list(_WEIGHT_PATTERNS)
+    matched = [n for n in names if any(fnmatchcase(n, pat) for pat in _WEIGHT_PATTERNS)]
+    return _one_copy(matched) or list(_WEIGHT_PATTERNS)
+
+
+def _prefetch_weights(repo: str, allow: list, *, local_ok: bool = True) -> None:
+    """Killable pre-download of exactly what `_resolve` will ask for.
+
+    Skipped for a directory that already exists, on the same test `_snapshot`
+    uses — a local checkpoint has nothing to download, and spawning a child to
+    discover that would add a process to every load from disk.
+
+    The allow-list is READ FROM `_resolve` rather than copied. Two lists that
+    are meant to be identical and are written twice are two lists that drift,
+    and the failure mode is silent: the child fetches one set, `_resolve` then
+    quietly downloads the difference in-process, un-killably, and Stop goes
+    back to doing nothing for exactly the files it was needed for.
+    """
+    if local_ok and Path(repo).expanduser().is_dir():
+        return
+    _prefetch(repo, allow)
+
+
+def _resolve(repo: str, allow: list | None = None, *, local_ok: bool = True) -> Path:
     """A local directory for `repo`, downloading only if it is not cached.
 
     A path that exists is used as-is, so somebody can point at a pipeline that
@@ -366,19 +493,7 @@ def _resolve(repo: str, *, local_ok: bool = True) -> Path:
     # It is a pickle, and that is not waved through: `_scan` walks every one
     # before anything loads, which is the whole reason that step is in the
     # sequence.
-    return _snapshot(
-        repo,
-        [
-            *_CONFIG_PATTERNS,
-            "*.txt",
-            "*.safetensors",
-            "*.bin",
-            "*/*.txt",
-            "*/*.safetensors",
-            "*/*.bin",
-        ],
-        local_ok=local_ok,
-    )
+    return _snapshot(repo, allow or _WEIGHT_PATTERNS, local_ok=local_ok)
 
 
 #: How long a Hub METADATA check may take before the Hub is treated as
@@ -387,6 +502,141 @@ def _resolve(repo: str, *, local_ok: bool = True) -> Path:
 #: gigabytes, so a single ceiling for both would either hang on the check or
 #: abort the fetch.
 ETAG_TIMEOUT_S = 8.0
+
+
+class ImageLoadCancelled(RuntimeError):
+    """The load was stopped on request. NOT a failure — somebody asked.
+
+    A RuntimeError rather than a Refusal because nothing was refused: the
+    request was fine and the answer is that it did not finish. The route
+    answers 200 with a plain sentence, the way the text side does, so the
+    panel does not paint a red error over something the reader did on purpose.
+    """
+
+
+@contextmanager
+def _tracked(repo: str, allow: list):
+    """Publish this load's progress, and mark it finished however it ends.
+
+    A context manager on the same `with` line as the handle's lock, which is
+    the reason the load body below is untouched. Every exit finishes the
+    tracker — a refusal is a FINISHED load, not a running one, and leaving it
+    active would leave the panel spinning on a job that already answered.
+    That is the exact failure this exists to remove, so it must not be
+    reintroduced by an unhandled path.
+    """
+    from . import progress
+
+    # The SAME list `_resolve` hands `snapshot_download`. Not a copy of it and
+    # not a rule that approximates it: a diffusion pipeline keeps every weight
+    # in a subfolder, and the tracker's own shape rule counted only the root
+    # `model_index.json` — 584 bytes against 1.3 GB, drawn as a full bar.
+    progress.IMAGE_LOADS.start(repo, tuple(allow))
+    try:
+        yield progress.IMAGE_LOADS
+    except ImageLoadCancelled as err:
+        progress.IMAGE_LOADS.finish(error=str(err), cancelled=True)
+        raise
+    except (Refusal, BadRequest) as err:
+        progress.IMAGE_LOADS.finish(error=err.sentence)
+        raise
+    except BaseException as err:
+        # BaseException, deliberately. A KeyboardInterrupt or a worker being
+        # torn down must not leave the tracker reporting an active load
+        # forever — the panel would poll a job nothing is running.
+        progress.IMAGE_LOADS.finish(error=f"{type(err).__name__} while loading")
+        raise
+
+
+def _stop_if_asked(when: str) -> None:
+    """Raise if a stop was asked for. Called BETWEEN stages only."""
+    from . import progress
+
+    if progress.IMAGE_LOADS.cancelled.is_set():
+        raise ImageLoadCancelled(f"Load stopped {when}.")
+
+
+#: Run in a CHILD interpreter so the download can be killed. Takes the repo,
+#: the cache directory and the allow-list as JSON, because an allow-list built
+#: by string-formatting into source is an injection waiting for a repo name
+#: with a quote in it.
+_PREFETCH = """
+import json, sys
+from huggingface_hub import snapshot_download
+repo, cache, allow = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+snapshot_download(repo_id=repo, cache_dir=cache, allow_patterns=allow)
+"""
+
+
+def _prefetch(repo: str, allow: list) -> None:
+    """Fetch `repo` in a killable child, so Stop can stop it mid-download.
+
+    Returns normally whether the child succeeded or failed — the caller's
+    `_snapshot` is what actually decides the load, and it will either find a
+    full cache (fast) or download the rest itself (correct). The ONLY outcome
+    this raises for is a stop the user asked for.
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from . import paths, progress, runtime
+
+    # Progress bars to a pipe nobody drains deadlocked this exact pattern on
+    # the text side once already: hub writes tqdm to stderr, the ~64 KB buffer
+    # fills, the child blocks forever. Both streams go to DEVNULL and must
+    # stay there.
+    env = {**os.environ, "HF_HUB_DISABLE_PROGRESS_BARS": "1"}
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                _PREFETCH,
+                repo,
+                str(paths.hf_hub_cache()),
+                json.dumps(list(allow)),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            # Windows: its own group, so terminate() does not also signal the
+            # server that spawned it.
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32"
+            else 0,
+        )
+    except Exception as err:
+        # No usable interpreter, a box that refuses process creation, a denied
+        # process group. Said out loud rather than swallowed, because the only
+        # other symptom is "Stop does not stop the download" — which nobody
+        # reports as a bug in here.
+        log.warning(
+            "prefetch child unusable for %s (%s: %s); the download will run "
+            "in-process and Stop will not interrupt it",
+            repo,
+            type(err).__name__,
+            err,
+        )
+        return
+
+    try:
+        while proc.poll() is None:
+            if progress.IMAGE_LOADS.cancelled.wait(0.4):
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                freed = runtime._clean_partials(repo)
+                raise ImageLoadCancelled(
+                    f"Download stopped. Removed {freed / 1e6:,.0f} MB of "
+                    f"partial files; anything already complete was kept."
+                )
+    finally:
+        if proc.poll() is None:  # an exception on our side, not the child's
+            proc.terminate()
 
 
 def _snapshot(repo: str, allow: list, *, local_ok: bool = True) -> Path:

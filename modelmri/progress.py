@@ -85,6 +85,20 @@ HUB_TIMEOUT_S = 8.0
 _CACHE_WRONG_AFTER = 32 * 1024 * 1024
 
 
+def _si_bytes(n: float) -> str:
+    """A byte count in the unit that keeps its significant digits.
+
+    `f"{n / 1e9:.1f} GB"` alone is what turned a real 30 MB repo into
+    "0.0 GB". Anything the meter is counting is by definition a size somebody
+    is waiting on, so it may not round away to nothing.
+    """
+    if n >= 1e9:
+        return f"{n / 1e9:,.1f} GB"
+    if n >= 1e6:
+        return f"{n / 1e6:,.0f} MB"
+    return f"{max(0, int(n)):,} bytes"
+
+
 def _weight_files(names: list[tuple[str, int]]) -> list[tuple[str, int]]:
     """The single weight format a load will download, preferring safetensors."""
     for ext in (".safetensors", ".bin", ".pth"):
@@ -199,23 +213,42 @@ def _offline() -> bool:
     )
 
 
-def _expected_files(hf_id: str) -> tuple[frozenset[str], int]:
+def _expected_files(
+    hf_id: str, patterns: tuple[str, ...] | None = None
+) -> tuple[frozenset[str], int]:
     """The exact files a load pulls, and their total size.
 
     An empty set with a 0 total means "could not be determined" -- offline,
     a rate limit, a private repo, or a repo that publishes no sizes. The
     caller shows an indeterminate bar rather than inventing a denominator.
+
+    `patterns` is the loader's OWN allow-list, the one it hands
+    `snapshot_download`. When a caller has it, guessing stops: the
+    denominator is exactly the set of files that will be fetched, and the
+    numerator measures that same set on disk, so the two cannot disagree.
+
+    Without it the shape rule below applies, which is right for a language
+    model -- weights at the repo root, variants (onnx/, coreml/, original/)
+    in subfolders nothing here reads. It is wrong for anything that keeps its
+    weights in subfolders on purpose: a diffusion pipeline measured 584 bytes
+    that way, against 1.3 GB, and the bar drew it as complete.
     """
     if _offline():
         return frozenset(), 0
     try:
+        from fnmatch import fnmatchcase
+
         from huggingface_hub import HfApi
 
         info = HfApi().model_info(hf_id, files_metadata=True, timeout=HUB_TIMEOUT_S)
         files = info.siblings or []
-        # Variants live in subfolders (onnx/, gguf/, coreml/, original/) we
-        # never touch. This is also what keeps the numerator honest: the same
-        # names go on to select what counts on disk.
+        if patterns:
+            keep = [
+                (f.rfilename, f.size or 0)
+                for f in files
+                if any(fnmatchcase(f.rfilename, pat) for pat in patterns)
+            ]
+            return frozenset(n for n, _ in keep), sum(s for _, s in keep)
         sized = [(f.rfilename, f.size or 0) for f in files if "/" not in f.rfilename]
         keep = _weight_files(sized) + [(n, s) for n, s in sized if n.endswith(_CONFIG)]
         return frozenset(n for n, _ in keep), sum(s for _, s in keep)
@@ -302,7 +335,14 @@ class _Tracker:
             snap = Snapshot(**asdict(self._snap))
         if snap.active:
             snap.elapsed_s = round(time.monotonic() - self._t0, 1)
-        snap.eta_s = _eta(snap.bytes_done, snap.bytes_total, snap.elapsed_s)
+            snap.eta_s = _eta(snap.bytes_done, snap.bytes_total, snap.elapsed_s)
+        else:
+            # A finished load has nothing left to wait for, and the estimate
+            # was being recomputed for it anyway: a download stopped at 67 MB
+            # of 3.34 GB went on publishing "10,702s left" after it had ended.
+            # None is the field's documented way of saying there is no answer,
+            # which is exactly the case here.
+            snap.eta_s = None
         return snap
 
     def start_external(
@@ -350,7 +390,14 @@ class _Tracker:
             if detail:
                 self._snap.detail = detail
 
-    def start(self, hf_id: str) -> None:
+    def start(self, hf_id: str, patterns: tuple[str, ...] | None = None) -> None:
+        """Begin tracking. `patterns` is the caller's own download allow-list.
+
+        Passing it is what lets the meter count a checkpoint whose weights
+        live in subfolders. A caller that does not have one is not penalised:
+        the watcher falls back to the shape rule, which is what every text
+        load has always used.
+        """
         self._t0 = time.monotonic()
         self.cancelled.clear()
         with self._lock:
@@ -361,7 +408,7 @@ class _Tracker:
             )
         self._stop = threading.Event()
         threading.Thread(
-            target=self._watch, args=(hf_id, self._stop, gen), daemon=True
+            target=self._watch, args=(hf_id, self._stop, gen, patterns), daemon=True
         ).start()
 
     def stage(self, stage: str, detail: str = "") -> None:
@@ -371,16 +418,32 @@ class _Tracker:
                 if detail:
                     self._snap.detail = detail
 
-    def finish(self, error: str | None = None) -> None:
+    def finish(self, error: str | None = None, *, cancelled: bool = False) -> None:
+        """Mark this load done. `cancelled` separates a stop from a failure.
+
+        Three outcomes, not two. A load somebody stopped reports `cancelled`
+        rather than `error`, because the route already answers it 200 with a
+        plain sentence and having the stage say "error" one field along would
+        put the red box back that the 200 was there to prevent.
+        """
         if self._stop is not None:
             self._stop.set()
         with self._lock:
             self._snap.active = False
-            self._snap.stage = "error" if error else "ready"
+            if cancelled:
+                self._snap.stage = "cancelled"
+            else:
+                self._snap.stage = "error" if error else "ready"
             self._snap.error = error
             self._snap.elapsed_s = round(time.monotonic() - self._t0, 1)
+            # The detail is the OUTCOME once there is one. It used to keep
+            # whatever the load was mid-sentence about, so a finished load sat
+            # there reading "stopping…" — a progress verb outliving the
+            # progress it described.
             if not error:
                 self._snap.detail = "ready"
+            elif cancelled:
+                self._snap.detail = error
 
     def _publish(self, gen: int, **fields) -> bool:
         """Write into the snapshot, but only while this load is still the one
@@ -392,7 +455,13 @@ class _Tracker:
                 setattr(self._snap, key, value)
             return True
 
-    def _watch(self, hf_id: str, stop: threading.Event, gen: int) -> None:
+    def _watch(
+        self,
+        hf_id: str,
+        stop: threading.Event,
+        gen: int,
+        patterns: tuple[str, ...] | None = None,
+    ) -> None:
         """Poll the cache directory until the load ends."""
         # Disk first, Hub second. The listing is a network call -- 1502 ms
         # measured on a model that was already complete on disk -- and until
@@ -400,7 +469,7 @@ class _Tracker:
         start_bytes = _bytes_on_disk(hf_id)
         if not self._publish(gen, bytes_done=start_bytes):
             return
-        wanted, total = _expected_files(hf_id)
+        wanted, total = _expected_files(hf_id, patterns)
         if wanted:
             # Recount against the real file list: the shape rule keeps
             # sibling weight formats a load will not read.
@@ -410,7 +479,7 @@ class _Tracker:
         if cached:
             detail = "reading from local cache, no download needed"
         elif total:
-            detail = f"downloading {total / 1e9:.1f} GB"
+            detail = f"{_si_bytes(total)} to fetch"
         if not self._publish(
             gen,
             bytes_total=total,
@@ -454,7 +523,7 @@ class _Tracker:
                     cached = False
                     last_change = now
                     self._snap.detail = (
-                        f"downloading {total / 1e9:.1f} GB" if total else "downloading"
+                        f"downloading {_si_bytes(total)}" if total else "downloading"
                     )
                 stalled_s = now - last_change
                 cpu_s = time.process_time() - last_cpu
@@ -530,3 +599,16 @@ TRACKER = _Tracker()
 # running and its updates silently dropped because the generation had moved
 # on. Same shape as the "5.0 GB / 2.5 GB" report that started all of this.
 PULLS = _Tracker()
+
+
+# A THIRD SLOT, for the same reason there is a second one. An image pipeline
+# is a different job from a language model — they are held by different
+# handles, either can be resident while the other loads, and a diffusion
+# pipeline takes minutes where a small text model takes seconds.
+#
+# Before this, image loads reported NOTHING: no stage, no bytes, no way to
+# stop. The maintainer's report was "its not loading the model its been a long
+# time", against a 6.3 GB pickle checkpoint on a synced drive that was in fact
+# loading correctly and slowly. A wait with no heartbeat is indistinguishable
+# from a hang, and the tool had no way to tell them apart either.
+IMAGE_LOADS = _Tracker()

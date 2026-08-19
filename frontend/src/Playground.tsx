@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import LoadBar from "./LoadBar";
 import DevicePicker from "./DevicePicker";
 import {
   cancelLoad,
@@ -600,79 +601,3 @@ function Generation({ text }: { text: string }) {
   );
 }
 
-const STAGES: Record<string, string> = {
-  resolving: "Resolving on the Hub",
-  weights: "Fetching weights",
-  device: "Moving to the accelerator",
-  ready: "Ready",
-  error: "Failed",
-};
-
-/** Progress for an in-flight load: named stage, bytes when we know them,
- *  and an indeterminate sweep when we don't. */
-function LoadBar({
-  p,
-  id,
-  onStop,
-}: {
-  p: LoadProgress | null;
-  id: string;
-  onStop: () => void;
-}) {
-  const total = p?.bytes_total ?? 0;
-  // Clamped, and not only in the bar. The width was already capped at 100%
-  // while the text beside it was not, so a mis-count showed as a full bar
-  // labelled "5.0 GB / 2.5 GB" — the number that gave the bug away.
-  const done = Math.min(p?.bytes_done ?? 0, total || Infinity);
-  const pct = total > 0 ? Math.min(100, (done / total) * 100) : null;
-  const stopping = (p?.detail ?? "").startsWith("stopping");
-  // The model the server is loading, which is not necessarily the one the
-  // picker is showing: pick a second model while the first is still loading
-  // and `id` is already the new one, so the running load's bytes and elapsed
-  // time appeared under a model that had not started.
-  const loading = p?.hf_id ?? id;
-  return (
-    <div className="loadbar glass-inset" role="status" aria-live="polite">
-      <div className="loadbar-row">
-        <span className="loadbar-stage">{STAGES[p?.stage ?? ""] ?? "Loading"}</span>
-        <span className="mid loadbar-id">{loading}</span>
-        <span className="spacer" />
-        <span className="meta">
-          {pct !== null && `${gb(done)} / ${gb(total)} · ${gb(total - done)} left · `}
-          {(p?.elapsed_s ?? 0).toFixed(0)}s
-          {/* Only when the server is willing to estimate. It withholds the
-              number until there is enough history to divide by, because a
-              countdown that opens with "4 hours" and settles at "40 seconds"
-              is one the reader learns to ignore. */}
-          {p?.eta_s != null && ` · ~${remaining(p.eta_s)} left`}
-        </span>
-        {/* The whole reason this component was revisited. A minutes-long
-            download with no way out is a trap, and this one could run for
-            days before failing. */}
-        <button className="ghost sm stop" onClick={onStop} disabled={stopping}>
-          {stopping ? "stopping…" : "Stop"}
-        </button>
-      </div>
-      <div className={`loadbar-track ${pct === null ? "indeterminate" : ""}`}>
-        <div
-          className="loadbar-fill"
-          style={pct === null ? undefined : { width: `${pct}%` }}
-        />
-      </div>
-      {p?.detail && <div className="meta loadbar-detail">{p.detail}</div>}
-    </div>
-  );
-}
-
-const gb = (n: number) =>
-  n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
-
-/** A duration somebody can act on. Seconds under a minute, then minutes, then
- *  hours and minutes — "312 minutes" is a number you have to do arithmetic on
- *  before it means anything. */
-export function remaining(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
-}

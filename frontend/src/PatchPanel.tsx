@@ -1,4 +1,5 @@
 import { CSSProperties, useState } from "react";
+import RunsOn from "./RunsOn";
 import {
   errorText,
   pathTrace,
@@ -172,6 +173,7 @@ export default function PatchPanel({
         <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Two prompts that differ in one fact. Every other panel asks what
         mattered by taking something away; this moves an activation from the

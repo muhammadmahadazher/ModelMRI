@@ -1279,12 +1279,35 @@ export const getImageAvailable = () =>
  *  other. A refusal that is NOT overridable answers again with the same
  *  sentence, which is the right outcome rather than a silent OOM.
  */
-export const loadImage = (repo: string, confirm = false) =>
+export const loadImage = (repo: string, confirm = false, device = "") =>
   fetch("/api/image/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo: repo.trim(), device: "", dtype: "", confirm }),
-  }).then((r) => json<ImageStatus>(r));
+    body: JSON.stringify({ repo: repo.trim(), device, dtype: "", confirm }),
+    // `LoadCancelled` rather than an error, because a load somebody stopped
+    // is not a failure: the route answers 200 with a sentence and the panel
+    // shows it plainly instead of painting a red box over a deliberate act.
+  }).then((r) => json<ImageStatus | LoadCancelled>(r));
+
+/** What the in-flight image load is doing.
+ *
+ *  The same `LoadProgress` shape as `/api/model/progress`, deliberately —
+ *  the stages differ (a diffusion pipeline is scanned for live pickle
+ *  opcodes; a language model is not) but everything around them is the same
+ *  question, and one shape means one `LoadBar` renders both. */
+export const getImageProgress = () =>
+  fetch("/api/image/progress").then((r) => json<LoadProgress>(r));
+
+/** Stop an in-flight image load.
+ *
+ *  `means` is the server being honest about the limit of its own button: the
+ *  download runs in a child process and dies immediately, but if the pipeline
+ *  is already opening, that call cannot be interrupted and the stop lands
+ *  when it returns. */
+export const cancelImageLoad = () =>
+  fetch("/api/image/cancel", { method: "POST" }).then((r) =>
+    json<{ stopping: boolean; means: string }>(r),
+  );
 
 /** Drop it and hand the memory back, not merely forget it. */
 export const unloadImage = () =>
@@ -3929,3 +3952,540 @@ export const scanFolder = (path: string) =>
       roots: string[];
     }>(r),
   );
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE JUDGE, AND WHAT THE ROBOT POLICY WOULD DO
+   ──────────────────────────────────────────────────────────────────────────
+   Six routes that were tested, documented and unreachable. Everything below
+   keeps the habits the rest of this file already keeps: a `null` is an
+   UNKNOWN and never a zero, a cap travels beside the thing it capped, and the
+   server's own `means` sentence is carried through verbatim because that is
+   where the caveats live.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** A deliberate no, raised on this side because the page cannot make the call.
+ *
+ *  `noModelHere` says "there is no model behind this page", which is the right
+ *  sentence for a forward pass and the wrong one for a dataset audit — that
+ *  reads FILES already on disk, and what a static bundle lacks there is a
+ *  filesystem, not a checkpoint. Same 409 and same JSON shape, so `explain`,
+ *  `errorText` and every refusal renderer treat it exactly as they treat the
+ *  server's own.
+ */
+function refusedHere(sentence: string): Promise<never> {
+  return Promise.reject(new ApiError(409, JSON.stringify({ error: sentence })));
+}
+
+// ------------------------------------------------------------------- judge
+//
+// LLM-as-judge, except the number is READ rather than sampled: one forward
+// pass per paraphrase, softmax over the verdict token ids at the final
+// position, no generation. Holding the weights is what makes that possible,
+// and it is the whole argument for the feature.
+
+/** One paraphrase, one forward pass. */
+export interface JudgePass {
+  paraphrase: number;
+  /** p(yes) AMONG the verdict tokens — which of the two, GIVEN it answered.
+   *  Read it beside `mass`, never alone: the ratio between two rounding
+   *  errors is still a number and still looks like a considered answer. */
+  p_yes: number;
+  p_no: number;
+  /** How much of the model's whole probability mass landed on a verdict token
+   *  at all. THIS is the number that says whether it answered. */
+  mass: number;
+  /** Above the server's floor. A `false` here is CARRIED rather than dropped —
+   *  that this model does not answer this phrasing is a fact about the
+   *  rubric — and it is NOT in the median. */
+  answered: boolean;
+}
+
+/** Which surface forms of the verdict this tokenizer can express in one token.
+ *
+ *  Reported because it is a fact about the measurement: `" yes"` and `"yes"`
+ *  are different ids, several casings can share one id, and the mass is summed
+ *  over the DISTINCT ids found here.
+ */
+export interface JudgeTokens {
+  yes_ids: number[];
+  no_ids: number[];
+  yes_forms: string[];
+  no_forms: string[];
+}
+
+export interface JudgeScore {
+  rubric: string;
+  passes: JudgePass[];
+  /** `null` when the verdict tokens were never resolved — not an empty set. */
+  tokens: JudgeTokens | null;
+  /** The judge's name, attached to every score. A small local model is a weak
+   *  evaluator and a well-calibrated report of a weak judge's opinion is still
+   *  a weak judge's opinion; the name is what lets a reader weigh it. Empty
+   *  when the checkpoint did not name itself. */
+  judge_model: string;
+  dtype: string;
+  device: string;
+  /** `null` is "no seed was fixed", which is NOT seed 0. */
+  seed: number | null;
+  means: string;
+  /** Absent when nothing was scored — never 0. The server writes these five
+   *  only when there is at least one pass, so an absent `median` means there
+   *  is no median rather than a median of zero. */
+  low?: number;
+  median?: number;
+  high?: number;
+  spread?: number;
+  /** How many paraphrases are IN that median — the answered ones. Read it
+   *  against `passes.length`, which is how many were run. */
+  n_paraphrases?: number;
+}
+
+/** The prompts that would be run, before any of them is. No model is touched. */
+export interface JudgePlan {
+  prompts: string[];
+  n_passes: number;
+}
+
+const JUDGE_NEEDS =
+  "Reading a rubric off a model's probability mass is one forward pass per " +
+  "paraphrase against weights this page does not hold.";
+
+export const judgePlan = (body: {
+  text: string;
+  rubric: string;
+  n_paraphrases: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        JUDGE_NEEDS +
+          " Pricing that run means listing the prompts it would make, and " +
+          "there is nothing here to make them against.",
+      )
+    : fetch("/api/judge/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<JudgePlan>(r));
+
+export const judgeScore = (body: {
+  text: string;
+  rubric: string;
+  n_paraphrases: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(JUDGE_NEEDS)
+    : fetch("/api/judge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<JudgeScore>(r));
+
+// ------------------------------------------------------ robot dataset audit
+
+/** One proof, its verdict, and the numbers behind it. */
+export interface AuditCheck {
+  name: string;
+  /** `ok`, `broken` or `unchecked`. Three, deliberately: a check either proved
+   *  the thing, proved the opposite, or could not be run on this machine, and
+   *  collapsing those into a score is what a grade does. Typed as the server's
+   *  own string so a verdict added later renders as itself, not as nothing. */
+  verdict: string;
+  detail: string;
+  /** What it measured and what it compared against. The keys are each check's
+   *  own, so this is rendered generically — and an `n_<name>` beside a
+   *  `<name>` list is that list's TRUE length, which is how a capped list
+   *  says it was capped. */
+  measured: Record<string, unknown>;
+}
+
+export interface AuditReport {
+  repo_id: string;
+  /** `null` is UNKNOWN and is NOT 0. "This dataset has no frames" and "the
+   *  frame table could not be read" are different answers, and the second is
+   *  the whole reason somebody opened an audit. */
+  n_episodes: number | null;
+  n_frames: number | null;
+  checks: AuditCheck[];
+  seconds: number;
+  means: string;
+}
+
+export const vlaAudit = () =>
+  DEMO || VIEWER
+    ? refusedHere(
+        "Auditing a robot dataset reads the parquet, the video files and the " +
+          "recorded statistics already on disk — nothing is downloaded, no " +
+          "policy is loaded and no GPU is touched. This page is a static " +
+          "bundle with no filesystem behind it, so there is nothing here to " +
+          "prove intact. `pip install modelmri` and audit a dataset of your " +
+          "own.",
+      )
+    : fetch("/api/vla/audit").then((r) => json<AuditReport>(r));
+
+// ------------------------------------------------------ what it would DO
+//
+// All three need the action expert, which lives in a second process with its
+// own venv because lerobot's pins cannot share an environment with this one.
+// Each refuses BEFORE spending any forward passes whenever the answer would
+// not have depended on them.
+
+/** Forward passes before any are spent. Frames and passes, never seconds. */
+export interface VLAActionCost {
+  episode: number;
+  frames_in_episode: number;
+  frames_measured: number;
+  /** What the stride will miss. A divergence between sampled frames is not in
+   *  the chart, and this is how many chances it had to hide. */
+  frames_skipped: number;
+  stride: number;
+  passes: number;
+  means: string;
+}
+
+/** One frame's policy action beside the human's, and the gap between. */
+export interface VLADivergence {
+  t: number;
+  predicted: number[];
+  recorded: number[];
+  /** Signed, per dimension. "The policy consistently reaches further" and "the
+   *  policy is noisy" are different findings; an absolute value erases the
+   *  first. */
+  delta: number[];
+  distance: number;
+}
+
+export interface VLACompare {
+  rows: VLADivergence[];
+  /** EMPTY when the dataset named no dimensions, or named a count that
+   *  disagreed with the policy's width — the server drops the whole list
+   *  rather than mislabelling one joint. */
+  joint_names: string[];
+  dimensions: number;
+  frames_measured: number;
+  frames_in_episode: number;
+  stride: number;
+  frames_skipped: number;
+  worst_frame: number;
+  worst_distance: number;
+  /** Per-dimension mean of the SIGNED delta. Bias, not error. */
+  bias: number[];
+  policy_repo: string;
+  revision: string;
+  /** `null` means no seed was fixed, so re-running gives a different curve. */
+  seed: number | null;
+  means: string;
+}
+
+export interface VLASwapArm {
+  instruction: string;
+  is_own: boolean;
+  action: number[];
+  distance_from_own: number;
+  /** Against the policy's OWN sampling spread, never a threshold from a paper
+   *  about a different policy. */
+  ratio_to_sampling: number;
+}
+
+export interface VLASwap {
+  arms: VLASwapArm[];
+  instruction_spread: number;
+  sampling_spread: number;
+  ratio: number;
+  listens: boolean;
+  seeds: number;
+  instructions_tried: number;
+  /** A CAP. Distinct instructions in this dataset that were NOT tried, so
+   *  above zero the spread across instructions is a lower bound. */
+  instructions_dropped: number;
+  means: string;
+}
+
+export interface VLAKnockoutRow {
+  stream: string;
+  label: string;
+  action: number[];
+  distance: number;
+  /** `null` when this policy's sampling spread could not be measured. The bar
+   *  is still a real measurement; there is simply no denominator, and
+   *  inventing one would be worse than leaving it out. NOT 0. */
+  ratio_to_sampling: number | null;
+  /** `null` for the same reason — "nothing here says whether this bar is
+   *  larger than the policy's own noise", which is not `false`. */
+  above_noise: boolean | null;
+}
+
+export interface VLAKnockout {
+  rows: VLAKnockoutRow[];
+  baseline: number[];
+  streams: number;
+  /** `null` when it could not be measured. */
+  sampling_spread: number | null;
+  means: string;
+}
+
+const POLICY_NEEDS =
+  "This asks what the robot policy would DO, which runs the action expert in " +
+  "its own process against a dataset on disk.";
+
+export const vlaActionCost = (episode: number, stride: number) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " Pricing a run this page cannot make would describe a wait nobody " +
+          "here is going to have.",
+      )
+    : fetch(`/api/vla/actions/cost?episode=${episode}&stride=${stride}`).then(
+        (r) => json<VLAActionCost>(r),
+      );
+
+export const vlaCompareActions = (body: {
+  episode: number;
+  stride: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " One forward pass per sampled frame, and a baked curve would be a " +
+          "fabricated comparison sitting beside real recordings. `pip install " +
+          "modelmri` to run it on a policy of your own.",
+      )
+    : fetch("/api/vla/actions/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLACompare>(r));
+
+export const vlaSwapInstruction = (body: {
+  episode: number;
+  t: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " It re-runs one frame under every distinct task string the dataset " +
+          "contains, and again under several seeds, none of which this page " +
+          "can do.",
+      )
+    : fetch("/api/vla/actions/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLASwap>(r));
+
+export const vlaKnockoutInputs = (body: {
+  episode: number;
+  t: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " It replaces each input in turn with that episode's mean and runs " +
+          "the policy again, which needs the policy.",
+      )
+    : fetch("/api/vla/actions/knockout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLAKnockout>(r));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE CONTROL, THE SAVED SWEEPS, AND A FINDING COUNTED OVER MANY RUNS
+   ──────────────────────────────────────────────────────────────────────────
+   Three tested routes with nothing on the page able to call them. Appended
+   as a block rather than filed beside their neighbours above for a mechanical
+   reason: several people are editing this 4,000-line module at once, and an
+   insertion in the middle of it is how two of them lose each other's work.
+
+   Same habits as the rest of the file: a `null` is an UNKNOWN and never a
+   zero, a cap travels beside the thing it capped, and the server's own
+   `means` sentence is carried through verbatim because that is where the
+   caveats live.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** The same head ranking, run again on an untrained twin of this architecture.
+ *
+ *  The question underneath every ranking in this tool: would this measurement
+ *  have produced a confident, ordered list anyway? The twin is built from
+ *  `config.json` alone — no weights fetched, works offline — seeded, and put
+ *  through the IDENTICAL `rank_heads` over the same tokens. Both sides go
+ *  through one function deliberately: a second implementation of the
+ *  measurement could differ from the one being checked, and then agreement
+ *  would mean nothing in either direction.
+ */
+export interface ControlRanking {
+  /** The seed the twin's weights came from. Echoed by the server rather than
+   *  chosen here, so the number on screen is the one that was used. */
+  seed: number;
+  baseline: string;
+  /** The loaded model's ranking, re-run through the same public method — so
+   *  it obeys every gate the panel's own ranking does. ONE layer. */
+  model: Ablation;
+  /** The untrained twin's ranking over the same tokens at the same position. */
+  untrained: Ablation;
+  /** Rank correlation between the two orderings.
+   *
+   *  NULL when the twin produced no ranking to correlate against — its scores
+   *  were all equal. That is not zero: "the two are uncorrelated" and "one
+   *  side is not a ranking at all" are different statements about the data,
+   *  and rendering the second as 0.00 invents a measurement. */
+  spearman: number | null;
+  /** How many of the top heads were compared, and how many are in both. Both
+   *  can legitimately be 0 — a ranking too short for a top-k has nothing to
+   *  say about shared heads, and the verdict says so rather than implying it. */
+  top_k: number;
+  top_k_shared: number;
+  /** The server's own reading of the two numbers above, thresholds stated.
+   *  Shown verbatim: it is written to be disagreed with, beside the
+   *  correlation it came from. */
+  verdict: string;
+}
+
+/** Run the control. `seed` is omitted unless asked for, so the server's own
+ *  default is what answers and the response says what it was. */
+export const controlRanking = (
+  layer: number,
+  /** The baseline that produced the ranking on screen — taken from that
+   *  ranking's own response, not from the panel's select, so the control is
+   *  about what the reader is looking at. */
+  baseline: string,
+  seed?: number,
+) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "The control builds a SECOND model — this architecture with random " +
+          "weights — and runs the identical head ranking over the same " +
+          "tokens, so it costs two full sweeps and a second model resident " +
+          "for the duration.",
+      )
+    : fetch(
+        `/api/attention/control?layer=${layer}&baseline=${encodeURIComponent(
+          baseline,
+        )}` + (seed == null ? "" : `&seed=${seed}`),
+      ).then((r) => json<ControlRanking>(r));
+
+/** One sweep saved on this machine, and how far it got. */
+export interface SavedSweep {
+  sweep_id: string;
+  /** ISO 8601 as the store wrote it, or "" for a row that carries none. An
+   *  empty string is UNKNOWN and must not be rendered as an epoch date. */
+  started_at: string;
+  model: string;
+  metric: string;
+  n_prompts: number;
+  n_measured: number;
+  /** A prompt the measurement could not be taken on is a ROW, not a gap —
+   *  see modelmri/sweep.py rule 2 — so this can be non-zero on a sweep that
+   *  is nonetheless complete. */
+  n_refused: number;
+  n_remaining: number;
+  complete: boolean;
+}
+
+/** Every sweep saved on this machine, newest first.
+ *
+ *  THE RESPONSE CARRIES NO TOTAL. `/api/sweeps` takes a `limit` and returns
+ *  at most that many rows with no field saying how many exist — so a list of
+ *  exactly `limit` rows is indistinguishable from a complete one, and the
+ *  only honest thing a caller can do is state the cap it asked for. Its
+ *  `means` sentence counts the rows it RETURNED, not the rows there are.
+ */
+export interface SweepList {
+  sweeps: SavedSweep[];
+  means: string;
+}
+
+export const savedSweeps = (limit: number) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Saved sweeps are read out of the trace database on your own " +
+          "machine. This page is a static recording with no database behind " +
+          "it, so any list here would be a list of somebody else's runs.",
+      )
+    : fetch(`/api/sweeps?limit=${limit}`).then((r) => json<SweepList>(r));
+
+/** What finishing a stopped sweep would cost, and whether it may run at all. */
+export interface ResumePlan {
+  sweep_id: string;
+  model: string;
+  metric: string;
+  n_prompts: number;
+  n_measured: number;
+  n_remaining: number;
+  /** Which prompt indices still need running. Can be as long as the sweep. */
+  remaining_indices: number[];
+  /** NULL when nothing blocks it. A string is the reason this resume would be
+   *  WRONG rather than merely expensive — a prompt set that has been edited, a
+   *  row indexed past the end, a different model loaded now — and it is never
+   *  a warning to override. */
+  blocked: string | null;
+  means: string;
+}
+
+export const sweepResumePlan = (sweepId: string) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "A resume plan is priced against the saved rows of a sweep on your " +
+          "machine, and checked against the model that is loaded now.",
+      )
+    : fetch(`/api/sweeps/${encodeURIComponent(sweepId)}/resume`).then((r) =>
+        json<ResumePlan>(r),
+      );
+
+/** One structural finding, and how many of the recorded runs contain it. */
+export interface RecurringFinding {
+  kind: string;
+  label: string;
+  /** Runs this finding appears in, out of the runs that were READ. Twice in
+   *  one run still counts as one run; `total_count` is the occurrences. */
+  n_runs: number;
+  of_runs: number;
+  total_count: number;
+  /** The finding's own identity — the input hash for a repeat, the name for a
+   *  storm, the sequence for a cycle. What the grouping was done on. */
+  signature: string;
+  trace_ids: string[];
+  means: string;
+}
+
+/** The same structural finding, counted over many recorded runs. */
+export interface PatternsAcrossRuns {
+  findings: RecurringFinding[];
+  /** How many runs were actually read. */
+  n_runs: number;
+  /** How many there were to read. */
+  n_runs_available: number;
+  /** Available minus read. Non-zero means "12 of 19" is 12 of the 19 NEWEST,
+   *  which is a different claim — the server reports it rather than leaving
+   *  the caller to subtract. */
+  truncated: number;
+  /** The trace name this was narrowed to, echoed back. "" is every run. */
+  name: string;
+}
+
+/** Count findings across runs. `name` narrows to one agent by trace name — a
+ *  pattern in 12 of 19 runs of the SAME agent is a different claim from one
+ *  seen across 19 unrelated runs. */
+export const patternsAcross = (name: string, limit: number) =>
+  DEMO || VIEWER
+    ? Promise.reject(
+        // Not `noModelHere`: what is missing on a static page is the database
+        // of recorded runs, not a checkpoint, and a refusal that names the
+        // wrong absent thing sends the reader to the wrong place. Same 409 and
+        // same JSON shape, so `explain` and `errorText` treat it identically.
+        new ApiError(
+          409,
+          JSON.stringify({
+            error:
+              "Counting a finding across runs queries every run recorded on " +
+              "a machine. This page carries a single recording, so any " +
+              "answer would be a pattern of one — install ModelMRI " +
+              "(`pip install modelmri`) to run it over your own.",
+          }),
+        ),
+      )
+    : fetch(
+        `/api/patterns/across?name=${encodeURIComponent(name)}&limit=${limit}`,
+      ).then((r) => json<PatternsAcrossRuns>(r));

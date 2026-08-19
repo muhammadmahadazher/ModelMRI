@@ -20,7 +20,7 @@ import {
   pullOllama,
   resolveOllama,
 } from "./api";
-import { remaining } from "./Playground";
+import { remaining } from "./LoadBar";
 
 /** What a pull is doing, right now. Bytes, a bar, and a time — the three
  *  things somebody watching a download wants and the picker used to answer

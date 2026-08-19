@@ -210,6 +210,23 @@ export async function demoFetch(
     });
   }
   if (p === "/api/accelerator") return ok((await bundle<any>("env")).accelerator ?? {});
+  // An EMPTY list, and that is the true answer rather than an evasion. This
+  // route reports the accelerators a machine has for a model to be placed on,
+  // and a static recording has no machine and places no model. `DevicePicker`
+  // renders nothing below two options — one device is not a choice — so the
+  // control correctly disappears instead of offering hardware nobody has.
+  //
+  // Deliberately NOT the bundled accelerator: that field describes the card
+  // the recording was MADE on, and offering it here as somewhere to send a
+  // load would be this page claiming somebody else's GPU as the visitor's.
+  if (p === "/api/devices") {
+    return ok({
+      devices: [],
+      reason:
+        "This page is a static recording with no machine behind it, so there " +
+        "is no device to place a model on.",
+    });
+  }
   if (p === "/api/model/progress") return ok((await bundle<any>("env")).progress ?? {});
   // A pull has its own progress slot, separate from a model load. Nothing can
   // be downloading on a static page, so the honest answer is the idle
@@ -883,6 +900,90 @@ export async function demoFetch(
         "Installed, this searches the Hub by task, says what each result " +
         "weighs before you click, and marks the ones already on your disk.",
     });
+  }
+  // ---- what this page is doing, and how to make it stop -------------------
+  //
+  // Nothing, and nothing. Both are honest answers rather than refusals, for
+  // the reason `/api/pull/progress` above already records: the panel polls
+  // progress the moment a load starts, and a 501 would draw an error across a
+  // panel that is behaving correctly.
+  if (p === "/api/image/progress") {
+    return ok({
+      active: false,
+      hf_id: null,
+      stage: "",
+      detail: "",
+      bytes_done: 0,
+      bytes_total: 0,
+      elapsed_s: 0,
+      eta_s: null,
+      error: null,
+    });
+  }
+  if (p === "/api/image/cancel") {
+    return ok({
+      stopping: false,
+      means:
+        "There is no load in flight to stop — this page is a static " +
+        "recording and holds no pipeline.",
+    });
+  }
+  // ---- the computer-vision asks -------------------------------------------
+  //
+  // All four need the classifier itself. `capabilities: []` on the resting
+  // status already gates every control that would call them, so these are
+  // belt and braces — but an endpoint whose only protection is a UI gate is
+  // one refactor away from being reachable, and `/api/features/ablate` above
+  // is the note about what a prefix handler answering the wrong shape costs.
+  if (
+    p === "/api/image/cv/predict" ||
+    p === "/api/image/cv/readout" ||
+    p === "/api/image/cv/attribute"
+  ) {
+    return refuse(
+      409,
+      "Each of these runs the classifier on YOUR picture: the prediction is " +
+        "one forward pass, the readout reads the patch grid out of that same " +
+        "pass, and the occlusion sweep re-runs it once per window. There is " +
+        "no model behind this page to run, and a baked answer would be a " +
+        "claim about somebody else's photograph.",
+    );
+  }
+  if (p === "/api/image/cv/cost") {
+    return refuse(
+      409,
+      "This prices the sweep from the loaded checkpoint's OWN input geometry " +
+        "— the size its processor resizes your picture to, not the size of " +
+        "the file you picked — and there is no checkpoint here to ask.",
+    );
+  }
+  // ---- the step trace and the filmstrip ------------------------------------
+  if (p === "/api/image/steps" || p === "/api/image/filmstrip") {
+    return refuse(
+      409,
+      "Both watch a real denoising run: the trace records what the model " +
+        "committed to at each step, and the filmstrip decodes the latent " +
+        "between them. There is no pipeline behind this page to step, and a " +
+        "baked strip would be frames from a run nobody made.",
+    );
+  }
+  if (p === "/api/image/filmstrip/cost") {
+    return refuse(
+      409,
+      "The decode cost is read off the loaded pipeline's own latent shape " +
+        "and its VAE, which there is none of here — so the number would " +
+        "describe a wait nobody on this page is going to have.",
+    );
+  }
+  // ---- the adapter reader --------------------------------------------------
+  if (p === "/api/image/adapter") {
+    return refuse(
+      501,
+      "Reading a LoRA means opening a file on your disk and measuring what " +
+        "it moves, and a page served from the web cannot see a filesystem. " +
+        "Installed, this takes any adapter you have and says which modules " +
+        "it touches and by how much — no base model needed.",
+    );
   }
   if (p === "/api/image/size") {
     return refuse(

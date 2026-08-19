@@ -227,6 +227,12 @@ _PUBLISHED = {
     # and answered at 200 rather than as a failure — see the handler's own
     # comment in server.py.
     "LoadCancelled",
+    # The image side's own, for the identical reason. Separate class rather
+    # than a shared one because the two loaders raise from different modules
+    # and neither should import the other to borrow an exception; the
+    # behaviour they are listed for -- an authored sentence, answered 200 --
+    # is the same.
+    "ImageLoadCancelled",
 }
 
 # Names a caught exception is bound to in this codebase.

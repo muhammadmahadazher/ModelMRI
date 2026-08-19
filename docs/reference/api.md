@@ -162,6 +162,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/image/discovered` | Image Discovered |
 | `GET` | `/api/image/filmstrip/cost` | Image Filmstrip Cost |
 | `GET` | `/api/image/local` | Image Local |
+| `GET` | `/api/image/progress` | Image Progress |
 | `GET` | `/api/image/search` | Image Search |
 | `GET` | `/api/image/size` | Image Size |
 | `GET` | `/api/image/steps/cost` | Image Steps Cost |
@@ -189,6 +190,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/image/adapter` | Image Adapter |
 | `POST` | `/api/image/attention` | Image Attention Capture |
 | `POST` | `/api/image/attribution` | Image Attribution |
+| `POST` | `/api/image/cancel` | Image Cancel |
 | `POST` | `/api/image/cv/attribute` | Image Cv Attribute |
 | `POST` | `/api/image/cv/predict` | Image Cv Predict |
 | `POST` | `/api/image/cv/readout` | Image Cv Readout |

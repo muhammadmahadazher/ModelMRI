@@ -76,6 +76,36 @@ EXEMPT = {
     "/api/lens/tune": "a training run over a corpus, minutes of live compute",
     "/api/quantdiff/behaviour": "loads both quantisations of a model side by side",
     "/api/rubric/score": "runs rubric predicates over a live generation",
+    "/api/judge": (
+        "reads the probability mass a LIVE model puts on the verdict token, "
+        "one forward pass per paraphrase; there are no weights here to read"
+    ),
+    "/api/judge/plan": (
+        "prices that run by listing the prompts it would make — real "
+        "arithmetic, but pricing a purchase this page cannot make would "
+        "describe a wait nobody here is going to have"
+    ),
+    "/api/vla/audit": (
+        "reads the parquet, the video files and the recorded statistics of a "
+        "dataset on YOUR disk; a browser cannot see a filesystem, and a baked "
+        "audit would be a claim about somebody else's data"
+    ),
+    "/api/vla/actions/cost": (
+        "counts the forward passes an action run would spend against a policy "
+        "sidecar this page does not have"
+    ),
+    "/api/vla/actions/compare": (
+        "runs the action expert once per sampled frame; a baked curve would be "
+        "a fabricated comparison sitting beside real recordings"
+    ),
+    "/api/vla/actions/swap": (
+        "re-runs one frame under every task string the dataset contains and "
+        "again under several seeds, against a policy this page does not carry"
+    ),
+    "/api/vla/actions/knockout": (
+        "replaces each input with its episode mean and re-runs the policy, "
+        "which needs the policy"
+    ),
     "/api/graph": "opens a circuit-tracer `.pt` from disk, which a page cannot see",
     "/api/gguf": "reads a GGUF from disk; the browser cannot see the filesystem",
     "/api/gguf/plan": "reads a GGUF header from disk to project its memory cost",
@@ -104,6 +134,34 @@ EXEMPT = {
         "viewer builds instead, and demo.ts's /api/features/ prefix would "
         "otherwise answer it 200 "
         "with a single feature's detail payload"
+    ),
+    # --- the control, and two readers of a database this page does not have --
+    "/api/attention/control": (
+        "builds a SECOND model — the same architecture with random weights — "
+        "and runs the identical head ranking over the same tokens, so it is "
+        "two full sweeps and a second model resident against a live runtime "
+        "this page has none of; api.ts refuses it in DEMO and VIEWER builds "
+        "and names what the run would cost"
+    ),
+    "/api/sweeps": (
+        "lists the sweeps saved in the trace database on your own machine. A "
+        "static bundle has no database, so any list here would be somebody "
+        "else's runs — the whole panel is gated off at its mount in App.tsx "
+        "for demo builds, and api.ts refuses the call as a second lock"
+    ),
+    "/api/sweeps/": (
+        "the resume plan for one saved sweep, priced against its stored rows "
+        "and checked against the model loaded now — neither of which exists "
+        "behind a static page. Reached only from the same gated panel as "
+        "/api/sweeps above"
+    ),
+    "/api/patterns/across": (
+        "counts one structural finding over every run recorded on a machine. "
+        "This page carries a single recording, so any answer would be a "
+        "pattern of one — the same argument demo.ts already makes for the "
+        "per-run /patterns route, and api.ts refuses it here in that route's "
+        "own words rather than through noModelHere, because what is missing "
+        "is the run database and not a checkpoint"
     ),
 }
 

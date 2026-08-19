@@ -127,7 +127,14 @@ function moveWithin(e: KeyboardEvent<HTMLDivElement>) {
   items[to]?.focus();
 }
 
-type Source = "cache" | "folder" | "hub";
+/** Where a checkpoint can come from, and they are four because they fail
+ *  for four unrelated reasons — see the note at the top of this file.
+ *
+ *  `path` is the one that has no list behind it: a directory that is
+ *  neither in the Hub cache nor under a root this process walks cannot be
+ *  enumerated, only named. It is the only source whose control is a box.
+ */
+type Source = "cache" | "folder" | "hub" | "path";
 
 interface Props {
   /** The section asking. Its families are the ones listed; the rest are
@@ -143,6 +150,22 @@ interface Props {
   /** Whatever the trigger is showing — the loaded pipeline, or the last pick.
    *  Marks its row, so the open sheet answers "what am I on?" as well. */
   current: string;
+  /** Pick AND commit, for the one source that has no row to click.
+   *
+   *  Every other source lists things, so a pick can fill the trigger and
+   *  leave the Load button beside it to commit — the grammar the rest of
+   *  this sheet uses on purpose. A typed path has no list: the box and the
+   *  button next to it ARE the whole control, which is the shape
+   *  `CustomPanel` already uses for the same job on the text side.
+   *
+   *  Optional, and it falls back to `onPick`. A sheet that silently did
+   *  nothing when a parent forgot to wire this would be worse than one
+   *  that fills the box and hands the commit back to the panel.
+   */
+  onLoadPath?: (path: string) => void;
+  /** Whether the panel behind is already loading something. The Load
+   *  button in here spends the same single load slot the panel's does. */
+  busy?: boolean;
 }
 
 /** One row on disk: cached, or found in a folder.
@@ -286,6 +309,8 @@ export default function ImageModelPicker({
   open,
   onClose,
   onPick,
+  onLoadPath,
+  busy = false,
   current,
   kind = "diffusion",
 }: Props) {
@@ -328,6 +353,12 @@ export default function ImageModelPicker({
   // leaves the message from the tab you just left sitting under the tab you
   // just opened. `ModelPicker` records that exact bug from the hosted demo.
   const [findErr, setFindErr] = useState("");
+  // The typed directory. Its own state rather than the trigger's, because
+  // the two are different claims: the trigger says what is CHOSEN, and
+  // this box says what somebody is in the middle of typing. Sharing one
+  // string would have every keystroke rewrite the trigger behind the
+  // sheet, and a half-typed path is not a choice.
+  const [path, setPath] = useState("");
 
   const sheetRef = useRef<HTMLDivElement>(null);
   // `onClose` is an inline arrow in the parent, so its identity changes on
@@ -478,6 +509,19 @@ export default function ImageModelPicker({
     setTab(next);
   }
 
+  /** Hand the typed directory to the panel, which starts the load.
+   *
+   *  Trimmed once, here, so the box, the disabled test and the request
+   *  all agree about what was typed — a path with a trailing space is the
+   *  same directory and must not be a different button state.
+   */
+  function commitPath() {
+    const want = path.trim();
+    if (want === "") return;
+    if (onLoadPath) onLoadPath(want);
+    else onPick(want);
+  }
+
   // Portalled to <body>. MEASURED: the scrim is `position: fixed; inset: 0`,
   // and it was rendering 935x546 at (36,136) inside a 1006x626 viewport --
   // the panel's own box. `.panel` carries `transform: matrix(1,0,0,1,0,0)`
@@ -533,6 +577,20 @@ export default function ImageModelPicker({
               onClick={() => openTab("hub")}
             >
               Find one
+            </button>
+            {/* No count on this one, and there could not be: the whole
+                point of it is the directories the other two cannot
+                enumerate. A tab that advertised a number here would be
+                advertising a list it does not have. */}
+            <button
+              role="tab"
+              id="img-src-path"
+              aria-selected={tab === "path"}
+              aria-controls="img-src-panel"
+              className={tab === "path" ? "on" : ""}
+              onClick={() => openTab("path")}
+            >
+              A path
             </button>
           </div>
           <span className="spacer" />
@@ -664,6 +722,66 @@ export default function ImageModelPicker({
               )}
               {disco && <div className="meta pad">{disco.means}</div>}
               {discoErr && <div className="hint err">{discoErr}</div>}
+            </div>
+          )}
+
+          {tab === "path" && (
+            <div className="image-path">
+              <p className="meta">
+                A checkpoint neither disk tab can reach: a clone somewhere
+                else on this machine, a directory exported by hand, a
+                snapshot outside the Hub cache and outside the roots this
+                process walks. <code>/api/image/load</code> opens a directory
+                exactly the way it opens a Hub id — the family, the
+                capabilities and the input size are read from the
+                checkpoint's own config either way, so nothing downstream
+                treats it as a lesser kind of model.
+              </p>
+              {/* An input and a Load button, the shape `CustomPanel` uses
+                  for the same job. Every other source here lists things,
+                  so a pick fills the trigger and the Load button beside it
+                  commits; a typed path has nothing to list, so the box and
+                  this button are the whole control. */}
+              <div className="row cand-manual">
+                <input
+                  className="combo grow"
+                  placeholder="a directory on this machine: C:\models\vit-base, /home/me/models/sd-turbo"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  onKeyDown={(e) =>
+                    e.key === "Enter" && path.trim() !== "" && commitPath()
+                  }
+                  spellCheck={false}
+                  aria-label="a directory on this machine to open an image model from"
+                />
+                <button
+                  className="ghost sm"
+                  onClick={commitPath}
+                  disabled={busy || path.trim() === ""}
+                >
+                  Load
+                </button>
+              </div>
+              <p className="meta">
+                A path names a directory on the disk the SERVER is running
+                on. Started from your own machine those are the same disk;
+                reached from anywhere else the route refuses the path and
+                says so in its own words rather than opening whatever that
+                name happens to mean over there.
+              </p>
+              <p className="meta">
+                Nothing prices this one first. <b>How big is it?</b> asks the
+                Hub, and a directory has no Hub entry to ask about — the two
+                disk tabs size what they find, and this box exists for the
+                directories they did not reach.
+              </p>
+              <p className="meta">
+                A name that is not a directory on that disk is tried as a Hub
+                id instead, so the refusal will name the Hub rather than your
+                filesystem. That is the server reporting what it actually
+                attempted, which is the honest answer even though it is not
+                the one a mistyped path invites.
+              </p>
             </div>
           )}
 

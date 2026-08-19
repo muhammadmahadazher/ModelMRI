@@ -56,6 +56,7 @@ from .custom import AdapterError, CustomHandle
 # Both are mutation-checked. Break the invariant and the suppression stops
 # being honest and the tests say so.
 from .errors import BadRequest, Refusal
+from .image_runtime import ImageLoadCancelled
 from .runtime import DEFAULT_MODEL, ModelRuntime, _load_failed
 from .traces import TraceStore, record_generation
 from .vla import DEFAULT_VLA_REPO as VLA_DEFAULT_REPO
@@ -2432,6 +2433,12 @@ def create_app(
                 local_ok=here,
             )
             return status.to_dict()
+        except ImageLoadCancelled as err:
+            # NOT a failure: the reader asked. 200 with a plain sentence, so
+            # the panel does not paint a red error over something they did on
+            # purpose — the same shape `/api/model/load` uses for its own
+            # `LoadCancelled`, because they are the same event.
+            return JSONResponse({"cancelled": True, "message": str(err)})
         # No separate `except Unsafe`. It is a `Refusal`, so the clause below
         # already answers 409 with its sentence intact — the extra arm added
         # nothing and named a type the leak check does not have on its
@@ -2456,6 +2463,42 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=code)
         except Exception as err:
             return _internal(err, "/api/image/load")
+
+    @app.get("/api/image/progress")
+    def image_progress() -> dict:
+        """Polled while a pipeline loads — a minutes-long wait needs a pulse.
+
+        A separate tracker from `/api/model/progress`, for the reason
+        `progress.py` already documents about pulls: an image pipeline and a
+        language model are different jobs held by different handles, either
+        can be resident while the other loads, and one shared slot reports one
+        job's name against another job's byte counts.
+        """
+        from .progress import IMAGE_LOADS
+
+        return IMAGE_LOADS.snapshot().to_dict()
+
+    @app.post("/api/image/cancel")
+    def image_cancel() -> dict:
+        """Stop an in-flight pipeline load.
+
+        `stopping` is False when there was nothing running. The stop lands
+        BETWEEN stages: `from_pretrained` is one opaque call that cannot be
+        interrupted, so a stop asked for while the pipeline is opening takes
+        effect when that returns. Said here rather than implied, because a
+        Stop that appears to do nothing for ten minutes is worse than one
+        whose limit is stated.
+        """
+        from .progress import IMAGE_LOADS
+
+        return {
+            "stopping": IMAGE_LOADS.request_cancel(),
+            "means": (
+                "A stop is honoured between stages. If the pipeline is already "
+                "opening, that call cannot be interrupted and the stop lands "
+                "when it returns."
+            ),
+        }
 
     @app.post("/api/image/unload")
     async def image_unload() -> dict:
@@ -3225,6 +3268,13 @@ def create_app(
 
         try:
             return await asyncio.to_thread(_run_compare, reader, state, req)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. `_reader()` above only
+            # opens the parquet; `av` is imported the first time a frame is
+            # actually decoded, which happens in here — so without this arm a
+            # machine with pyarrow and no av gets a 500 carrying none of the
+            # sentence that says which package to install.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
@@ -3301,6 +3351,13 @@ def create_app(
 
         try:
             return await asyncio.to_thread(_run_swap, reader, state, req)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. `_reader()` above only
+            # opens the parquet; `av` is imported the first time a frame is
+            # actually decoded, which happens in here — so without this arm a
+            # machine with pyarrow and no av gets a 500 carrying none of the
+            # sentence that says which package to install.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
@@ -3364,6 +3421,13 @@ def create_app(
 
         try:
             return await asyncio.to_thread(_run_knockout, reader, state, req)
+        except ImportError as err:
+            # The DECODER, not the metadata reader. `_reader()` above only
+            # opens the parquet; `av` is imported the first time a frame is
+            # actually decoded, which happens in here — so without this arm a
+            # machine with pyarrow and no av gets a 500 carrying none of the
+            # sentence that says which package to install.
+            return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:

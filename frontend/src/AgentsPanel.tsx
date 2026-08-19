@@ -3,7 +3,9 @@ import { useScanOnData } from "./useScanOnData";
 import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
 import ShareRun from "./ShareRun";
 import InspectDrop from "./InspectDrop";
+import PatternsAcross from "./PatternsAcross";
 import RubricPanel from "./RubricPanel";
+import JudgePanel from "./JudgePanel";
 import {
   Adopted,
   adoptStep,
@@ -471,6 +473,31 @@ with trace("my-agent"):
       />
 
       <RubricPanel
+        onPick={(id) => {
+          setSel(null);
+          void getTrace(id).then(setDoc);
+        }}
+      />
+
+      {/* Directly beneath the deterministic scorer, because the pair is the
+          argument. The rubric above asks exact predicates and never touches a
+          model, so a match is a match. This one asks the loaded model — and
+          reads its probability mass rather than sampling a label off it, which
+          is only possible because the weights are on this machine. The step
+          selected on the timeline is offered as the text to judge, so what was
+          scored is something you can read. */}
+      <JudgePanel step={sel} />
+
+      {/* ACROSS runs, above the list of runs. The rubric block scores each run
+          against rules you wrote; this counts what the runs have in common
+          without being told what to look for, and both answer questions about
+          the whole store rather than about whichever run is open below.
+
+          The agent names come from the list this panel already holds, so the
+          filter offers the names that exist rather than a box that can only be
+          got wrong — and its counts are the same counts the rows show. */}
+      <PatternsAcross
+        agents={groups.map((g) => ({ name: g.name, runs: g.runs.length }))}
         onPick={(id) => {
           setSel(null);
           void getTrace(id).then(setDoc);

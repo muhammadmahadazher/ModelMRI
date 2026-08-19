@@ -79,6 +79,10 @@ const CATEGORY_BY_DOT: Record<string, string> = {
   "d-ground": "text",
   "d-base": "text",
   "d-custom": "text",
+  // Saved sweeps. A sweep is the same text-to-text measurement run over many
+  // prompts, so it belongs with the panels that make those measurements
+  // rather than in `other`.
+  "d-sweep": "text",
   "d-image": "image",
   "d-vision": "vision",
   "d-vla": "robot",
@@ -107,6 +111,10 @@ const SUB_BY_DOT: Record<string, string> = {
   "d-run": "run",
   "d-base": "run",
   "d-custom": "run",
+  // "Run" rather than "compare": what the panel lists is runs and what they
+  // cost to finish. The comparison a sweep enables happens inside its own
+  // output file, not here.
+  "d-sweep": "run",
   "d-attn": "attn",
   "d-feat": "concepts",
   "d-lens": "concepts",

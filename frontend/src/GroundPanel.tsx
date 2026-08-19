@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import RunsOn from "./RunsOn";
 import { errorText, GroundScore, Grounding, groundAnswer } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -154,6 +155,7 @@ export default function GroundPanel({
         </h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Attach a passage of your own text and ask a question about it. Every
         RAG interface shows you which chunks were <i>retrieved</i>; this

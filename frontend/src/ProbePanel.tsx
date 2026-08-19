@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import RunsOn from "./RunsOn";
 import { errorText, LayerProbe, ProbeReport, runProbe } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -168,6 +169,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
         <h2 className="h-probe">PROBES — WHERE A PROPERTY BECOMES READABLE</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Two groups of your own sentences, and a linear fit at every layer that
         tries to tell them apart from the residual stream. The accuracy is the

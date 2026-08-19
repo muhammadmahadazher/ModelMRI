@@ -22,6 +22,7 @@ import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
+import SweepsPanel from "./SweepsPanel";
 import PalettePicker from "./PalettePicker";
 import ThemeToggle from "./ThemeToggle";
 import { VIEWER } from "./viewer";
@@ -316,6 +317,18 @@ export default function App() {
               its own two models and its own prompts, so it sits beside the
               custom-model panel rather than inside the playground. */}
           <ModelDiffPanel epoch={resetKey} />
+          {/* Every sweep saved on this machine. Sited beside the model-diff
+              panel because it needs nothing loaded and is about runs rather
+              than about the resident model: `modelmri sweep` runs headless in
+              a terminal and saves whatever it got, and this is the only way to
+              see that a run exists at all.
+
+              `!DEMO` at the mount rather than inside the component, so rollup
+              folds the constant and drops the whole subtree from the published
+              bundle. The hosted demo is a static recording with no database
+              behind it — a panel whose every answer would be "there are no
+              sweeps here" teaches a visitor that the feature is broken. */}
+          {!DEMO && <SweepsPanel />}
           {/* Text → Image. Its own handle, its own lifecycle, and nothing
               above it loaded: a diffusion pipeline is several models and the
               server refuses to hold one beside a resident text model without

@@ -20,6 +20,7 @@ import {
   rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
+import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
@@ -663,6 +664,31 @@ export default function AttentionPanel({
               </ul>
               <span className="meta">{agree.means}</span>
             </div>
+          )}
+          {/* THE CONTROL, and it belongs to the list above it rather than to a
+              panel of its own.
+
+              The baseline comparison one block up asks how much of this order
+              was decided by what a removed head is replaced with. This asks
+              the harder one: whether an untrained model of the same shape
+              would have produced an ordered list just as convincing. Every
+              argument this tool makes for controls applies to its own
+              rankings, and this was the measurement that had no button.
+
+              `!replay` because the server refuses a recording in its own
+              words — a `.mri` does not carry a second model — and a control
+              that can only ever refuse teaches the wrong lesson. The demo and
+              viewer builds refuse in `api.ts`, naming what the run costs. The
+              baseline this passes is the one that produced the ranking on
+              screen (`ranked.baseline`), not the select's current value: the
+              select can have moved since, and a control for a ranking nobody
+              is looking at is worse than none. */}
+          {!replay && (
+            <ControlTwin
+              layer={layer}
+              baseline={ranked.baseline}
+              wholeModel={wholeModel}
+            />
           )}
           {/* The setup that produced this ranking. It sits at the bottom of
               the block rather than the top because it answers a question you

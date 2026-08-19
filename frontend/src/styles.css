@@ -6935,3 +6935,727 @@ button:disabled,
   border-radius: var(--r-well);
   border: 1px solid var(--hair);
 }
+
+/* Which model a panel is about. Sits directly under the section heading,
+   because that is where the question is asked. */
+.runs-on { margin: 2px 0 8px; }
+.runs-on-id { overflow-wrap: anywhere; }
+
+
+/* ---------- the vision instrument: one picture, several asks ----------
+
+   What a vision checkpoint says, where it looked, and what actually supported
+   the answer are three measurements OF ONE IMAGE, and they used to render as
+   three unrelated blocks with the subject buried inside the third of them --
+   which is how "What does it say?" came to sit disabled beside the words
+   "pick a picture first" while the file picker lived in another section.
+
+   This is the layout that makes them one instrument: the subject stated once,
+   and every ask beside it. Two columns where there is room, so the picture
+   stays on screen while you read what was measured about it; one column
+   below that, where a sticky picture would cover the answers underneath it
+   instead of accompanying them. */
+.vis {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+.vis-subject { min-width: 0; }
+.vis-subject .image-shot { max-width: 100%; }
+.vis-asks {
+  display: grid;
+  gap: 14px;
+  /* Without this a wide attribution table stretches the column instead of
+     scrolling inside it, and the whole panel grows a horizontal scrollbar. */
+  min-width: 0;
+}
+
+@media (min-width: 1000px) {
+  .vis {
+    grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+    align-items: start;
+  }
+  .vis-subject {
+    position: sticky;
+    top: 12px;
+  }
+}
+
+/* One ask: a question, its controls, its answer. They are built to look alike
+   -- several questions about one picture should not read as several unrelated
+   tools, which is what a heading in one style and a bare control row in
+   another had them reading as. */
+.vis-ask {
+  min-width: 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: var(--sf-float);
+}
+.vis-ask-h {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* The panel's own accent where one is set. The fallback is a real token and
+     not a colour literal: an undefined custom property with no fallback voids
+     the whole declaration, which is how this stylesheet has silently lost a
+     rule three times. */
+  color: var(--panel-accent, var(--ink-2));
+}
+/* The single line that says what the ask measures. Bounded, because a caption
+   run across the full width of a wide panel stops reading as a caption. */
+.vis-ask-1l {
+  margin: 0 0 10px;
+  max-width: 62ch;
+}
+
+/* The prose that used to stand between the controls and the button that
+   spends them. Every word of it is still here -- a fill is a BASELINE and not
+   a deletion, and the price is a price of the tensor the model sees rather
+   than of the file on your disk -- one click away instead of four paragraphs
+   deep. */
+.vis-more { margin-top: 12px; }
+.vis-more > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  font-size: var(--t-xs);
+  color: var(--ink-2);
+}
+.vis-more > summary:hover { color: var(--ink); }
+.vis-more > summary:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.vis-more > p { max-width: 76ch; }
+
+/* The vision panel had a dot colour and no accent. `.d-vision` paints the dot
+   `--sem-base`, but no rule set `--panel-accent` for it, so the panel's rail,
+   border and focus glow fell back to `--color-mute` while its own heading was
+   a different hue entirely. Appended rather than inserted beside its twelve
+   siblings: later wins at equal specificity, and the middle of this file
+   belongs to other people this week. */
+.panel:has(.d-vision) { --panel-accent: var(--sem-base); }
+
+/* A directory, typed. The one image-model source with no list behind it: a
+   checkpoint outside the Hub cache and outside the walked roots cannot be
+   enumerated, only named. */
+.image-path {
+  display: grid;
+  gap: 10px;
+  padding: 14px 10px;
+}
+.image-path p {
+  margin: 0;
+  max-width: 76ch;
+}
+.image-path code {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE CONTROL · SAVED SWEEPS · A FINDING COUNTED OVER RUNS
+   ──────────────────────────────────────────────────────────────────────────
+   Appended rather than filed beside the blocks these extend, because several
+   people are editing this file at once and an insertion in the middle of
+   7,000 lines is how two of them lose each other's work.
+
+   NO LITERAL COLOURS. Every value here is an existing custom property or a
+   `color-mix` of one — the palette is [data-palette] x [data-theme] x
+   [data-contrast] and a hex is wrong in most of those combinations. And every
+   `var()` below without a fallback is a token this file actually defines: an
+   undefined one voids the WHOLE declaration at computed-value time, silently,
+   so the rule simply does not render. tests/test_css_vars.py is the check.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ---------- the control: the same ranking on an untrained twin ----------
+   Inside the ranking block, so it is separated from the list above it by a
+   rule rather than by a card — it is the ranking's own error bar, not a
+   second instrument. */
+.ctl-twin {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hair);
+}
+.ctl-result { margin-top: 8px; }
+/* The server's sentence carries the finding, so it gets the weight of one.
+   `.hint.ok` already draws the left rule; this only lifts the ink, because a
+   verdict printed in the muted hint colour reads as a footnote to the numbers
+   it is actually about. */
+.ctl-verdict { color: var(--color-ink); }
+.ctl-facts { display: block; margin-top: 6px; }
+
+.ctl-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+/* One above the other before the two five-row lists start wrapping inside
+   their own columns — a KL and a probability pair do not fit in half of a
+   narrow panel, and a wrapped number is harder to compare than a scrolled
+   one. */
+@media (max-width: 760px) {
+  .ctl-cols { grid-template-columns: 1fr; }
+}
+.ctl-col {
+  background: var(--color-paper);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-min);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.ctl-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ctl-col-facts { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+/* Rows, not a table: each is head · score · what happened to the answer, and
+   the three want different type. `.ranking-list` already owns the spacing. */
+.ctl-list { margin-top: 8px; }
+.ctl-list li {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 2px 10px;
+  padding: 3px 0;
+}
+.ctl-head { color: var(--color-ink); }
+.ctl-kl { color: var(--color-attn); text-align: right; }
+/* The probability pair spans both columns on its own line: it is the sentence
+   under the number, not a third column of it. */
+.ctl-note { grid-column: 1 / -1; overflow-wrap: anywhere; }
+/* Below the measured noise floor. Shown, because hiding it would imply the
+   list is complete — never presented as a result. */
+.ctl-list li.faint { opacity: 0.65; }
+.ctl-list li.faint .ctl-kl { color: var(--color-mute); }
+
+/* ---------- saved sweeps ----------
+   Teal, which this stylesheet already spends on "the reference you measure
+   against" (see the note beside --color-probe). A sweep is exactly that: the
+   distribution a single number is a sample from. The hue is REUSED with an
+   argument rather than a ninth being invented, which is the same decision
+   recorded for probes and for Text → Image. */
+.h-sweep { color: var(--sem-base); }
+.d-sweep { background: var(--sem-base); }
+.panel:has(.d-sweep) { --panel-accent: var(--sem-base); }
+
+.sw-what { display: block; margin: 0 0 10px; max-width: 68ch; }
+.sw-controls { gap: 8px; align-items: center; margin-bottom: 8px; }
+
+.sw-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.sw-row {
+  background: var(--color-paper);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-min);
+  padding: 10px 12px;
+}
+.sw-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sw-id { color: var(--color-ink); overflow-wrap: anywhere; }
+.sw-row-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+}
+.sw-model { overflow-wrap: anywhere; }
+/* A refusal is a row, not a gap — so it is legible beside a sweep that is
+   nonetheless complete, rather than reading as a failure of the sweep. */
+.sw-refused { color: var(--color-agent); }
+
+/* How far it got. Drawn only when there are prompts to divide by: a sweep with
+   none renders a sentence instead, because a bar of NaN width is a shape on
+   screen that means nothing. */
+.sw-bar {
+  height: 4px;
+  max-width: 320px;
+  margin-top: 7px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--line) 75%, transparent);
+}
+.sw-bar i {
+  display: block;
+  height: 100%;
+  background: var(--sem-base);
+  transition: width var(--dur-small) var(--ease-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The bar is a measurement, not an animation. Said here as well as in the
+     global block above, so the rule survives an edit to either one. */
+  .sw-bar i { transition: none; }
+}
+
+.sw-actions { gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.sw-plan {
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid color-mix(in oklab, var(--sem-base) 45%, transparent);
+}
+.sw-idx {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin-top: 6px;
+}
+.sw-idx .mid {
+  color: var(--color-ink);
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- one finding, counted over many runs ----------
+   Inside the agents panel, under the rubric block: both ask about the whole
+   store rather than about the run open below them. */
+.pat-across {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hair);
+}
+.pat-controls { gap: 8px; align-items: center; flex-wrap: wrap; }
+.pat-result { margin-top: 8px; }
+.pat-scope { display: block; }
+
+.pat-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.pat-item {
+  background: var(--color-paper);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-min);
+  padding: 10px 12px;
+}
+.pat-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* The kind of finding — repeat, retry storm, cycle. `.lbl-chip` draws the
+   shape and takes its border from `currentColor`, so the colour set here is
+   the whole difference. */
+.pat-kind {
+  color: var(--color-agent);
+  border-color: color-mix(in oklab, var(--sem-agent) 45%, transparent);
+}
+.pat-label {
+  color: var(--color-ink);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pat-count { white-space: nowrap; }
+.pat-traces {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 8px;
+}
+.pat-sig { overflow-wrap: anywhere; }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE JUDGE, THE DATASET AUDIT AND THE ACTION MEASUREMENTS
+   ──────────────────────────────────────────────────────────────────────────
+   Every custom property below is one that exists — checked against the
+   definitions in this file, because an undefined `var()` with no fallback
+   invalidates the WHOLE declaration and the rule then silently does not
+   render. `tests/test_css_vars.py` is what holds that line.
+
+   The recurring shape here is a REFUSAL DRAWN AS A RESULT. Four surfaces in
+   this file already draw a deliberate no in red beside a broken-looking
+   button; a judge that reports "the model did not put enough mass on a
+   verdict token to have answered" has measured something, and red under a
+   disabled control is the wrong sentence for it.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── the judge ─────────────────────────────────────────────────────────────
+   Tinted with the agent hue rather than the feature one, so it reads as a
+   sibling of the rubric scorer above without reading as the same control. */
+.judge-panel {
+  margin: 10px 0;
+  padding: 11px 13px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-agent) 26%, transparent);
+  background: color-mix(in oklab, var(--color-agent) 3%, transparent);
+  display: grid;
+  gap: 6px;
+}
+.judge-text,
+.judge-rubric {
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--hair);
+  background: var(--color-card);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--t-sm);
+  resize: vertical;
+}
+.judge-text { font-family: var(--font-mono); font-size: var(--t-xs); }
+.judge-meter { flex-wrap: wrap; gap: 8px; align-items: baseline; }
+
+/* The store clipped the text being judged, so the score is about a prefix.
+   Warned rather than mentioned: a truncated output that reads as a complete
+   one is how you debug the wrong thing for an hour. */
+.judge-cap {
+  border-left: 2px solid color-mix(in oklab, var(--sem-agent) 60%, transparent);
+  padding-left: var(--sp-3);
+}
+.judge-planerr { opacity: 0.85; }
+
+/* THE PRICE, BEFORE THE SPEND. Sunk rather than raised: it is the receipt for
+   a purchase that has not happened, not a result. */
+.judge-plan {
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px dashed color-mix(in oklab, var(--ink-3) 40%, transparent);
+  background: color-mix(in oklab, var(--ink-4) 6%, transparent);
+}
+.judge-plan > p { margin: 0; }
+.judge-plan summary { cursor: pointer; margin-top: 6px; }
+.judge-prompts {
+  list-style: decimal;
+  margin: 6px 0 0;
+  padding-left: 1.6rem;
+  display: grid;
+  gap: 6px;
+}
+.judge-prompts pre,
+.judge-pass-prompt pre {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--line-soft);
+  background: var(--color-card);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  line-height: 1.55;
+  /* The paraphrases carry their own line breaks, and those breaks are what
+     make a prompt readable as a prompt rather than as a run-on sentence. */
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.judge-go { margin: 4px 0 2px; }
+
+/* A DELIBERATE NO, drawn as a reading. Same weight as a result, and the tag
+   says which kind of answer it is so it is never mistaken for a crash. */
+.judge-refusal,
+.vla-refusal {
+  margin: 8px 0;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in oklab, var(--sem-agent) 42%, transparent);
+  border-left: 3px solid var(--sem-agent);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+  font: 400 var(--t-sm)/1.6 var(--font-sans);
+}
+.judge-refusal > p,
+.vla-refusal > p { margin: 5px 0 0; }
+.judge-tag {
+  display: inline-block;
+  font: 600 var(--t-2xs)/1.2 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--sem-agent);
+}
+
+.judge-out { margin-top: 10px; display: grid; gap: 8px; }
+.judge-means { margin: 0; }
+.judge-nums { flex-wrap: wrap; gap: 12px; }
+.judge-num {
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-size: var(--t-xs);
+}
+.judge-note { margin: 0; }
+
+.judge-passes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+.judge-passes > li {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr) 3.4rem minmax(0, 1.6fr);
+  gap: 8px;
+  align-items: center;
+  font-size: var(--t-xs);
+}
+.judge-passes > li > .judge-pass-prompt { grid-column: 1 / -1; }
+.judge-pass-prompt summary { cursor: pointer; }
+@media (max-width: 720px) {
+  .judge-passes > li { grid-template-columns: 2.4rem minmax(0, 1fr) 3.4rem; }
+  .judge-passes > li > .meta { grid-column: 1 / -1; }
+}
+.judge-track {
+  position: relative;
+  display: block;
+  height: 12px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--ink-4) 10%, transparent);
+  border: 1px solid var(--line-soft);
+}
+.judge-bar {
+  position: absolute;
+  left: 0;
+  top: 1px;
+  bottom: 1px;
+  min-width: 1px;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-agent);
+  transition: width var(--dur-medium) var(--ease-out);
+}
+/* A phrasing the model did not answer. The bar goes HOLLOW rather than short:
+   its p(yes) is a ratio between two rounding errors, and drawing that at the
+   same weight as a real verdict is exactly the confident-looking number the
+   floor exists to keep off the screen. */
+.judge-passes > li.unanswered .judge-bar {
+  background: transparent;
+  border: 1px dashed color-mix(in oklab, var(--ink-3) 60%, transparent);
+}
+.judge-passes > li.unanswered .mid { opacity: 0.6; font-style: italic; }
+
+/* ── the dataset audit ─────────────────────────────────────────────────────
+   No grade, and nothing here computes one: three verdicts, each drawn as
+   itself. A verdict word the server adds later falls through to the neutral
+   base rule rather than disappearing. */
+.vla-audit { margin-top: 14px; }
+.aud-checks {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.aud-check {
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--ink-4) 5%, transparent);
+}
+.aud-check.aud-ok {
+  border-color: color-mix(in oklab, var(--color-vla) 34%, transparent);
+  background: color-mix(in oklab, var(--color-vla) 5%, transparent);
+}
+.aud-check.aud-broken {
+  border-color: color-mix(in oklab, var(--color-pop) 55%, transparent);
+  border-left: 3px solid var(--color-pop);
+  background: color-mix(in oklab, var(--color-pop) 8%, transparent);
+}
+/* COULD NOT BE RUN is neither a pass nor a fail, and it must not look like
+   either — outlined, the way the probe panel draws a layer whose null could
+   not be measured. */
+.aud-check.aud-unchecked {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--sem-agent) 45%, transparent);
+  background: color-mix(in oklab, var(--sem-agent) 5%, transparent);
+}
+.aud-head { gap: 8px; align-items: baseline; }
+.aud-verdict {
+  font: 600 var(--t-2xs)/1.2 var(--font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+}
+.aud-check.aud-ok .aud-verdict {
+  color: var(--color-vla);
+  border-color: color-mix(in oklab, var(--color-vla) 45%, transparent);
+}
+.aud-check.aud-broken .aud-verdict {
+  color: var(--color-pop);
+  border-color: color-mix(in oklab, var(--color-pop) 55%, transparent);
+}
+.aud-check.aud-unchecked .aud-verdict {
+  color: var(--sem-agent);
+  border-color: color-mix(in oklab, var(--sem-agent) 50%, transparent);
+}
+.aud-name { font-size: var(--t-sm); }
+.aud-detail { margin: 6px 0 0; }
+.aud-measured {
+  margin: 7px 0 0;
+  display: grid;
+  gap: 3px;
+}
+.aud-row {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.aud-row > dt { margin: 0; }
+.aud-row > dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-feature-settings: var(--num);
+  font-size: var(--t-2xs);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+@media (max-width: 720px) {
+  .aud-row { grid-template-columns: minmax(0, 1fr); }
+}
+.aud-item {
+  padding: 1px 6px;
+  border-radius: var(--r-min);
+  border: 1px solid var(--line-soft);
+  background: var(--color-card);
+  overflow-wrap: anywhere;
+}
+/* A capped list SAYS it is capped. Eight gaps read as "there are eight". */
+.aud-cap {
+  flex-basis: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--t-2xs);
+  color: var(--sem-agent);
+}
+/* UNKNOWN, which is not zero. Set in the sans face with no mono digits so the
+   eye separates it from a count before it reads it — the same treatment the
+   token ledger gives "not reported by provider". */
+.aud-unknown {
+  font-family: var(--font-sans);
+  font-feature-settings: normal;
+  font-style: italic;
+  opacity: 0.85;
+}
+
+/* ── what the policy would do ──────────────────────────────────────────── */
+.vla-actions { margin-top: 14px; }
+.vla-idle { opacity: 0.9; }
+/* The cost, before the button. Same dashed sunk treatment as the judge's
+   plan, because it is the same promise: this is what it WOULD spend. */
+.vla-plan {
+  margin: 6px 0;
+  padding: 8px 11px;
+  border-radius: 8px;
+  border: 1px dashed color-mix(in oklab, var(--ink-3) 40%, transparent);
+  background: color-mix(in oklab, var(--ink-4) 6%, transparent);
+}
+.vla-plan > p { margin: 0 0 4px; }
+.vla-plan > p:last-child { margin-bottom: 0; }
+.vla-result { margin: 10px 0; display: grid; gap: 6px; }
+.vla-result > p { margin: 0; }
+.vla-cap { color: var(--sem-agent); }
+/* The knockout's sentence is written with paragraph breaks — "these do not add
+   up" is its own paragraph on purpose — and HTML collapses them. */
+.vla-pre { white-space: pre-wrap; }
+.vla-bias {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.vla-bias > li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 2px 8px;
+  border-radius: var(--r-min);
+  border: 1px solid var(--line-soft);
+  background: var(--color-card);
+  font-size: var(--t-2xs);
+}
+.vla-arms {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.vla-arms > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 4.4rem 6.5rem;
+  gap: 8px;
+  align-items: center;
+  font-size: var(--t-xs);
+}
+/* The policy's OWN instruction is the baseline every other arm is measured
+   from, so it is marked rather than sorted to the top. */
+.vla-arms > li.own .vla-bar {
+  background: color-mix(in oklab, var(--color-vla) 45%, transparent);
+}
+.vla-arm-name {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 720px) {
+  .vla-arms > li { grid-template-columns: minmax(0, 1fr) 4.4rem; }
+  .vla-arms > li > .vla-track { grid-column: 1 / -1; }
+  .vla-arms > li > .meta { grid-column: 1 / -1; }
+}
+
+
+/* MEASURED: the typed-path source rendered its last paragraph outside the
+   sheet's rounded edge, on the page behind it. `.sheet` is a fixed-height
+   flex column and only `.model-list` carried the rule that makes a source
+   scroll INSIDE it -- so a source that is prose rather than a list took its
+   own content height and spilled. Same two properties, same reason: a flex
+   item's default `min-height: auto` refuses to shrink below its content no
+   matter what `overflow` says. */
+.sheet-tabpanel > .image-path {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+
+
+/* The knockout borrows `.vla-blocks` for its three bar states and overrides
+   only the first column. That column is 5rem because the occlusion map labels
+   a block "r3 c7"; a knockout labels one "camera1 → episode mean", and at 5rem
+   every label in the list is clipped to the point of being unreadable. */
+.vla-knock > li {
+  grid-template-columns: 13rem minmax(0, 1fr) 4.4rem 9rem;
+}
+@media (max-width: 720px) {
+  .vla-knock > li { grid-template-columns: 10rem minmax(0, 1fr) 4.4rem; }
+}
+
+
+/* `ImageCV` holds two of the asks, so it sits between `.vis-asks` and them --
+   which means the column's gap falls on the WRAPPER and the two asks inside
+   it end up flush, their borders doubling into one heavy line while the third
+   ask is spaced normally. Same gap here makes all of them siblings visually,
+   which is the whole point of their looking alike. */
+.icv {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* `.image-attr` carried a 4px top margin from when it was the last block of a
+   flat panel. As one ask among several it puts an 18px gap under the ask
+   above it where every other pair has 14 -- three sections that look alike
+   should also be spaced alike. */
+.vis-ask.image-attr { margin-top: 0; }
