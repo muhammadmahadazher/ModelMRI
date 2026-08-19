@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { howLong } from "./measured";
+import { VIEWER } from "./viewer";
 import { useScanOnData } from "./useScanOnData";
 import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
 import ShareRun from "./ShareRun";
@@ -253,6 +254,35 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
   // populated branch is invisible to exactly the reader who has no store
   // entries — here, somebody who was sent a bundle and opened it.
   const empties = !list || list.length === 0;
+  // A DIFFERENT EMPTY IN THE VIEWER. The branch below tells a reader how to
+  // fill this panel — generate above, or add three lines to their agent — and
+  // neither is available to somebody reading a file on a machine with nothing
+  // installed. The honest answer there is that this particular bundle carries
+  // no run, which is an ordinary thing for a bundle to do.
+  if (empties && !carried?.available && VIEWER) {
+    return (
+      <div className="panel">
+        <div className="sect">
+          <span className="dot d-agent" />
+          <h2 className="h-agent">AGENTS — RECORDED RUNS</h2>
+          <span className="rule" />
+        </div>
+        <div className="agents-empty">
+          <p>
+            <b>This file carries no agent run.</b> A `.mri` holds whatever was
+            captured when it was written — attention, a logit lens, a patching
+            trace, an agent run, or any combination — and this one was
+            exported without one.
+          </p>
+          <p className="meta">
+            A bundle that does carry a run opens here with its timeline, every
+            step's input and output, and what the run cost in tokens. Nothing
+            is installed to read it: the file is the whole of it.
+          </p>
+        </div>
+      </div>
+    );
+  }
   if (empties && !carried?.available) {
     return (
       <div className="panel">
@@ -429,7 +459,11 @@ with trace("my-agent"):
       </p>
 
       {/* Search is over STEPS, not runs — what somebody is looking for is the
-          tool call that failed, not the hour it happened in. */}
+          tool call that failed, not the hour it happened in. Across the
+          STORE, though, which the viewer does not have: one run needs no
+          search across it, and the box would only ever refuse. */}
+      {!VIEWER && (
+        <>
       <div className="row trace-search" style={{ marginBottom: 10 }}>
         <input
           className="sm"
@@ -486,13 +520,22 @@ with trace("my-agent"):
           )}
         </div>
       )}
+        </>
+      )}
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
-          {rows.length} recording{rows.length === 1 ? "" : "s"}
+          {VIEWER
+            ? `${rows.length} run${rows.length === 1 ? "" : "s"} in this file`
+            : `${rows.length} recording${rows.length === 1 ? "" : "s"}`}
           {demos > 0 && ` · ${demos} bundled sample${demos === 1 ? "" : "s"}`}
         </span>
         <span className="spacer" />
+        {/* Both buttons DELETE from the store. This page writes nothing, and
+            the run on screen is inside the file — there is no copy of it here
+            to remove. */}
+        {!VIEWER && (
+        <>
         <button
           className="ghost sm"
           disabled={clearing}
@@ -514,6 +557,8 @@ with trace("my-agent"):
             Remove sample
           </button>
         )}
+        </>
+        )}
       </div>
 
       {demos > 0 && (
@@ -525,6 +570,17 @@ with trace("my-agent"):
         </p>
       )}
 
+      {/* EVERY BLOCK BELOW NEEDS A STORE, A DISK OR WEIGHTS, and the
+          standalone viewer has none of the three. They are not mounted there
+          rather than mounted and refusing: a control that can only ever
+          refuse teaches a reader that the feature is broken, which is the
+          rule `Playground` states three times for the same situation.
+
+          What the viewer keeps is everything that reads the file it was
+          given — the run, its timeline, the step inspector and the token
+          tables. That is the whole of what a bundle carries. */}
+      {!VIEWER && (
+        <>
       {/* Sited above the list, because what it produces IS a row in that
           list — an Inspect sample becomes an ordinary trace and everything
           below reads it without knowing where it came from. */}
@@ -574,6 +630,8 @@ with trace("my-agent"):
           void getTrace(id).then(setDoc);
         }}
       />
+        </>
+      )}
 
       {/* THE OTHER SOURCE. The list below is what this machine recorded or
           imported; this is what arrived inside the `.mri` somebody sent. It
@@ -790,7 +848,7 @@ with trace("my-agent"):
               which reads as the run being broken rather than as the button
               not applying to it. The reader is already holding the bundle
               this would produce. */}
-          {fromSession ? (
+          {fromSession || VIEWER ? (
             <div className="hint">
               This run arrived inside the session file you have open, so there
               is nothing here to package — the bundle already exists and you
@@ -902,7 +960,10 @@ with trace("my-agent"):
                 // on the sender's machine with weights and all — the bundle
                 // simply does not carry token ids, by design, because they are
                 // the model's reading of somebody's private prompt.
-                (fromSession ? (
+                // VIEWER counts as `fromSession`: everything it shows came
+                // out of the open file, so the reason a step cannot be
+                // adopted there is the file's shape and not where it ran.
+                (fromSession || VIEWER ? (
                   <div className="hint">
                     A session file carries this run's shape — its steps, timing
                     and token counts — and not the token ids underneath them,

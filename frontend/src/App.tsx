@@ -381,6 +381,21 @@ export default function App() {
           />
         </>
       )}
+
+      {/* AND IN THE VIEWER, which is the whole reason a `.mri` carries a run.
+          `ShareRun` promises the recipient "sees the failing tool call, clicks
+          it, and lands in the attention view of the generation that produced
+          the bad argument, on a machine with no GPU" — and until this the
+          viewer mounted no agents panel at all, so a bundle built around a
+          failing step opened with the run invisible.
+
+          The panel is the same component. What it cannot do here it does not
+          offer: the store searches, the imports, the rubric, the judge and the
+          two clear buttons all need a store, a disk or weights, and are gated
+          out rather than mounted and refusing. `runs` is 0 because there is no
+          playground here to record one, and adopting is impossible for a
+          reason the step inspector states. */}
+      {VIEWER && <AgentsPanel runs={0} />}
       <footer>
         {/* Read from /api/session. It was the literal "MRI-0.3" and had been
             wrong since 0.4.0 — a version string nobody remembers to bump is a
