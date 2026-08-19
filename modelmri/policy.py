@@ -42,6 +42,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import fmt
 from .errors import Refusal
 
 # What THIS side speaks. Declared here and again in
@@ -306,7 +307,7 @@ def check_capacity(
         raise capacity.TooBig(
             f"the policy sidecar's environment needs about "
             f"{VENV_DISK_BYTES / 1e9:,.0f} GB for its own torch, and "
-            f"{volume.drive or volume} has {free / 1e9:,.1f} GB free.",
+            f"{volume.drive or volume} has {fmt.bytes_si(free)} free.",
             overridable=False,
         )
 

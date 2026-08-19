@@ -1948,6 +1948,19 @@ input[type="range"]:focus-visible { outline: none; }
 }
 @keyframes featIn { from { opacity: 0; } }
 .feat-id { color: var(--color-feat); min-width: 62px; font-weight: 600; }
+/* The registered-but-unopenable list. `.resting-empty` has no rule for a
+   `ul`, so this would inherit the browser default and sit indented past the
+   sentence it belongs to. */
+.feat-unsupported {
+  margin: 8px 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 5px;
+}
+.feat-unsupported code {
+  color: var(--color-ink);
+}
+
 .feat-act { color: var(--color-mute); margin-left: auto; font-variant-numeric: tabular-nums; }
 
 /* ---------- the causal column, beside the activation it disagrees with ----

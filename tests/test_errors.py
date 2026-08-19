@@ -256,21 +256,32 @@ def app_where(patch, monkeypatch):
 def test_a_module_route_does_not_republish_a_broken_exception(
     patch, method, path, monkeypatch
 ):
-    # `repo`/`hook` are here for /api/sae/load specifically. That route now
-    # resolves an empty request against the registry — "the SAE for whatever
-    # model is loaded" rather than one model's release answering for all of
-    # them — so with nothing loaded it refuses BEFORE reaching `load_sae`,
-    # and this test would then be asserting against a guard instead of the
-    # thing it patched. Naming a repo skips the lookup and puts the patched
-    # function back in the path. Every other route ignores the extra keys, as
-    # they already do for the three above.
-    body = {
-        "token": "x",
-        "name": "x",
-        "prompt": "x",
-        "repo": "someone/sae",
-        "hook": "blocks.0.hook_resid_pre",
+    # ONE BODY PER ROUTE, each carrying only the keys that route declares.
+    # This used to send a single kitchen-sink body to all of them and lean on
+    # "every other route ignores the extra keys" — which is exactly the
+    # behaviour `Body` removed, because ignoring an unknown key is how
+    # `{"model_id": ...}` loaded a different model than the caller named and
+    # answered 200. A request body that names a field no route has is a typo,
+    # here as much as in anyone else's client.
+    #
+    # `repo`/`hook` are for /api/sae/load specifically. That route resolves an
+    # empty request against the registry — "the SAE for whatever model is
+    # loaded" — so with nothing loaded it refuses BEFORE reaching `load_sae`,
+    # and this test would then assert against a guard instead of the thing it
+    # patched. Naming a repo skips the lookup and puts it back in the path.
+    bodies = {
+        "/api/hub/signin": {"token": "x"},
+        "/api/ollama/pull": {"name": "x"},
+        "/api/sae/load": {"repo": "someone/sae", "hook": "blocks.0.hook_resid_pre"},
+        "/api/vla/load": {"repo": "someone/policy"},
+        # No prompt: this one takes an episode and a timestep.
+        "/api/vla/analyse": {"episode": 0, "t": 0},
+        # A free `dict`, not a `Body` — an imported trace is somebody else's
+        # document and its keys are theirs, so the same reasoning does not
+        # apply and `steps` is the minimum that reaches the patched function.
+        "/api/traces/import": {"name": "x", "steps": []},
     }
+    body = bodies.get(path)
     r = app_where(patch, monkeypatch).request(method, path, json=body)
     assert r.status_code == 500, f"{path} answered {r.status_code}"
     assert BROKE not in r.text

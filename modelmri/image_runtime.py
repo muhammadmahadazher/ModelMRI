@@ -370,7 +370,7 @@ class ImageHandle:
         # files from the ones arriving.
         allow = (
             _allow_for(repo)
-            if not (local_ok and Path(repo).expanduser().is_dir())
+            if not (local_ok and _is_local_dir(repo))
             else list(_WEIGHT_PATTERNS)
         )
         with self._lock, _tracked(repo, allow) as tracking:
@@ -601,6 +601,37 @@ def _allow_for(repo: str) -> list[str]:
     return _one_copy(matched) or list(_WEIGHT_PATTERNS)
 
 
+def _is_local_dir(repo: str, *, expand: bool = True) -> bool:
+    """`repo` names a directory on this machine. NEVER raises.
+
+    `Path.is_dir()` promises False for a path that does not exist, and keeps
+    that promise by swallowing a FIXED set of Windows errors — ERROR_NOT_READY,
+    ERROR_INVALID_NAME, and a few more. Measured here, it does not cover
+    everything a real machine produces:
+
+        OSError: [WinError 433] A device which does not exist was specified:
+        'hf-internal-testing\\tiny-stable-diffusion-torch'
+
+    That is a HUB ID, resolved as a relative path against a working directory
+    on a Google Drive mount, on the way to deciding whether it was local. It
+    needed no filesystem at all, and the entire load answered 500 "Something
+    inside ModelMRI failed rather than refusing" — the one sentence this
+    project treats as a bug report about itself.
+
+    A disconnected network drive, a container bind that went away, and a cloud
+    mount mid-reconnect all reach here the same way. "We could not ask" and
+    "it is not a local directory" lead to the same place: there is nothing
+    local to open, so the Hub is the answer. Making the question total is the
+    honest form of that, and it cannot mask a real local directory — a
+    directory that exists and is readable answers True before any of this.
+    """
+    try:
+        candidate = Path(repo)
+        return (candidate.expanduser() if expand else candidate).is_dir()
+    except OSError:
+        return False
+
+
 def _prefetch_weights(repo: str, allow: list, *, local_ok: bool = True) -> None:
     """Killable pre-download of exactly what `_resolve` will ask for.
 
@@ -614,7 +645,7 @@ def _prefetch_weights(repo: str, allow: list, *, local_ok: bool = True) -> None:
     quietly downloads the difference in-process, un-killably, and Stop goes
     back to doing nothing for exactly the files it was needed for.
     """
-    if local_ok and Path(repo).expanduser().is_dir():
+    if local_ok and _is_local_dir(repo):
         return
     _prefetch(repo, allow)
 
@@ -799,7 +830,7 @@ def _snapshot(repo: str, allow: list, *, local_ok: bool = True) -> Path:
     """
     if local_ok:
         candidate = Path(repo).expanduser()
-        if candidate.is_dir():
+        if _is_local_dir(repo):
             return candidate
 
     from huggingface_hub import snapshot_download
@@ -936,9 +967,16 @@ def _guard(
     from . import capacity, devices
 
     if already_held_bytes > 0 and not confirm:
+        # Through `fmt.bytes_si`, not `/1e9`. Measured on
+        # `hf-internal-testing/tiny-stable-diffusion-torch`: "already holding
+        # 1.3 GB of weights, and a pipeline adds 0.0 GB on top of it" — a
+        # refusal whose stated reason is that the second thing costs nothing.
+        # The comment eighteen lines above `_status` in this same file already
+        # describes this fix being made there; the guard kept its own copy of
+        # the arithmetic and so kept the bug.
         raise capacity.TooBig(
-            f"this process is already holding {already_held_bytes / 1e9:,.1f} "
-            f"GB of weights, and a pipeline adds {resident / 1e9:,.1f} GB on "
+            f"this process is already holding {fmt.bytes_si(already_held_bytes)} "
+            f"of weights, and a pipeline adds {fmt.bytes_si(resident)} on "
             f"top of it. Unlike a model that can be offloaded, both of these "
             f"are wanted resident at once — unload the other one first.",
             overridable=True,

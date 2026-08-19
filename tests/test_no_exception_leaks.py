@@ -88,7 +88,7 @@ def test_a_failed_load_does_not_publish_the_exception(client, monkeypatch):
     monkeypatch.setattr(
         transformers.AutoModelForCausalLM, "from_pretrained", staticmethod(explode)
     )
-    client.post("/api/model/load", json={"id": "Qwen/Qwen3-1.7B", "source": "hf"})
+    client.post("/api/model/load", json={"hf_id": "Qwen/Qwen3-1.7B", "source": "hf"})
 
     body = client.get("/api/model/progress").text
     assert not leaked(body), f"the progress snapshot leaked {leaked(body)}"
@@ -109,7 +109,7 @@ def test_the_load_route_itself_stays_generic(client, monkeypatch):
         transformers.AutoModelForCausalLM, "from_pretrained", staticmethod(explode)
     )
     resp = client.post(
-        "/api/model/load", json={"id": "Qwen/Qwen3-1.7B", "source": "hf"}
+        "/api/model/load", json={"hf_id": "Qwen/Qwen3-1.7B", "source": "hf"}
     )
     assert resp.status_code == 500
     assert not leaked(resp.text)

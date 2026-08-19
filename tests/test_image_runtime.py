@@ -19,6 +19,21 @@ import json
 
 import pytest
 
+# AT COLLECTION TIME, not inside a test. Several tests here patch
+# `transformers.<class>` through monkeypatch's STRING form, which imports the
+# module at the moment of the call — and importing `transformers` from inside
+# a running test re-enters `huggingface_hub`'s lazy `__getattr__` while it is
+# still resolving, which fails as:
+#
+#   ImportError: cannot import name 'logging' from 'huggingface_hub'
+#
+# Four tests in this file failed that way, but ONLY when a file that imports
+# torch without transformers ran first (`test_behavdiff.py` does), and they
+# passed alone — so the suite's result depended on which files were selected.
+# Importing here makes the module already-present by the time any patch
+# resolves it, which is the condition the lazy loader is safe under.
+pytest.importorskip("transformers")
+
 from modelmri import image_runtime as ir
 from modelmri.errors import BadRequest, Refusal
 
@@ -553,3 +568,50 @@ def test_the_imaging_library_s_own_bound_gets_an_honest_sentence():
     assert "not an image this can decode" not in said, (
         "a too-big image was reported as an unreadable one"
     )
+
+
+def test_a_hub_id_is_not_a_local_directory_even_when_the_disk_cannot_say():
+    """`Path.is_dir()` is not total, and three callers here assumed it was.
+
+    Measured against the running server, loading a Hub id that touches no
+    filesystem at all:
+
+        POST /api/image/load {"repo": "hf-internal-testing/tiny-stable-diffusion-torch"}
+        -> 500 "Something inside ModelMRI failed rather than refusing."
+
+        OSError: [WinError 433] A device which does not exist was specified
+
+    `is_dir()` promises False for a path that does not exist and keeps that
+    promise by swallowing a FIXED set of Windows errors. 433 is not among
+    them, so a relative path resolved against a working directory on a virtual
+    volume — a cloud mount mid-reconnect, a network drive that went away —
+    raised, and the whole image loader answered a 500 for a repo whose files
+    are on the Hub.
+
+    "We could not ask" and "it is not a local directory" lead to the same
+    place: there is nothing local to open. The question is total now.
+    """
+    from pathlib import Path
+
+    assert ir._is_local_dir("hf-internal-testing/tiny-stable-diffusion-torch") is False
+    # A real directory still answers True — the guard must not swallow the
+    # case it exists to protect.
+    assert ir._is_local_dir(str(Path(__file__).resolve().parent)) is True
+
+
+def test_the_disk_refusing_to_answer_is_not_a_local_directory(monkeypatch):
+    """The raise itself, forced, because no test machine has a flaky volume.
+
+    Any OSError, not just the one that was measured: a reader hitting
+    ERROR_NOT_READY on an empty optical drive or a permission error on a
+    mounted share deserves the same answer, and enumerating winerrors here
+    would be a second, weaker copy of the list pathlib already keeps.
+    """
+    from pathlib import Path
+
+    def explode(self):
+        raise OSError(22, "A device which does not exist was specified")
+
+    monkeypatch.setattr(Path, "is_dir", explode)
+    assert ir._is_local_dir("anything/at/all") is False
+    assert ir._is_local_dir("~") is False

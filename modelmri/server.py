@@ -23,7 +23,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__, behavdiff, custom, gguf_read, otel, paths
 from . import image_steps as _steps_defaults
@@ -257,7 +257,35 @@ def _internal(err: BaseException, where: str) -> JSONResponse:
 # classification, so it needs no arm either.
 
 
-class LoadRequest(BaseModel):
+class Body(BaseModel):
+    """A request body that REFUSES a key it does not know.
+
+    Pydantic ignores unknown fields by default, and the consequence is not
+    cosmetic. Measured against the running server:
+
+        POST /api/model/load {"model_id": "Qwen/Qwen3-1.7B"}
+        -> 200 {"loaded": true, "hf_id": "Qwen/Qwen2.5-0.5B-Instruct", ...}
+
+    The field is `hf_id`. A caller who wrote `model_id` was told the load
+    succeeded, and a DIFFERENT model was loaded — every panel then measuring a
+    model nobody asked for, with nothing anywhere saying the key was dropped.
+
+    The dangerous version of this is not the load. It is a sweep or a probe
+    whose parameter name was misspelled: the run uses the default, finishes,
+    and reports numbers labelled as though the parameter had been applied. A
+    silently wrong measurement presented as a right one is the single failure
+    this project is built to avoid, and `extra="ignore"` manufactures it from
+    one typo.
+
+    422 with the offending key named is the honest answer. It is also the
+    cheaper one to debug: the alternative is noticing, later, that the answer
+    was about something else.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LoadRequest(Body):
     hf_id: str = DEFAULT_MODEL
     source: str = "hf"  # "hf" | "ollama"
     # The user saw the size warning and chose to proceed anyway.
@@ -268,7 +296,7 @@ class LoadRequest(BaseModel):
     device: str = ""
 
 
-class GgufLoad(BaseModel):
+class GgufLoad(Body):
     path: str
     # None means "whatever this accelerator prefers". Named explicitly rather
     # than defaulted to float32 here, because the dtype is half of the memory
@@ -279,7 +307,7 @@ class GgufLoad(BaseModel):
     confirm: bool = False
 
 
-class QuantCompare(BaseModel):
+class QuantCompare(Body):
     quantised: str
     original: str
     prompt: str = "The capital of France is"
@@ -287,7 +315,7 @@ class QuantCompare(BaseModel):
     attention: bool = True
 
 
-class SAELoadRequest(BaseModel):
+class SAELoadRequest(Body):
     """Which SAE to load. Empty means "the one for the model that is loaded".
 
     NOT defaulted to a repo id. A constant here is one model's release
@@ -308,38 +336,38 @@ class SAELoadRequest(BaseModel):
     average_l0: int | None = None
 
 
-class SteerRequest(BaseModel):
+class SteerRequest(Body):
     feature_id: int | None = None  # None clears steering
     scale: float = Field(default=0.0, ge=-100.0, le=100.0)
 
 
-class HubSignInRequest(BaseModel):
+class HubSignInRequest(Body):
     token: str = Field(min_length=1, max_length=400)
 
 
-class OllamaPullRequest(BaseModel):
+class OllamaPullRequest(Body):
     name: str = Field(min_length=1, max_length=200)
     # The user saw the size warning and chose to proceed. Never a default,
     # and never enough to override a disk that has no room.
     confirm: bool = False
 
 
-class VLALoadRequest(BaseModel):
+class VLALoadRequest(Body):
     # One constant, in vla.py. Two copies of a default is two things to
     # forget to change.
     repo: str = VLA_DEFAULT_REPO
 
 
-class VLAAnalyseRequest(BaseModel):
+class VLAAnalyseRequest(Body):
     episode: int = Field(default=0, ge=0)
     t: int = Field(default=0, ge=0)
 
 
-class VLADatasetRequest(BaseModel):
+class VLADatasetRequest(Body):
     repo_id: str = Field(min_length=1, max_length=200)
 
 
-class ScanRequest(BaseModel):
+class ScanRequest(Body):
     """A checkpoint or a directory of them.
 
     `limit` bounds a directory walk, and what it drops is reported rather than
@@ -351,7 +379,7 @@ class ScanRequest(BaseModel):
     limit: int = Field(default=200, ge=1, le=5000)
 
 
-class ImageLoadRequest(BaseModel):
+class ImageLoadRequest(Body):
     """A cached pipeline directory, or a Hub id.
 
     No default. The checkpoint decides which panels apply, so guessing one
@@ -364,7 +392,7 @@ class ImageLoadRequest(BaseModel):
     confirm: bool = False
 
 
-class ImageRunRequest(BaseModel):
+class ImageRunRequest(Body):
     """One prompt through the pipeline, with the seed that makes it repeat.
 
     `seed` is optional and `None` is NOT 0. A diffusion run without a fixed
@@ -389,7 +417,7 @@ class ImageKnockoutRequest(ImageRunRequest):
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
-class TraceToDatasetRequest(BaseModel):
+class TraceToDatasetRequest(Body):
     """Recorded runs, turned into a set of cases you can re-run.
 
     No expected answers anywhere in this request, deliberately. The row is
@@ -404,7 +432,7 @@ class TraceToDatasetRequest(BaseModel):
     only_errors: bool = Field(default=False)
 
 
-class ExperimentCompareRequest(BaseModel):
+class ExperimentCompareRequest(Body):
     """Two runs of one dataset, case by case.
 
     `higher_is_better` has NO default and is required. There is no way to tell
@@ -427,7 +455,7 @@ class ExperimentCompareRequest(BaseModel):
     top_k: int = Field(default=12, ge=1, le=200)
 
 
-class ScorerRunRequest(BaseModel):
+class ScorerRunRequest(Body):
     """One scorer, one output, and whatever that scorer needs to compare to.
 
     `reference` is `None` rather than "" for the scorers that need nothing to
@@ -443,7 +471,7 @@ class ScorerRunRequest(BaseModel):
     options: dict | None = Field(default=None)
 
 
-class TrajectoryCompareRequest(BaseModel):
+class TrajectoryCompareRequest(Body):
     """What was supposed to happen, against what did.
 
     Both sides are lists of recorded-step dicts, or of bare names, or a
@@ -455,7 +483,7 @@ class TrajectoryCompareRequest(BaseModel):
     candidate: list = Field(default_factory=list, max_length=2000)
 
 
-class ImageAttributionRequest(BaseModel):
+class ImageAttributionRequest(Body):
     """One picture, covered up a window at a time.
 
     The image travels IN the request as a data URL, never as a path: a path
@@ -480,7 +508,7 @@ class ImageAttributionRequest(BaseModel):
     batch: int = Field(default=32, ge=1, le=64)
 
 
-class AdapterRequest(BaseModel):
+class AdapterRequest(Body):
     """A LoRA on this machine, by path.
 
     A PATH rather than an upload: an adapter is tens of megabytes and already
@@ -494,7 +522,7 @@ class AdapterRequest(BaseModel):
     top: int = Field(default=40, ge=1, le=500)
 
 
-class CVPredictRequest(BaseModel):
+class CVPredictRequest(Body):
     """One picture, and what the model says about it.
 
     The image travels IN the request as a data URL for the same reason
@@ -511,7 +539,7 @@ class CVPredictRequest(BaseModel):
     mask_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
-class CVAttributeRequest(BaseModel):
+class CVAttributeRequest(Body):
     """Occlusion attribution over a prediction this model actually made.
 
     `target` names WHICH answer to attribute. `None` is "whatever the model
@@ -531,7 +559,7 @@ class CVAttributeRequest(BaseModel):
     batch: int = Field(default=32, ge=1, le=64)
 
 
-class StepTraceRequest(BaseModel):
+class StepTraceRequest(Body):
     """One run, keeping every step's latent, to find where it committed.
 
     Deliberately NOT the filmstrip. This decodes nothing -- it measures how far
@@ -549,7 +577,7 @@ class StepTraceRequest(BaseModel):
     threshold: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
-class FilmstripRequest(BaseModel):
+class FilmstripRequest(Body):
     """Watch the picture form, decoding only the steps you name.
 
     `every` and `at` are two ways to choose the same thing and both are
@@ -575,7 +603,7 @@ class FilmstripRequest(BaseModel):
     )
 
 
-class VLAFrameRequest(BaseModel):
+class VLAFrameRequest(Body):
     """One frame, plus the seed that makes the answer reproducible.
 
     `seed` is optional and `None` is NOT 0. None means "do not fix the
@@ -589,7 +617,7 @@ class VLAFrameRequest(BaseModel):
     seed: int | None = Field(default=None, ge=0, lt=2**31)
 
 
-class VLACompareRequest(BaseModel):
+class VLACompareRequest(Body):
     """A whole episode, strided.
 
     `stride=0` means "choose one that fits the work budget" rather than
@@ -602,25 +630,25 @@ class VLACompareRequest(BaseModel):
     seed: int | None = Field(default=None, ge=0, lt=2**31)
 
 
-class CustomLoadRequest(BaseModel):
+class CustomLoadRequest(Body):
     path: str = Field(min_length=1, max_length=4096)
 
 
-class CustomRootRequest(BaseModel):
+class CustomRootRequest(Body):
     # A folder to also look in, for a model that does not live where the
     # server was started. Added to the allowed roots rather than bypassing
     # them — see custom.add_root.
     path: str = Field(min_length=1, max_length=4096)
 
 
-class CustomRunRequest(BaseModel):
+class CustomRunRequest(Body):
     # None means "use the adapter's example_input()"; the panel sends the
     # shape it showed you, so nothing ever runs on a shape you didn't see.
     shape: list[int] | None = Field(default=None, max_length=8)
     seed: int = Field(default=0, ge=0, le=2**31 - 1)
 
 
-class PatchGraphRequest(BaseModel):
+class PatchGraphRequest(Body):
     """A pair, and how far back to walk from what the grid flagged."""
 
     clean: str
@@ -631,7 +659,7 @@ class PatchGraphRequest(BaseModel):
     max_receivers: int = 0
 
 
-class PatchRequest(BaseModel):
+class PatchRequest(Body):
     # Two prompts, not one, and the pair is the unit of meaning: neither is
     # usable without the other, so they arrive together rather than as a
     # prompt plus a query parameter.
@@ -639,7 +667,7 @@ class PatchRequest(BaseModel):
     corrupt: str
 
 
-class PromptRequest(BaseModel):
+class PromptRequest(Body):
     prompt: str
     max_new_tokens: int = Field(default=256, ge=1, le=4096)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)

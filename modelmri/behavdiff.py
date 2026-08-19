@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # Above this many tokens the captured distributions get large: the tensor is
@@ -382,7 +383,7 @@ def _cap_prompt(prompt: str, tokenizer, notes: list[str]) -> str:
         f"prompt is {len(ids)} tokens; compared the first {MAX_POSITIONS}. "
         f"The retained distributions are positions x vocabulary, so the whole "
         f"prompt would hold roughly "
-        f"{len(ids) * getattr(tokenizer, 'vocab_size', 32000) * 4 / 1e9:.1f} GB "
+        f"{fmt.bytes_si(len(ids) * getattr(tokenizer, 'vocab_size', 32000) * 4)} "
         f"per side."
     )
     return tokenizer.decode(ids[:MAX_POSITIONS])

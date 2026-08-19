@@ -286,6 +286,39 @@ export default function FeaturesPanel({
               </div>
             ))}
           </>
+        ) : opts?.matching.length ? (
+          /* REGISTERED, AND THIS BUILD CANNOT OPEN IT. A different situation
+             from "none exists", with a different next step, and the branch
+             below said the false one: "No sparse autoencoder exists for
+             gemma-2-9b" — two lines above "Known SAEs: gemma-scope-9b-pt-res",
+             which is the release registered for exactly that model.
+
+             `matching` minus `usable` is non-empty here by construction: every
+             entry registered for this model is unsupported. Each carries the
+             registry's own `note`, and those notes are not interchangeable —
+             one says the layout has never been run against this model and is
+             expected to work, the other says the layout cannot be read at all.
+             Printing one sentence for both would put the reader back where
+             this branch found them. */
+          <div className="resting-empty">
+            <b>
+              {opts.matching.length === 1 ? "An SAE is" : `${opts.matching.length} SAEs are`}{" "}
+              registered for {opts.model}, and this build cannot open{" "}
+              {opts.matching.length === 1 ? "it" : "them"} yet.
+            </b>
+            <ul className="feat-unsupported">
+              {opts.matching.map((m) => (
+                <li key={m.repo}>
+                  <code>{m.repo}</code> — {m.note || "no reason was recorded."}
+                </li>
+              ))}
+            </ul>
+            The box below takes a repo id directly, so one marked{" "}
+            <em>expected to work but not measured here</em> is still worth a
+            try — it will either load or refuse with the dimension it found.
+            The logit lens further down asks a different question of the same
+            residual stream and works on every model.
+          </div>
         ) : (
           <div className="resting-empty">
             <b>No sparse autoencoder exists for {opts?.model ?? "this model"}.</b>{" "}
