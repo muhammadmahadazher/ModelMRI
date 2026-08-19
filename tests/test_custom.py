@@ -721,3 +721,49 @@ def test_two_candidate_walks_that_disagree_about_the_total_are_not_equal():
 
     # A plain list carries no claim about the walk, so the rows decide.
     assert complete == [{"name": "a"}]
+
+
+def test_the_total_counts_rows_not_paths(tmp_path, monkeypatch):
+    """The total added to stop a fabricated count was itself fabricated.
+
+    MEASURED with 45 adapter-shaped `.py` files and 45 `.pt` files in a folder
+    that is BOTH the working directory and MODELMRI_MODELS_DIR — which is the
+    ordinary case, because the allowed roots overlap by design:
+
+        adapters 40 of 90, checkpoints 40 of 90
+
+    Ninety, for forty-five files. The counter incremented on every path the
+    glob yielded: before the skip-directory test, before the template and
+    `test_` exclusions, before the `seen` dedupe that exists precisely because
+    the roots overlap, and before the module-level `def load` test that
+    decides whether a `.py` is a candidate at all.
+
+    "40 of 90" is worse than the plain "40" it replaced — a specific,
+    confident, wrong number that sends a reader looking for fifty models which
+    do not exist. `n_total` has to mean "rows this walk WOULD have listed".
+    """
+    for i in range(45):
+        (tmp_path / f"adapter_{i:02d}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / f"model_{i:02d}.pt").write_bytes(b"\0" * 32)
+
+    # The same directory twice, which is what the real roots do.
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path, tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == 40
+    assert adapters.n_total == 45, "the same file through two roots counted twice"
+
+    scripts = custom.find_torchscript()
+    assert len(scripts) == 40
+    assert scripts.n_total == 45
+
+    # And a non-candidate `.py` must not inflate it either.
+    (tmp_path / "notes.py").write_text("# just a note\n", encoding="utf-8")
+    (tmp_path / "test_thing.py").write_text(
+        "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+        encoding="utf-8",
+    )
+    assert custom.find_adapters(tmp_path).n_total == 45

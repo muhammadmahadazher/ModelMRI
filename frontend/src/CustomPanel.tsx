@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  CustomCandidate,
+  CustomCandidates,
   CustomLayer,
   CustomRun,
   CustomStatus,
@@ -51,11 +51,11 @@ export default function CustomPanel({
   onModelChange?: () => void;
 } = {}) {
   const [status, setStatus] = useState<CustomStatus | null>(null);
-  const [cands, setCands] = useState<{
-    adapters: CustomCandidate[];
-    torchscript: CustomCandidate[];
-    roots: string[];
-  } | null>(null);
+  // The SHARED type, not a local copy of its shape. This inline literal is
+  // why three fields the server had started returning were invisible here:
+  // the panel described the payload for itself, so nothing told it when the
+  // payload grew.
+  const [cands, setCands] = useState<CustomCandidates | null>(null);
   const [run, setRun] = useState<CustomRun | null>(null);
   const [shape, setShape] = useState("");
   const [busy, setBusy] = useState("");
@@ -261,6 +261,20 @@ export default function CustomPanel({
                 Python file with <code>def load(): return your_model</code> —
                 copy <code>examples/adapter_template.py</code> next to your
                 training code, or set <code>MODELMRI_MODELS_DIR</code>.
+              </p>
+            )}
+            {/* THE CAP, SAID. Both walks stop at 40 and a reader choosing
+                from this list believes it is every model they have. Rendered
+                once above both lists rather than twice, because the walks
+                share a limit and two identical warnings read as two
+                problems. */}
+            {cands.truncated && (
+              <p className="hint">
+                Showing {cands.adapters.length} of {cands.n_adapters_found}{" "}
+                adapter(s) and {cands.torchscript.length} of{" "}
+                {cands.n_torchscript_found} checkpoint(s) found here — the walk
+                stops after that many so a large folder cannot hang the panel.
+                Anything not listed can still be loaded by typing its path.
               </p>
             )}
             {cands.adapters.length > 0 && (

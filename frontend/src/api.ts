@@ -1140,6 +1140,10 @@ export interface ImageModelInfo {
 export interface ImageAvailable {
   models: ImageModelInfo[];
   known: number;
+  /** The cache walk stops at `scan_limit`, so a flat count is a claim that
+   *  this is everything. `means` carries the sentence; these carry the fact. */
+  truncated: boolean;
+  scan_limit: number;
   means: string;
 }
 
@@ -1981,7 +1985,14 @@ export interface ImageSize {
   id: string;
   size_bytes: number | null;
   gated: boolean;
-  cached: boolean;
+  /** `null` when the local cache could not be walked at all. "We looked and
+   *  it is not here" and "nobody could look" are different answers, and only
+   *  one of them justifies telling somebody to spend the download. */
+  cached: boolean | null;
+  partial: boolean | null;
+  /** Whether the walk ran. `means` already says so in words; this is here so
+   *  nothing branches on `cached === false` and gets it wrong. */
+  cache_readable: boolean;
   means: string;
 }
 
@@ -3009,14 +3020,20 @@ export interface CustomRun {
 export const getCustom = () =>
   fetch("/api/custom").then((r) => json<CustomStatus>(r));
 
+export interface CustomCandidates {
+  adapters: CustomCandidate[];
+  torchscript: CustomCandidate[];
+  roots: string[];
+  /** How many the walk SAW, against how many it returned. Both walks stop at
+   *  40, and a panel whose whole job is "here is what is on your disk" showed
+   *  40 of 45 with nothing to say five were missing. */
+  n_adapters_found: number;
+  n_torchscript_found: number;
+  truncated: boolean;
+}
+
 export const getCustomCandidates = () =>
-  fetch("/api/custom/candidates").then((r) =>
-    json<{
-      adapters: CustomCandidate[];
-      torchscript: CustomCandidate[];
-      roots: string[];
-    }>(r),
-  );
+  fetch("/api/custom/candidates").then((r) => json<CustomCandidates>(r));
 
 export const loadCustom = (path: string) =>
   fetch("/api/custom/load", {
@@ -3943,19 +3960,16 @@ export const unloadModel = () =>
  *  them. A local tool that will import any path handed to it is a nastier
  *  primitive than it looks.
  */
+/** The same walk `/api/custom/candidates` runs, plus the folder that was
+ *  added. One type for both, because the panel renders whichever answered
+ *  last and a shape that differs between them would drop the truncation
+ *  notice depending on which button was pressed. */
 export const scanFolder = (path: string) =>
   fetch("/api/custom/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
-  }).then((r) =>
-    json<{
-      added: string;
-      adapters: CustomCandidate[];
-      torchscript: CustomCandidate[];
-      roots: string[];
-    }>(r),
-  );
+  }).then((r) => json<CustomCandidates & { added: string }>(r));
 
 /* ══════════════════════════════════════════════════════════════════════════
    THE JUDGE, AND WHAT THE ROBOT POLICY WOULD DO

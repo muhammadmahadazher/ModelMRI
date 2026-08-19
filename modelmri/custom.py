@@ -1143,13 +1143,6 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> Candidates
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.py")):
-            # COUNTED past the limit, not abandoned at it. Returning here meant
-            # the walk never learned what it skipped, so the panel could say
-            # "40" and never "40 of 45" — and five of the reader's own models
-            # were absent from the one view that exists to list them.
-            if len(found) >= limit:
-                n_total += 1
-                continue
             # Relative to the scan root, not the absolute path. `path.parts`
             # includes every ancestor above the root, so a repo that happens to
             # live under a directory named `build`, `dist`, `node_modules` or
@@ -1188,6 +1181,22 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> Candidates
             # ModelMRI's own saes.py and vla.py as models you had trained.
             if not _MODULE_LEVEL_LOAD.search(head):
                 continue
+            # COUNTED HERE, where a row is confirmed — after the skip
+            # directories, after the template and `test_` exclusions, after
+            # the `seen` dedupe that exists because the allowed roots overlap
+            # by design, and after the module-level `def load` test that
+            # decides whether a `.py` is a candidate at all.
+            #
+            # Counting at the top of the loop instead reported "40 of 90" for
+            # forty-five files: the same file through two roots, plus every
+            # `.py` that was never a candidate. A specific wrong total is
+            # worse than the plain "40" it replaced, because a reader goes
+            # looking for the fifty models it implies.
+            n_total += 1
+            if len(found) >= limit:
+                # Past the limit the row is not built, but it HAS been
+                # counted, which is the whole point of walking on.
+                continue
             score = sum(h in path.name.lower() for h in _ADAPTER_HINTS)
             found.append(
                 {
@@ -1199,9 +1208,9 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> Candidates
                 }
             )
     found.sort(key=lambda f: (not f["hint"], not f["has_example"], f["name"]))
-    # `n_total` counts every adapter-shaped file the walk SAW; `len(found)` is
-    # how many it returned.
-    return Candidates(found, n_total=n_total + len(found))
+    # `n_total` is every row this walk would have listed; `len(found)` is how
+    # many it did.
+    return Candidates(found, n_total=n_total)
 
 
 def checkpoint_kind(path: Path) -> str:
@@ -1292,9 +1301,6 @@ def find_torchscript(limit: int = 40) -> Candidates:
         # `checkpoint_kind` labels it so, but it can now be READ.
         for pattern in ("*.pt", "*.pth", "*.torchscript", "*.gguf"):
             for path in sorted(base.rglob(pattern)):
-                if len(out) >= limit:
-                    n_total += 1
-                    continue
                 # Relative to the scan root, not the absolute path -- the
                 # same fix `find_adapters` above already carries, in its own
                 # words: "`path.parts` includes every ancestor above the root,
@@ -1324,6 +1330,13 @@ def find_torchscript(limit: int = 40) -> Candidates:
                     # rather than listing it with a made-up size, because the
                     # size is the only thing this row adds over the filename.
                     continue
+                # COUNTED HERE, past the skip directories and past the `seen`
+                # dedupe — the allowed roots overlap by design, so counting at
+                # the top of the loop reported one file twice. See
+                # `find_adapters` for the measurement that showed it.
+                n_total += 1
+                if len(out) >= limit:
+                    continue
                 out.append(
                     {
                         "path": str(path),
@@ -1336,4 +1349,4 @@ def find_torchscript(limit: int = 40) -> Candidates:
                         "kind": checkpoint_kind(path),
                     }
                 )
-    return Candidates(out, n_total=n_total + len(out))
+    return Candidates(out, n_total=n_total)

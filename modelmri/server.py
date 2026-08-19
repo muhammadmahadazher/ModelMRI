@@ -2277,11 +2277,21 @@ def create_app(
             adapters, scripts = await asyncio.to_thread(
                 lambda: (custom.find_adapters(), custom.find_torchscript())
             )
+            # THE SAME FIELDS `/api/custom/candidates` returns, because this
+            # is the same walk with the same cap. The panel renders whichever
+            # of the two answered last, so a shape that differs between them
+            # loses the truncation notice depending on which button was
+            # pressed.
+            n_adapters = getattr(adapters, "n_total", len(adapters))
+            n_scripts = getattr(scripts, "n_total", len(scripts))
             return {
                 "added": str(root),
                 "adapters": adapters,
                 "torchscript": scripts,
                 "roots": [str(r) for r in custom.allowed_roots()],
+                "n_adapters_found": n_adapters,
+                "n_torchscript_found": n_scripts,
+                "truncated": n_adapters > len(adapters) or n_scripts > len(scripts),
             }
         except AdapterError as err:
             return JSONResponse({"error": err.sentence}, status_code=422)
