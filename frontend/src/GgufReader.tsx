@@ -306,6 +306,20 @@ export default function GgufReader({
             .slice(0, 6)
             .map((o) => `${o.name} (${o.type}, ${o.bpw})`)
             .join(", ")}
+          {/* TWO CUTS, neither of them visible. The server keeps the twelve
+              highest and this keeps six of those, so a file with forty
+              tensors above its headline listed six under a sentence reading
+              as though they were the set. The server's total is the only
+              number that can say so — the panel cannot see past what it was
+              sent. */}
+          {s.n_higher_precision_tensors > Math.min(6, s.higher_precision_tensors.length) && (
+            <>
+              {" "}
+              … and {s.n_higher_precision_tensors -
+                Math.min(6, s.higher_precision_tensors.length)}{" "}
+              more, {s.n_higher_precision_tensors} in total
+            </>
+          )}
           . These sit above <code>{s.dominant_type}</code> and are excluded from
           it — which is why a file labelled for its dominant type can read much
           higher overall.

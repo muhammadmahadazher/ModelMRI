@@ -256,7 +256,13 @@ class Gguf:
             "by_type_covers_whole_file": whole,
             "dominant_type": headline if whole else None,
             "why_unmeasured": why,
+            # Capped at twelve, and the total travels with it. The panel
+            # then cuts to six, so a file with forty tensors above its
+            # headline showed six and said nothing — a list that reads as
+            # "these are the ones sitting above the dominant type" when it is
+            # 15% of them. Both cuts are disclosed now, from this one number.
             "higher_precision_tensors": outliers[:12],
+            "n_higher_precision_tensors": len(outliers),
             "context_length": meta.get(f"{arch}.context_length") if arch else None,
             "block_count": meta.get(f"{arch}.block_count") if arch else None,
             "embedding_length": meta.get(f"{arch}.embedding_length") if arch else None,

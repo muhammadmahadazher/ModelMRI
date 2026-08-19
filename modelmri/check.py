@@ -208,8 +208,20 @@ def run(
                         "no name failed twice in a row inside "
                         f"{found.retry_window_ms} ms"
                         if not storms
+                        # NAMED THREE, FOUND N. `no-errors` thirty lines
+                        # above lists five and appends " …" when there are
+                        # more; these two listed three and said nothing, so a
+                        # build with thirty retry storms reported three and
+                        # read as though that was all of them. The count is
+                        # what a reader acts on — three storms is a flaky
+                        # dependency, thirty is a broken loop.
                         else "; ".join(
                             f"{s.label} failed {s.count}x in a row" for s in storms[:3]
+                        )
+                        + (
+                            f" … and {len(storms) - 3} more, {len(storms)} in total"
+                            if len(storms) > 3
+                            else ""
                         )
                     ),
                     step_ids=[sid for s in storms for sid in s.step_ids],
@@ -244,10 +256,17 @@ def run(
                         detail=(
                             "no sequence repeated back to back"
                             if not cycles
+                            # Same cut, same silence, same fix as the
+                            # retry storms above.
                             else "; ".join(
                                 f"{c.cycle_length} steps repeated {c.count}x "
                                 f"({c.label})"
                                 for c in cycles[:3]
+                            )
+                            + (
+                                f" … and {len(cycles) - 3} more, {len(cycles)} in total"
+                                if len(cycles) > 3
+                                else ""
                             )
                         ),
                         step_ids=[sid for c in cycles for sid in c.step_ids],

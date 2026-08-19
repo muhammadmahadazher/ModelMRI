@@ -734,3 +734,42 @@ def test_the_report_survives_json(photo):
 def test_the_model_name_travels_when_it_is_given(photo):
     out = va.sweep(MeanNet().eval(), photo, patch=8, model_name="google/vit-base")
     assert "google/vit-base" in out.means()
+
+
+def test_the_estimate_reports_a_batch_it_had_to_reduce():
+    """`_clamp_batch` returns `(requested, used)` and its docstring says why:
+    "Both travel, because a silent cap is a defect."
+
+    `estimate` took `[1]` and discarded the request, so the cost estimate
+    quoted a batch the caller never asked for with nothing saying it had been
+    reduced — while `sweep`, the run this estimates, reports the pair. One
+    question, two answers, and the estimate is the one read BEFORE committing
+    to the cost.
+    """
+    from modelmri import vision_attr as va
+
+    over = va.estimate(height=224, width=224, patch=32, stride=32, batch=999)
+    assert over["batch_requested"] == 999
+    assert over["batch"] == va.MAX_BATCH
+    assert "999 was asked for" in over["means"]
+    assert str(va.MAX_BATCH) in over["means"]
+
+    # Unclamped says nothing extra — "4 was asked for and 4 was used" is noise.
+    fine = va.estimate(height=224, width=224, patch=32, stride=32, batch=4)
+    assert fine["batch_requested"] == fine["batch"] == 4
+    assert "asked for" not in fine["means"]
+
+
+def test_the_per_call_input_size_is_not_printed_as_zero():
+    """`{input_bytes / 1e6:,.1f} MB` floored a small occluder's per-call cost.
+
+    A 32x32 occluder over a 64x64 image at batch 1 is well under a megabyte,
+    and this is the figure a reader uses to decide whether the sweep fits.
+    """
+    from modelmri import vision_attr as va
+
+    small = va.estimate(
+        height=64, width=64, patch=16, stride=16, batch=1, bytes_per_value=1
+    )
+    assert small["input_bytes_per_call"] > 0
+    assert "0.0 MB" not in small["means"], small["means"]

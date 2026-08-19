@@ -55,6 +55,13 @@ SERVER_INFO = {"name": "modelmri", "version": ""}
 # with a sentence rather than hang a client's event loop.
 ATTACH_TIMEOUT = 120
 
+# How much prompt and generation text `inspect_mri` returns. A cap is right
+# here — the result lands in a model's context and a 200 kB prompt would crowd
+# out the answer it was fetched to support — and what was cut is reported
+# beside it, because a truncated prompt an agent cannot tell from a whole one
+# is a reasoning error waiting to happen.
+MAX_MCP_TEXT = 2000
+
 
 def _tools() -> list:
     """The tool list, as MCP describes them.
@@ -301,8 +308,21 @@ class Server:
                 "n_layers": parsed.n_layers,
                 "n_heads": parsed.n_heads,
                 "n_tokens": len(parsed.tokens),
-                "prompt": parsed.prompt[:2000],
-                "generation": parsed.generation[:2000],
+                # CLIPPED, AND SAID SO. These were sliced at 2000 with no
+                # marker and no length, so an agent reading this tool got a
+                # truncated prompt indistinguishable from a whole one — and
+                # then reasoned about a `.mri` on the strength of two thirds
+                # of the text that produced it. `modelmri inspect --json`, the
+                # sibling for a human, returns both whole.
+                #
+                # The cap stays: an MCP result goes into a model's context and
+                # a 200 kB prompt would crowd out the answer. What changes is
+                # that the reader is told, in the same shape `traces.py` uses
+                # — the text, plus how many characters are not in it.
+                "prompt": parsed.prompt[:MAX_MCP_TEXT],
+                "prompt_clipped": max(0, len(parsed.prompt) - MAX_MCP_TEXT),
+                "generation": parsed.generation[:MAX_MCP_TEXT],
+                "generation_clipped": max(0, len(parsed.generation) - MAX_MCP_TEXT),
                 "has": {
                     "attention": bool(parsed.attention),
                     "lens": bool(parsed.lens),

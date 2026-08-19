@@ -2862,6 +2862,10 @@ export interface GgufSummary {
   head_count_kv: number | null;
   tokenizer: string | null;
   higher_precision_tensors: { name: string; type: string; bpw: number }[];
+  /** How many there ARE. The array above is the twelve highest and the panel
+   *  shows six of those, so without this the list reads as the whole set when
+   *  it can be a small fraction of it. */
+  n_higher_precision_tensors: number;
   unmeasured_tensors: number;
   means: string;
 }

@@ -422,3 +422,37 @@ def test_a_step_that_recorded_no_duration_is_still_just_absent():
     assert a.ok is True
     assert "recorded no duration" in a.detail
     assert "cannot read" not in a.detail
+
+
+def test_a_list_of_three_says_how_many_there_were():
+    """`no-errors` lists five and marks its cut with " …"; these two listed
+    three and said nothing, so a build with twenty retry storms reported three
+    and read as though that was all of them.
+
+    The count is what a reader acts on. Three storms is a flaky dependency;
+    twenty is a broken loop, and the detail line said the same thing for both.
+    """
+    steps = [
+        {
+            "id": f"s{i}",
+            "kind": "tool_call",
+            "name": f"fetch{i // 2}",
+            "error": True,
+            "started_ms": i * 10,
+            "duration_ms": 5,
+        }
+        for i in range(40)
+    ]
+    from modelmri import check as check_mod
+
+    result = check_mod.run({"name": "n", "steps": steps}, no_retry_storms=True)
+    a = next(x for x in result.assertions if x.name == "no-retry-storms")
+    assert a.ok is False
+    assert "20 in total" in a.detail, a.detail
+    assert "and 17 more" in a.detail
+
+    # Three or fewer says nothing extra: "3 in total" under three named ones
+    # is noise, and the sibling above behaves the same way.
+    few = check_mod.run({"name": "n", "steps": steps[:4]}, no_retry_storms=True)
+    b = next(x for x in few.assertions if x.name == "no-retry-storms")
+    assert "in total" not in b.detail, b.detail

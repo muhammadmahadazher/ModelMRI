@@ -116,6 +116,7 @@ import math
 import time
 from dataclasses import asdict, dataclass, field
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # The four fills, named on every result. There is no neutral one — see the
@@ -409,7 +410,13 @@ def estimate(
         height, width, patch, patch if stride is None else stride
     )
     patch = int(patch)
-    batch = _clamp_batch(batch)[1]
+    # BOTH, which is what `_clamp_batch` returns and what its docstring asks
+    # for: "Both travel, because a silent cap is a defect." This took `[1]`
+    # and threw the request away, so the cost estimate quoted a batch the
+    # caller never asked for with nothing saying it had been reduced — and
+    # `sweep`, the run this estimates, reports the pair. One question, two
+    # answers, and the estimate is the one read BEFORE committing to the cost.
+    batch_requested, batch = _clamp_batch(batch)
 
     rows, cols = _count_windows(height, width, patch, stride)
     n_windows = rows * cols
@@ -436,6 +443,7 @@ def estimate(
         "passes": passes,
         "forward_calls": calls,
         "batch": batch,
+        "batch_requested": batch_requested,
         "patch": patch,
         "stride": stride,
         # Only the occluded copies of the input, which is the one number this
@@ -450,8 +458,17 @@ def estimate(
             f"A {patch}x{patch} occluder at stride {stride} over a "
             f"{height}x{width} image is {n_windows} windows — a {rows}x{cols} "
             f"map — and {passes} forward passes, sent {batch} at a time in "
-            f"{calls} calls. The occluded copies alone are "
-            f"{input_bytes / 1e6:,.1f} MB per call; the activations behind "
+            f"{calls} calls."
+            + (
+                f" A batch of {batch_requested} was asked for and {batch} is "
+                f"this module's bound on how many full-size copies of the "
+                f"image it will hold at once, so the figures here are for "
+                f"{batch}."
+                if batch_requested != batch
+                else ""
+            )
+            + f" The occluded copies alone are "
+            f"{fmt.bytes_si(input_bytes)} per call; the activations behind "
             f"them are a multiple of that which nothing here can know without "
             f"running the model."
             + (
