@@ -229,6 +229,38 @@ const NEEDS_A_MACHINE =
   "Install ModelMRI (`pip install modelmri`) to point these instruments at " +
   "your own models.";
 
+/** The step shape the panels read, from the smaller one a `.mri` carries.
+ *
+ *  MIRRORS `server.py`'s `/api/session/trace`, which does exactly this for the
+ *  app. A bundle stores a deliberately reduced step — no `seq`, no cache or
+ *  reasoning token counts, no `adoptable` — and the panels treat a MISSING key
+ *  and a null one very differently:
+ *
+ *    step.tokens_cache_read !== null   is TRUE for undefined, and the ledger
+ *                                      printed "undefined cache read"
+ *    step {sel.seq}                    printed "step undefined"
+ *
+ *  `null` is the value that already means "the recorder said nothing", and
+ *  `seq` is positional so it is derived rather than left blank. Fixed in the
+ *  app first; the viewer served the raw steps and kept the bug, which is what
+ *  a fix on one side of a wire looks like.
+ */
+function viewerSteps(steps: Record<string, unknown>[]): Record<string, unknown>[] {
+  return steps.map((step, i) => ({
+    truncated_in: 0,
+    truncated_out: 0,
+    tokens_cache_read: null,
+    tokens_cache_write: null,
+    tokens_reasoning: null,
+    // Never adoptable, and false rather than absent: a `.mri` carries a run's
+    // shape and not the token ids underneath it, so there is nothing here for
+    // the mechanistic panels to reopen.
+    adoptable: false,
+    ...step,
+    seq: i,
+  }));
+}
+
 export async function viewerFetch(
   path: string,
   /** JSON body, when the caller sent one. Nothing here needs it yet — every
@@ -387,12 +419,29 @@ export async function viewerFetch(
   if (p === "/api/traces") {
     const t = open?.trace;
     if (!t?.steps?.length) return ok([]);
+    // The same fields the store's own list carries. Without them the row
+    // rendered a bare "·" with nothing after it: `howLong(undefined)` is ""
+    // by design, and `n_timed === 0` is false for undefined so the "not
+    // timed" arm never fired either.
+    const timed = t.steps.filter(
+      (s) => typeof s.duration_ms === "number" && Number.isFinite(s.duration_ms),
+    );
     return ok([
       {
         id: t.id || "bundled",
         name: t.name || "the bundled run",
         started_at: t.started_at || "",
         n_steps: t.steps.length,
+        n_timed: timed.length,
+        // `MAX(started_ms + duration)`, matching `traces.list_traces`. A step
+        // with no duration contributes its start alone, which is why the
+        // count above travels beside it.
+        total_ms: t.steps.reduce((m, s) => {
+          const at = typeof s.started_ms === "number" ? s.started_ms : 0;
+          const dur = typeof s.duration_ms === "number" ? s.duration_ms : 0;
+          return Math.max(m, at + dur);
+        }, 0),
+        n_errors: t.steps.filter((s) => Boolean(s.error)).length,
       },
     ]);
   }
@@ -415,7 +464,7 @@ export async function viewerFetch(
       id: t.id || "bundled",
       name: t.name || "the bundled run",
       started_at: t.started_at || "",
-      steps: t.steps,
+      steps: viewerSteps(t.steps),
       step_ref: t.step_ref || "",
       truncated: t.truncated || 0,
       n_steps_total: t.n_steps_total ?? t.steps.length,

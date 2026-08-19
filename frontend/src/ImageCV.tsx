@@ -79,7 +79,7 @@ export default function ImageCV({
       if (what === "predict") {
         setPred(await imageCvPredict({ image: picture, top_k: topK }));
       } else if (what === "readout") {
-        const got = await imageCvReadout({ image: picture, top_k: topK });
+        const got = await imageCvReadout({ image: picture });
         setReadout(got);
         setLayer(0);
       }

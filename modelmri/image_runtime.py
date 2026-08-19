@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import fmt, imaging
+from . import fmt, image_attention, imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -122,6 +122,12 @@ class ImageStatus:
             "components": dict(self.components),
             "bytes_resident": self.bytes_resident,
             "load_seconds": self.load_seconds,
+            # PUBLISHED, not just enforced. The route refuses a request
+            # marking more words than this, so a panel that lets somebody pick
+            # twenty-five and then hands them a validation error has charged
+            # them the picking before mentioning the limit. One number, from
+            # the module that owns it.
+            "max_knockout_words": image_attention.MAX_KNOCKOUT_WORDS,
             "reason": self.reason,
             "means": self.means(),
         }

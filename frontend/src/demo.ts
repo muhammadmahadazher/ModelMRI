@@ -805,6 +805,10 @@ export async function demoFetch(
     components: {},
     bytes_resident: 0,
     load_seconds: null,
+    // The bound the live route enforces. Stated even with nothing loaded,
+    // because it is a property of the tool rather than of a pipeline — and
+    // the picker reads it to know when to stop accepting words.
+    max_knockout_words: 24,
     reason,
     means:
       `No image model is held in this process, so nothing here can say what ` +

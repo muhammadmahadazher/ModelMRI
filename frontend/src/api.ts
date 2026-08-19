@@ -1242,6 +1242,12 @@ export interface ImageStatus {
   bytes_resident: number;
   /** `null` when nothing was loaded, which is not a load that took no time. */
   load_seconds: number | null;
+  /** The most words one request may MARK, from the module that enforces it.
+   *  NOT a bound on the work: the knockout runs an arm for every word in the
+   *  prompt and this list only says which rows the caller asked about. The
+   *  panel discloses it before the click rather than letting the route refuse
+   *  afterwards. */
+  max_knockout_words: number;
   reason: string;
   means: string;
 }
@@ -1964,7 +1970,10 @@ export const imageCvPredict = (body: { image: string; top_k: number }) =>
     body: JSON.stringify(body),
   }).then((r) => json<ImageCvPrediction>(r));
 
-export const imageCvReadout = (body: { image: string; top_k: number }) =>
+/** Just the picture. `top_k` used to travel here and the route discarded it —
+ *  `layer_readout` returns per-layer maps, not a class ranking, so there is
+ *  nothing for it to cut. Sending it now is a 422 naming the field. */
+export const imageCvReadout = (body: { image: string }) =>
   fetch("/api/image/cv/readout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

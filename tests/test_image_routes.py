@@ -556,3 +556,53 @@ def test_a_small_cache_is_not_reported_as_zero_gigabytes(client, monkeypatch):
     assert body["bytes_on_disk"] == 4_000_000
     assert "4 MB in total" in body["means"], body["means"]
     assert "0.0 GB" not in body["means"]
+
+
+def test_the_readout_refuses_a_field_it_never_read(client):
+    """`/api/image/cv/readout` took `CVPredictRequest`, which declares `top_k`
+    and `mask_threshold` — and `layer_readout` reads neither.
+
+    It returns per-layer maps, not a class ranking, so there is no list to cut
+    and no mask to threshold. Both were accepted and silently discarded, and
+    the app's own client was sending `top_k`, so a reader tuning it watched
+    nothing change with no way to learn why.
+    """
+    r = client.post(
+        "/api/image/cv/readout",
+        json={"image": "data:image/png;base64,AAA", "top_k": 5},
+    )
+    assert r.status_code == 422
+    assert "top_k" in r.text
+
+    # And the shape it does take gets past validation — the refusal below is
+    # about no model being loaded, which is a different and correct one.
+    ok = client.post(
+        "/api/image/cv/readout", json={"image": "data:image/png;base64,AAA"}
+    )
+    assert ok.status_code != 422, ok.text
+
+
+def test_the_knockout_marking_bound_is_published_not_only_enforced(client):
+    """A panel that lets somebody pick twenty-five words and then hands them a
+    validation error has charged them the picking before mentioning the limit.
+
+    It bounds the MARKING, not the work: `image_attention.knockout` derives its
+    arms from `prompt.split()` and runs one for every word, so this list only
+    says which rows the caller asked about.
+    """
+    from modelmri import image_attention
+
+    status = client.get("/api/image").json()
+    assert status["max_knockout_words"] == image_attention.MAX_KNOCKOUT_WORDS
+
+    # The route enforces the same number it publishes.
+    over = client.post(
+        "/api/image/knockout",
+        json={
+            "prompt": "a b c",
+            "seed": 1,
+            "words": [f"w{i}" for i in range(image_attention.MAX_KNOCKOUT_WORDS + 1)],
+        },
+    )
+    assert over.status_code == 422
+    assert "words" in over.text

@@ -25,7 +25,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, behavdiff, custom, gguf_read, otel, paths
+from . import __version__, behavdiff, custom, gguf_read, image_attention, otel, paths
 from . import image_steps as _steps_defaults
 from . import openai_api as openai_api_mod
 from .custom import AdapterError, CustomHandle
@@ -421,7 +421,11 @@ class ImageKnockoutRequest(ImageRunRequest):
     than the word.
     """
 
-    words: list[str] = Field(default_factory=list, max_length=24)
+    # The bound lives in `image_attention` and is published on the image
+    # status, so the panel can disclose it before the click rather than after.
+    words: list[str] = Field(
+        default_factory=list, max_length=image_attention.MAX_KNOCKOUT_WORDS
+    )
     seed: int = Field(default=0, ge=0, lt=2**31)
 
 
@@ -545,6 +549,23 @@ class CVPredictRequest(Body):
     # the right cut for a crowded street scene is not the right cut for a
     # single object on a plain ground.
     mask_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class CVReadoutRequest(Body):
+    """Just the picture.
+
+    This route took `CVPredictRequest`, which declares `top_k` and
+    `mask_threshold` — and `layer_readout` reads neither: it returns per-layer
+    maps, not class predictions, so there is no ranking to cut and no mask to
+    threshold. Both were accepted and silently discarded, so a caller tuning
+    them watched nothing change and had no way to learn why.
+
+    Its own model, so a request naming either is refused by name. `Body`
+    forbids unknown keys, which is what makes that refusal say which field it
+    is rather than shrugging.
+    """
+
+    image: str = Field(min_length=1)
 
 
 class CVAttributeRequest(Body):
@@ -3046,7 +3067,7 @@ def create_app(
         return found.to_dict()
 
     @app.post("/api/image/cv/readout")
-    async def image_cv_readout(req: CVPredictRequest):
+    async def image_cv_readout(req: CVReadoutRequest):
         """What each layer looked at -- where the architecture has such a thing.
 
         A ViT has attention; a convolutional backbone does not. The refusal

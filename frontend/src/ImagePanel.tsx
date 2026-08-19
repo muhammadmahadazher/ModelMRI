@@ -258,6 +258,11 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
   const [seed, setSeed] = useState(0);
   const [run, setRun] = useState<ImageAttentionRun | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
+  // The SERVER's bound, not a re-typed copy. `image_attention` owns it, the
+  // route enforces it, and the status publishes it — so the three cannot
+  // drift. 24 is the fallback for a server too old to send it, and it is the
+  // value that shipped, so an old server refuses at exactly where this stops.
+  const maxKnockWords = status?.max_knockout_words ?? 24;
   const [knock, setKnock] = useState<ImageKnockout | null>(null);
   // Priced before anything is spent, and three separate questions: one render,
   // every arm of a knockout, and what keeping a latent per step would hold.
@@ -1292,6 +1297,19 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
                 key={`${w}:${i}`}
                 className={`tok${picked.includes(w) ? " pin" : ""}`}
                 aria-pressed={picked.includes(w)}
+                // Refusing the pick the route would refuse anyway, at the
+                // moment of the click. Picking twenty-five words and THEN
+                // being handed a validation error charges the reader the
+                // picking before mentioning the limit. Deselecting is always
+                // allowed, so the cap can never trap a selection.
+                disabled={
+                  !picked.includes(w) && picked.length >= maxKnockWords
+                }
+                title={
+                  !picked.includes(w) && picked.length >= maxKnockWords
+                    ? `${maxKnockWords} is the most words one request will mark — every word is measured either way`
+                    : undefined
+                }
                 onClick={() =>
                   setPicked((prev) =>
                     prev.includes(w) ? prev.filter((x) => x !== w) : [...prev, w],
@@ -1324,8 +1342,23 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
               </span>
             ) : (
               <span className="meta">
+                {/* `words.length`, which is right and was nearly "fixed" into
+                    being wrong. `image_attention.knockout` derives its arms
+                    from `prompt.split()` and runs one for EVERY word; the
+                    picked list is passed as `tokens` and only marks which
+                    rows the reader asked about. The note above this says so
+                    in as many words. The cost is the prompt's length, not the
+                    selection's. */}
                 {words.length} arms plus the unmodified prompt, all at seed{" "}
                 {seed}.
+                {picked.length >= maxKnockWords && (
+                  <>
+                    {" "}
+                    {maxKnockWords} is the most words one request will mark —
+                    every word is still measured, so this bounds what you can
+                    single out rather than what the run costs.
+                  </>
+                )}
               </span>
             )}
           </div>

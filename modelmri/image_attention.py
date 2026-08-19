@@ -420,6 +420,18 @@ class _Capturing:
         self.store.add(probs, tokens_axis=2)
 
 
+# The most words one request may MARK. Not a bound on the work: `knockout`
+# derives its arms from `prompt.split()` and runs one for every word, so the
+# cost is the prompt's length and this list only says which rows the caller
+# asked about.
+#
+# Named and published on the image status rather than only enforced at the
+# route, because a panel that lets somebody pick twenty-five words and then
+# hands them a validation error has charged them the picking before mentioning
+# the limit.
+MAX_KNOCKOUT_WORDS = 24
+
+
 def knockout(
     pipe,
     prompt: str,
