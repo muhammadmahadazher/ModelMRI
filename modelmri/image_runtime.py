@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import fmt, image_attention, image_fit, imaging
+from . import fmt, image_attention, image_fit, image_input, imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -128,6 +128,17 @@ class ImageStatus:
             # them the picking before mentioning the limit. One number, from
             # the module that owns it.
             "max_knockout_words": image_attention.MAX_KNOCKOUT_WORDS,
+            # The same argument, for the picture rather than the prompt.
+            # `image_input` enforces both of these at decode time and nothing
+            # published either, so somebody choosing a 40 MB photo paid the
+            # read and the base64 encode before being told the bound existed —
+            # exactly what the comment above this one exists to prevent.
+            #
+            # Enforcement stays in `decode`, whose refusal names WHICH stage
+            # failed. A pydantic `max_length` on the field would replace that
+            # with a generated 422 about a string.
+            "max_image_bytes": image_input.MAX_IMAGE_BYTES,
+            "max_image_pixels": image_input.MAX_PIXELS,
             "reason": self.reason,
             "means": self.means(),
         }

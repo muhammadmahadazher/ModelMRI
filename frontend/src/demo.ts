@@ -857,6 +857,11 @@ export async function demoFetch(
     // because it is a property of the tool rather than of a pipeline — and
     // the picker reads it to know when to stop accepting words.
     max_knockout_words: 24,
+    // The same two bounds the live `image_input` enforces, for the same
+    // reason: a visitor picking a photo should learn the limit before paying
+    // the read and the base64 encode rather than after.
+    max_image_bytes: 32 * 1024 * 1024,
+    max_image_pixels: 64_000_000,
     reason,
     means:
       `No image model is held in this process, so nothing here can say what ` +
@@ -1238,6 +1243,10 @@ export async function demoFetch(
       passes,
       forward_calls: calls,
       batch,
+      // BOTH numbers, because a silent cap is a defect — this file's own
+      // header rule, and the clamp on the line above was being applied
+      // without it. `vision_attr.estimate` has always returned this.
+      batch_requested: batchAsked,
       patch,
       stride,
       input_bytes_per_call: inputBytes,
@@ -1250,7 +1259,18 @@ export async function demoFetch(
         `A ${patch}x${patch} occluder at stride ${stride} over a ` +
         `${height}x${width} image is ${nWindows} windows — a ${rows}x${cols} ` +
         `map — and ${passes} forward passes, sent ${batch} at a time in ` +
-        `${calls} calls. The occluded copies alone are ` +
+        `${calls} calls.` +
+        // The clause Python emits in the same position, which this omitted —
+        // so a visitor who asked for a batch of 200 read a sentence priced at
+        // 64 that never mentioned the reduction. The rule this file states
+        // for itself is that the sentence a visitor reads is the sentence the
+        // tool writes.
+        (batchAsked !== batch
+          ? ` A batch of ${batchAsked} was asked for and ${batch} is this ` +
+            `module's bound on how many full-size copies of the image it will ` +
+            `hold at once, so the figures here are for ${batch}.`
+          : "") +
+        ` The occluded copies alone are ` +
         `${(inputBytes / 1e6).toLocaleString(undefined, {
           minimumFractionDigits: 1,
           maximumFractionDigits: 1,

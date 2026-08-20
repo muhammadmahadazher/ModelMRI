@@ -1248,6 +1248,17 @@ export interface ImageStatus {
    *  panel discloses it before the click rather than letting the route refuse
    *  afterwards. */
   max_knockout_words: number;
+  /** The largest data URL `image_input.decode` will accept, in bytes, and the
+   *  largest picture it will decode, in pixels.
+   *
+   *  Published for the same reason as `max_knockout_words` above: both were
+   *  enforced at decode time and stated nowhere, so somebody choosing a 40 MB
+   *  photo paid the read and the base64 encode before learning the bound
+   *  existed. The pixel bound is separate from the byte bound on purpose — a
+   *  decompression bomb is a few kilobytes of PNG that expands to gigabytes,
+   *  which a bound on the compressed size cannot catch. */
+  max_image_bytes: number;
+  max_image_pixels: number;
   reason: string;
   means: string;
 }
@@ -1484,6 +1495,17 @@ export interface ImageAttributionCost {
   forward_calls: number;
   /** The batch actually used, already clamped to what the module allows. */
   batch: number;
+  /** What was ASKED for, which is not always what will be used.
+   *
+   *  Both numbers travel because a silent cap is a defect. `vision_attr.
+   *  estimate` has always returned this and the preflight type dropped it on
+   *  the way to the browser, so a caller asking for a batch of 200 was priced
+   *  at 64 with nothing saying the request had been reduced. The sweep
+   *  response reports both (`ImagePanel` draws "The batch was reduced");
+   *  only the estimate lost it. The panel's own slider stops at 64, so this
+   *  fires for direct API callers rather than from the UI — the type was
+   *  wrong either way. */
+  batch_requested: number;
   patch: number;
   stride: number;
   /** The occluded copies of the input alone. The activations behind them are
