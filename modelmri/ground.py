@@ -178,17 +178,25 @@ class Grounding:
                 "THE NOISE FLOOR IS EXACTLY ZERO: this model reproduced its "
                 "own answer bit for bit, so every passage that moved it at "
                 f"all counts as clearing, and {len(used)} of {self.n_chunks} "
+                # THROUGH `fmt.measured`, like `joint` and `noise_floor`
+                # fourteen lines above. This branch is the one that says "Read
+                # the nats, not the verdict" — and `:.4f` floored those very
+                # nats to "0.0000" for anything under 5e-5, which is the
+                # ordinary size here: the branch is entered precisely when the
+                # model reproduced its answer bit for bit, so the movements
+                # that "cleared" a floor of zero are the tiny ones.
                 "did. Read the nats, not the verdict — the largest here is "
-                f"{top:.4f} and the smallest that 'cleared' is "
-                f"{min((c.dependence for c in used), default=0.0):.4f}. There "
-                "is no significance test on this run."
+                f"{fmt.measured(top, 4)} and the smallest that 'cleared' is "
+                f"{fmt.measured(min((c.dependence for c in used), default=0.0), 4)}"
+                ". There is no significance test on this run."
             )
         else:
             names = ", ".join(f"#{c.index}" for c in used[:4])
             parts.append(
                 f"{len(used)} of {self.n_chunks} passages cleared the floor "
                 f"({names}) — removing those moved the answer further than "
-                f"the model's own run-to-run spread ({self.noise_floor:.4f})."
+                f"the model's own run-to-run spread "
+                f"({fmt.measured(self.noise_floor, 4)})."
             )
         if any(c.looked_not_used is None for c in self.chunks):
             why = (

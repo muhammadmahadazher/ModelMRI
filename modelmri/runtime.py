@@ -739,8 +739,52 @@ class ModelRuntime:
             f"({snap.stage}: {snap.detail})"
         )
 
+    def _way_out(self) -> str:
+        """What the reader can actually DO about the load in the way.
+
+        STAGE-DEPENDENT, because Stop is not always an escape and saying it is
+        would be a promise the code does not keep. `load` checks
+        `TRACKER.cancelled` once, immediately before
+        `AutoModelForCausalLM.from_pretrained` — so a stop lands while the
+        weights are still arriving, and does nothing at all once they have.
+        `from_pretrained` and `model.to(device)` are single calls into
+        transformers and torch; neither takes a cancellation token, and a
+        10 GB checkpoint on a smaller card sits in exactly that phase for
+        minutes.
+
+        The first version of this sentence said "Press Stop — this is the one
+        control that works while a load is running", which is true for half of
+        a load's life and false for the half somebody is most likely to be
+        staring at.
+        """
+        snap = progress.TRACKER.snapshot()
+        if snap.stage == "resolving":
+            return (
+                "Press Stop on the progress bar to end it — nothing has "
+                "started downloading yet."
+            )
+        # THE BYTES, not the stage. `stage` stays "weights" from the first
+        # request through to the end of `from_pretrained`, so it cannot tell
+        # "still arriving" from "arrived, now loading" — and those are exactly
+        # the two halves that differ in whether Stop does anything. An earlier
+        # version of this branched on the stage and told a reader to press
+        # Stop in the phase where Stop is ignored.
+        if snap.bytes_total > 0 and snap.bytes_done < snap.bytes_total:
+            return (
+                "Press Stop on the progress bar to end it — the weights are "
+                "still arriving, which is the phase a stop can interrupt."
+            )
+        return (
+            "The weights have finished arriving and this load is now inside "
+            "transformers, which offers no way to interrupt it — Stop will "
+            "not end this phase. It will finish or fail on its own; if it has "
+            "been far longer than the model's size warrants, the model is "
+            "probably larger than this machine can hold and restarting the "
+            "server is the way out."
+        )
+
     @contextmanager
-    def _load_slot(self, hf_id: str) -> Iterator[None]:
+    def _load_slot(self, what: str) -> Iterator[None]:
         """The load lock, with a ceiling on how long a caller waits for it.
 
         A load holds this for as long as it takes, and one that stops
@@ -755,11 +799,21 @@ class ModelRuntime:
         design, so a second request is a 409, not a queue slot.
         """
         if not self._lock.acquire(timeout=LOAD_QUEUE_WAIT_S):
-            busy = self._in_flight() or "another load is running"
-            raise Refusal(
-                f"Cannot load '{hf_id}' yet: {busy}. Stop it first, or wait "
-                f"for it to finish."
-            )
+            # `what` IS THE ACTION, not a model id. It used to be called
+            # `hf_id` and interpolated as "Cannot load '{hf_id}'", which is
+            # true for one of the four callers and gibberish for the rest:
+            # pressing Unload while a load ran answered "Cannot load 'unload'
+            # yet", and the quantisation comparison answered "Cannot load
+            # 'quantisation comparison' yet".
+            #
+            # Unload matters most here, because it is the button somebody
+            # reaches for when a load is taking too long — and it is held
+            # behind the very lock they are trying to get out from under. It
+            # cannot simply skip the lock: freeing the model a load is halfway
+            # through writing is worse than waiting. So the refusal names the
+            # button that DOES work.
+            busy = self._in_flight() or "another load is already running"
+            raise Refusal(f"Cannot {what} yet: {busy}. {self._way_out()}")
         try:
             yield
         finally:
@@ -842,7 +896,7 @@ class ModelRuntime:
                 self._last_ground = {}
             return self.status()
 
-        with self._load_slot(hf_id):
+        with self._load_slot(f"load {hf_id!r}"):
             dtype = devices.torch_dtype(self.accel)
             progress.TRACKER.start(hf_id)
             try:
@@ -3884,7 +3938,7 @@ class ModelRuntime:
         from . import gguf_load
 
         want = dtype or self.accel.dtype
-        with self._load_slot(f"gguf {Path(path).name}"):
+        with self._load_slot(f"load the GGUF {Path(path).name!r}"):
             # start_external, NOT start. `start` spawns a watcher that polls
             # the HuggingFace cache for a directory named after its argument
             # and calls HfApi().model_info() on it -- so a local filename went
@@ -3949,7 +4003,7 @@ class ModelRuntime:
         """
         from . import behavdiff
 
-        with self._load_slot("quantisation comparison"):
+        with self._load_slot("run the quantisation comparison"):
             # Before the slot does anything else: the caller's model is dead
             # weight for this measurement and its memory is what makes the
             # measurement possible.
