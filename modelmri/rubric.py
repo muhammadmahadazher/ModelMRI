@@ -389,29 +389,53 @@ class Report:
         return " ".join(parts)
 
 
-def _total_ms(steps) -> int:
-    """Wall clock the recorded steps span.
+def _total_ms(steps) -> int | None:
+    """Wall clock the recorded steps span, or `None` when nobody timed it.
 
     Steps with no duration contribute their start but not a length, because
     `None` means nobody wrote one down — treating it as 0 would shorten a run
     to make it look faster than it was measured to be.
+
+    AND THAT IS EXACTLY WHAT IT DID when NO step carried one. The span from
+    first start to last end collapses to 0, and 0 went to `_compare` as a
+    measurement: a run nobody timed matched "under 500 ms" with the detail "0
+    ms of recorded wall clock", and sorted to the fast end of every
+    `slowest_percent` cut. An unknown duration is not a fast one.
+
+    `None` is that answer. A run with SOME durations still returns a span,
+    which is a floor and the honest best available — the rules that read it
+    are about the whole run, not about a per-step total.
+
+    Floats count. `isinstance(length, int)` dropped a step recorded as
+    `1500.0`, which is what `(t1 - t0) * 1000` produces in any recorder that
+    does not round; `check.py` had the same defect in its own gate.
     """
     if not steps:
-        return 0
+        return None
     starts, ends = [], []
+    timed = 0
     for step in steps:
         start = step.get("started_ms")
         if not isinstance(start, int) or isinstance(start, bool):
             continue
         length = step.get("duration_ms")
+        usable = (
+            float(length)
+            if isinstance(length, (int, float))
+            and not isinstance(length, bool)
+            and math.isfinite(length)
+            else None
+        )
+        if usable is not None:
+            timed += 1
         starts.append(start)
-        ends.append(start + (length if isinstance(length, int) else 0))
-    if not ends:
-        return 0
+        ends.append(start + (usable or 0))
+    if not ends or not timed:
+        return None
     # LAST END MINUS FIRST START, not just the last end. An imported trace
     # whose offsets begin at a wall-clock epoch rather than 0 would otherwise
     # report a span of about 1.7 trillion ms and win every duration rule.
-    return max(ends) - min(starts)
+    return int(round(max(ends) - min(starts)))
 
 
 def score(traces_and_steps, rules) -> Report:
@@ -443,7 +467,16 @@ def score(traces_and_steps, rules) -> Report:
                 f"as evidence."
             )
             continue
-        ordered = sorted(durations)
+        # Untimed runs are not in the distribution. Including them as 0
+        # dragged the cut down and put every one of them at the fast end of a
+        # ranking they were never measured for.
+        ordered = sorted(d for d in durations if d is not None)
+        if not ordered:
+            report.skipped[rule.name] = (
+                "no run in this set recorded a duration, so there is no "
+                "distribution to take a percentile of."
+            )
+            continue
         # The cut is the (100 - value)th percentile: "slowest 10%" means above
         # the 90th.
         index = min(
@@ -528,6 +561,15 @@ def _apply(rule: Rule, steps, total_ms: int, slow_cut: dict) -> Hit:
         # complaint and then silently ran as `>` — measured, a 100 ms run
         # against `lt 500` did not match. Validating a field and then ignoring
         # it is worse than not offering it.
+        if total_ms is None:
+            return Hit(
+                rule=rule.name,
+                matched=False,
+                detail=(
+                    "no step in this run recorded a duration, so its wall "
+                    "clock is unknown rather than zero"
+                ),
+            )
         return Hit(
             rule=rule.name,
             matched=_compare(total_ms, rule.op, rule.value),
@@ -538,6 +580,15 @@ def _apply(rule: Rule, steps, total_ms: int, slow_cut: dict) -> Hit:
         cut = slow_cut.get(rule.name)
         if cut is None:  # pragma: no cover - skipped rules never reach here
             return Hit(rule=rule.name, matched=False, detail="not evaluated")
+        if total_ms is None:
+            return Hit(
+                rule=rule.name,
+                matched=False,
+                detail=(
+                    "no step in this run recorded a duration, so it is not in "
+                    "the distribution this cut was taken from"
+                ),
+            )
         return Hit(
             rule=rule.name,
             matched=total_ms >= cut,

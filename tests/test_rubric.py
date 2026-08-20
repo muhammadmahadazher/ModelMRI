@@ -482,3 +482,71 @@ def test_the_kind_of_run_survives_to_the_row():
     rows = rubric.score([(scripted, [_step("s")]), (mine, [_step("s")])], rules).rows
     assert rows[0].demo is True
     assert rows[1].demo is False
+
+
+# ------------------------------ an unrecorded duration is not a fast one
+
+
+def _steps(*durations, start=0):
+    """Steps at successive starts; `None` means nobody recorded a length."""
+    out, at = [], start
+    for i, d in enumerate(durations):
+        step = {"id": f"s{i}", "kind": "llm_call", "name": "call", "started_ms": at}
+        if d is not None:
+            step["duration_ms"] = d
+        out.append(step)
+        at += int(d or 100)
+    return out
+
+
+def test_a_run_nobody_timed_has_no_wall_clock():
+    """`_total_ms`'s own docstring says treating an absent length as 0 "would
+    shorten a run to make it look faster than it was measured to be" — and
+    that is exactly what it did when NO step carried one.
+
+    The span from first start to last end collapses to 0, and 0 went on to
+    `_compare` as a measurement: a run nobody timed matched "under 500 ms"
+    with the detail "0 ms of recorded wall clock".
+    """
+    from modelmri import rubric as r
+
+    assert r._total_ms(_steps(None, None, None)) is None
+    assert r._total_ms([]) is None
+    # Some durations is a floor, which is the honest best available.
+    assert r._total_ms(_steps(400, None)) == 400
+    assert r._total_ms(_steps(1200)) == 1200
+
+
+def test_a_float_duration_counts():
+    """`isinstance(length, int)` dropped a step recorded as `1500.0`, which is
+    what `(t1 - t0) * 1000` produces in any recorder that does not round."""
+    from modelmri import rubric as r
+
+    assert r._total_ms(_steps(300.0)) == 300
+    # And a bool is not a duration, for the reason `isinstance(True, int)` is
+    # True everywhere else in this codebase.
+    assert r._total_ms(_steps(True)) is None
+
+
+def test_a_duration_rule_does_not_match_a_run_it_could_not_time():
+    from modelmri import rubric as r
+
+    runs = [
+        ({"id": "A", "name": "untimed"}, _steps(None, None)),
+        ({"id": "B", "name": "slow"}, _steps(1200)),
+    ]
+    rule = r.Rule(
+        name="under 500ms",
+        kind="duration_over",
+        pattern="",
+        step_kind="",
+        op="lt",
+        value=500,
+    )
+    by_name = {row.name: row for row in r.score(runs, [rule]).rows}
+    untimed = by_name["untimed"].hits[0]
+    assert untimed.matched is False
+    assert "unknown rather than zero" in untimed.detail
+    # The timed run is judged on its real number, unchanged.
+    assert by_name["slow"].hits[0].matched is False
+    assert "1200 ms" in by_name["slow"].hits[0].detail
