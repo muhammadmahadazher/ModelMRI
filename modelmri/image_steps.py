@@ -126,6 +126,7 @@ import io
 import math
 from dataclasses import dataclass, field
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # The share of a run's measured movement that counts as "committed". A
@@ -232,6 +233,12 @@ class LatentTrace:
     # the commit step more than most things a user would think to vary — which
     # is why it is a field rather than a footnote.
     scheduler: str = ""
+    #: "callback" or "hook". NOT cosmetic: a callback latent is what the
+    #: pipeline carried at the END of a step, and a hooked one is what went
+    #: IN to the denoiser with the scheduler's scaling applied. Each is
+    #: internally consistent; they must never be compared against each other,
+    #: so every response says which produced it.
+    captured_by: str = "callback"
     steps: list[StepChange] = field(default_factory=list)
     steps_requested: int = 0
     # Without the batch axis. Reported so the memory claim is checkable against
@@ -260,6 +267,7 @@ class LatentTrace:
             "seed": self.seed,
             "model": self.model,
             "scheduler": self.scheduler,
+            "captured_by": self.captured_by,
             "steps": [s.to_dict() for s in self.steps],
             "steps_requested": self.steps_requested,
             "steps_measured": len(self.steps),
@@ -296,12 +304,31 @@ class LatentTrace:
                 None,
             )
             distance = (
-                f" At that step the latent was still {at_commit:,.4f} RMS from "
-                f"where it finished, against {started:,.4f} at the first step "
+                f" At that step the latent was still "
+                f"{fmt.measured(at_commit, 4)} RMS from where it finished, "
+                f"against {fmt.measured(started, 4)} at the first step "
                 f"measured."
                 if at_commit is not None and started is not None
                 else ""
             )
+
+        # WHICH QUANTITY. A hooked run measures the denoiser's input rather
+        # than the latent the pipeline carried out of a step, and a reader
+        # comparing a hooked commit step against a callback one would be
+        # comparing two different things that share a name.
+        route = (
+            ""
+            if self.captured_by != "hook"
+            else (
+                f" This pipeline does not offer `callback_on_step_end`, so the "
+                f"trajectory was read with a forward hook on the denoiser: "
+                f"what is plotted is {HOOK_QUANTITY}, not the latent the "
+                f"pipeline carried out of each step. The two differ by the "
+                f"scheduler's own scaling, so this curve is comparable step to "
+                f"step and against another hooked run — and NOT against a run "
+                f"of a pipeline that does offer the callback."
+            )
+        )
 
         seeded = (
             f"Seed {self.seed}."
@@ -317,7 +344,7 @@ class LatentTrace:
         return (
             f"Per-step RMS movement of the latent across {n} denoising steps of "
             f"{self.model or 'this model'} on {self.scheduler or 'its scheduler'}"
-            f", at the prompt given. {seeded}\n\n"
+            f", at the prompt given. {seeded}{route}\n\n"
             f"{headline}{distance} The step at other thresholds: "
             f"{_commit_line(self.commits())}.\n\n"
             f"THE THRESHOLD IS A CONVENTION, NOT A FINDING. Nothing calibrated "
@@ -687,6 +714,158 @@ def _call_parameters(pipe) -> set[str]:
 # -------------------------------------------------------------------- the run
 
 
+def _class_label_of(pipe, prompt: str) -> int:
+    """The class number a class-conditioned pipeline should denoise.
+
+    A DiT is steered by a number from its own label list, not by words, so the
+    prompt box means something different here and this is where that is
+    resolved rather than guessed. Three forms are accepted, in order:
+
+      "207"              the number itself, checked against the label list
+      "golden retriever" a name, matched against the pipeline's own labels
+      "a golden retriever on grass"
+                         a name appearing inside a sentence, because the box
+                         says "prompt" and people write prompts in it
+
+    A prompt naming nothing is REFUSED with examples rather than defaulted to
+    class 0. Filing every unmatched prompt under one class would produce a
+    trajectory that looks like a measurement of the words and is a measurement
+    of the tench.
+    """
+    labels = getattr(pipe, "labels", None)
+    text = (prompt or "").strip()
+
+    if text.isdigit():
+        want = int(text)
+        if isinstance(labels, dict) and labels and want not in set(labels.values()):
+            top = max(labels.values())
+            raise BadRequest(
+                f"this model has classes 0..{top} and {want} is outside that."
+            )
+        return want
+
+    if isinstance(labels, dict) and labels:
+        lowered = text.lower()
+        # Exact name first, then a name appearing inside a sentence — longest
+        # match wins, so "golden retriever" beats "retriever".
+        for name, index in labels.items():
+            if name.lower() == lowered:
+                return int(index)
+        hits = sorted(
+            ((name, idx) for name, idx in labels.items() if name.lower() in lowered),
+            key=lambda pair: -len(pair[0]),
+        )
+        if hits:
+            return int(hits[0][1])
+        examples = ", ".join(sorted(labels)[:5])
+        raise BadRequest(
+            f"this model is class-conditioned: it is steered by a number from "
+            f"its own label list, not by words, and nothing in {text!r} names "
+            f"one of its {len(labels)} classes. Give a class number, or one of "
+            f"its names — for example {examples}."
+        )
+
+    raise BadRequest(
+        "this model is class-conditioned and publishes no label list, so a "
+        "class can only be given as a number. Try a whole number in place of "
+        "the prompt."
+    )
+
+
+#: What a hook-captured latent IS, in one phrase, for every sentence that has
+#: to name it. Not the same quantity as the callback's, and the difference is
+#: not cosmetic — see `_capture_by_hook`.
+HOOK_QUANTITY = "the denoiser's input at each step, as the scheduler scaled it"
+
+
+def _capture_by_hook(pipe, store, steps: int, on_step=None):
+    """Film a pipeline that will not hand its latents to a callback.
+
+    WHY THIS EXISTS. `callback_on_step_end` is diffusers' convenience API, and
+    a pipeline whose `__call__` does not take it was refused outright: "there
+    is nothing here to measure between the steps". That was a claim about the
+    API, not about the model. The denoiser is an `nn.Module`, and a forward
+    hook on it fires once per denoising step with the latent as its first
+    argument — no pipeline cooperation required at all.
+
+    MEASURED on facebook/DiT-XL-2-256, the checkpoint that prompted this:
+    `DiTPipeline.__call__` accepts `class_labels, guidance_scale, generator,
+    num_inference_steps, output_type, return_dict` and no callback, and
+    `DiTTransformer2DModel` has no `set_attn_processor`. Six requested steps,
+    six hook calls, latents of (2, 4, 32, 32) whose mean absolute value fell
+    0.766 -> 0.516 across the run. The trajectory was always there.
+
+    IT IS NOT THE SAME QUANTITY, and that matters enough to travel in the
+    response. The callback hands over the latent at the END of a step, after
+    the scheduler has applied its update. A hook sees what goes IN to the
+    denoiser, which the scheduler has scaled first — `scale_model_input` is
+    applied on the way. So a hook-captured curve is internally consistent and
+    comparable step to step, and a number from it must never be compared
+    against a number from the callback path. Every result says which produced
+    it.
+
+    THE BATCH IS NOT IMAGES. Classifier-free guidance stacks the unconditional
+    and conditional passes into one tensor, so the hook sees (2, ...) for a
+    single image. `_Trace.add` refuses a leading dimension above 1 — correctly,
+    because averaging two images' movement reports a commit step belonging to
+    neither — so the conditional half is taken here. It is the second: diffusers
+    concatenates [uncond, cond] throughout.
+    """
+    import torch
+
+    denoiser = _denoiser_of(pipe)
+    if denoiser is None:
+        raise NotSupported(
+            "this pipeline has no `unet` or `transformer`, so there is no "
+            "denoiser to hook."
+        )
+
+    seen = {"n": 0}
+
+    def _hook(_module, args, kwargs, _output):
+        latent = (
+            args[0] if args else kwargs.get("hidden_states") or kwargs.get("sample")
+        )
+        if not isinstance(latent, torch.Tensor) or latent.ndim < 2:
+            return
+        index = seen["n"]
+        seen["n"] = index + 1
+        if index >= steps:
+            # A pipeline that calls its denoiser more than once per step — some
+            # do for guidance variants — would otherwise overrun the trace it
+            # was asked for. Kept to what was requested rather than reporting a
+            # step count nobody asked about.
+            return
+
+        # The timestep, where the denoiser was told one. Positional for a UNet
+        # (`sample, timestep, ...`) and for a DiT (`hidden_states, timestep`),
+        # and a keyword for anything that passes it by name.
+        raw = args[1] if len(args) > 1 else kwargs.get("timestep")
+        if isinstance(raw, torch.Tensor):
+            raw = raw.flatten()[0] if raw.numel() else None
+        try:
+            timestep = float(raw) if raw is not None else float(index)
+        except (TypeError, ValueError):
+            timestep = float(index)
+
+        one = latent
+        if int(latent.shape[0]) > 1:
+            # Guidance, not a batch of images: take the conditional half.
+            one = latent[latent.shape[0] // 2 :][:1]
+        store.add(index, timestep, one)
+        if on_step is not None:
+            on_step(index, steps)
+
+    # `with_kwargs=True` so a pipeline that calls its denoiser by keyword is
+    # filmed too. Older torch has no such parameter; the positional form still
+    # covers every diffusers pipeline in the wild.
+    try:
+        handle = denoiser.register_forward_hook(_hook, with_kwargs=True)
+    except TypeError:
+        handle = denoiser.register_forward_hook(lambda m, a, o: _hook(m, a, {}, o))
+    return handle
+
+
 def trace(
     pipe,
     prompt: str,
@@ -766,15 +945,38 @@ def trace(
         call_kwargs["output_type"] = "latent"
         decodes = 0
 
+    # TWO WAYS IN, and the pipeline decides which. `callback_on_step_end` is
+    # the one diffusers documents; a hook on the denoiser is the one that works
+    # regardless. See `_capture_by_hook` for what the hook captures and why it
+    # is not interchangeable with the callback's latent.
+    by_hook = "callback_on_step_end" not in accepted
+    handle = None
     try:
+        if by_hook:
+            handle = _capture_by_hook(pipe, store, steps, on_step)
+            # A class-conditioned pipeline takes no prompt at all, and passing
+            # one positionally lands it in `class_labels`. The caller's prompt
+            # is carried into the response either way, so a reader can see what
+            # was — and was not — given to the model.
+            if "prompt" in accepted:
+                call_kwargs["prompt"] = prompt
+            elif "class_labels" in accepted:
+                call_kwargs["class_labels"] = [_class_label_of(pipe, prompt)]
         with torch.inference_mode():
-            pipe(
-                prompt,
-                num_inference_steps=steps,
-                generator=generator,
-                callback_on_step_end=_tick,
-                **call_kwargs,
-            )
+            if by_hook:
+                pipe(
+                    num_inference_steps=steps,
+                    generator=generator,
+                    **call_kwargs,
+                )
+            else:
+                pipe(
+                    prompt,
+                    num_inference_steps=steps,
+                    generator=generator,
+                    callback_on_step_end=_tick,
+                    **call_kwargs,
+                )
     except BaseException:
         # Nothing was attached to the pipeline — `callback_on_step_end` is an
         # argument to the call rather than state on the model, so unlike
@@ -786,6 +988,12 @@ def trace(
         # eventually" is not a memory bound.
         store.release()
         raise
+    finally:
+        # A hook left on the denoiser would film every later run too, and
+        # `image_attention.capture` learned that lesson for attention
+        # processors. Removed on every path, including the raising one.
+        if handle is not None:
+            handle.remove()
 
     if len(store.latents) < 2:
         raise NotSupported(
@@ -809,6 +1017,7 @@ def trace(
         total_change=round(total, 6),
         vae_decodes=decodes,
         bytes_held=store.bytes_held,
+        captured_by="hook" if by_hook else "callback",
     )
 
 

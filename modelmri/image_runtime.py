@@ -242,27 +242,47 @@ def _measurable(pipe, offered: tuple) -> tuple[list, dict]:
 
     kept, withheld = [], {}
     try:
-        params = inspect.signature(type(pipe).__call__).parameters
+        # Read for the record even though the latent capabilities no longer
+        # turn on it: a pipeline that DOES offer the callback is filmed
+        # through it, and `image_steps.trace` makes that choice from the same
+        # signature.
+        _ = inspect.signature(type(pipe).__call__).parameters
     except (TypeError, ValueError):
         # An exotic callable this cannot introspect. Nothing is withheld on
         # that basis: a capability removed because we could not look is a
         # guess, and the run itself refuses honestly if it turns out to be
         # unsupported.
-        params = None
+        pass
 
     denoiser = getattr(pipe, "unet", None) or getattr(pipe, "transformer", None)
 
     for cap in offered:
-        if cap in ("step_commit", "latent_trace") and params is not None:
-            if "callback_on_step_end" not in params:
+        if cap in ("step_commit", "latent_trace"):
+            # NO LONGER WITHHELD FOR A MISSING CALLBACK. This used to refuse
+            # any pipeline whose `__call__` lacks `callback_on_step_end`, on
+            # the stated grounds that it is "the only place diffusers exposes
+            # an intermediate latent". That was true of diffusers' documented
+            # API and false of the model: the denoiser is an `nn.Module`, and
+            # a forward hook on it fires once per step with the latent as its
+            # first argument.
+            #
+            # Measured on facebook/DiT-XL-2-256, which is where the complaint
+            # came from: no callback, no `set_attn_processor`, and eight
+            # requested steps produce eight hooked latents on a clean
+            # denoising trajectory. `image_steps.trace` takes that route
+            # automatically and every response says which one it used, because
+            # the two capture different quantities.
+            #
+            # What IS still required is a denoiser to hook.
+            if denoiser is None:
                 withheld[cap] = (
-                    f"`{type(pipe).__name__}.__call__` does not accept "
-                    f"`callback_on_step_end`, which is the only place "
-                    f"diffusers exposes an intermediate latent. The run would "
-                    f"produce its final image and nothing in between, so there "
-                    f"is nothing here to measure between the steps."
+                    f"`{type(pipe).__name__}` exposes neither a `unet` nor a "
+                    f"`transformer`, so there is no denoiser to watch and "
+                    f"nothing here to measure between the steps."
                 )
                 continue
+            kept.append(cap)
+            continue
         if cap in ("cross_attention", "token_knockout") and denoiser is not None:
             if not hasattr(denoiser, "set_attn_processor"):
                 withheld[cap] = (
