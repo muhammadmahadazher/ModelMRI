@@ -331,6 +331,68 @@ def test_every_family_imaging_can_name_has_a_loader():
     assert imaging.UNKNOWN not in covered
 
 
+def test_a_missing_package_is_not_reported_as_a_broken_checkpoint(monkeypatch):
+    """MEASURED on `facebook/detr-resnet-50`, which is built on a TimmBackbone.
+
+    transformers raised ImportError, and the refusal said "none of the loaders
+    could open it: ImportError … so this is about the weights" — sending a
+    reader to re-download a checkpoint that was perfectly intact, when the fix
+    was one `pip install` away. A refusal has to name the next step, and here
+    the next step is the package.
+    """
+    import transformers
+
+    from modelmri import imaging
+
+    def explode(*_a, **_k):
+        raise ImportError(
+            "TimmBackbone requires the timm library but it was not found in "
+            "your environment. You can install it with pip: `pip install timm`."
+        )
+
+    monkeypatch.setattr(
+        transformers.AutoModelForObjectDetection, "from_pretrained", explode
+    )
+    monkeypatch.setattr(transformers.AutoModel, "from_pretrained", explode)
+
+    with pytest.raises(Refusal) as caught:
+        ir._load_transformers(
+            __import__("pathlib").Path("."), imaging.DETECTION, "float32"
+        )
+
+    said = getattr(caught.value, "sentence", None) or str(caught.value)
+    assert "timm" in said, "the package that is missing has to be named"
+    assert "pip install timm" in said, "and the command that fixes it"
+    assert "checkpoint is fine" in said, "the weights are not the problem"
+    assert "about the weights" not in said
+
+
+def test_an_import_error_naming_no_package_still_refuses_honestly(monkeypatch):
+    """The name is read from the exception, not from a table of models — so a
+    backend nobody here has heard of is covered. When it cannot be read, the
+    sentence says an optional package is missing rather than inventing one."""
+    import transformers
+
+    from modelmri import imaging
+
+    def explode(*_a, **_k):
+        raise ImportError("something optional is not here")
+
+    monkeypatch.setattr(
+        transformers.AutoModelForObjectDetection, "from_pretrained", explode
+    )
+    monkeypatch.setattr(transformers.AutoModel, "from_pretrained", explode)
+
+    with pytest.raises(Refusal) as caught:
+        ir._load_transformers(
+            __import__("pathlib").Path("."), imaging.DETECTION, "float32"
+        )
+
+    said = getattr(caught.value, "sentence", None) or str(caught.value)
+    assert "optional package" in said
+    assert "pip install " not in said, "no command for a package it cannot name"
+
+
 def test_a_family_with_no_loader_is_named_rather_than_guessed_at(monkeypatch):
     """Unreachable through `load`, which refuses an unknown family first.
     Stated anyway — a family added to `imaging` and not to the table must say

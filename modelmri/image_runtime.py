@@ -40,6 +40,7 @@ picture.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -1316,6 +1317,35 @@ def _load_transformers(
     # The exception TYPE, never its text. `from_pretrained` puts absolute
     # paths from this machine into its messages, and a refusal is something a
     # user pastes into an issue.
+    # A MISSING PACKAGE IS NOT A BROKEN CHECKPOINT, and the sentence below used
+    # to call it one. MEASURED on `facebook/detr-resnet-50`, which is built on
+    # a `TimmBackbone`: the load raised ImportError, and this reported "none of
+    # the loaders could open it: ImportError … so this is about the weights",
+    # sending a reader to re-download a checkpoint that is perfectly intact.
+    # The fix is one install away and the refusal has to say which one.
+    #
+    # The package name is lifted from the exception, not from a table of
+    # models: transformers raises `requires the timm library` for whichever
+    # optional backend a checkpoint happens to want, so reading it covers the
+    # ones nobody here has heard of. Only the NAME is taken — the rest of the
+    # message carries absolute paths from this machine.
+    if isinstance(last, ImportError):
+        package = getattr(last, "name", "") or ""
+        if not package:
+            found = re.search(r"requires the (\w+) library", str(last))
+            package = found.group(1) if found else ""
+        needs = (
+            f" It needs the `{package}` package, which is not installed here — "
+            f"`pip install {package}` and load it again."
+            if package
+            else " It needs an optional package that is not installed here."
+        )
+        raise Refusal(
+            f"This is {imaging.label(family)}, and the checkpoint is fine: it "
+            f"was identified from its config before anything was "
+            f"loaded.{needs}"
+        ) from last
+
     why = (
         type(last).__name__
         if last is not None
