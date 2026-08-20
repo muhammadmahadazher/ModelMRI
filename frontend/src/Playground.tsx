@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import LoadBar from "./LoadBar";
+import { invalidateSession } from "./RunsOn";
 import DevicePicker from "./DevicePicker";
 import {
   cancelLoad,
@@ -252,6 +253,12 @@ export default function Playground({
       }
       setMeta(`loaded in ${((performance.now() - t) / 1000).toFixed(1)}s`);
       await onModelChange();
+      // THE SIX PANELS BELOW read the session through a shared cache keyed on
+      // `epoch`, and `setEpoch(0)` is a no-op when it is already 0 — which it
+      // is on a fresh page, because epoch counts GENERATIONS. Without this
+      // they keep the answer fetched before the model existed and go on
+      // telling the reader to load one.
+      invalidateSession();
       setEpoch(0);
       return true;
     } catch (err) {

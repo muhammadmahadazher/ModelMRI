@@ -12,6 +12,7 @@ import {
   unloadModel,
 } from "./api";
 import AgentsPanel from "./AgentsPanel";
+import { invalidateSession } from "./RunsOn";
 import CategoryBar from "./CategoryBar";
 import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
@@ -102,6 +103,10 @@ export default function App() {
     try {
       const out = await unloadModel();
       await refresh();
+      // The remount below lands on epoch 0, and the session cache is
+      // module-level so it survives one. Without this the panels advertise
+      // "measures <model>" with live buttons over memory that was just freed.
+      invalidateSession();
       setResetKey((k) => k + 1);
       // Report what came back, not what should have. An allocator that keeps
       // its arena is a real outcome and rounding it away would be a small lie

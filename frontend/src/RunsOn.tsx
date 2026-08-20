@@ -26,15 +26,71 @@ import { getSession, SessionInfo } from "./api";
  * otherwise.
  */
 
-/** Shared across every mounted copy. Keyed by epoch so a model change
- *  invalidates it and nothing else does. */
-let cached: { epoch: number; promise: Promise<SessionInfo> } | null = null;
+/** Shared across every mounted copy.
+ *
+ *  KEYED ON EPOCH ALONE, THIS WAS WRONG IN BOTH DIRECTIONS. `epoch` counts
+ *  GENERATIONS — `Playground` bumps it when one finishes — and it is set to
+ *  the literal 0 after a load. On a fresh page nothing has generated, so epoch
+ *  is already 0, `setEpoch(0)` is a no-op, no `[epoch]` effect re-runs, and
+ *  `sessionFor(0)` hands back the promise resolved before the model existed.
+ *
+ *  MEASURED: fresh page, press Load, wait for "Loaded ✓" in the RUN panel —
+ *  and six panels below it still read "Nothing is loaded, so pick one in Run
+ *  at the top of the page first." The page telling you to do the thing you
+ *  just did.
+ *
+ *  The mirror is worse: after Unload, `App` bumps `resetKey` and the remount
+ *  lands on epoch 0 again, but this cache is module-level and survives it — so
+ *  the panels advertise "measures <model> · cuda · bfloat16" with live buttons
+ *  over freed memory.
+ *
+ *  `epoch` cannot simply be made monotonic: `epoch > 0` gates the telemetry
+ *  bar and the attention panel, and bumping it on a load would mount both for
+ *  a run that never happened. So a model change says so explicitly, and every
+ *  mounted copy re-reads when it does.
+ */
+let cached: { key: string; promise: Promise<SessionInfo> } | null = null;
+let version = 0;
+const listeners = new Set<() => void>();
+
+/** The resident model changed — drop the shared answer and re-read.
+ *
+ *  Called wherever a model is loaded, unloaded or swapped. Cheap: it is one
+ *  request shared by every mounted panel, which is the reason the cache
+ *  exists at all.
+ */
+export function invalidateSession(): void {
+  version += 1;
+  cached = null;
+  listeners.forEach((notify) => notify());
+}
 
 function sessionFor(epoch: number): Promise<SessionInfo> {
-  if (!cached || cached.epoch !== epoch) {
-    cached = { epoch, promise: getSession() };
+  const key = `${epoch}:${version}`;
+  if (!cached || cached.key !== key) {
+    cached = { key, promise: getSession() };
   }
   return cached.promise;
+}
+
+/** Re-render this component when the resident model changes.
+ *
+ *  A cleared cache alone is not enough: the effects below are keyed on
+ *  `[epoch]`, so nothing would re-run to notice it was cleared.
+ */
+function useSessionVersion(): number {
+  const [seen, setSeen] = useState(version);
+  useEffect(() => {
+    const notify = () => setSeen(version);
+    listeners.add(notify);
+    // Between render and subscribe, an invalidation can land — pick it up
+    // rather than waiting for the next one.
+    notify();
+    return () => {
+      listeners.delete(notify);
+    };
+  }, []);
+  return seen;
 }
 
 /**
@@ -56,6 +112,7 @@ function sessionFor(epoch: number): Promise<SessionInfo> {
  */
 export function useModelReady(epoch: number): boolean | null {
   const [ready, setReady] = useState<boolean | null>(null);
+  const seen = useSessionVersion();
   useEffect(() => {
     let live = true;
     void sessionFor(epoch)
@@ -66,7 +123,7 @@ export function useModelReady(epoch: number): boolean | null {
     return () => {
       live = false;
     };
-  }, [epoch]);
+  }, [epoch, seen]);
   return ready;
 }
 
@@ -81,6 +138,7 @@ export default function RunsOn({
   needsModel?: boolean;
 }) {
   const [info, setInfo] = useState<SessionInfo | null>(null);
+  const seen = useSessionVersion();
 
   useEffect(() => {
     let live = true;
@@ -94,7 +152,7 @@ export default function RunsOn({
     return () => {
       live = false;
     };
-  }, [epoch]);
+  }, [epoch, seen]);
 
   if (!info) return null;
   const m = info.model;
