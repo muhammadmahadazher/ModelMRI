@@ -269,6 +269,13 @@ def bake_llm(scenario: dict) -> dict:
         ("ablate_estimate", "/api/attention/ablate/estimate"),
         ("telemetry", "/api/telemetry"),
         ("lens_tuned", "/api/lens/tuned"),
+        # WITH THIS SCENARIO'S MODEL RESIDENT. It used to be baked into
+        # `env.json`, once, while SAE_MODEL was loaded — so the demo served
+        # google/gemma-2-2b's 27-layer logit lens under every Qwen scenario,
+        # receipt and all. A lens is per model in the most literal way: its
+        # rows are that model's layers and its tokens are that model's
+        # vocabulary.
+        ("lens", "/api/lens?top_k=5"),
     ):
         try:
             extra[name] = get(path)
@@ -382,6 +389,11 @@ def main() -> int:
     write(
         "features.json",
         {
+            # WHICH MODEL THIS WAS BAKED ON. Without it the shim gated the
+            # whole features section on the scenario INDEX's default, which is
+            # a Qwen — while every number in this file came from
+            # google/gemma-2-2b. The gate was true for exactly the wrong model.
+            "model": SAE_MODEL,
             "sae": sae,
             "summary": summary,
             "feature": feature,
@@ -402,7 +414,6 @@ def main() -> int:
         ("accelerator", "/api/accelerator"),
         ("progress", "/api/model/progress"),
         ("sae_available", "/api/sae/available"),
-        ("lens", "/api/lens?top_k=5"),
         ("session_state", "/api/session/state"),
         ("vla_datasets", "/api/vla/datasets"),
         # Public registry facts, not machine facts — safe to publish, and it

@@ -703,6 +703,35 @@ def no_machine_leaks() -> None:
         f"replay, roots={disco.get('roots')!r}",
     )
 
+    # WHICH MODEL THE FEATURE RECORDINGS CAME FROM. `features.json` is baked
+    # while SAE_MODEL is resident, which is not either scenario — the demo
+    # ships one public SAE and no Qwen has one. The shim gates the whole
+    # features section on this field, and while it was ABSENT the gate keyed
+    # on the scenario index's default instead: true for a Qwen, over numbers
+    # measured on google/gemma-2-2b. The panel then reported
+    # `gemma-scope-2b-pt-res`, `d_in 2304` and Gemma's token strip under a
+    # Qwen session, and the steering A/B paired Qwen's baseline against
+    # Gemma's steered sentence as though one caused the other.
+    feats = json.loads((BUNDLE / "features.json").read_text("utf-8"))
+    feat_model = feats.get("model")
+    check(
+        "features.json says which model it was baked on",
+        feat_model is not None,
+        "no `model` key — the shim cannot tell whether these features belong "
+        "to the selected scenario, and defaulted to assuming they did",
+    )
+    # It may legitimately be a model no scenario offers: that is the case the
+    # gate exists to close, and it closes correctly as long as the field is
+    # there to read.
+    if feat_model is not None and feat_model not in scenarios:
+        check(
+            "a features bundle from outside the scenarios is gated, not served",
+            'const saeScenario = async () => (await bundle<any>("features")).model'
+            in (SRC / "demo.ts").read_text("utf-8"),
+            f"features.json was baked on {feat_model}, which no scenario "
+            f"offers, and demo.ts keys the SAE gate on something else",
+        )
+
     # The status pill renders `${hf_id} · ${device}`, so a baked "cuda:0" told
     # a visitor on a phone that their model was running on CUDA. Six of these
     # were published across five payloads. `demo.ts` already falls back to

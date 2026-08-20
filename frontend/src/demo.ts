@@ -281,8 +281,6 @@ export async function demoFetch(
   }
   if (p === "/api/paths") return ok((await bundle<any>("env")).paths ?? {});
   if (p === "/api/hub/auth") return ok((await bundle<any>("env")).hub_auth ?? { signed_in: false });
-  if (p === "/api/sae/available") return ok((await bundle<any>("env")).sae_available ?? []);
-  if (p === "/api/lens") return ok((await bundle<any>("env")).lens ?? {});
   if (p === "/api/vla/datasets") return ok((await bundle<any>("env")).vla_datasets ?? []);
   // Sizes are real registry facts; `fits` is not, because a static page has
   // no idea what GPU is reading it. Null means unknown, which is a different
@@ -432,9 +430,46 @@ export async function demoFetch(
   // The real server cannot do this: `load()` clears `sae`, `_feats` and
   // `_steer` on every model change, so the panel falls to "no SAE exists for
   // this model". These branches now behave the same way.
-  const saeScenario = async () => (await index()).default;
+  // THE MODEL THE FEATURES WERE BAKED ON, read from the bundle that holds
+  // them — not the scenario index's default, which is a Qwen while every
+  // number in `features.json` came from google/gemma-2-2b. Keyed on the
+  // index, this gate was true for exactly the wrong model: the panel reported
+  // `gemma-scope-2b-pt-res`, `d_in 2304` and Gemma's token strip under a Qwen
+  // session, and the steering A/B paired Qwen's baseline against Gemma's
+  // steered sentence as though one caused the other.
+  //
+  // A bundle baked before this field existed returns undefined, so `hasSAE`
+  // is false for every scenario and the panel shows its honest "no SAE exists
+  // for this model" state. That is the correct answer for both Qwens.
+  const saeScenario = async () => (await bundle<any>("features")).model;
   const hasSAE = async () => (await current()).id === (await saeScenario());
 
+  // The third door to the same recording. `env.json`'s `sae_available` names
+  // google/gemma-2-2b too, so serving it ungated advertised a Gemma SAE as
+  // available while a Qwen was selected.
+  if (p === "/api/sae/available") {
+    // The EMPTY SHAPE, not an empty array. This route answers an object —
+    // `{model, matching, usable, catalogue}` — and `FeaturesPanel` reads
+    // `opts.usable.length` off it. Returning `[]` when the gate is closed
+    // crashed the panel on `undefined.length`, which is a worse failure than
+    // the one being fixed: trading another model's data for a blank page.
+    //
+    // `matching: []` is also the truthful answer. No SAE is registered for
+    // either Qwen scenario, which is exactly what the panel's "no sparse
+    // autoencoder exists for this model" state is for.
+    if (!(await hasSAE())) {
+      const s = await current();
+      return ok({ model: s.id, matching: [], usable: [], catalogue: [] });
+    }
+    return ok(
+      (await bundle<any>("env")).sae_available ?? {
+        model: null,
+        matching: [],
+        usable: [],
+        catalogue: [],
+      },
+    );
+  }
   if (p === "/api/sae") {
     if (!(await hasSAE())) {
       return ok({ loaded: false, repo: null, hook: null, layer: null, d_in: null });
@@ -562,6 +597,19 @@ export async function demoFetch(
   if (p === "/api/attention/direct") return recorded("direct");
   if (p === "/api/attention/ablate/estimate") return recorded("ablate_estimate");
   if (p === "/api/telemetry") return recorded("telemetry");
+  // PER SCENARIO, like the tuned lens beside it. This was served from
+  // `env.json` with no gate at all, and `env.json` is baked once while
+  // SAE_MODEL — google/gemma-2-2b — is resident. So selecting a Qwen and
+  // pressing the lens read returned Gemma's 27 layers of Gemma vocabulary,
+  // under a ReceiptLine printing `google/gemma-2-2b@c5ebcd40` beside a status
+  // pill naming Qwen. A logit lens is per model in the most literal way: its
+  // rows are that model's layers.
+  //
+  // `recorded` refuses BY NAME for a bundle baked before this moved, which is
+  // the honest answer until they are re-baked — an empty panel reads as a
+  // measurement that found nothing, and the old behaviour read as a
+  // measurement of the wrong model.
+  if (p === "/api/lens") return recorded("lens");
   if (p === "/api/lens/tuned") return recorded("lens_tuned");
 
   // `/api/traces/…` is EIGHT routes on the real server, not one, and this
