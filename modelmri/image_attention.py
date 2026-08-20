@@ -109,6 +109,14 @@ class AttentionRun:
     padding_from: int = 0
     steps_requested: int = 0
     resolutions: list[int] = field(default_factory=list)
+    #: How wide the denoiser's conditioning actually was, read off the maps.
+    #: Not the tokenizer's length and not `MAX_TOKENS`: PixArt-Alpha is 120 and
+    #: Sigma is 300, while `tokenizer.model_max_length` for their T5 is 512.
+    conditioning_width: int = 0
+    #: Columns that were measured and have no label to put on them, because
+    #: `_tokenize` caps labels at `MAX_TOKENS`. Reported rather than dropped
+    #: quietly — this is a cap on what can be SHOWN, not on what was measured.
+    columns_unlabelled: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -121,6 +129,8 @@ class AttentionRun:
             "steps_requested": self.steps_requested,
             "steps_measured": len(self.steps),
             "resolutions": self.resolutions,
+            "conditioning_width": self.conditioning_width,
+            "columns_unlabelled": self.columns_unlabelled,
             "means": self.means(),
         }
 
@@ -143,12 +153,21 @@ class AttentionRun:
             if self.seed is not None
             else " No seed was fixed, so another run gives another trajectory."
         )
+        unlabelled = (
+            f" This denoiser's conditioning is {self.conditioning_width} "
+            f"columns wide and only {len(self.tokens)} of them could be "
+            f"labelled, so {self.columns_unlabelled} measured column(s) are "
+            f"not plotted — a limit on what can be SHOWN, not on what was "
+            f"measured."
+            if self.columns_unlabelled
+            else ""
+        )
         return (
             f"Cross-attention from {len(self.steps)} denoising steps of "
             f"{self.model or 'this model'}, averaged over heads and over the "
             f"{len(self.resolutions)} attention resolutions "
             f"({', '.join(str(r) for r in self.resolutions)}).{seeded}{dropped}"
-            f"{pad}\n\n"
+            f"{pad}{unlabelled}\n\n"
             f"ATTENTION IS NOT A CAUSE. A token can be attended to and change "
             f"nothing in the image. `knockout` removes a token and regenerates "
             f"at the same seed, which is the measurement that can say what a "
@@ -205,7 +224,9 @@ def capture(
             "columns are integers is not a map of words."
         )
 
-    store = _Collector(n_tokens=len(tokens))
+    # No width is passed: the maps say how wide the conditioning is, and the
+    # labels are fitted to them at report time. See `_Collector.n_tokens`.
+    store = _Collector()
     original = denoiser.attn_processors
     denoiser.set_attn_processor(_wrap(original, store))
 
@@ -252,14 +273,31 @@ def capture(
             "the model."
         )
 
+    # The labels are fitted to the maps, not the other way round. `_tokenize`
+    # caps its labels at `MAX_TOKENS`, and the captured width is whatever the
+    # denoiser's conditioning actually is — 120 on PixArt-Alpha, 300 on Sigma.
+    # Where the maps are wider than the labels, the extra columns are REAL
+    # measurements with no word to put on them, so they are dropped from the
+    # per-token vector and the number of them is reported. Silently keeping
+    # them would put unlabelled numbers in a map whose columns are supposed to
+    # be words; silently dropping them would be a cap nobody was told about.
+    width = store.n_tokens or len(tokens)
+    columns_cut = max(0, width - len(tokens))
+    labels = tokens[:width]
+    if columns_cut:
+        for step in store.steps:
+            step.per_token = step.per_token[: len(labels)]
+
     return AttentionRun(
-        tokens=tokens,
+        tokens=labels,
         steps=store.steps,
         seed=seed,
         model=public_model_name(pipe, model_name),
         padding_from=padding_from,
         steps_requested=requested,
         resolutions=sorted(store.resolutions),
+        conditioning_width=width,
+        columns_unlabelled=columns_cut,
     )
 
 
@@ -312,7 +350,24 @@ class _Collector:
     hides head-level disagreement, exactly as it would on the text side.
     """
 
-    def __init__(self, n_tokens: int) -> None:
+    def __init__(self, n_tokens: int | None = None) -> None:
+        #: The conditioning width, LEARNED from the first map rather than
+        #: taken from the tokenizer.
+        #:
+        #: This was `len(tokens)`, and `_tokenize` slices its labels to
+        #: `MAX_TOKENS = 77`. So the label cap became the acceptance test for
+        #: every captured map: on a pipeline whose conditioning is wider —
+        #: PixArt-Alpha is 120, PixArt-Sigma 300, both advertised as having
+        #: cross-attention — every block of every step was silently dropped,
+        #: `steps` finished empty, and `capture` raised "the run finished
+        #: without capturing a single cross-attention map. This denoiser may
+        #: attend to its conditioning somewhere this does not reach."
+        #:
+        #: Which is a claim about the model, made after the reader has paid
+        #: for a full generation, about a model that attends exactly where
+        #: this looks. A tokenizer-derived count cannot be the gate:
+        #: `tokenizer.model_max_length` (T5: 512) is not the pipeline's
+        #: `max_sequence_length` (300) either.
         self.n_tokens = n_tokens
         self.steps: list[StepMap] = []
         self.resolutions: set[int] = set()
@@ -323,7 +378,16 @@ class _Collector:
         """One block's attention probabilities, already (batch*heads, q, k)."""
         import torch
 
-        if probs.ndim != 3 or probs.shape[tokens_axis] != self.n_tokens:
+        if probs.ndim != 3:
+            return
+        width = int(probs.shape[tokens_axis])
+        if self.n_tokens is None:
+            self.n_tokens = width
+        elif width != self.n_tokens:
+            # A genuine inconsistency — two different conditioning widths in
+            # one run — and still a reason to skip. This is the check the
+            # original was reaching for; it was just comparing against the
+            # wrong number.
             return
         self.resolutions.add(int(probs.shape[1]))
         # Sum over query positions (pixels), mean over heads. float32 because

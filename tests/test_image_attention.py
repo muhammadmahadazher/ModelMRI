@@ -271,3 +271,84 @@ def test_the_cost_is_known_before_it_is_spent():
     assert plan["arms"] == 7
     assert plan["passes"] == 140
     assert "No seconds are quoted" in plan["means"]
+
+
+# --------------------------------- the label cap was the acceptance test
+
+
+def test_a_conditioning_wider_than_the_label_cap_is_still_captured():
+    """`_Collector` was told `n_tokens=len(tokens)`, and `_tokenize` slices its
+    labels to `MAX_TOKENS = 77`. So the LABEL cap became the acceptance test
+    for every captured map.
+
+    On a pipeline whose conditioning is wider — PixArt-Alpha is 120, Sigma is
+    300, and `imaging` advertises cross_attention for both — every block of
+    every step was dropped, `steps` finished empty, and `capture` raised "this
+    denoiser may attend to its conditioning somewhere this does not reach".
+    That is a claim about the model, made after the reader paid for a full
+    generation, about a model that attends exactly where this looks.
+    """
+    import torch
+
+    from modelmri.image_attention import _Collector
+
+    store = _Collector()
+    store.add(torch.rand(8, 1024, 120), tokens_axis=2)
+    store.close_step(0, 999.0)
+
+    assert store.n_tokens == 120, "the width comes from the map, not a constant"
+    assert len(store.steps) == 1, "the map was kept rather than silently dropped"
+    assert len(store.steps[0].per_token) == 120
+
+
+def test_two_different_widths_in_one_run_are_still_skipped():
+    """The check the original was reaching for — it just compared against the
+    wrong number. A genuine inconsistency is still a reason to skip."""
+    import torch
+
+    from modelmri.image_attention import _Collector
+
+    store = _Collector()
+    store.add(torch.rand(8, 1024, 120), tokens_axis=2)
+    store.add(torch.rand(8, 1024, 77), tokens_axis=2)
+    store.close_step(0, 999.0)
+
+    assert store.n_tokens == 120
+    assert len(store.steps[0].per_token) == 120, "the odd map did not contribute"
+
+
+def test_measured_columns_with_no_label_are_reported_not_hidden():
+    """Where the maps are wider than the labels, the extra columns are real
+    measurements with no word to put on them. Keeping them would put unlabelled
+    numbers in a map whose columns are supposed to be words; dropping them
+    silently would be a cap nobody was told about."""
+    from modelmri.image_attention import AttentionRun, StepMap
+
+    run = AttentionRun(
+        tokens=[f"t{i}" for i in range(77)],
+        steps=[StepMap(step=0, timestep=1.0, per_token=[0.1] * 77, blocks=8)],
+        conditioning_width=120,
+        columns_unlabelled=43,
+        resolutions=[64],
+    )
+
+    said = run.means()
+
+    assert "120 columns wide" in said
+    assert "43 measured column(s) are not plotted" in said
+    assert "not on what was measured" in said
+    assert run.to_dict()["columns_unlabelled"] == 43
+
+
+def test_a_run_whose_labels_cover_everything_says_nothing_about_cuts():
+    from modelmri.image_attention import AttentionRun, StepMap
+
+    run = AttentionRun(
+        tokens=["a", "b"],
+        steps=[StepMap(step=0, timestep=1.0, per_token=[0.5, 0.5], blocks=1)],
+        conditioning_width=2,
+        columns_unlabelled=0,
+        resolutions=[64],
+    )
+
+    assert "not plotted" not in run.means()

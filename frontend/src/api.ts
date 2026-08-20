@@ -1296,6 +1296,14 @@ export interface ImageAttentionRun {
   steps_measured: number;
   /** The attention resolutions the maps were averaged over. */
   resolutions: number[];
+  /** How wide the denoiser's conditioning actually was, read off the maps —
+   *  not the tokenizer's length and not the 77-token label cap. PixArt-Alpha
+   *  is 120 and Sigma is 300. */
+  conditioning_width: number;
+  /** Columns that were MEASURED and have no word to label them, because the
+   *  label list is capped. A limit on what can be shown, not on what was
+   *  measured — `means` says so in words. */
+  columns_unlabelled: number;
   means: string;
 }
 
