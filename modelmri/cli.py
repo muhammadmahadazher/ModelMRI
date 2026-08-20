@@ -768,11 +768,23 @@ def list_traces() -> int:
     for r in rows[:40]:
         flag = "demo" if r.get("demo") else ""
         errs = f"  {r['n_errors']} failed" if r.get("n_errors") else ""
-        secs = (r.get("total_ms") or 0) / 1000
-        print(
-            f"  {r['name'][:30]:<30} {r['n_steps']:>4} steps  {secs:>7.1f}s"
-            f"{errs}  {flag}"
-        )
+        # `n_timed`, which the store ships beside `total_ms` for exactly this.
+        # A step's `duration_ms` is optional — `otel.py` leaves it None when the
+        # span carried no end time, and `/api/traces/import` documents it as
+        # optional — so a run where nothing was timed has `total_ms` 0, and
+        # this printed "0.0s" as a measurement of a run that took some real
+        # amount of time nobody recorded. `AgentsPanel` gets this right; the
+        # CLI was the one consumer ignoring the field.
+        n_timed = int(r.get("n_timed") or 0)
+        n_steps = int(r["n_steps"])
+        if not n_timed:
+            took = "  not timed"
+        else:
+            # ">=" when only some steps were timed: the total is a floor, not
+            # the run's duration.
+            mark = ">=" if n_timed < n_steps else " "
+            took = f"{mark}{r['total_ms'] / 1000:>6.1f}s"
+        print(f"  {r['name'][:30]:<30} {n_steps:>4} steps  {took:>9}{errs}  {flag}")
     if len(rows) > 40:
         print(f"  ... and {len(rows) - 40} more")
     print("\n  Open them in the browser:  modelmri serve")

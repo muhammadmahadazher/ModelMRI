@@ -47,7 +47,7 @@ import logging
 import urllib.error
 import urllib.parse
 
-from . import imaging
+from . import fmt, imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             "is on this machine."
         ) from err
 
-    here, partial, cache_capped, cache_readable = _cached_ids()
+    here, partial, unsizeable, cache_capped, cache_readable = _cached_ids()
     spec = TASKS[tag]
     out: list[dict] = []
     for m in raw if isinstance(raw, list) else []:
@@ -392,7 +392,7 @@ class _Rows(list):
 
 
 def _cached_ids() -> tuple:
-    """`(with_weights, configs_only, capped, readable)` — what is here, whether
+    """`(with_weights, configs_only, unsizeable, capped, readable)` — what is here, whether
     the walk hit its own limit, and whether it ran at all.
 
     Returns two sets, and the split is the whole point. `imaging.scan_cache`
@@ -419,13 +419,14 @@ def _cached_ids() -> tuple:
 
     with_weights: set = set()
     configs_only: set = set()
+    unsizeable: set = set()
     try:
         found = imaging.scan_cache()
     except Exception:
         log.warning("could not read the image cache", exc_info=True)
         # `readable=False`. NOT an empty result: the caller has to be able to
         # tell "we looked and it is not there" from "nobody could look".
-        return with_weights, configs_only, False, False
+        return with_weights, configs_only, unsizeable, False, False
 
     # `scan_cache` stops at its own limit, and a repo past that point is
     # reported as NOT cached — which reads as "you do not have this" for a
@@ -437,13 +438,21 @@ def _cached_ids() -> tuple:
         try:
             weighs = image_runtime._weights_bytes(_path_of(model))
         except Exception:
-            # Unsizeable is not the same as absent, and it is not "here"
-            # either — an entry nothing could measure must not be reported as
-            # a download that costs nothing.
+            # A THIRD SET. The comment here already said "unsizeable is not
+            # the same as absent" and the code then set `weighs = 0`, which
+            # filed the entry under `configs_only` — so `_size_means` stated
+            # as fact that the repo "has a cache entry on this machine but NO
+            # WEIGHTS in it — an interrupted download", from a permission
+            # error. Reproduced with `PermissionError`. That sends somebody to
+            # re-download a model that may be sitting there complete, and the
+            # sibling `local()` in this same module answers the identical
+            # failure correctly with `complete: None` — so the two routes
+            # contradicted each other, in one panel, about one repo.
             log.warning("could not size %s", model.path, exc_info=True)
-            weighs = 0
+            unsizeable.add(model.path)
+            continue
         (with_weights if weighs > 0 else configs_only).add(model.path)
-    return with_weights, configs_only, capped, True
+    return with_weights, configs_only, unsizeable, capped, True
 
 
 def local() -> list[dict]:
@@ -713,12 +722,22 @@ def size_of(repo: str) -> dict:
         raise Refusal(f"The Hub did not describe `{name}` in a shape this reads.")
 
     weighs = hub.weight_bytes(raw)
-    here, partial, _capped, cache_readable = _cached_ids()
+    here, partial, unsizeable, _capped, cache_readable = _cached_ids()
     # `None`, not `False`, when the walk could not run. "We looked and it is
     # not there" and "nobody could look" are different answers, and only one
     # of them justifies telling somebody to spend the download.
-    cached = (name in here) if cache_readable else None
-    incomplete = (name in partial) if cache_readable else None
+    unsized = (name in unsizeable) if cache_readable else False
+    # `None` for BOTH when the entry could not be measured, for the same
+    # reason they are `None` when the walk could not run: "we looked and it is
+    # not there" and "nobody could look" are different answers, and only one
+    # of them justifies telling somebody to spend the download. This used to
+    # answer `partial: True` from a permission error and state as fact that
+    # the entry held no weights.
+    if not cache_readable or unsized:
+        cached = incomplete = None
+    else:
+        cached = name in here
+        incomplete = name in partial
     return {
         "id": name,
         "size_bytes": weighs or None,
@@ -726,7 +745,10 @@ def size_of(repo: str) -> dict:
         "cached": cached,
         "partial": incomplete,
         "cache_readable": cache_readable,
-        "means": _size_means(name, weighs, cached, incomplete, cache_readable),
+        #: The entry is here and could not be measured — a third state beside
+        #: `cached` and `partial`, both of which are `None` when this is true.
+        "cache_unsized": unsized,
+        "means": _size_means(name, weighs, cached, incomplete, cache_readable, unsized),
     }
 
 
@@ -736,12 +758,13 @@ def _size_means(
     cached: bool | None,
     partial: bool | None = False,
     cache_readable: bool = True,
+    unsized: bool = False,
 ) -> str:
     if not cache_readable:
         # Said, not logged. The reader is deciding whether to spend a
         # download; "I could not check" changes that decision and a warning in
         # somebody's terminal does not reach them.
-        size = f"{weighs / 1e9:,.2f} GB" if weighs else "an unpublished amount"
+        size = fmt.bytes_si(weighs) if weighs else "an unpublished amount"
         return (
             f"`{name}` publishes {size} of weights. Whether it is ALREADY on "
             f"this machine is unknown rather than no: the local cache could "
@@ -750,13 +773,24 @@ def _size_means(
             f"do. The terminal running `modelmri serve` says why the cache "
             f"could not be walked."
         )
-    if cached:
+    if unsized:
+        # BEFORE the partial branch, which is where this used to land. An
+        # entry nobody could measure is not an interrupted download, and
+        # saying so sends a reader to re-fetch a model that may be complete.
+        size = fmt.bytes_si(weighs) if weighs else "an unpublished amount"
+        where = (
+            f"`{name}` has a cache entry on this machine that could not be "
+            f"measured, so whether its weights arrived is unknown rather than "
+            f"answered. The source publishes {size}. The terminal running "
+            f"`modelmri serve` says why the entry could not be read."
+        )
+    elif cached:
         where = f"`{name}` is already on this machine, so nothing would be downloaded."
     elif partial:
         # The state that used to be reported as "nothing would be downloaded".
         # A cache entry holding configs and no weights looks present to a
         # directory listing and has its entire transfer still ahead of it.
-        size = f"{weighs / 1e9:,.2f} GB" if weighs else "an unpublished amount"
+        size = fmt.bytes_si(weighs) if weighs else "an unpublished amount"
         where = (
             f"`{name}` has a cache entry on this machine but NO WEIGHTS in it — "
             f"an interrupted download rather than a model that is ready. "
@@ -764,7 +798,7 @@ def _size_means(
         )
     elif weighs:
         where = (
-            f"`{name}` publishes {weighs / 1e9:,.2f} GB of weights, which is "
+            f"`{name}` publishes {fmt.bytes_si(weighs)} of weights, which is "
             f"what a download would transfer and roughly what it would need "
             f"resident."
         )

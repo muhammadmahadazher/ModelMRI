@@ -51,19 +51,31 @@ MAX_CYCLE_LEN = 12
 # where "not scanned" is a true one.
 MAX_STEPS_FOR_CYCLES = 4_000
 
-# How much of a step's input feeds the repeat hash. Hashing megabytes to
-# compare two steps is waste; the prefix that decides equality for a
-# pathological repeat is short.
-INPUT_HASH_CHARS = 4_000
-
 
 def _signature(step: dict) -> str:
-    """The identity a repeat is counted against: (kind, name, input)."""
+    """The identity a repeat is counted against: (kind, name, input).
+
+    THE WHOLE INPUT. This hashed the first 4,000 characters, on the reasoning
+    that hashing megabytes to compare two steps is waste and the prefix that
+    decides equality is short. The prefix does not decide equality in the one
+    place this runs: agent steps share a system prompt, and `otel.py` maps
+    `gen_ai.input.messages` onto `input`, so every LLM call in a run begins
+    with the same multi-kilobyte preamble and differs only afterwards. Twenty
+    -seven distinct calls collapsed into "llm_call generate ran 27 times with
+    the same input", and the module's own sentences promise exact matching.
+
+    It is not a cosmetic count. `cli.py --max-repeat` feeds `check.py`, so an
+    inflated number fails somebody's build over calls that were never repeats.
+
+    The cost this was avoiding is not real either: what reaches here is already
+    bounded — `traces._clip` stores at most 20,000 characters — and SHA-256
+    over that is microseconds against a walk that already visits every step.
+    """
     payload = "\x00".join(
         (
             str(step.get("kind") or ""),
             str(step.get("name") or ""),
-            str(step.get("input") or "")[:INPUT_HASH_CHARS],
+            str(step.get("input") or ""),
         )
     )
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:16]

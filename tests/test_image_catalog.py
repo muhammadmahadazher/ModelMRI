@@ -740,13 +740,81 @@ def test_a_cache_nobody_could_read_is_unknown_not_absent(monkeypatch):
         raise OSError("the cache is gone")
 
     monkeypatch.setattr(imaging, "scan_cache", boom)
-    with_weights, configs_only, _capped, readable = image_catalog._cached_ids()
+    with_weights, configs_only, unsizeable, _capped, readable = (
+        image_catalog._cached_ids()
+    )
 
     assert readable is False
-    assert not with_weights and not configs_only
+    assert not with_weights and not configs_only and not unsizeable
 
     # And the sentence says so, rather than leaving it to a log line the
     # reader never sees.
     means = image_catalog._size_means("acme/thing", 350_000_000, None, None, readable)
     assert "unknown rather than no" in means
     assert "could not be read" in means
+
+
+def test_an_entry_nobody_could_measure_is_not_an_interrupted_download(monkeypatch):
+    """`except Exception: weighs = 0` filed an unsizeable entry under
+    `configs_only`, so `/api/image/size` stated as fact that the repo "has a
+    cache entry on this machine but NO WEIGHTS in it — an interrupted download
+    rather than a model that is ready. Finishing it costs 0.35 GB, not
+    nothing."
+
+    Reproduced with a `PermissionError`. It sends the reader to re-download a
+    model that may be sitting there complete — and `local()`, in this same
+    module, answers the identical failure correctly with `complete: None`, so
+    the two routes contradicted each other in one panel about one repo.
+    """
+    from modelmri import image_catalog, image_runtime, imaging
+
+    row = imaging.ImageModel(
+        path="acme/unmeasurable",
+        directory="/nowhere/acme--unmeasurable",
+        family=imaging.UNET_DIFFUSION,
+        architecture="StableDiffusionPipeline",
+    )
+    monkeypatch.setattr(imaging, "scan_cache", lambda *a, **k: [row])
+
+    def denied(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(image_runtime, "_weights_bytes", denied)
+
+    with_weights, configs_only, unsizeable, _capped, readable = (
+        image_catalog._cached_ids()
+    )
+
+    assert readable is True
+    assert "acme/unmeasurable" in unsizeable
+    assert "acme/unmeasurable" not in configs_only, (
+        "unmeasurable is not the same as holding no weights"
+    )
+    assert "acme/unmeasurable" not in with_weights
+
+
+def test_the_sentence_for_an_unmeasurable_entry_claims_nothing_about_weights():
+    from modelmri import image_catalog
+
+    said = image_catalog._size_means(
+        "acme/unmeasurable", 350_000_000, None, None, True, True
+    )
+
+    assert "could not be measured" in said
+    assert "unknown rather than" in said
+    assert "NO WEIGHTS" not in said
+    assert "interrupted download" not in said
+
+
+def test_a_size_under_a_gigabyte_is_not_rendered_as_zero():
+    """`f"{weighs / 1e9:,.2f} GB"` rendered any real measurement under 5 MB as
+    "0.00 GB", including inside "Finishing it costs 0.00 GB, not nothing." —
+    which collides with this UI's own token for "could not measure". Three
+    sibling modules carry a "fmt.bytes_si, not /1e9" comment; this one still
+    divided."""
+    from modelmri import image_catalog
+
+    said = image_catalog._size_means("acme/small", 4_000_000, False, True, True)
+
+    assert "0.00 GB" not in said
+    assert "4.0 MB" in said or "4 MB" in said, said

@@ -2096,6 +2096,15 @@ export interface ImageFit {
    *  blocking: a component can be handed to `from_pretrained` directly, and
    *  the server cannot see that from the files on disk. */
   absent: string[];
+  /** Components whose directory could not be listed at all — a permission,
+   *  an ACL, or a sync client's virtual filesystem.
+   *
+   *  Neither counted nor assumed absent. With one of these `card_bytes` is
+   *  `null`, because a total that silently omits a component is not a total.
+   *  This used to read as "empty", which flipped `loadable` to false, halved
+   *  the published size, and told the reader to re-download a model that was
+   *  sitting there complete. */
+  unreadable: string[];
   disk_bytes: number;
   /** Resident weight bytes at `dtype`. `null` when any component could not be
    *  priced — a total missing one part is not a total. */
@@ -2182,6 +2191,15 @@ export interface ImageSize {
   /** Whether the walk ran. `means` already says so in words; this is here so
    *  nothing branches on `cached === false` and gets it wrong. */
   cache_readable: boolean;
+  /** The entry IS here and could not be measured — a permission error, an
+   *  ACL, a sync client's virtual filesystem.
+   *
+   *  A third state beside `cached` and `partial`, and both of those are
+   *  `null` when this is true. It used to be filed as `partial: true`, so the
+   *  panel stated as fact that the repo "has a cache entry on this machine but
+   *  NO WEIGHTS in it — an interrupted download", from a permission error, and
+   *  sent the reader to re-download something that may be complete. */
+  cache_unsized: boolean;
   means: string;
 }
 
@@ -3397,7 +3415,18 @@ export interface VLASweep {
   episode_stride: number;
   frame_stride: number;
   seconds: number;
+  /** A SAMPLE of the frames that could not be measured, capped server-side.
+   *  Use `n_failed` for how many there were — this list is what to look at,
+   *  not the measurement. */
   failed: { episode: number; timestep: number; why: string }[];
+  /** How many frames failed in total.
+   *
+   *  Separate from `failed.length` because that list is truncated, and the
+   *  server's own sentence used to count the truncated list: with PyAV absent
+   *  over six episodes of a hundred frames, all 600 failed and the report read
+   *  "20 frame(s) could not be measured". The true figure was not derivable
+   *  from the payload at all. */
+  n_failed: number;
   means: string;
   strip: {
     rows: { episode: number; timesteps: number[]; values: number[] }[];

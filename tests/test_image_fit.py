@@ -30,6 +30,7 @@ import json
 import pickle
 import zipfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 from test_fit import write_safetensors  # the same real-file writer
@@ -592,6 +593,97 @@ def test_a_stray_adapter_beside_a_pipeline_is_not_the_model(tmp_path):
     assert got.loadable is False
     assert got.verdict != "fits"
     assert got.components == [], "a LoRA in the root is not the pipeline"
+
+
+def test_a_component_that_cannot_be_read_is_unknown_rather_than_empty(
+    tmp_path, monkeypatch
+):
+    """`_weights_in` returned `[]` for an unreadable directory and for an empty
+    one, and those are different answers.
+
+    An `iterdir` that raises therefore looked exactly like a component with no
+    weights: `loadable` flipped True -> False, the row grew "the download of
+    that component did not finish", and `card_bytes` silently HALVED because
+    the component was dropped from the price. The picker removed the Load
+    button and told the reader to fetch a model that is sitting there complete.
+
+    Reachable from a POSIX `--x` directory, an NTFS Traverse-without-List ACL,
+    fd exhaustion in a long-lived server, or a sync client's virtual
+    filesystem returning a transient error.
+    """
+    component(tmp_path, "unet", {"w": ("F32", [64, 64])})
+    component(tmp_path, "vae", {"w": ("F32", [64, 64])})
+    index(tmp_path, {"unet": "UNet2DConditionModel", "vae": "AutoencoderKL"})
+
+    healthy = priced(tmp_path)
+    assert healthy.loadable is True
+    assert healthy.card_bytes == 2 * 64 * 64 * 2
+
+    real_iterdir = Path.iterdir
+
+    def blocked(self):
+        if self.name == "unet":
+            raise PermissionError(13, "Permission denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", blocked)
+    # A fresh key, so the memo does not answer from the healthy read above.
+    monkeypatch.setattr(image_fit, "_MEMO", {})
+
+    got = priced(tmp_path)
+
+    assert got.card_bytes is None, "a total missing a component is not a total"
+    assert got.verdict == "unknown"
+    assert any("unet" in u for u in got.unreadable)
+    assert not any("did not finish" in m for m in got.missing), (
+        "an unreadable directory is not an interrupted download"
+    )
+    assert got.loadable is True, (
+        "whether it loads is still the loader's question — this only refuses "
+        "to publish a size it could not measure"
+    )
+
+
+def test_the_memo_notices_a_config_appearing(tmp_path):
+    """The memo was keyed on weight files while the answer is driven by the
+    configs, so a refusal outlived the thing it was about.
+
+    Worse, following this module's own advice could not clear it: re-fetching
+    a missing `config.json` touches no weight blob, so the second call landed
+    on the same key and replayed the same refusal for the life of the process.
+    """
+    component(tmp_path, "vae", {"w": ("F32", [64, 64])})
+    (tmp_path / "unet").mkdir()
+    write_safetensors(
+        tmp_path / "unet" / "diffusion_pytorch_model.safetensors",
+        {"w": ("F32", [64, 64])},
+    )
+    index(tmp_path, {"unet": "UNet2DConditionModel", "vae": "AutoencoderKL"})
+
+    before = priced(tmp_path)
+    assert before.loadable is False, "unet has weights and no config"
+
+    # Exactly what the refusal tells the reader to do.
+    (tmp_path / "unet" / "config.json").write_text("{}")
+
+    after = priced(tmp_path)
+
+    assert after.loadable is True, "the memo replayed a refusal that was fixed"
+
+
+def test_the_memo_notices_a_config_disappearing(tmp_path):
+    """The reverse, which is the dangerous direction: a green badge surviving
+    the file that justified it."""
+    component(tmp_path, "unet", {"w": ("F32", [64, 64])})
+    index(tmp_path, {"unet": "UNet2DConditionModel"})
+
+    assert priced(tmp_path).loadable is True
+
+    (tmp_path / "unet" / "config.json").unlink()
+
+    assert priced(tmp_path).loadable is False, (
+        "a stale `fits` outlived the config it was based on"
+    )
 
 
 def test_a_weight_file_the_loader_never_opens_is_not_the_model(tmp_path):

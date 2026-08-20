@@ -484,3 +484,51 @@ def test_a_healthy_dataset_reports_real_counts():
 
     assert isinstance(report.n_episodes, int)
     assert isinstance(report.n_frames, int)
+
+
+def test_a_pair_search_that_stopped_early_does_not_report_its_stop_as_the_total():
+    """The pair scan is quadratic, so it stops at `MAX_PAIRS_KEPT`.
+
+    MEASURED on this fixture: 400 pairs qualify and the check reported
+    `n_pairs: 40, truncated: False, "Scanned all 80 frames"` — a tenfold
+    under-report presented as a complete count, with the one field that could
+    have contradicted it saying the scan was complete. It was: the FRAME scan
+    finished, the PAIR search did not, and those are two different truncations
+    that needed two fields.
+    """
+    n = 80
+    state = [[float(i % 4), 0.0] for i in range(n)]
+    action = [[0.0, 0.0] if (i // 4) % 2 else [50.0, 0.0] for i in range(n)]
+    reader = FakeReader(
+        [FakeEpisode(0, n, 0)],
+        {"episode_index": [0] * n, "observation.state": state, "action": action},
+    )
+
+    check = vla_audit.check_contradictions(reader)
+
+    assert check.measured["n_pairs"] == vla_audit.MAX_PAIRS_KEPT
+    assert check.measured["pairs_complete"] is False, (
+        "the search stopped, and the payload has to say so"
+    )
+    assert check.measured["pairs_cap"] == vla_audit.MAX_PAIRS_KEPT
+    assert "at least" in check.detail, check.detail
+    assert "the search stopped there" in check.detail
+    # The FRAME scan is a separate question and still answered separately.
+    assert check.measured["truncated"] is False
+
+
+def test_a_pair_search_that_finished_states_its_count_plainly():
+    """So "at least" cannot become the wording for every result."""
+    n = 12
+    state = [[float(i % 6), 0.0] for i in range(n)]
+    action = [[0.0, 0.0] if (i // 6) % 2 else [50.0, 0.0] for i in range(n)]
+    reader = FakeReader(
+        [FakeEpisode(0, n, 0)],
+        {"episode_index": [0] * n, "observation.state": state, "action": action},
+    )
+
+    check = vla_audit.check_contradictions(reader)
+
+    assert check.measured["n_pairs"] < vla_audit.MAX_PAIRS_KEPT
+    assert check.measured["pairs_complete"] is True
+    assert "at least" not in check.detail

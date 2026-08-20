@@ -159,6 +159,10 @@ class ImageFit:
     #: blocking: a component can be handed to `from_pretrained` directly, and
     #: this cannot see that from the files on disk.
     absent: list[str] = field(default_factory=list)
+    #: Components whose directory could not be listed at all. Neither counted
+    #: nor assumed absent — with one of these the total is UNKNOWN, because a
+    #: sum that silently omits a component is not a sum.
+    unreadable: list[str] = field(default_factory=list)
     disk_bytes: int = 0
     #: Resident weight bytes at `dtype`. `None` when any component could not be
     #: priced, because a total missing one part is not a total.
@@ -222,11 +226,28 @@ def _stem_of(name: str) -> str:
     return head if dot and head in _CANONICAL_STEMS else stem
 
 
-def _weights_in(folder: Path) -> list[Path]:
+def _weights_in(folder: Path) -> list[Path] | None:
+    """The weight files in `folder`, or `None` when it could not be READ.
+
+    `None` and `[]` are different answers and this returned `[]` for both. An
+    unreadable component directory therefore looked exactly like an empty one:
+    `loadable` flipped True -> False, the row grew "the download of that
+    component did not finish", and `card_bytes` silently HALVED, because
+    `_weighted_parts` dropped a component it could not see from the price. The
+    picker then removed the Load button and told the reader to fetch a model
+    that was sitting there complete.
+
+    Reachable without anything exotic: a POSIX `--x` directory, an NTFS
+    Traverse-without-List ACL, file-descriptor exhaustion in a long-lived
+    server, or a transient error from a sync client's virtual filesystem.
+
+    This function's own caller already states the rule for the root, one frame
+    up: "could not be read, so what it holds is unknown rather than empty".
+    """
     try:
         entries = sorted(folder.iterdir())
     except OSError:
-        return []
+        return None
     return [f for f in entries if f.is_file() and f.suffix.lower() in WEIGHT_SUFFIXES]
 
 
@@ -263,7 +284,9 @@ def _by_variant(files: list[Path]) -> dict[str, list[Path]]:
     return groups
 
 
-def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
+def _weighted_parts(
+    root: Path,
+) -> tuple[dict[str, list[Path]], list[str], list[str]]:
     """Which directories hold weights, found by looking rather than by name.
 
     A diffusers pipeline keeps each component in its own folder; a transformers
@@ -275,6 +298,9 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
     """
     parts: dict[str, list[Path]] = {}
     skipped: list[str] = []
+    #: Components whose directory could not be listed. Their weights are
+    #: neither counted nor assumed absent — see `_weights_in`.
+    unreadable: list[str] = []
     #: A subdirectory that carries a plain `config.json` is a COMPONENT, even
     #: when its weights are missing. Tracked because it decides whether the
     #: flat-checkpoint fallback below is allowed to fire at all.
@@ -293,6 +319,9 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
         if (entry / "config.json").is_file():
             component_dirs += 1
         found = _weights_in(entry)
+        if found is None:
+            unreadable.append(entry.name)
+            continue
         if not found:
             continue
         if entry.name in NOT_RESIDENT:
@@ -314,7 +343,7 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
         parts[entry.name] = found
 
     if parts:
-        return parts, skipped
+        return parts, skipped, unreadable
 
     # A FLAT checkpoint — but only if nothing here looks like a pipeline.
     #
@@ -343,7 +372,7 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
     # exists to prevent. A config saying "I am a model" is not the same claim
     # as "my weights are under a name the loader opens".
     if component_dirs:
-        return {}, skipped
+        return {}, skipped, unreadable
     flat = [f for f in _weights_in(root) if _stem_of(f.name) in _CANONICAL_STEMS]
     if flat:
         kept, ignored = _one_format(flat)
@@ -352,8 +381,8 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
                 f"{ignored[0].name} — a second copy of the same tensors in a "
                 f"format the loader does not prefer"
             )
-        return {"": kept}, skipped
-    return {}, skipped
+        return {"": kept}, skipped, unreadable
+    return {}, skipped, unreadable
 
 
 def _declared(root: Path) -> dict[str, str]:
@@ -378,7 +407,9 @@ def _declared(root: Path) -> dict[str, str]:
     return out
 
 
-def _gaps(root: Path, declared: dict[str, str]) -> tuple[list[str], list[str]]:
+def _gaps(
+    root: Path, declared: dict[str, str]
+) -> tuple[list[str], list[str], list[str]]:
     """Which declared components cannot be built from what is on this disk.
 
     A weight-bearing component writes a plain `config.json` beside its weights;
@@ -409,6 +440,7 @@ def _gaps(root: Path, declared: dict[str, str]) -> tuple[list[str], list[str]]:
     """
     problems: list[str] = []
     absent: list[str] = []
+    unknown: list[str] = []
     for name in sorted(declared):
         if not _SAFE_NAME.match(name):
             # `name` arrives from a downloaded `model_index.json`, and on
@@ -433,7 +465,17 @@ def _gaps(root: Path, declared: dict[str, str]) -> tuple[list[str], list[str]]:
         if not folder.is_dir():
             absent.append(f"{name} is declared but its folder is not here")
             continue
-        has_weights = bool(_weights_in(folder))
+        listing = _weights_in(folder)
+        if listing is None:
+            # UNKNOWN, and not a gap. Saying "this component did not finish
+            # downloading" about a directory nobody could open sends a reader
+            # to re-fetch a model that may be complete.
+            unknown.append(
+                f"{name} could not be read, so whether its weights are here "
+                f"is unknown rather than answered"
+            )
+            continue
+        has_weights = bool(listing)
         has_config = (folder / "config.json").is_file()
         if not has_weights and not has_config:
             # A scheduler or tokenizer: no weights expected, nothing missing.
@@ -448,7 +490,7 @@ def _gaps(root: Path, declared: dict[str, str]) -> tuple[list[str], list[str]]:
                 f"{name} has weights and no config.json, so there is nothing "
                 f"telling the loader what to build them into"
             )
-    return problems, absent
+    return problems, absent, unknown
 
 
 def _choose_variant(parts: dict[str, list[Path]]) -> tuple[str | None, str]:
@@ -875,9 +917,26 @@ def _fingerprint(root: Path) -> tuple:
     stamps = []
     try:
         for f in sorted(root.rglob("*")):
-            if f.is_file() and f.suffix.lower() in WEIGHT_SUFFIXES:
+            if not f.is_file():
+                continue
+            # THE CONFIGS TOO. Keyed on weight files alone, the memo missed
+            # every input that actually decides the answer: `_gaps`,
+            # `_declared` and the component count all read `config.json` and
+            # `model_index.json`. Measured: refuse for a missing
+            # `unet/config.json`, write the file, ask again -> the identical
+            # stale refusal, for the life of the process. Following this
+            # module's own advice made it worse, because fetching the config
+            # touches no weight blob and so lands on the same key. The reverse
+            # is worse still: delete a config after a healthy pricing and the
+            # green badge survives.
+            if f.suffix.lower() in WEIGHT_SUFFIXES or f.name in (
+                "config.json",
+                "model_index.json",
+            ):
                 st = f.stat()
-                stamps.append((f.name, st.st_size, int(st.st_mtime)))
+                # The RELATIVE path, not the bare name — two components can
+                # each hold a `config.json` of the same size.
+                stamps.append((str(f.relative_to(root)), st.st_size, int(st.st_mtime)))
     except OSError:
         return ()
     return tuple(stamps)
@@ -936,7 +995,7 @@ def of(
         return out
 
     try:
-        parts, skipped = _weighted_parts(root)
+        parts, skipped, unreadable = _weighted_parts(root)
     except _fit.Refusal as err:
         out.reason = err.sentence if hasattr(err, "sentence") else str(err)
         out.loadable = False
@@ -952,12 +1011,14 @@ def of(
     # Asked before the sizes, because "some weights are here" is not the same
     # question as "this can be built". A pipeline holding its VAE and nothing
     # else has weights to measure and no way to run.
-    broken, absent = _gaps(root, _declared(root))
+    broken, absent, unknown = _gaps(root, _declared(root))
+    unreadable = list(dict.fromkeys([*unreadable, *unknown]))
     # Both are REPORTED; only the unambiguous half refuses. An absent folder
     # is worth saying out loud beside a model and is not worth blocking a load
     # over — see `_gaps`.
     out.missing = broken
     out.absent = absent
+    out.unreadable = unreadable
     if broken:
         out.loadable = False
 
@@ -1045,7 +1106,12 @@ def of(
         out.exact = out.exact and exact
 
     out.disk_bytes = disk_total
-    out.card_bytes = card_total
+    out.card_bytes = None if out.unreadable else card_total
+    if out.unreadable:
+        # Not a refusal. Whether it loads is still the loader's question; what
+        # this cannot do is publish a size that quietly leaves a component out.
+        out.exact = False
+        out.reason = out.reason or ("; ".join(out.unreadable) + ".")
 
     _verdict(out, free_bytes, total_bytes)
     out.means = _sentence(out)

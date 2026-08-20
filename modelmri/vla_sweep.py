@@ -44,6 +44,12 @@ from .errors import BadRequest
 # truncated: a ranking silently missing its tail looks exactly like a ranking.
 MAX_FRAMES = 5_000
 
+# How many undecodable frames are LISTED. The full count travels beside them as
+# `Sweep.n_failed` — the list is a sample to look at, not the measurement, and
+# reporting its length as the measurement is how a 600-frame failure was
+# published as twenty.
+MAX_FAILED_LISTED = 20
+
 # Default steps. Episodes and frames stride independently: you usually want
 # every episode and a few frames of each, not the reverse.
 DEFAULT_EPISODE_STRIDE = 1
@@ -95,7 +101,14 @@ class Sweep:
     n_episodes: int = 0
     frames_total: int = 0
     seconds: float = 0.0
+    #: A SAMPLE of what could not be measured, capped at `MAX_FAILED_LISTED`.
     failed: list[dict] = field(default_factory=list)
+    #: How many failed in total. Separate from `len(failed)` because the list
+    #: is truncated and the sentence below was counting the truncated list:
+    #: measured with PyAV absent over six episodes of a hundred frames, every
+    #: one of the 600 failed and the report said "20 frame(s) could not be
+    #: measured". The true figure was not derivable from the payload at all.
+    n_failed: int = 0
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -130,11 +143,17 @@ class Sweep:
                 f"what happens in that frame, and no failure mode has been "
                 f"named for it."
             )
-        if self.failed:
+        if self.n_failed:
+            listed = (
+                ""
+                if self.n_failed <= len(self.failed)
+                else f" ({len(self.failed)} of them listed below)"
+            )
             parts.append(
-                f"{len(self.failed)} frame(s) could not be measured and are "
+                f"{self.n_failed} frame(s) could not be measured and are "
                 f"ABSENT from the ranking rather than scored zero — a frame "
-                f"that failed to decode is not a frame with a low score."
+                f"that failed to decode is not a frame with a low score"
+                f"{listed}."
             )
         return " ".join(parts)
 
@@ -404,7 +423,8 @@ def run(
         n_episodes=len(seen_episodes),
         frames_total=total,
         seconds=round(time.perf_counter() - started, 2),
-        failed=failed[:20],
+        failed=failed[:MAX_FAILED_LISTED],
+        n_failed=len(failed),
     )
 
 
