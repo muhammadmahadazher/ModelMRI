@@ -185,7 +185,22 @@ class LeRobotV3Reader:
         return self._video_key
 
     def use_camera(self, name: str | None) -> None:
-        """Choose which view the frames come from."""
+        """Choose which view the frames come from.
+
+        UNDER THE LOCK, all of it. This mutates `_video_key` and `_episodes`
+        and then frees the open PyAV container, while `frame()` and
+        `raw_frame()` decode from that same container inside `self._lock`.
+        Done outside it, a camera change landing between another request's
+        `av.open` and its decode frees the container out from under a C
+        extension that is mid-read.
+
+        MEASURED on a two-camera LeRobot v3.0 snapshot: a switcher thread
+        against a decode loop segfaults the process — exit 139, repeatable,
+        and the same loop without the switcher survives 200 iterations. There
+        is no catching it: `except Exception` never runs, and every other
+        request in flight dies with the process. Reachable from the camera
+        dropdown, whose effect cleanup does not abort the in-flight fetch.
+        """
         if not name or name == self._video_key:
             return
         if name not in self._cameras:
@@ -193,9 +208,10 @@ class LeRobotV3Reader:
                 f"{name!r} is not a camera in {self.repo_id} — "
                 f"this dataset has {', '.join(self._cameras)}"
             )
-        self._video_key = name
-        self._episodes = None  # routing is per camera
-        self.close()  # and so is the open container
+        with self._lock:
+            self._video_key = name
+            self._episodes = None  # routing is per camera
+            self._close_locked()  # and so is the open container
 
     @classmethod
     def discover(
@@ -206,6 +222,18 @@ class LeRobotV3Reader:
     # ---------- metadata ----------
 
     def episodes(self) -> list[EpisodeInfo]:
+        """Episode routing for the CURRENT camera, built once and cached.
+
+        Under the lock because `_episodes` is the cache `use_camera` clears and
+        `_video_key` is what it swaps. `frame()` calls this before taking the
+        lock for its decode, so without this a camera change landing in the gap
+        hands back camera A's routing rows under camera B's key — a frame from
+        the wrong view, with nothing anywhere saying so.
+        """
+        with self._lock:
+            return self._episodes_locked()
+
+    def _episodes_locked(self) -> list[EpisodeInfo]:
         if self._episodes is None:
             files = sorted((self.snapshot / "meta" / "episodes").rglob("*.parquet"))
             if not files:
@@ -390,7 +418,9 @@ class LeRobotV3Reader:
 
         path = self._video_file(ep)
         if self._container is None or self._container_key != (str(path), "r"):
-            self.close()
+            # `_close_locked`, not `close`: every caller of `_decode` already
+            # holds `self._lock`, and `close` now takes it.
+            self._close_locked()
             self._container = av.open(str(path))
             self._container_key = (str(path), "r")
         container = self._container
@@ -418,14 +448,19 @@ class LeRobotV3Reader:
         return best.to_ndarray(format="rgb24")
 
     def frame(self, episode: int, t: int) -> FrameSample:
-        eps = self.episodes()
-        match = next((e for e in eps if e.index == episode), None)
-        if match is None:
-            raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
-        if not 0 <= t < match.length:
-            raise BadRequest(f"t must be in [0,{match.length}) for episode {episode}")
-
+        # ONE lock for the routing AND the decode. Resolving the episode first
+        # and taking the lock afterwards leaves a gap a camera change fits
+        # inside, and the rows resolved for the old camera would then be
+        # decoded against the new one's container.
         with self._lock:
+            eps = self._episodes_locked()
+            match = next((e for e in eps if e.index == episode), None)
+            if match is None:
+                raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
+            if not 0 <= t < match.length:
+                raise BadRequest(
+                    f"t must be in [0,{match.length}) for episode {episode}"
+                )
             rows = self._frame_table()
             # `data_from` comes from the dataset's own dataset_from_index
             # where that column exists, and falls back to the summed-length
@@ -450,25 +485,41 @@ class LeRobotV3Reader:
 
     def raw_frame(self, episode: int, t: int):
         """The decoded RGB ndarray for a frame (for model input)."""
-        eps = self.episodes()
-        match = next((e for e in eps if e.index == episode), None)
-        if match is None:
-            raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
-        # The same bound `frame()` above enforces, and `HDF5Reader.raw_frame`
-        # enforces, and this one did not. LeRobot v3.0 concatenates many
-        # episodes into ONE mp4, so an episode is a span inside a file: a `t`
-        # past the end resolves to `from_ts + t/fps`, which lands inside the
-        # NEXT episode and decodes a real frame from it. No error, a picture
-        # on screen, and it is the method the analysis and occlusion paths
-        # call -- so the causal map, the attention comparison and the shared
-        # .mri would all be of a frame belonging to another episode, labelled
-        # with this one.
-        if not 0 <= t < match.length:
-            raise BadRequest(f"t must be in [0,{match.length}) for episode {episode}")
+        # One lock across routing and decode, for the reason `frame()` gives.
         with self._lock:
+            eps = self._episodes_locked()
+            match = next((e for e in eps if e.index == episode), None)
+            if match is None:
+                raise BadRequest(f"episode {episode} not in [0,{len(eps)})")
+            # The same bound `frame()` above enforces, and
+            # `HDF5Reader.raw_frame` enforces, and this one did not. LeRobot
+            # v3.0 concatenates many episodes into ONE mp4, so an episode is a
+            # span inside a file: a `t` past the end resolves to
+            # `from_ts + t/fps`, which lands inside the NEXT episode and
+            # decodes a real frame from it. No error, a picture on screen, and
+            # it is the method the analysis and occlusion paths call -- so the
+            # causal map, the attention comparison and the shared .mri would
+            # all be of a frame belonging to another episode, labelled with
+            # this one.
+            if not 0 <= t < match.length:
+                raise BadRequest(
+                    f"t must be in [0,{match.length}) for episode {episode}"
+                )
             return self._decode(match.from_ts + t / self.fps, match)
 
     def close(self) -> None:
+        """Free the open container. Safe to call from another thread."""
+        with self._lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        """The same, for callers that already hold `self._lock`.
+
+        Split because `threading.Lock` is not reentrant: `use_camera` and
+        `_decode` both need to close while holding it, and calling the public
+        `close` from there would deadlock rather than crash — which is a
+        quieter failure and no better.
+        """
         if self._container is not None:
             try:
                 self._container.close()

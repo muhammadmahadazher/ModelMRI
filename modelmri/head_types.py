@@ -69,6 +69,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # How many standard deviations above its own null a head has to score before a
@@ -368,6 +369,29 @@ def _patterns_from(profiles, sinks, seq_len: int) -> dict:
 #: merely noisy — it does not exist.
 MIN_SEQ_LEN = 4
 
+#: Ceilings, because the floors were only half the guard. `seq_len=-4` was
+#: caught and `seq_len=100000` was not: the probe runs with
+#: `output_attentions=True`, so the tensors handed back are
+#: `n_sequences x layers x heads x (2*seq_len)^2 x 4` bytes and that term is
+#: QUADRATIC in a number taken straight off a URL. `?seq_len=100000` asks the
+#: allocator for hundreds of gigabytes before a single forward pass, and
+#: `?n_sequences=1000000` does the same through the profile list.
+#:
+#: Two gates rather than one. These constants are the cheap structural bound,
+#: refused before anything is built. `ATTENTION_BUDGET_BYTES` below is the
+#: honest one — it is checked once the model's own layer and head counts are
+#: known, so the refusal quotes the arithmetic for THIS model rather than a
+#: number chosen for some other one. A 32x16 model and a 4x4 model do not have
+#: the same safe sequence length, and a single constant would be wrong for
+#: both.
+MAX_SEQ_LEN = 512
+MAX_SEQUENCES = 64
+
+#: What the attention tensors may occupy before this refuses. Deliberately
+#: generous — the point is to stop an allocation nobody could have wanted, not
+#: to second-guess a reasonable probe.
+ATTENTION_BUDGET_BYTES = 2_000_000_000
+
 
 def label_heads(
     model,
@@ -407,10 +431,43 @@ def label_heads(
             f"The labels are read from what a head does on the SECOND copy of "
             f"a repeated sequence; there is no second copy below that length."
         )
+    if seq_len > MAX_SEQ_LEN:
+        raise BadRequest(
+            f"a probe sequence of {seq_len:,} tokens is past the "
+            f"{MAX_SEQ_LEN:,} this will measure. The attention tensors are "
+            f"QUADRATIC in this number — every head hands back a "
+            f"{2 * seq_len:,}x{2 * seq_len:,} map — so the cost stops being "
+            f"about the model and starts being about the length. The labels "
+            f"read a positional habit, and that habit is visible at "
+            f"{MIN_SEQ_LEN}-64 tokens."
+        )
+    if n_sequences > MAX_SEQUENCES:
+        raise BadRequest(
+            f"{n_sequences:,} probe sequences is past the {MAX_SEQUENCES} "
+            f"this will run. Each one is two forward passes with attention "
+            f"kept, and the labels are gated on a measured null that settles "
+            f"well before this — more sequences past that point buy precision "
+            f"nobody reads."
+        )
 
     config = getattr(model, "config", None)
     n_layers = int(getattr(config, "num_hidden_layers", 0) or 0)
     n_heads = int(getattr(config, "num_attention_heads", 0) or 0)
+    if n_layers and n_heads:
+        # THE HONEST BOUND, quoted for this model. `output_attentions=True`
+        # returns one [1, heads, S, S] float32 tensor per layer per sequence.
+        span = 2 * seq_len
+        want = n_sequences * n_layers * n_heads * span * span * 4
+        if want > ATTENTION_BUDGET_BYTES:
+            raise BadRequest(
+                f"measuring {n_sequences} sequence(s) of {seq_len} tokens on "
+                f"this model means keeping attention for {n_layers} layers x "
+                f"{n_heads} heads at {span}x{span} — "
+                f"{fmt.bytes_si(want)}, past the "
+                f"{fmt.bytes_si(ATTENTION_BUDGET_BYTES)} this will hold at "
+                f"once. The maps are quadratic in the sequence length, so "
+                f"halving it quarters this."
+            )
     if not n_layers or not n_heads:
         raise Refusal(
             "this model does not report a layer and head count, so its heads "

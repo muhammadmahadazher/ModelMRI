@@ -910,8 +910,29 @@ def _capture_by_hook(pipe, store, steps: int, on_step=None):
     seen = {"n": 0}
 
     def _hook(_module, args, kwargs, _output):
+        # `is not None`, never `or`. `a or b` evaluates `bool(a)`, and
+        # `Tensor.__bool__` raises for anything with more than one element:
+        #
+        #   RuntimeError: Boolean value of Tensor with more than one value is
+        #   ambiguous
+        #
+        # So a denoiser called with `hidden_states=` — rather than positionally
+        # or as `sample=` — crashed the trace instead of being read. Installed
+        # diffusers has pipelines that do exactly that AND lack
+        # `callback_on_step_end`, which is precisely the combination that sends
+        # `trace()` down this hook path. The `sample=` spelling worked, which is
+        # why it stayed hidden.
         latent = (
-            args[0] if args else kwargs.get("hidden_states") or kwargs.get("sample")
+            args[0]
+            if args
+            else next(
+                (
+                    kwargs[name]
+                    for name in ("hidden_states", "sample")
+                    if kwargs.get(name) is not None
+                ),
+                None,
+            )
         )
         if not isinstance(latent, torch.Tensor) or latent.ndim < 2:
             return

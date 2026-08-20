@@ -73,6 +73,12 @@ WEIGHTED_COMPONENTS = ("unet", "transformer", "vae", "text_encoder", "text_encod
 # than after it.
 WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".pth", ".ckpt"})
 
+# How many files `_scan` will open before it gives up. NAMED, because the
+# number is now reported in a refusal rather than silently bounding a security
+# check — see `_scan`, where a scan that hits this is refused rather than
+# treated as a pass.
+SCAN_LIMIT = 400
+
 
 class NotLoaded(Refusal):
     """No pipeline is held, and the message says what to load."""
@@ -560,12 +566,41 @@ class ImageHandle:
         diffusers pipeline is a directory of them. This window is precisely
         what `weights_scan` exists for, so it runs here rather than being
         something the user is trusted to remember.
+
+        A CLEAN SCAN AND A SHORT SCAN ARE NOT THE SAME ANSWER. `scan_dir`
+        stops at `SCAN_LIMIT` files and reports that on the tree it returns —
+        `n_total`, `truncated`, `readable` — and this iterated the tree as a
+        plain list, so all three were discarded and a partial scan finding
+        nothing was read as "nothing to find".
+
+        MEASURED with this project's own malicious fixture: a directory
+        holding the `__reduce__` -> `os.system` blob is refused. Add 600 empty
+        `annotations/*.json` files — which sort before `unet/` — and the walk
+        spends its whole budget on them: `scanned 400 of 603, truncated`, zero
+        dangerous rows, and the load proceeds to unpickle the payload. The
+        padding is ordinary-looking and a published Hub repo can carry it,
+        because `_one_copy` keeps every non-weight file in the download.
+
+        So a scan that did not finish is a refusal, not a pass. There is no
+        second line of defence to fall back on: `_load_diffusion` cannot pass
+        `use_safetensors=True`, since real checkpoints this tool supports
+        (`DiT-XL-2-256`, `segmind/tiny-sd`) ship `.bin` and nothing else.
         """
         from . import weights_scan
 
-        for report in weights_scan.scan_dir(local, limit=400):
+        tree = weights_scan.scan_dir(local, limit=SCAN_LIMIT)
+        for report in tree:
             if report.dangerous:
                 raise weights_scan.Unsafe(report.means())
+        if not tree.readable or tree.truncated:
+            raise Refusal(
+                f"{len(tree)} of {tree.n_total} files here could be checked "
+                f"for code that runs on load, so the rest is UNKNOWN rather "
+                f"than safe and nothing was opened. This scan is the only "
+                f"thing standing between a `.bin` and `from_pretrained` "
+                f"unpickling it. A checkpoint with this many files beside its "
+                f"weights is worth looking at by hand before loading it."
+            )
 
 
 # The JSON a family can be named from. Kilobytes, and every one of them is

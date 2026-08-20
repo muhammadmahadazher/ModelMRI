@@ -13,7 +13,7 @@ import os
 import pytest
 
 from modelmri import head_types as ht
-from modelmri.errors import Refusal
+from modelmri.errors import BadRequest, Refusal
 
 
 class _Tokenizer:
@@ -391,3 +391,76 @@ def test_a_recording_without_labels_refuses_with_a_reason(runtime_with_types):
     reader.open_session(gzip.compress(json.dumps(doc).encode()))
     with pytest.raises(Refusal, match="does not carry head type labels"):
         reader.head_types()
+
+
+# ------------------------------------------------- the ceiling, not just the floor
+
+
+class _Shape:
+    """A model config with stated layer and head counts, and nothing else."""
+
+    def __init__(self, layers: int, heads: int) -> None:
+        self.num_hidden_layers = layers
+        self.num_attention_heads = heads
+
+
+class _Model:
+    def __init__(self, layers: int = 32, heads: int = 16) -> None:
+        self.config = _Shape(layers, heads)
+
+
+def test_an_enormous_sequence_length_is_refused_before_anything_is_built():
+    """`seq_len=-4` was caught and `seq_len=100000` was not.
+
+    The probe runs with `output_attentions=True`, so what comes back is
+    `n_sequences x layers x heads x (2*seq_len)^2 x 4` bytes — QUADRATIC in a
+    number taken straight off a URL. `?seq_len=100000` asks the allocator for
+    hundreds of gigabytes before a single forward pass.
+    """
+    with pytest.raises(BadRequest) as caught:
+        ht.label_heads(_Model(), None, seq_len=100_000, n_sequences=6)
+
+    said = caught.value.sentence
+    assert str(ht.MAX_SEQ_LEN) in said
+    assert "QUADRATIC" in said, "say WHY the number matters, not just that it is big"
+
+
+def test_an_enormous_sequence_count_is_refused_too():
+    with pytest.raises(BadRequest, match="past the"):
+        ht.label_heads(_Model(), None, seq_len=24, n_sequences=1_000_000)
+
+
+def test_a_length_under_the_cap_is_still_refused_when_this_model_cannot_hold_it():
+    """The structural cap is not the honest bound — a 32x16 model and a 4x4
+    model do not have the same safe sequence length, and one constant would be
+    wrong for both. 400 is under MAX_SEQ_LEN and still 3.4 GB of attention."""
+    assert 400 < ht.MAX_SEQ_LEN
+
+    with pytest.raises(BadRequest) as caught:
+        ht.label_heads(_Model(32, 16), None, seq_len=400, n_sequences=6)
+
+    said = caught.value.sentence
+    assert "32 layers" in said and "16 heads" in said, "quote THIS model"
+    assert "GB" in said, "and the arithmetic that produced the refusal"
+
+
+def test_the_same_length_is_allowed_on_a_model_small_enough_for_it():
+    """So the budget is about the model rather than a second fixed ceiling."""
+    small = _Model(4, 4)
+    # Past the tensors, into the real work — which fails on the absent
+    # tokenizer, and that is a different refusal.
+    with pytest.raises((Refusal, AttributeError, TypeError)) as caught:
+        ht.label_heads(small, None, seq_len=400, n_sequences=6)
+
+    if isinstance(caught.value, BadRequest):  # pragma: no cover - guard
+        assert "past the" not in caught.value.sentence
+
+
+def test_an_ordinary_probe_is_not_refused():
+    """The bounds must not fire on the defaults the route ships."""
+    with pytest.raises((Refusal, AttributeError, TypeError)) as caught:
+        ht.label_heads(_Model(), None, seq_len=24, n_sequences=6)
+
+    assert not isinstance(caught.value, BadRequest), (
+        f"the default probe was refused: {getattr(caught.value, 'sentence', '')}"
+    )

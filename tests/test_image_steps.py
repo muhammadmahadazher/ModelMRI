@@ -1364,3 +1364,60 @@ def test_a_run_that_hands_over_nothing_cannot_be_filmed(tiny_vae):
 def test_a_filmstrip_seed_that_is_not_a_whole_number_is_refused(pipe):
     with pytest.raises(BadRequest, match="whole number"):
         ist.filmstrip(pipe, PROMPT, seed=7.5, steps=4, at=[3])
+
+
+# ------------------------------------------- the hook, and tensor truthiness
+
+
+def test_the_hook_reads_a_latent_passed_as_hidden_states(pipe):
+    """`a or b` calls `bool(a)`, and `Tensor.__bool__` raises for anything with
+    more than one element:
+
+        RuntimeError: Boolean value of Tensor with more than one value is
+        ambiguous
+
+    So `kwargs.get("hidden_states") or kwargs.get("sample")` crashed the trace
+    for any denoiser called with `hidden_states=` rather than positionally or
+    as `sample=`. Installed diffusers ships pipelines that do exactly that AND
+    lack `callback_on_step_end` — which is the combination that routes `trace`
+    down the hook path in the first place. The `sample=` spelling worked, which
+    is why it stayed hidden.
+
+    Driven through the real registration rather than by calling the closure, so
+    a future rewrite that keeps the bug still fails here.
+    """
+    store = ist._Trace(steps=3)
+    handle = ist._capture_by_hook(pipe, store, steps=3)
+    try:
+        denoiser = ist._denoiser_of(pipe)
+        latent = torch.zeros(2, 4, 32, 32)
+        # The spelling that used to raise. The hook is registered with
+        # `with_kwargs=True`, so a keyword call reaches it as `kwargs`.
+        for h in denoiser._forward_hooks.values():
+            h(
+                denoiser,
+                (),
+                {"hidden_states": latent, "timestep": torch.tensor(5)},
+                None,
+            )
+    finally:
+        handle.remove()
+
+    assert store.latents, "the latent was read rather than raising"
+    assert store.indices == [0]
+    assert store.shape == (4, 32, 32), store.shape
+
+
+def test_the_hook_still_reads_a_latent_passed_as_sample(pipe):
+    """The spelling that always worked, so the fix cannot break it."""
+    store = ist._Trace(steps=3)
+    handle = ist._capture_by_hook(pipe, store, steps=3)
+    try:
+        denoiser = ist._denoiser_of(pipe)
+        for h in denoiser._forward_hooks.values():
+            h(denoiser, (), {"sample": torch.zeros(2, 4, 32, 32)}, None)
+    finally:
+        handle.remove()
+
+    assert store.latents
+    assert store.indices == [0]

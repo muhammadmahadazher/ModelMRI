@@ -125,6 +125,62 @@ def test_a_pipeline_carrying_an_executable_payload_is_refused_before_loading(tmp
         ir.ImageHandle().load(str(root))
 
 
+def test_padding_a_repo_past_the_scan_cap_does_not_smuggle_a_pickle(tmp_path):
+    """THE bypass. The scan stops at `SCAN_LIMIT` files and said nothing.
+
+    `scan_dir` returns a `ScanTree` carrying `n_total`, `truncated` and
+    `readable`, and `_scan` iterated it as a plain list — so a scan that ran
+    out of budget before reaching the payload was indistinguishable from a
+    scan that found nothing.
+
+    MEASURED: the malicious fixture above is refused on its own. Add 600 empty
+    `annotations/*.json` files, which sort before `unet/`, and the walk spends
+    its whole budget on them — 400 of 603 scanned, zero dangerous rows — and
+    the load proceeds to unpickle `__reduce__ -> os.system`. The padding is
+    ordinary-looking, and a published Hub repo can carry it because
+    `_one_copy` keeps every non-weight file in the download.
+    """
+    import pickle
+
+    from modelmri import weights_scan
+
+    root = _pipeline(tmp_path, suffix=".bin", mb=0)
+
+    class _RunsAShellCommand:
+        def __reduce__(self):
+            import os
+
+            return (os.system, ("echo pwned",))
+
+    (root / "unet" / "diffusion_pytorch_model.bin").write_bytes(
+        pickle.dumps(_RunsAShellCommand())
+    )
+
+    padding = root / "annotations"
+    padding.mkdir()
+    for i in range(ir.SCAN_LIMIT + 200):
+        (padding / f"{i:05d}.json").write_text("{}")
+
+    with pytest.raises((weights_scan.Unsafe, Refusal)) as caught:
+        ir.ImageHandle().load(str(root))
+
+    said = getattr(caught.value, "sentence", None) or str(caught.value)
+    assert "nothing was opened" in said or "executes" in said, said
+    # And the numbers are stated rather than the cap being silent.
+    if not isinstance(caught.value, weights_scan.Unsafe):
+        assert str(ir.SCAN_LIMIT) in said or "could be checked" in said
+
+
+def test_an_unpadded_pipeline_still_scans_and_loads(tmp_path, monkeypatch):
+    """So the fix above cannot become "refuse anything with files in it"."""
+    _stub_load(monkeypatch)
+    root = _pipeline(tmp_path, mb=4)
+    for i in range(10):
+        (root / f"note{i}.json").write_text("{}")
+
+    assert ir.ImageHandle().load(str(root)).loaded is True
+
+
 def test_a_pipeline_beside_a_resident_model_is_refused_with_both_numbers(tmp_path):
     """One process, two sets of weights. Unlike a single oversized model,
     neither of these can be offloaded to rescue the other."""
