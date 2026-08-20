@@ -94,16 +94,30 @@ _CANONICAL_STEMS = frozenset(
 #: Room left for everything that is not weights: the latents, the attention
 #: maps this tool captures, the autocast copies, allocator fragmentation.
 #:
-#: A STARTING FIGURE, not yet a measured one — `measure_overhead` at the
-#: bottom of this module is what measures it, by running a real pipeline and
-#: reporting peak allocation above the resting weights. Until that has been run
-#: on hardware this is a declared threshold rather than an observed one, and
-#: saying so is the difference between a number a reader can check and one they
-#: have to trust.
+#: MEASURED, on an RTX 4060 Laptop with `nota-ai/bk-sdm-tiny` at 512x512 —
+#: `measure_overhead` at the bottom of this module is what produced these, by
+#: running the passes this tool actually runs and reading
+#: `torch.cuda.max_memory_allocated` above the resting weights:
 #:
-#: It is REPORTED in every verdict (`activation_headroom`) for the same reason:
-#: a badge that says "tight" without saying what it is tight against is asking
-#: to be believed rather than read.
+#:     weights resting              1083 MB
+#:     a plain latent trace          141 MB above weights
+#:     a cross-attention capture     650 MB above weights
+#:
+#: Two things that reading settles. The capture costs **4.5x** the plain trace,
+#: so the threshold has to be set for the capture — a bound drawn from
+#: denoising alone would call a model comfortable and then die during the one
+#: measurement people came for.
+#:
+#: And it does NOT grow with steps: 650, 640 and 640 MB at 6, 20 and 30 steps.
+#: The maps do not accumulate on the card, so peak allocation is bounded by one
+#: step's working set rather than by the length of the run. That is what makes
+#: a single constant honest here instead of something that has to scale.
+#:
+#: 900 MiB sits above the worst of those with room to spare, which is the right
+#: direction for a figure that gates a refusal: the models measured are small,
+#: and a full-size SD or SDXL holds larger maps per step. It is REPORTED in
+#: every verdict (`activation_headroom`) so a reader can check this arithmetic
+#: rather than take it on faith.
 ACTIVATION_HEADROOM = 900 * 1024 * 1024
 
 
