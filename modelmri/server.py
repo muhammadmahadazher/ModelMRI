@@ -4708,10 +4708,20 @@ def create_app(
                 head = inspect_io.header(path)
                 out = inspect_io.read_sample(path, sample_id=sample_id)
                 stored = traces.import_trace(out.trace)
+                refs = inspect_io.samples(path)
                 return out.to_dict() | {
                     "trace_id": stored,
                     "header": head.to_dict(),
-                    "samples": [s.to_dict() for s in inspect_io.samples(path)],
+                    "samples": [s.to_dict() for s in refs],
+                    # BOTH numbers. The list is capped at
+                    # `MAX_SAMPLES_LISTED`, and the panel was printing its
+                    # length as the log's sample count — so a 6,000-sample
+                    # file read "5000 samples" as a fact about the reader's
+                    # own archive, with the dropdown holding an arbitrary
+                    # subset in zip order and a later sample simply
+                    # unselectable.
+                    "samples_total": refs.n_total,
+                    "samples_truncated": refs.truncated,
                 }
 
         try:

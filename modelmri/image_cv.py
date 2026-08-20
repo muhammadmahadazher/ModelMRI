@@ -961,16 +961,48 @@ def _fill_detection(found, output, names, top_k, processor, height, width) -> No
                 output, threshold=0.0, target_sizes=[(height, width)]
             )
             if done and "scores" in done[0] and len(done[0]["scores"]) == queries:
-                scores = done[0]["scores"].float().cpu()
-                found.scoring = "checkpoint_post_processor"
-                found.scoring_reason = (
-                    "Scores come from this checkpoint's OWN "
-                    "`post_process_object_detection`, which knows whether its "
-                    "head is softmax- or sigmoid-scored — read rather than "
-                    "inferred. The boxes below are computed here from "
-                    "`pred_boxes` so that they do not depend on whether a "
-                    "processor was supplied."
-                )
+                cand = done[0]["scores"].float().cpu()
+                # LENGTH IS NOT ALIGNMENT, and this treated it as though it
+                # were. Some post-processors RE-RANK: they flatten the
+                # (query x class) grid, sort it descending, and hand back the
+                # top `queries` of it. The length check passes and row `i` is
+                # then somebody else's query entirely.
+                #
+                # MEASURED on `PekingU/rtdetr_r50vd`: background slots with
+                # logit around -11 were reported as 99% detections carrying
+                # their own boxes, the three real detections never appeared,
+                # and each row contradicted itself on screen — `score=0.9975`
+                # printed beside `logit=-10.82`, because `logit` is
+                # query-aligned and `score` was not. `conditional_detr` and
+                # `deformable_detr` hit it too, at exactly 100 queries.
+                #
+                # A sorted result is the signature, and it is safe to test
+                # for: a genuinely query-aligned output that happens to be
+                # monotonically decreasing is vanishingly unlikely, and being
+                # wrong about it only costs the structural reading below,
+                # which is correct and says that it is a reading.
+                sorted_out = bool(queries > 1 and (cand[:-1] >= cand[1:]).all())
+                if sorted_out:
+                    scores = None
+                    found.scoring_reason = (
+                        "This checkpoint's `post_process_object_detection` "
+                        "re-ranks its output — it returns scores sorted by "
+                        "confidence rather than one per query — so its rows "
+                        "cannot be matched back to the queries the boxes come "
+                        "from. Scores here are derived from the logits "
+                        "instead, which keeps every row about one query."
+                    )
+                else:
+                    scores = cand
+                    found.scoring = "checkpoint_post_processor"
+                    found.scoring_reason = (
+                        "Scores come from this checkpoint's OWN "
+                        "`post_process_object_detection`, which knows whether "
+                        "its head is softmax- or sigmoid-scored — read rather "
+                        "than inferred. The boxes below are computed here from "
+                        "`pred_boxes` so that they do not depend on whether a "
+                        "processor was supplied."
+                    )
         except Exception:
             # A post-processor that will not run is not a reason to fail a
             # prediction: the structural reading below answers the same

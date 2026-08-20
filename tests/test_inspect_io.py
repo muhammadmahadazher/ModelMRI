@@ -470,3 +470,45 @@ def test_an_all_untimestamped_sample_still_ladders():
         for s in inspect_io._steps_from_events(events, inspect_io.Mapping())
     ]
     assert offsets == [0, 10, 20]
+
+
+def test_the_listing_itself_carries_the_true_total(tmp_path, monkeypatch):
+    """The refusal path got this right; the LISTING path did not.
+
+    `samples()` returned a plain list, so the cap could not travel with it and
+    `InspectDrop` printed `samples.length` as the log's sample count — a
+    6,000-sample file rendering "5000 samples" as a fact about the reader's own
+    archive. The picker below it then held an arbitrary subset in whatever
+    order the zip stored them, so a later sample was simply unselectable with
+    nothing saying why.
+    """
+    monkeypatch.setattr(inspect_io, "MAX_SAMPLES_LISTED", 3)
+    path = _log(tmp_path, samples=[_sample(sid=f"s{i}") for i in range(6)])
+
+    refs = inspect_io.samples(path)
+
+    assert len(refs) == 3, "the cap still applies to what is listed"
+    assert refs.n_total == 6, "and the true count travels with it"
+    assert refs.truncated is True
+
+
+def test_an_uncapped_listing_reports_itself_as_complete(tmp_path):
+    """So `truncated` cannot become permanently true."""
+    path = _log(tmp_path, samples=[_sample(sid=f"s{i}") for i in range(4)])
+
+    refs = inspect_io.samples(path)
+
+    assert len(refs) == 4
+    assert refs.n_total == 4
+    assert refs.truncated is False
+
+
+def test_the_listing_is_still_a_list(tmp_path):
+    """`SampleList` subclasses `list` so every existing caller is unchanged —
+    the route iterates it, the refusal path takes `len()` of it."""
+    path = _log(tmp_path, samples=[_sample(sid="only")])
+
+    refs = inspect_io.samples(path)
+
+    assert isinstance(refs, list)
+    assert [r.id for r in refs] == ["only"]

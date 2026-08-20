@@ -102,8 +102,20 @@ export default function InspectDrop({
         <div className="ins-result">
           <div className="meta">
             <b>{out.header.task || "an eval"}</b> · {out.header.model || "model not stated"}{" "}
-            · log format v{out.header.version} · {out.samples.length} sample
-            {out.samples.length === 1 ? "" : "s"}
+            · log format v{out.header.version} · {out.samples_total} sample
+            {out.samples_total === 1 ? "" : "s"}
+            {/* `samples_total`, not `samples.length`. The list is capped
+                server-side, and printing its length stated the cap as a fact
+                about the reader's own file: a 6,000-sample log read "5000
+                samples". The dropdown below holds the listed subset, so when
+                the two differ that has to be said rather than left to be
+                discovered by a sample being unselectable. */}
+            {out.samples_truncated && (
+              <>
+                {" "}
+                — the first {out.samples.length} are listed below
+              </>
+            )}
           </div>
 
           {/* Why THIS sample. Otherwise the reader is looking at one row of a

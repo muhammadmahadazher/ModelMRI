@@ -2652,7 +2652,19 @@ export interface InspectImport {
     status: string;
     n_samples: number;
   };
+  /** The samples LISTED, capped server-side. Use `samples_total` for how many
+   *  the log carries — this array is what the picker can offer, not a count
+   *  of the reader's file. */
   samples: { name: string; id: string; epoch: number }[];
+  /** Every sample in the archive, counted before the cap.
+   *
+   *  `samples.length` was being printed as this, so a 6,000-sample log
+   *  rendered "5000 samples" as a fact about the reader's own archive, while
+   *  the picker held an arbitrary subset in zip order and a later sample was
+   *  simply unselectable with nothing saying why. */
+  samples_total: number;
+  /** Whether the list above is short of `samples_total`. */
+  samples_truncated: boolean;
   means: string;
 }
 

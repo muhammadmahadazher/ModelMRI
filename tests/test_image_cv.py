@@ -978,3 +978,81 @@ def test_both_occlusion_routes_ask_the_processor_for_their_grey():
     start = source.index('@app.post("/api/image/cv/attribute")')
     route = source[start : source.index("@app.", start + 10)]
     assert "value_range=image_input.value_range_of(processor)" in route
+
+
+# ------------------------------------- a processor that re-ranks its output
+
+
+class _ReRankingProcessor:
+    """A post-processor of the RT-DETR family.
+
+    It flattens the (query x class) grid, sorts it descending, and hands back
+    the top `queries` of it — so its rows are ranked, not query-aligned. Real
+    ones do this: `PekingU/rtdetr_r50vd`, and `conditional_detr` and
+    `deformable_detr` at exactly 100 queries.
+    """
+
+    def post_process_object_detection(self, output, threshold=0.0, target_sizes=None):
+        logits = output.logits[0]
+        flat = logits.sigmoid().flatten()
+        ranked, _ = torch.sort(flat, descending=True)
+        n = int(logits.shape[0])
+        return [{"scores": ranked[:n], "labels": torch.zeros(n), "boxes": None}]
+
+
+class _AlignedProcessor:
+    """One that really does answer per query, in QUERY order.
+
+    Reversed deliberately. Query order is arbitrary — a detector's later slots
+    are as likely to be the confident ones as its earlier slots — and this
+    fixture has only three queries, where the odds of landing in descending
+    order by chance are one in six. A real head has 100 to 300, which is what
+    makes the sortedness test safe in production and unusable at this size.
+    """
+
+    def post_process_object_detection(self, output, threshold=0.0, target_sizes=None):
+        logits = output.logits[0]
+        per_query = logits.softmax(dim=-1).max(dim=-1).values
+        return [
+            {
+                "scores": per_query.flip(0),
+                "labels": logits.argmax(dim=-1).flip(0),
+                "boxes": None,
+            }
+        ]
+
+
+def test_a_re_ranking_processor_is_not_read_as_query_aligned(corners):
+    """LENGTH IS NOT ALIGNMENT, and the guard was `len(scores) == queries`.
+
+    MEASURED on `PekingU/rtdetr_r50vd`: background slots with logit around -11
+    were reported as 99% detections carrying their own boxes, the three real
+    detections never appeared, and every row contradicted itself — `score`
+    from the sorted tensor beside a `logit` that is query-aligned.
+    """
+    found = cv.predict(
+        _eval(TinyDetector()), corners, top_k=3, processor=_ReRankingProcessor()
+    ).to_dict()
+
+    assert found["scoring"] != "checkpoint_post_processor", (
+        "a sorted result cannot be matched back to the queries the boxes come from"
+    )
+    assert "re-ranks" in found["scoring_reason"]
+
+    # And every row stays about ONE query: the score and the logit agree in
+    # ordering, which is what was contradicting itself before.
+    boxes = found["boxes"]
+    ranked_by_score = [b["query"] for b in sorted(boxes, key=lambda b: -b["score"])]
+    ranked_by_logit = [b["query"] for b in sorted(boxes, key=lambda b: -b["logit"])]
+    assert ranked_by_score == ranked_by_logit
+
+
+def test_a_genuinely_query_aligned_processor_is_still_preferred(corners):
+    """The guard must not throw away the checkpoint's own answer — reading
+    beats inferring, which is the rule the rest of this module follows."""
+    found = cv.predict(
+        _eval(TinyDetector()), corners, top_k=3, processor=_AlignedProcessor()
+    ).to_dict()
+
+    assert found["scoring"] == "checkpoint_post_processor"
+    assert "OWN" in found["scoring_reason"]
