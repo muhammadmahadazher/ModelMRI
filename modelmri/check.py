@@ -340,7 +340,16 @@ def run(
             if not math.isfinite(value):
                 unreadable += 1
                 continue
-            timed.append(int(value))
+            # AS A FLOAT. `int(value)` truncated toward zero, which is
+            # fine for 1500.0 and ruinous in aggregate: 5000 steps of 0.9 ms
+            # each is 4.5 seconds of real work, and every one of them became
+            # 0, so the total was 0 and the gate passed a 100 ms limit. A
+            # sub-millisecond step is a real step — an in-process tool call
+            # routinely is — and this assertion exists to catch the run that
+            # is slower than it should be.
+            timed.append(float(value))
+        # Summed at full precision and rounded ONCE, for display. The
+        # comparison below uses the true total.
         total = sum(timed)
         untimed = missing
         out.assertions.append(
@@ -353,8 +362,15 @@ def run(
                 # failure this whole assertion exists to prevent.
                 ok=total <= max_ms and unreadable == 0,
                 detail=(
-                    f"{total} ms across {len(timed)} timed step(s), limit "
-                    f"{max_ms}"
+                    # A decimal place under ten milliseconds. Rounding to a
+                    # whole number rendered 0.6 and 1.2 identically as "1 ms"
+                    # against a limit of 1 — one passing, one failing, the
+                    # same words for both. Above ten the fraction is noise and
+                    # the thousands separator is what a reader needs.
+                    f"{total:,.1f} ms" if total < 10 else f"{round(total):,} ms"
+                )
+                + (
+                    f" across {len(timed)} timed step(s), limit {max_ms:,}"
                     + (
                         f". {unreadable} step(s) carry a duration this cannot "
                         f"read and are NOT in that total, so the total is a "

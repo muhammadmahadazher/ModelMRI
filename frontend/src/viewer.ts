@@ -355,14 +355,37 @@ export async function viewerFetch(
   }
 
   if (p === "/api/attention/meta") {
-    if (!open) return ok({ available: false });
+    // `reason` on both branches, mirroring `Session.attention_meta`. The panel
+    // prints it and renders NOTHING without one, so a bundle exported around
+    // an agent run — which carries no attention slices — made the whole
+    // attention section vanish with nothing saying why. That was fixed in the
+    // Python half and this shim, which serves the same route to the same
+    // panel, kept the old shape: the fix reached the app and not the page it
+    // was written for.
+    if (!open) {
+      return ok({
+        available: false,
+        reason:
+          "no file is open yet. Drop a `.mri` on this page and its attention " +
+          "maps, if it carries any, appear here.",
+      });
+    }
+    const slices = Object.keys(open.attention ?? {}).length;
     return ok({
-      available: Object.keys(open.attention ?? {}).length > 0,
+      available: slices > 0,
       n_prompt: open.n_prompt ?? 0,
       n_layers: open.n_layers ?? 0,
       n_heads: open.n_heads ?? 0,
       n_tokens: (open.tokens ?? []).length,
       replay: true,
+      ...(slices > 0
+        ? {}
+        : {
+            reason:
+              "this session carries no attention maps. A `.mri` stores the " +
+              "slices that were captured, and this one was exported for what " +
+              "it does carry rather than for a layer and head.",
+          }),
     });
   }
 

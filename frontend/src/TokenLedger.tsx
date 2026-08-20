@@ -58,7 +58,22 @@ export function TokenTable({
   rollup?: TokenRollup;
   title: string;
 }) {
-  if (!rollup || !rollup.n_llm_steps) {
+  // ABSENT AND ZERO ARE DIFFERENT FACTS, and one sentence covered both. The
+  // rollup is computed by `ledger.roll_up` server-side; the standalone viewer
+  // has no Python and omits it rather than shipping a second implementation
+  // of the token arithmetic. So a bundled run with an 812 → 140 token call
+  // arrived with `rollup === undefined` and this said "no LLM calls here" —
+  // about a run whose steps say otherwise, on the one page that cannot check.
+  if (!rollup) {
+    return (
+      <p className="meta">
+        {title}: the token roll-up is computed by ModelMRI and is not carried
+        in a shared file, so it is not counted here. The per-step counts above
+        are the file's own.
+      </p>
+    );
+  }
+  if (!rollup.n_llm_steps) {
     return (
       <p className="meta">
         {title}: no LLM calls here, so there are no tokens to count.

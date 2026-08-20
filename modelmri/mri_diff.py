@@ -299,6 +299,26 @@ def _diff_attention(a, b) -> Delta:
     )
 
 
+def _top_k_line(top: int, entered: list, left: list) -> str:
+    """Which heads entered and left the top K, as a sentence.
+
+    Extracted because two paths need it and a second copy of a sentence is a
+    second chance for the two to disagree: the missing-floor branch reports
+    exactly this finding, which does not depend on a floor at all.
+    """
+    return (
+        f"the top {top} changed: "
+        + ", ".join(f"L{h[0]}H{h[1]}" for h in entered)
+        + " entered"
+        + (
+            " and " + ", ".join(f"L{h[0]}H{h[1]}" for h in left) + " left"
+            if left
+            else ""
+        )
+        + "."
+    )
+
+
 def _diff_ranking(a, b) -> Delta:
     rows_a = (a.ranking or {}).get("ranked") or []
     rows_b = (b.ranking or {}).get("ranked") or []
@@ -354,16 +374,52 @@ def _diff_ranking(a, b) -> Delta:
     # section is not a zero") and broke it here.
     floor_a = (a.ranking or {}).get("noise_floor_kl")
     floor_b = (b.ranking or {}).get("noise_floor_kl")
+
+    # WHICH HEADS ARE IN THE TOP FIVE needs no floor. It is a comparison of
+    # two orderings, and it is the finding a reader acts on: "L5H3 entered and
+    # L0H0 left" says the answer moved to a different head. Computed BEFORE
+    # the floor is required, because the first version of this guard returned
+    # NOT_COMPARABLE for a missing floor and took that finding down with it —
+    # a real top-five change, reported as nothing, exit 0.
+    top = min(5, len(shared))
+    top_a = sorted(shared, key=lambda h: -scores_a[h])[:top]
+    top_b = sorted(shared, key=lambda h: -scores_b[h])[:top]
+    entered = [h for h in top_b if h not in top_a]
+    left = [h for h in top_a if h not in top_b]
+
     if floor_a is None or floor_b is None:
         which = "the first" if floor_a is None else "the second"
+        why = (
+            f"{which} file's ranking records no noise floor, so no per-head "
+            f"score difference can be judged against one. An absent floor is "
+            f"not a floor of zero — with one, every last-digit difference "
+            f"counts as a change. Re-run `modelmri ablate` on that side to "
+            f"record one, or diff two files that both carry it."
+        )
+        if entered:
+            # The ordering DID change, and that does not depend on a floor.
+            # Reported as a change, so the exit code is the one the reader
+            # expects, with the magnitude question named as unanswered.
+            return Delta(
+                "head ranking",
+                CHANGED,
+                f"{_top_k_line(top, entered, left)} {why}",
+                magnitude=None,
+                floor=None,
+                unit="nats",
+                measured={
+                    "heads_compared": len(shared),
+                    "top_k": top,
+                    "entered_top_k": [f"L{h[0]}H{h[1]}" for h in entered],
+                    "left_top_k": [f"L{h[0]}H{h[1]}" for h in left],
+                    "floor": None,
+                    "floor_from": "neither file recorded one",
+                },
+            )
         return Delta(
             "head ranking",
             NOT_COMPARABLE,
-            f"{which} file's ranking records no noise floor, so there is "
-            f"nothing to judge a difference against. An absent floor is not a "
-            f"floor of zero — with one, every last-digit difference counts as "
-            f"a change. Re-run `modelmri ablate` on that side to record one, "
-            f"or diff two files that both carry it.",
+            f"the top {top} are the same heads in both files. Beyond that, {why}",
         )
     floor = max(float(floor_a), float(floor_b))
 
@@ -373,12 +429,6 @@ def _diff_ranking(a, b) -> Delta:
         if abs(gap) > floor:
             moved.append((abs(gap), head, scores_a[head], scores_b[head]))
     moved.sort(reverse=True)
-
-    top = min(5, len(shared))
-    top_a = sorted(shared, key=lambda h: -scores_a[h])[:top]
-    top_b = sorted(shared, key=lambda h: -scores_b[h])[:top]
-    entered = [h for h in top_b if h not in top_a]
-    left = [h for h in top_a if h not in top_b]
 
     measured = {
         "heads_compared": len(shared),
@@ -411,17 +461,7 @@ def _diff_ranking(a, b) -> Delta:
     # not. "Which head carries this answer" is what a reader acts on; a score
     # that drifted while the order held is a smaller claim and reads as one.
     if entered:
-        head_line = (
-            f"the top {top} changed: "
-            + ", ".join(f"L{h[0]}H{h[1]}" for h in entered)
-            + " entered"
-            + (
-                " and " + ", ".join(f"L{h[0]}H{h[1]}" for h in left) + " left"
-                if left
-                else ""
-            )
-            + "."
-        )
+        head_line = _top_k_line(top, entered, left)
     else:
         _, head, was, now = moved[0]
         # THE MOVEMENT, not just the pair. `:.5f` on both sides printed a

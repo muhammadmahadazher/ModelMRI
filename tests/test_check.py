@@ -248,7 +248,7 @@ def test_untimed_steps_are_excluded_and_declared():
     }
     result = check.run(doc, max_ms=100)
     detail = result.assertions[0].detail
-    assert "5 ms across 1 timed step(s)" in detail
+    assert "5.0 ms across 1 timed step(s)" in detail
     assert "1 step(s) recorded no duration and are not in this total" in detail
 
 
@@ -366,7 +366,7 @@ def test_max_ms_reads_a_duration_recorded_as_a_float():
     ]
     a = _run(steps, max_ms=5000)
     assert a.ok is False, a.detail
-    assert "10500 ms across 7 timed step(s)" in a.detail
+    assert "10,500 ms across 7 timed step(s)" in a.detail
 
     # And ints are untouched, so the fix is a widening rather than a swap.
     ints = [dict(s, duration_ms=1500) for s in steps]
@@ -380,7 +380,7 @@ def test_max_ms_passes_a_run_that_is_actually_under_the_limit():
         max_ms=5000,
     )
     assert a.ok is True
-    assert "1200 ms across 1 timed step(s)" in a.detail
+    assert "1,200 ms across 1 timed step(s)" in a.detail
 
 
 def test_a_duration_that_is_present_and_unreadable_fails_the_gate():
@@ -456,3 +456,54 @@ def test_a_list_of_three_says_how_many_there_were():
     few = check_mod.run({"name": "n", "steps": steps[:4]}, no_retry_storms=True)
     b = next(x for x in few.assertions if x.name == "no-retry-storms")
     assert "in total" not in b.detail, b.detail
+
+
+def test_sub_millisecond_steps_are_not_truncated_to_nothing():
+    """`int(value)` truncated toward zero, and in aggregate that lost the run.
+
+    Fine for 1500.0 and ruinous for a fleet of small ones: 5000 steps of 0.9 ms
+    each is 4.5 seconds of real work, every one of them became 0, the total was
+    0, and the gate passed a 100 ms limit. An in-process tool call routinely
+    takes under a millisecond, and this assertion exists to catch the run that
+    is slower than it should be.
+    """
+    steps = [
+        {
+            "id": f"s{i}",
+            "kind": "tool_call",
+            "name": "lookup",
+            "started_ms": i,
+            "duration_ms": 0.9,
+        }
+        for i in range(5000)
+    ]
+    a = _run(steps, max_ms=100)
+    assert a.ok is False, a.detail
+    assert "4,500 ms" in a.detail
+
+
+def test_a_total_under_ten_milliseconds_keeps_a_decimal():
+    """Rounding to a whole number rendered 0.6 and 1.2 identically as "1 ms"
+    against a limit of 1 — one passing, one failing, the same words for both.
+
+    The same defect as `mri_diff` printing "moved 0.10000 -> 0.10000": a
+    display precision that cannot separate the two cases it is reporting on.
+    """
+
+    def three(each):
+        return [
+            {
+                "id": f"s{i}",
+                "kind": "tool_call",
+                "name": "x",
+                "started_ms": i,
+                "duration_ms": each,
+            }
+            for i in range(3)
+        ]
+
+    under = _run(three(0.2), max_ms=1)
+    over = _run(three(0.4), max_ms=1)
+    assert under.ok is True and "0.6 ms" in under.detail
+    assert over.ok is False and "1.2 ms" in over.detail
+    assert under.detail != over.detail

@@ -579,3 +579,85 @@ def test_a_head_that_moved_is_not_printed_as_two_identical_numbers(tmp_path):
     number twice, in a sentence whose whole content is that it changed."""
     delta, _ = _ranking_delta(tmp_path, _STEADY, 0.0, _DRIFT, 0.0)
     assert "0.10000 → 0.10000" not in delta.detail, delta.detail
+
+
+def _eight(kls, floor):
+    """A ranking over eight heads, so the top FIVE can gain and lose members."""
+    rank = {
+        "baseline": "zero",
+        "ranked": [{"layer": 0, "head": i, "kl": v} for i, v in enumerate(kls)],
+    }
+    if floor is not None:
+        rank["noise_floor_kl"] = floor
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a", "b"],
+        prompt="p",
+        generation="g",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=8,
+        n_prompt=1,
+        ranking=rank,
+    )
+
+
+_BEFORE = [0.90, 0.80, 0.70, 0.60, 0.50, 0.10, 0.05, 0.01]
+#: H7 rockets into the top five and H4 drops out of it.
+_AFTER = [0.90, 0.80, 0.70, 0.60, 0.02, 0.10, 0.05, 0.95]
+
+
+def _ranking_of(tmp_path, kls_a, floor_a, kls_b, floor_b):
+    a, b = tmp_path / "a.mri", tmp_path / "b.mri"
+    a.write_bytes(_eight(kls_a, floor_a))
+    b.write_bytes(_eight(kls_b, floor_b))
+    report = mri_diff.diff(str(a), str(b))
+    return next(
+        d for d in report.deltas if d.name == "head ranking"
+    ), report.exit_code()
+
+
+def test_a_missing_floor_does_not_hide_a_top_five_change(tmp_path):
+    """WHICH HEADS ARE IN THE TOP FIVE needs no noise floor.
+
+    It is a comparison of two orderings — "L0H7 entered and L0H4 left" says the
+    answer moved to a different head — and it is the finding a reader acts on.
+
+    The first version of the missing-floor guard returned NOT_COMPARABLE for
+    the whole section and took that finding down with it: a real top-five
+    change, reported as nothing, exit 0. Refusing to invent a floor is right;
+    refusing to report what does not need one is a different mistake in the
+    same place.
+    """
+    delta, code = _ranking_of(tmp_path, _BEFORE, None, _AFTER, 0.001)
+    assert delta.status == mri_diff.CHANGED
+    assert "L0H7 entered" in delta.detail and "L0H4 left" in delta.detail
+    assert code == 1, "a changed ranking must still fail the build"
+    # And the magnitude question is named as unanswered rather than guessed.
+    assert "records no noise floor" in delta.detail
+    assert delta.floor is None
+    assert delta.magnitude is None
+
+
+def test_a_missing_floor_still_refuses_the_magnitude_question(tmp_path):
+    """With the ordering unchanged there is nothing floor-independent left to
+    report, so the section is genuinely not comparable — and says which half it
+    could answer."""
+    delta, code = _ranking_of(tmp_path, _BEFORE, None, _BEFORE, 0.001)
+    assert delta.status == mri_diff.NOT_COMPARABLE
+    assert "the top 5 are the same heads in both files" in delta.detail
+    assert code == 0
+
+
+def test_the_ordinary_path_reports_both(tmp_path):
+    """With floors on both sides the ordering and the magnitudes travel
+    together, and the guard must not have changed that."""
+    delta, code = _ranking_of(tmp_path, _BEFORE, 0.001, _AFTER, 0.001)
+    assert delta.status == mri_diff.CHANGED
+    assert "L0H7 entered" in delta.detail
+    assert "noise floor" in delta.detail
+    assert delta.floor == 0.001
+    assert code == 1
