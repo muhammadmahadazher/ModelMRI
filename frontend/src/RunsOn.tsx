@@ -73,12 +73,17 @@ function sessionFor(epoch: number): Promise<SessionInfo> {
   return cached.promise;
 }
 
-/** Re-render this component when the resident model changes.
+/** Re-render when ANY resident model changes — text, image or robot policy.
+ *
+ *  Exported because the header needs it too. It reads `/api/session`, which
+ *  reports all three, and nothing was telling it to re-read: loading a
+ *  diffusion pipeline left "no model loaded" in the top bar with 3.3 GB
+ *  resident and every control in that panel live.
  *
  *  A cleared cache alone is not enough: the effects below are keyed on
  *  `[epoch]`, so nothing would re-run to notice it was cleared.
  */
-function useSessionVersion(): number {
+export function useSessionVersion(): number {
   const [seen, setSeen] = useState(version);
   useEffect(() => {
     const notify = () => setSeen(version);

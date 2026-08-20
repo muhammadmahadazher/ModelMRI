@@ -12,7 +12,7 @@ import {
   unloadModel,
 } from "./api";
 import AgentsPanel from "./AgentsPanel";
-import { invalidateSession } from "./RunsOn";
+import { invalidateSession, useSessionVersion } from "./RunsOn";
 import CategoryBar from "./CategoryBar";
 import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
@@ -93,9 +93,13 @@ export default function App() {
     }
   }, []);
 
+  // `heldVersion` as well as `refresh`. The image and robot panels load
+  // their own resources, and until they announced it the top bar kept
+  // whatever it last fetched — "no model loaded" over a resident pipeline.
+  const heldVersion = useSessionVersion();
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, heldVersion]);
 
   async function onUnload() {
     setBusyTop("unload");

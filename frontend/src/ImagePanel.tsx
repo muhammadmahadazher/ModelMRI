@@ -3,6 +3,7 @@ import { measured, signed } from "./measured";
 import DevicePicker from "./DevicePicker";
 import LoadBar, { gb } from "./LoadBar";
 import RestingSketch from "./RestingSketch";
+import { invalidateSession } from "./RunsOn";
 import ImageModelPicker from "./ImageModelPicker";
 import AdapterPanel from "./AdapterPanel";
 import ImageCV from "./ImageCV";
@@ -515,6 +516,12 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
         return;
       }
       setStatus(s);
+      // THE TOP BAR READS `/api/session`, which reports the image pipeline
+      // alongside the text model — and nothing was telling it to re-read, so
+      // it kept saying "no model loaded" with 3.3 GB of pipeline resident and
+      // every control in this panel live. The header and the panel answering
+      // one question two ways.
+      invalidateSession();
       // A new pipeline makes every reading on screen a claim about a model
       // that is no longer here.
       setRun(null);
@@ -573,6 +580,8 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
     setErr("");
     try {
       setStatus(await unloadImage());
+      // Same reason as the load: the top bar has to stop naming it.
+      invalidateSession();
       setRun(null);
       setKnock(null);
       setPicked([]);

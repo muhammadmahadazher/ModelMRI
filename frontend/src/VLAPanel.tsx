@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invalidateSession } from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
 import RestingSketch from "./RestingSketch";
 import {
@@ -145,6 +146,9 @@ export default function VLAPanel() {
     setErr("");
     try {
       setVla(await loadVLA(policy));
+      // The top bar reports the robot policy too, and had the same silence as
+      // the image panel: a resident policy under "no model loaded".
+      invalidateSession();
     } catch (e) {
       setErr(errorText(e));
     } finally {
