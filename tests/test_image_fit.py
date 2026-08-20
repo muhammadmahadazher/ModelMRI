@@ -28,7 +28,6 @@ from __future__ import annotations
 import io
 import json
 import pickle
-import struct
 import zipfile
 from dataclasses import dataclass
 
@@ -182,7 +181,10 @@ def test_a_dot_in_the_publishers_own_filename_is_not_a_variant(tmp_path):
     assert image_fit._variant_of("sam3.1_multiplex.pt") == ""
     assert image_fit._variant_of("model.fp16.safetensors") == "fp16"
     assert image_fit._variant_of("model.safetensors") == ""
-    assert image_fit._variant_of("diffusion_pytorch_model.fp16-00001-of-00002.safetensors") == "fp16"
+    assert (
+        image_fit._variant_of("diffusion_pytorch_model.fp16-00001-of-00002.safetensors")
+        == "fp16"
+    )
 
 
 # ------------------------------------------------- present is not loadable

@@ -488,6 +488,7 @@ def test_the_token_fields_are_namespaced_rather_than_squatting_on_semconv():
     assert keys["tokens_in"] == "gen_ai.usage.input_tokens"
     assert keys["tokens_out"] == "gen_ai.usage.output_tokens"
 
+
 def test_a_truncation_count_survives_as_a_number():
     """These are COUNTS, not flags. `traces._unclip` returns how many
     characters were not stored — 18,412, not True — and the agents panel prints

@@ -261,7 +261,9 @@ class _StepCtx:
             self._record["duration_ms"] = self._trace.now_ms() - self._entered_ms
         if exc is not None:
             self._record["error"] = True
-            self._record["output"] = _cut(f"{type(exc).__name__}: {exc}", MAX_ERROR_CHARS)
+            self._record["output"] = _cut(
+                f"{type(exc).__name__}: {exc}", MAX_ERROR_CHARS
+            )
 
 
 def step(
@@ -553,7 +555,9 @@ def _decode_span(tokenizer, meta: dict, start: int, end: int | None) -> str:
 
 def _msgs_preview(kwargs: dict) -> str:
     try:
-        return _cut(json.dumps(kwargs.get("messages", []), default=str), MAX_PREVIEW_CHARS)
+        return _cut(
+            json.dumps(kwargs.get("messages", []), default=str), MAX_PREVIEW_CHARS
+        )
     except Exception:
         return ""
 

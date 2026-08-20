@@ -213,11 +213,7 @@ def _weights_in(folder: Path) -> list[Path]:
         entries = sorted(folder.iterdir())
     except OSError:
         return []
-    return [
-        f
-        for f in entries
-        if f.is_file() and f.suffix.lower() in WEIGHT_SUFFIXES
-    ]
+    return [f for f in entries if f.is_file() and f.suffix.lower() in WEIGHT_SUFFIXES]
 
 
 def _one_format(files: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -456,7 +452,9 @@ def _choose_variant(parts: dict[str, list[Path]]) -> tuple[str | None, str]:
     # `n or "this checkpoint"`: a flat checkpoint's component is named "" until
     # it is renamed to "weights" further down, so the sentence read
     # " ship only variant weights, so this must be loaded with …".
-    missing = sorted((n or "this checkpoint") for n, have in available.items() if "" not in have)
+    missing = sorted(
+        (n or "this checkpoint") for n, have in available.items() if "" not in have
+    )
     every = set().union(*available.values()) if available else set()
     usable = sorted(
         v
@@ -568,10 +566,22 @@ def _pickle_table(path: Path) -> tuple[dict[str, tuple[str, int]], dict[str, int
         if name == "MARK":
             stack.append(_Mark)
         elif name in (
-            "SHORT_BINUNICODE", "BINUNICODE", "UNICODE",
-            "BINSTRING", "SHORT_BINSTRING", "BINBYTES", "SHORT_BINBYTES",
-            "BININT", "BININT1", "BININT2", "INT", "LONG", "LONG1", "LONG4",
-            "BINFLOAT", "FLOAT",
+            "SHORT_BINUNICODE",
+            "BINUNICODE",
+            "UNICODE",
+            "BINSTRING",
+            "SHORT_BINSTRING",
+            "BINBYTES",
+            "SHORT_BINBYTES",
+            "BININT",
+            "BININT1",
+            "BININT2",
+            "INT",
+            "LONG",
+            "LONG1",
+            "LONG4",
+            "BINFLOAT",
+            "FLOAT",
         ):
             stack.append(arg)
         elif name == "NONE":
@@ -598,12 +608,12 @@ def _pickle_table(path: Path) -> tuple[dict[str, tuple[str, int]], dict[str, int
             cut = len(stack) - 1
             while cut >= 0 and stack[cut] is not _Mark:
                 cut -= 1
-            items = tuple(stack[cut + 1:])
+            items = tuple(stack[cut + 1 :])
             # `max(cut, 0)`: an unmatched TUPLE leaves `cut` at -1, and
             # `del stack[-1:]` removes ONE element where clearing was meant.
             # Unreachable on a valid pickle; a stack that silently keeps
             # growing is not how this should fail on an invalid one.
-            del stack[max(cut, 0):]
+            del stack[max(cut, 0) :]
             stack.append(items)
         elif name == "TUPLE1":
             stack.append((stack.pop(),))
@@ -649,7 +659,9 @@ def _pickle_table(path: Path) -> tuple[dict[str, tuple[str, int]], dict[str, int
     return out, blobs
 
 
-def _price_pickle(path: Path, dtype_bytes: int | None) -> tuple[int, int | None, bool, str]:
+def _price_pickle(
+    path: Path, dtype_bytes: int | None
+) -> tuple[int, int | None, bool, str]:
     """One `.bin`, priced from its own tensor table where that can be read."""
     try:
         table, blobs = _pickle_table(path)
@@ -953,9 +965,7 @@ def of(
         out.reason = why
     elif out.missing:
         out.reason = (
-            "this cannot be loaded as it stands: "
-            + "; ".join(out.missing)
-            + "."
+            "this cannot be loaded as it stands: " + "; ".join(out.missing) + "."
         )
     elif why:
         # A variant WAS found, but only because some component ships nothing
@@ -1064,7 +1074,9 @@ def _sentence(f: ImageFit) -> str:
     if not f.loadable:
         return f.reason
 
-    size = fmt.bytes_si(f.card_bytes) if f.card_bytes is not None else "an unknown amount"
+    size = (
+        fmt.bytes_si(f.card_bytes) if f.card_bytes is not None else "an unknown amount"
+    )
     about = "" if f.exact else "about "
     at = f"at {f.dtype}"
     where = f.device_name or f.device
@@ -1075,8 +1087,7 @@ def _sentence(f: ImageFit) -> str:
     room = f.free_bytes if f.free_bytes is not None else f.total_bytes
     which = "free right now" if f.free_bytes is not None else "in total"
     head = (
-        f"{about}{size} of weights {at} against {fmt.bytes_si(room)} {which} "
-        f"on {where}"
+        f"{about}{size} of weights {at} against {fmt.bytes_si(room)} {which} on {where}"
     )
     if f.verdict == "over":
         return (
