@@ -114,8 +114,15 @@ FIELDS: tuple[Field, ...] = (
     # vocabulary nobody agreed to.
     Field("kind", "modelmri.step.kind", "str"),
     Field("seq", "modelmri.step.seq", "int"),
-    Field("truncated_in", "modelmri.truncated.input", "bool"),
-    Field("truncated_out", "modelmri.truncated.output", "bool"),
+    # A COUNT, not a flag. `traces.py` fills these from `_unclip`, which
+    # returns how many characters were not stored -- 18,412, not True --
+    # and every consumer reads the number: the agents panel prints it
+    # with `toLocaleString()`, the judge panel picks "was" or "were"
+    # from it. Declared "bool", `_value` collapsed 18,412 to `true` and
+    # `_read` handed back `True`, so an export said a payload had been
+    # cut while destroying by how much.
+    Field("truncated_in", "modelmri.truncated.input", "int"),
+    Field("truncated_out", "modelmri.truncated.output", "int"),
     # Whether a duration was recorded at all. See `_span_times`.
     Field("_duration_recorded", "modelmri.duration.recorded", "bool"),
     # The step's real id. The OTLP span id is DERIVED (see `_span_id`), so

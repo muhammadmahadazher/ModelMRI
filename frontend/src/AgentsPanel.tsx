@@ -914,11 +914,18 @@ with trace("my-agent"):
                 <pre className="io">
                   <span className="io-l">IN</span>
                   {sel.input}
+                  {/* The cap is NOT named, because there are two of them and
+                      this cannot tell which one fired. The recorder cuts an
+                      auto-instrumented payload at 4,000 before the store ever
+                      sees it; the store cuts at 20,000. Naming 20,000 stated a
+                      bound that had not applied to the very payloads most
+                      likely to be cut. The COUNT is the honest part, and it is
+                      the part a reader acts on. */}
                   {(sel.truncated_in ?? 0) > 0 && (
                     <span className="clipped">
                       {"\n"}— {sel.truncated_in!.toLocaleString()} characters not
-                      stored (payloads are capped at 20,000 so one runaway tool
-                      output cannot fill your disk)
+                      stored. The payload was cut so one runaway tool output
+                      cannot fill your disk.
                     </span>
                   )}
                 </pre>
@@ -930,8 +937,8 @@ with trace("my-agent"):
                   {(sel.truncated_out ?? 0) > 0 && (
                     <span className="clipped">
                       {"\n"}— {sel.truncated_out!.toLocaleString()} characters
-                      not stored (payloads are capped at 20,000 so one runaway
-                      tool output cannot fill your disk)
+                      not stored. The payload was cut so one runaway tool output
+                      cannot fill your disk.
                     </span>
                   )}
                 </pre>

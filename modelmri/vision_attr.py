@@ -141,6 +141,20 @@ DEFAULT_PATCH = 16
 # refusal names the stride that would fit rather than merely saying no.
 MAX_PASSES = 4096
 
+#: The largest axis this will do window arithmetic over.
+#:
+#: Not a bound on picture quality and not a second `MAX_PASSES`:
+#: `_axis` MATERIALISES every window start as a list before anything
+#: counts them, so a height nobody could photograph builds a
+#: multi-gigabyte list to answer a question the pass ceiling was always
+#: going to refuse. `/api/image/attribution/cost` and
+#: `/api/image/cv/cost` take height and width straight from the query
+#: string, so this is reachable by one request.
+#:
+#: Checked in the one function `estimate` and `plan_windows` share, so
+#: the price and the run cannot disagree about which geometries exist.
+MAX_AXIS = 16_384
+
 # Occluded copies per forward call. The batch holds this many full-size images
 # resident at once -- at 224x224x3 float32 that is 38.5 MB at 64, and the
 # activations behind it are an unknown multiple -- so the bound is memory
@@ -287,6 +301,17 @@ def _validate_geometry(height: int, width: int, patch: int, stride: int) -> int:
         )
     if height < 1 or width < 1:
         raise BadRequest(f"an image of {height}x{width} pixels has nothing to occlude.")
+    if height > MAX_AXIS or width > MAX_AXIS:
+        raise BadRequest(
+            f"an image of {height:,}x{width:,} is past the {MAX_AXIS:,}-pixel "
+            f"axis this plans over. The bound is on the ARITHMETIC rather "
+            f"than on the picture: every window start is materialised "
+            f"before any of them is counted, so a size like this builds a "
+            f"list of billions of positions to price a sweep the "
+            f"{MAX_PASSES}-pass ceiling was always going to refuse. Price "
+            f"the checkpoint's own input size — the model resizes to it "
+            f"before it sees anything."
+        )
     if patch > min(height, width):
         raise BadRequest(
             f"a patch of {patch} does not fit inside a {height}x{width} image. "
