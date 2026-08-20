@@ -785,8 +785,21 @@ def ingest(payload: dict) -> dict:
     generations: set[str] = set()
     unmapped: set[str] = set()
     steps: list[dict] = []
+    # Spans with no usable start. Counted rather than filed at offset 0 — see
+    # the guard below.
+    undated = 0
 
-    ordered = sorted(spans, key=lambda s: str(s.get("startTimeUnixNano") or "0"))
+    # ORDERED NUMERICALLY. `str(...)` sorts by text, so "9..." sorts after
+    # "10...": a nanosecond stamp with fewer digits than its neighbour lands
+    # out of order, and `seq` — derived from this loop — then contradicts the
+    # timestamps it was supposed to summarise.
+    def _start_of(span: dict) -> int:
+        try:
+            return int(span.get("startTimeUnixNano") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    ordered = sorted(spans, key=_start_of)
     for seq, span in enumerate(ordered):
         attrs = _flat(span.get("attributes"))
         generations.add(str(attrs.get("modelmri.semconv.generation") or "unstated"))
@@ -803,6 +816,23 @@ def ingest(payload: dict) -> dict:
             end_ns = int(span.get("endTimeUnixNano") or 0)
         except (TypeError, ValueError):
             start_ns = end_ns = 0
+
+        # A SPAN WITH NO START IS NOT A SPAN AT THE START. `base_ns` above
+        # already excludes these from the baseline — `if s > 0` — because a
+        # zero stamp is not a time. Filing them anyway put every one of them
+        # at offset 0, reading as the first thing that happened in the run.
+        #
+        # `traces._ms` refuses a step with no `started_ms` in those words:
+        # "filing it at 0 would put it at the start of the run". This
+        # manufactured exactly what that guard exists to reject, one module
+        # over, and the store then accepted it because the field was present.
+        #
+        # Dropped and COUNTED, and the count reaches the reader below. The
+        # alternative — omitting `started_ms` — makes `import_trace` refuse
+        # the whole document, losing every span that did have a time.
+        if start_ns <= 0:
+            undated += 1
+            continue
 
         # An end equal to the start is how OTLP is forced to express "unknown",
         # so it reads back as unknown rather than as a measured zero -- unless
@@ -866,6 +896,13 @@ def ingest(payload: dict) -> dict:
             }
         )
 
+    if undated:
+        notes.append(
+            f"{undated} span(s) carried no usable startTimeUnixNano and are "
+            f"NOT in this trace. A span with no start is not a span at the "
+            f"start: filing them at offset 0 would put them before everything "
+            f"that was timed."
+        )
     if unmapped:
         notes.append(
             "these operations have no ModelMRI step kind and were filed as "
