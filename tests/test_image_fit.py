@@ -594,6 +594,61 @@ def test_a_stray_adapter_beside_a_pipeline_is_not_the_model(tmp_path):
     assert got.components == [], "a LoRA in the root is not the pipeline"
 
 
+def test_a_weight_file_the_loader_never_opens_is_not_the_model(tmp_path):
+    """MEASURED on the two SAM checkpoints in this machine's cache.
+
+    `facebook/sam3` ships `model.safetensors` and loads. `facebook/sam3.1`
+    ships only `sam3.1_multiplex.pt` and fails with OSError — `from_pretrained`
+    opens `model.safetensors`, `pytorch_model.bin` or a shard index, and does
+    not search a folder for whatever looks like tensors.
+
+    This rule was briefly relaxed on the theory that a root `config.json` made
+    any weight file beside it the model, because refusing sam3.1 looked like a
+    false refusal hiding a working checkpoint. It was not working. The
+    relaxation put a green badge and a 3.5 GB size on a click that cannot
+    succeed, which is the outcome this module exists to prevent.
+    """
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["Sam3VideoModel"]})
+    )
+    write_safetensors(tmp_path / "sam3.1_multiplex.pt", {"w": ("F32", [64, 64])})
+
+    got = priced(tmp_path)
+
+    assert got.loadable is False
+    assert got.verdict != "fits"
+    assert got.card_bytes is None, "unknown, not a size for something unloadable"
+    assert "sam3.1_multiplex.pt" in got.reason, "name the file that is here"
+    assert "model.safetensors" in got.reason, "and the name the loader wants"
+
+
+def test_the_same_checkpoint_with_a_canonical_name_does_load(tmp_path):
+    """The other half, so the rule above cannot become "refuse everything flat"."""
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["Sam3VideoModel"]})
+    )
+    write_safetensors(tmp_path / "model.safetensors", {"w": ("F32", [64, 64])})
+
+    got = priced(tmp_path)
+
+    assert got.loadable is True
+    assert got.card_bytes == 64 * 64 * 2
+
+
+def test_a_stray_file_beside_canonical_weights_is_ignored_not_added(tmp_path):
+    """`facebook/sam3` ships `sam3.pt` beside `model.safetensors`. One load
+    reads one of them, and counting both was the 2x over-quote that took its
+    published size from 3.45 GB to a true 1.72 GB."""
+    (tmp_path / "config.json").write_text("{}")
+    write_safetensors(tmp_path / "model.safetensors", {"w": ("F32", [1024, 512])})
+    write_safetensors(tmp_path / "sam3.pt", {"w": ("F32", [1024, 512])})
+
+    got = priced(tmp_path)
+
+    assert got.loadable is True
+    assert got.card_bytes == 1024 * 512 * 2, "one copy, not two"
+
+
 def test_a_component_name_from_the_index_cannot_steer_the_walk(tmp_path):
     """`model_index.json` is downloaded, and on Windows `root / "C:/Windows"`
     resolves to the ABSOLUTE path — so a malformed index would have a listing

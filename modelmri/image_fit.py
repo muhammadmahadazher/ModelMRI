@@ -326,24 +326,25 @@ def _weighted_parts(root: Path) -> tuple[dict[str, list[Path]], list[str]]:
     # the exact green-badge-then-failed-click this module exists to prevent.
     #
     # So: the fallback is for checkpoints that were never a pipeline, and the
-    # root file has to be one the loaders actually look for. A stray adapter or
-    # example file sitting beside a pipeline is not the model.
-    # A root `config.json` is a transformers checkpoint saying "I am the
-    # model", and then whatever weight file sits beside it IS the weights,
-    # whatever it is called. MEASURED: `facebook/sam3.1` ships exactly one
-    # weight file, `sam3.1_multiplex.pt`, and requiring a canonical stem
-    # rejected a perfectly loadable checkpoint — a false refusal, which is the
-    # worse error of the two because it hides a model that works.
+    # root file has to be one the LOADERS ACTUALLY LOOK FOR. `from_pretrained`
+    # opens `model.safetensors`, `pytorch_model.bin`, or a shard index — it
+    # does not scan a directory for anything tensor-shaped. A weight file under
+    # any other name is a file the loader will never find, however real its
+    # tensors are.
     #
-    # Without that config there is nothing claiming to be a model, so only the
-    # filenames the loaders actually go looking for count. That is the SDXL
-    # case: `model_index.json` and no root config, where the only root file was
-    # `sd_xl_offset_example-lora_1.0.safetensors`.
+    # This rule was briefly relaxed to "a root `config.json` means whatever
+    # weight file sits beside it is the model", on the theory that rejecting
+    # `facebook/sam3.1` (which ships only `sam3.1_multiplex.pt`) was a false
+    # refusal hiding a working model. It was not. MEASURED: sam3.1 fails to
+    # load with OSError — no file named model.safetensors — while `facebook/
+    # sam3`, which ships `model.safetensors` beside its own `sam3.pt`, loads
+    # fine. The refusal was correct and the relaxation turned it into a green
+    # badge on a click that cannot work, which is the one outcome this module
+    # exists to prevent. A config saying "I am a model" is not the same claim
+    # as "my weights are under a name the loader opens".
     if component_dirs:
         return {}, skipped
-    flat = _weights_in(root)
-    if not (root / "config.json").is_file():
-        flat = [f for f in flat if _stem_of(f.name) in _CANONICAL_STEMS]
+    flat = [f for f in _weights_in(root) if _stem_of(f.name) in _CANONICAL_STEMS]
     if flat:
         kept, ignored = _one_format(flat)
         if ignored:
@@ -964,11 +965,31 @@ def of(
         out.loadable = False
         out.verdict = "unknown"
         out.exact = False
-        out.reason = (
-            "no weight files anywhere under this directory, so it holds "
-            "configuration and nothing to load — an interrupted download "
-            "rather than a model that is ready."
-        )
+        # WHICH of the two is it. "Nothing here to load" and "there are weights
+        # here but not under a name the loader opens" send a reader to
+        # completely different places, and reporting the second as the first
+        # tells somebody staring at a 3.5 GB file on their own disk that their
+        # directory is empty.
+        stranded = [
+            f.name
+            for f in _weights_in(root)
+            if _stem_of(f.name) not in _CANONICAL_STEMS
+        ]
+        if stranded:
+            out.reason = (
+                f"the only weight file here is {stranded[0]}, and "
+                f"`from_pretrained` opens `model.safetensors`, "
+                f"`pytorch_model.bin` or a shard index — it does not search a "
+                f"folder for whatever looks like tensors. So this download is "
+                f"missing the file the loader goes looking for, however real "
+                f"the one that is here may be."
+            )
+        else:
+            out.reason = (
+                "no weight files anywhere under this directory, so it holds "
+                "configuration and nothing to load — an interrupted download "
+                "rather than a model that is ready."
+            )
         out.means = out.reason
         return out
 
