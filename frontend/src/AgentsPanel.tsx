@@ -451,11 +451,26 @@ with trace("my-agent"):
           reader would look for their own generation and be told it is not
           here, while it sits in the list underneath. Both sources, one line,
           and the `this app` pill on the rows says which is which. */}
+      {/* Both sources name something the viewer does not have: there is no
+          playground above it to generate in, and `modelmri-record` is a
+          package on a machine with ModelMRI installed. A reader who was sent
+          a file has neither, and telling them how to fill a panel that is
+          already full is the same dead end the empty state was fixed for. */}
       <p className="agents-what meta">
-        A flight recorder for runs: each generation you make above lands here
-        as one <b>llm_call</b>, and a program of your own calling{" "}
-        <b>modelmri-record</b> lands here with its tool calls and sub-agents
-        nested underneath it.
+        {VIEWER ? (
+          <>
+            The agent run this file carries, with every step's input and
+            output and what the run cost in tokens. Nothing is installed to
+            read it — the file is the whole of it.
+          </>
+        ) : (
+          <>
+            A flight recorder for runs: each generation you make above lands
+            here as one <b>llm_call</b>, and a program of your own calling{" "}
+            <b>modelmri-record</b> lands here with its tool calls and
+            sub-agents nested underneath it.
+          </>
+        )}
       </p>
 
       {/* Search is over STEPS, not runs — what somebody is looking for is the
@@ -525,8 +540,14 @@ with trace("my-agent"):
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
+          {/* `rows` is the STORE, and the viewer has none — the run it shows
+              is the carried one. Counting rows there printed "0 runs in this
+              file" directly above the row displaying the run, which is a
+              count contradicting the thing beneath it. Introduced when the
+              viewer stopped listing the carried run as a store row, and
+              caught by reading the count rather than the change. */}
           {VIEWER
-            ? `${rows.length} run${rows.length === 1 ? "" : "s"} in this file`
+            ? `${carried?.available ? 1 : 0} run${carried?.available ? "" : "s"} in this file`
             : `${rows.length} recording${rows.length === 1 ? "" : "s"}`}
           {demos > 0 && ` · ${demos} bundled sample${demos === 1 ? "" : "s"}`}
         </span>
