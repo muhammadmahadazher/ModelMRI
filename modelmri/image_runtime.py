@@ -46,7 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import fmt, image_attention, imaging
+from . import fmt, image_attention, image_fit, imaging
 from .errors import BadRequest, Refusal
 
 log = logging.getLogger(__name__)
@@ -424,20 +424,58 @@ class ImageHandle:
             _stop_if_asked("before the weights were scanned")
             tracking.stage("scan", "reading opcodes — loading nothing")
             self._scan(local)
-            resident = _weights_bytes(local)
+            # What will be RESIDENT, not what is on disk. `_weights_bytes`
+            # sums file sizes, and by the time we are here the files are
+            # already on the disk — the only question left is the card. An F32
+            # checkpoint loaded bf16 allocates half its file size, and
+            # `sd-turbo` keeps two copies of its VAE in one folder, so the
+            # disk figure was over-quoting the load twice over.
+            sizing = image_fit.of(local, dtype=dtype)
+            resident = sizing.card_bytes
+            if resident is None:
+                # Unknown, so fall back to the figure that at least errs
+                # towards refusing. Unknown is not zero.
+                resident = _weights_bytes(local)
             _guard(
                 resident,
                 local,
                 confirm=confirm,
                 already_held_bytes=already_held_bytes,
             )
+            if not sizing.loadable:
+                # Said BEFORE the loader hits it, in terms of the component
+                # that is short, rather than as a diffusers OSError about a
+                # filename the reader never chose.
+                #
+                # `not loadable` is the whole test, not `and sizing.missing`.
+                # There is a second way to be unloadable — no single variant
+                # covering every component, which sets `variant=None` and
+                # leaves `missing` EMPTY — and gating on the list meant that
+                # case fell straight through to a load with `variant=None`
+                # and died on a raw filename error.
+                raise Refusal(
+                    f"{repo} is on this disk but cannot be opened: "
+                    + ("; ".join(sizing.missing) or sizing.reason)
+                    + " Re-downloading it will fetch what is missing."
+                )
 
             _stop_if_asked("before the pipeline was opened")
             tracking.stage(
                 "open", "opening the pipeline — this step cannot be interrupted"
             )
             pipe, chosen_device, chosen_dtype, seconds = _load_pipeline(
-                local, family=found.family, device=device, dtype=dtype
+                local,
+                family=found.family,
+                device=device,
+                dtype=dtype,
+                # Supplied because the CHECKPOINT needs it, not because
+                # anybody asked. `stabilityai/sd-turbo` publishes its text
+                # encoder as fp16 only, so the default load cannot find
+                # weights for a component the pipeline requires and dies on a
+                # filename. `image_fit` works out which variant covers every
+                # component; passing it is the difference between a model that
+                # opens and one that does not.
+                variant=sizing.variant or None,
             )
             self.pipe = pipe
             # Best-effort and NEVER fatal: a diffusion pipeline has no image
@@ -1046,7 +1084,9 @@ _TRANSFORMERS_LOADERS = {
 _DIFFUSION_FAMILIES = frozenset({imaging.UNET_DIFFUSION, imaging.DIT_DIFFUSION})
 
 
-def _load_pipeline(local: Path, *, family: str, device: str, dtype: str):
+def _load_pipeline(
+    local: Path, *, family: str, device: str, dtype: str, variant: str | None = None
+):
     """Open the checkpoint with the loader its FAMILY actually needs."""
     import torch
 
@@ -1062,9 +1102,9 @@ def _load_pipeline(local: Path, *, family: str, device: str, dtype: str):
 
     t0 = time.time()
     if family in _DIFFUSION_FAMILIES:
-        model = _load_diffusion(local, torch_dtype)
+        model = _load_diffusion(local, torch_dtype, variant=variant)
     elif family in _TRANSFORMERS_LOADERS:
-        model = _load_transformers(local, family, torch_dtype)
+        model = _load_transformers(local, family, torch_dtype, variant=variant)
     else:
         # Unreachable through `load`, which refuses an unknown family before
         # it gets here. Stated anyway: a family added to `imaging` and not to
@@ -1189,7 +1229,7 @@ def _missing_package(err: ImportError) -> str:
     return ""
 
 
-def _load_diffusion(local: Path, torch_dtype):
+def _load_diffusion(local: Path, torch_dtype, *, variant: str | None = None):
     try:
         from diffusers import DiffusionPipeline
     except ImportError:
@@ -1200,9 +1240,11 @@ def _load_diffusion(local: Path, torch_dtype):
             "should not pay for a dependency they will never import."
         ) from None
 
+    extra = {"variant": variant} if variant else {}
     return DiffusionPipeline.from_pretrained(
         str(local),
         torch_dtype=torch_dtype,
+        **extra,
         # NEVER downloaded silently. A pipeline that needs code from the Hub
         # is a pipeline that runs somebody else's Python, and that decision
         # does not belong to a checkbox nobody read.
@@ -1212,7 +1254,9 @@ def _load_diffusion(local: Path, torch_dtype):
     )
 
 
-def _load_transformers(local: Path, family: str, torch_dtype):
+def _load_transformers(
+    local: Path, family: str, torch_dtype, *, variant: str | None = None
+):
     """A single transformers checkpoint, through the first class that opens it.
 
     Each candidate is tried in turn and the LAST failure is what gets
@@ -1248,6 +1292,11 @@ def _load_transformers(local: Path, family: str, torch_dtype):
                 str(local),
                 # Same rule as the diffusion path, for the same reason.
                 trust_remote_code=False,
+                # And for the same reason as the diffusion path: a checkpoint
+                # publishing only `model.fp16.safetensors` cannot be opened by
+                # a load that asks for the plain name. `image_fit` reads which
+                # variant the files on this disk actually offer.
+                **({"variant": variant} if variant else {}),
                 **{dtype_kw: torch_dtype},
             )
         except Exception as err:

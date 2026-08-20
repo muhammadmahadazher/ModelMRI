@@ -453,7 +453,14 @@ def local() -> list[dict]:
     off the files rather than from the Hub, because the question "will this
     fit" is about the copy on this machine.
     """
-    from . import image_runtime
+    from . import devices, image_runtime
+
+    # ONE reading of the card for the whole list. Free VRAM is a measurement
+    # that changes under you, and taking it per row would answer every row
+    # against a slightly different machine — so two models of the same size
+    # could come back with different verdicts in the same response.
+    device = devices.detect()
+    free_bytes, total_bytes = devices._free_total(device)
 
     out: list[dict] = []
     for found in imaging.scan_cache():
@@ -487,10 +494,46 @@ def local() -> list[dict]:
                 # are not, which is an interrupted download. None: this entry
                 # could not be sized at all, so neither claim can be made.
                 "complete": (bytes_on_disk > 0) if sized else None,
+                # WILL IT RUN HERE. `size_bytes` above is what it weighs on
+                # disk, which is not what it costs on the card and says
+                # nothing about whether the load can even succeed. This is
+                # the answer to the question somebody scanning the list is
+                # actually asking.
+                "fit": _fit_of(found, device, free_bytes, total_bytes),
             }
         )
     out.sort(key=lambda r: (not r["known"], -(r["size_bytes"] or 0), r["path"]))
     return out
+
+
+def _fit_of(found, device, free_bytes, total_bytes) -> dict | None:
+    """This model priced against this card, or `None` when it could not be.
+
+    Never raises into the listing. A checkpoint whose layout defeats the
+    calculator must still appear in the picker — dropping the row would hide a
+    model the reader can see on their own disk, and failing the whole route
+    would hide every other model too.
+    """
+    from . import image_fit
+
+    try:
+        return image_fit.of(
+            _path_of(found),
+            device=device,
+            free_bytes=free_bytes,
+            total_bytes=total_bytes,
+            # NOT here. Reading a `.bin`'s tensor table means opening the zip,
+            # which means the whole file is materialised — measured at 69 s
+            # for one 346 MB pickle on this machine's Drive-backed cache, and
+            # this runs once per cached model on every page load. Pickles are
+            # priced from their size instead, marked inexact and SAID so in
+            # the component's note; the exact walk happens on the load path,
+            # where the file is about to be opened anyway.
+            read_pickles=False,
+        ).to_dict()
+    except Exception:
+        log.warning("could not price %s against this card", found.path, exc_info=True)
+        return None
 
 
 def discovered(roots=None) -> dict:

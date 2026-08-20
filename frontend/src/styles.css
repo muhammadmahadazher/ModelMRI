@@ -7713,3 +7713,64 @@ button:disabled,
 /* The lens's own error, in nats. Right-aligned so the column reads as
    numbers down the page rather than as a ragged label. */
 .lens-kl { text-align: right; font-size: var(--t-2xs); color: var(--color-mute); }
+
+/* WILL IT RUN HERE — a second number beside the size, not a recolouring of it.
+
+   The size column says what a checkpoint weighs on disk. That is the wrong
+   number for the question a reader is actually asking while looking at a list
+   of models and a GPU they remember buying: an F32 checkpoint loaded bf16
+   takes half its file size, and `sd-turbo` ships two copies of its VAE in one
+   folder. So the two figures sit side by side and the badge carries the one
+   that decides whether the click works.
+
+   Colour is never the only signal. The dot is a SHAPE per verdict as well as
+   a hue — filled for fits, hollow for tight, crossed by a bar for over — and
+   the full sentence is on the title, because a reader who cannot separate
+   green from amber still has to be able to act on this. */
+.image-fit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: var(--num);
+}
+.image-fit .fit-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  border: 1.5px solid currentColor;
+}
+/* Room for the weights AND for what a capture pass allocates on top. */
+.fit-fits { color: var(--sem-vla); }
+.fit-fits .fit-dot { background: currentColor; }
+/* It loads and may still die during a measurement, which is a different
+   warning from "this will not load" and must not look like the same one. */
+.fit-tight { color: var(--sem-agent); }
+.fit-tight .fit-dot { background: transparent; }
+/* Larger than what is free. The bar is the shape half of the signal. */
+.fit-over { color: var(--sem-error); }
+.fit-over .fit-dot {
+  background: transparent;
+  position: relative;
+}
+.fit-over .fit-dot::after {
+  content: "";
+  position: absolute;
+  inset: 45% -2px auto -2px;
+  height: 1.5px;
+  background: currentColor;
+}
+/* The card did not say how much memory it has. Dimmed and italic, in the
+   register this sheet already uses for "nobody could tell" rather than for a
+   quantity — the same treatment `.image-size.unknown` gets. */
+.fit-unknown {
+  color: var(--ink-3);
+  font-style: italic;
+  font-variant-numeric: normal;
+}
+.fit-unknown .fit-dot { border-style: dashed; background: transparent; }
+@media (prefers-reduced-motion: no-preference) {
+  .image-fit .fit-dot { transition: background var(--dur-2, 160ms) var(--ease, ease); }
+}

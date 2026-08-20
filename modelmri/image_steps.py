@@ -672,17 +672,53 @@ def _whole(value) -> int | None:
     return value
 
 
-def _denoiser_of(pipe):
-    """The module that denoises, whatever this pipeline calls it.
+#: Parameter names a denoiser's `forward` uses for the diffusion timestep.
+#: This is the STRUCTURAL test — what the module takes, not what it is called.
+_TIMESTEP_PARAMS = ("timestep", "timesteps", "t", "sigma")
 
-    Deliberately the same three names `image_attention._denoiser_of` looks for.
-    Copied rather than imported: reaching across modules for a private name to
-    save five lines couples two files that only happen to agree today.
+
+def _denoiser_of(pipe):
+    """The module that denoises, found by what it TAKES.
+
+    The three names below — `unet`, `transformer`, `denoiser` — are right for
+    everything diffusers ships today, so they stay as the fast path. They are
+    a guess about naming, though, and a pipeline that calls its denoiser
+    something else used to come back as "this pipeline has no `unet` or
+    `transformer`, so there is no denoiser whose steps could be traced" —
+    a refusal about a vocabulary, dressed as a fact about the model.
+
+    So the fallback asks a question about the architecture instead: which
+    component is an `nn.Module` whose `forward` accepts a diffusion timestep?
+    That is what makes a denoiser a denoiser. A VAE, a text encoder and a
+    safety checker all fail it; a UNet, a DiT and anything shaped like one
+    passes it whatever its author named it.
     """
     for name in ("unet", "transformer", "denoiser"):
         found = getattr(pipe, name, None)
         if found is not None:
             return found
+
+    import inspect
+
+    try:
+        import torch
+    except Exception:  # pragma: no cover - torch is a hard dependency here
+        return None
+
+    # `components` is diffusers' own registry of what a pipeline holds, so this
+    # walks the pipeline's declared parts rather than every attribute on it.
+    parts = getattr(pipe, "components", None)
+    if not isinstance(parts, dict):
+        return None
+    for part in parts.values():
+        if not isinstance(part, torch.nn.Module):
+            continue
+        try:
+            params = inspect.signature(part.forward).parameters
+        except (TypeError, ValueError):
+            continue
+        if any(p in params for p in _TIMESTEP_PARAMS):
+            return part
     return None
 
 
@@ -714,6 +750,51 @@ def _call_parameters(pipe) -> set[str]:
 # -------------------------------------------------------------------- the run
 
 
+def _label_table(pipe) -> tuple[dict, int | None]:
+    """`({name: index}, n_classes)` for a class-conditioned pipeline.
+
+    THREE SOURCES, because `pipe.labels` is `DiTPipeline`'s attribute and not
+    a diffusers convention. Reading only that made the label lookup work for
+    exactly one checkpoint and refuse every other class-conditioned model with
+    "publishes no label list" — a statement about where this looked, not about
+    what the model carries.
+
+      pipe.labels            DiTPipeline's own {name: id}
+      denoiser.config        `id2label`, the transformers convention, which is
+                             also what `imaging` reads to count classes
+      num_class_embeds       no names, but it fixes the VALID RANGE, which is
+                             what a bare number has to be checked against
+
+    Either half may be empty. Names with no count still validate a name; a
+    count with no names still validates a number; neither is a reason to
+    accept anything.
+    """
+    labels: dict = {}
+    n_classes: int | None = None
+
+    own = getattr(pipe, "labels", None)
+    if isinstance(own, dict) and own:
+        labels = {str(k): int(v) for k, v in own.items() if _whole(v) is not None}
+
+    denoiser = _denoiser_of(pipe)
+    config = getattr(denoiser, "config", None)
+    id2label = getattr(config, "id2label", None)
+    if isinstance(id2label, dict) and id2label and not labels:
+        for key, name in id2label.items():
+            index = _whole(key)
+            if index is not None:
+                labels[str(name)] = index
+
+    for attr in ("num_class_embeds", "num_classes"):
+        found = _whole(getattr(config, attr, None))
+        if found:
+            n_classes = found
+            break
+    if n_classes is None and labels:
+        n_classes = max(labels.values()) + 1
+    return labels, n_classes
+
+
 def _class_label_of(pipe, prompt: str) -> int:
     """The class number a class-conditioned pipeline should denoise.
 
@@ -732,19 +813,20 @@ def _class_label_of(pipe, prompt: str) -> int:
     trajectory that looks like a measurement of the words and is a measurement
     of the tench.
     """
-    labels = getattr(pipe, "labels", None)
+    labels, n_classes = _label_table(pipe)
     text = (prompt or "").strip()
 
     if text.isdigit():
         want = int(text)
-        if isinstance(labels, dict) and labels and want not in set(labels.values()):
-            top = max(labels.values())
+        # The RANGE, from wherever it could be read — a name table, or a bare
+        # `num_class_embeds` on a model that publishes no names at all.
+        if n_classes is not None and not 0 <= want < n_classes:
             raise BadRequest(
-                f"this model has classes 0..{top} and {want} is outside that."
+                f"this model has classes 0..{n_classes - 1} and {want} is outside that."
             )
         return want
 
-    if isinstance(labels, dict) and labels:
+    if labels:
         lowered = text.lower()
         # Exact name first, then a name appearing inside a sentence — longest
         # match wins, so "golden retriever" beats "retriever".
@@ -765,10 +847,15 @@ def _class_label_of(pipe, prompt: str) -> int:
             f"its names — for example {examples}."
         )
 
+    known = (
+        f" It has {n_classes} classes, numbered 0..{n_classes - 1}."
+        if n_classes
+        else ""
+    )
     raise BadRequest(
-        "this model is class-conditioned and publishes no label list, so a "
-        "class can only be given as a number. Try a whole number in place of "
-        "the prompt."
+        f"this model is class-conditioned and publishes no label names, so a "
+        f"class can only be given as a number.{known} Try a whole number in "
+        f"place of the prompt."
     )
 
 

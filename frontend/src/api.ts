@@ -2033,6 +2033,76 @@ export const readAdapter = (path: string, top = 40) =>
     body: JSON.stringify({ path, top }),
   }).then((r) => json<AdapterReport>(r));
 
+/** One weighted part of a pipeline, priced from the files it actually has. */
+export interface ImageFitComponent {
+  name: string;
+  /** The variant chosen for pricing — `""` for the unsuffixed files. */
+  variant: string;
+  /** Every variant on disk, so a reader can see what was NOT chosen. */
+  variants: string[];
+  files: number;
+  disk_bytes: number;
+  /** `null` is UNKNOWN, never 0 — 0 would read as "this part is free". */
+  card_bytes: number | null;
+  /** Priced from a tensor table (`true`) or from file sizes (`false`). */
+  exact: boolean;
+  note: string;
+}
+
+/** Whether one image model will actually run on the card in this machine.
+ *
+ *  `size_bytes` on the row beside this is what the checkpoint weighs ON DISK,
+ *  which is a different number from what it costs once loaded and says nothing
+ *  at all about whether the load can succeed. An F32 checkpoint loaded bf16
+ *  allocates half its file size; `stabilityai/sd-turbo` keeps two copies of
+ *  its VAE in one folder; and a component holding a config with no weights is
+ *  a model listed as ready that fails at the click. All three are answered
+ *  here and none of them are visible in the disk figure.
+ */
+export interface ImageFit {
+  path: string;
+  components: ImageFitComponent[];
+  /** Components on disk deliberately not counted, with the reason. Rendered
+   *  rather than dropped: a total that silently omits a folder somebody can
+   *  see on their own disk reads as an arithmetic error. */
+  excluded: string[];
+  /** Declared components whose folder is here and CONTRADICTS ITSELF — a
+   *  config with no weights, or weights with no config. Non-empty means the
+   *  load FAILS, however comfortably the sizes fit. */
+  missing: string[];
+  /** Declared components whose folder is not here at all. Reported, never
+   *  blocking: a component can be handed to `from_pretrained` directly, and
+   *  the server cannot see that from the files on disk. */
+  absent: string[];
+  disk_bytes: number;
+  /** Resident weight bytes at `dtype`. `null` when any component could not be
+   *  priced — a total missing one part is not a total. */
+  card_bytes: number | null;
+  dtype: string;
+  device: string;
+  device_name: string;
+  /** `null` is UNKNOWN. Apple's unified memory reports no free figure, and 0
+   *  free would say the machine is out of memory when nobody asked it. */
+  free_bytes: number | null;
+  total_bytes: number | null;
+  headroom_bytes: number | null;
+  /** `"fits"` | `"tight"` | `"over"` | `"unknown"`, and `"unknown"` is a real
+   *  answer rather than a cheerful default. */
+  verdict: string;
+  /** The variant `from_pretrained` must be given, `""` when the plain files
+   *  are complete, and `null` when no variant covers every component — which
+   *  means the checkpoint cannot be loaded as it stands. */
+  variant: string | null;
+  loadable: boolean;
+  exact: boolean;
+  /** The room left for latents and attention maps that the verdict used.
+   *  REPORTED so a reader can check the arithmetic rather than taking a
+   *  threshold on faith. */
+  activation_headroom: number;
+  reason: string;
+  means: string;
+}
+
 export interface ImageLocalModel {
   /** The repo id, and the string `loadImage` takes. */
   path: string;
@@ -2054,6 +2124,10 @@ export interface ImageLocalModel {
    *  available. Reporting that as `false` sends somebody to re-download a
    *  model they may already have. */
   complete: boolean | null;
+  /** Will it run HERE. `null` when the row could not be priced at all — the
+   *  model still lists, because dropping it would hide a checkpoint the
+   *  reader can see on their own disk. */
+  fit: ImageFit | null;
 }
 
 export interface ImageLocal {

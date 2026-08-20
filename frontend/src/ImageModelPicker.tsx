@@ -89,6 +89,24 @@ function downloads(n: number): string {
  *  An empty string means the row is pickable.
  */
 function blockedBecause(m: ImageLocalModel | ImageDiscoveredModel): string {
+  // A pipeline can hold weights and still not be buildable: `complete` asks
+  // whether ANY weights are on the disk, and a checkpoint whose unet is
+  // missing while its VAE is present answers yes. MEASURED on the cached
+  // `segmind/tiny-sd` and `stabilityai/sd-turbo`, both of which listed as
+  // ready and failed at the click with a diffusers error naming a filename
+  // the reader never chose. The server already worked out which component is
+  // short; this says so instead.
+  //
+  // `!fit.loadable` is the whole test. Gating on `missing.length` missed the
+  // other way a checkpoint is unopenable — no single variant covering every
+  // component, which leaves `missing` empty and puts the explanation in
+  // `reason`. Such a row came back pickable AND badge-less, so it looked
+  // like an ordinary healthy model right up until the click.
+  const fit = "fit" in m ? m.fit : null;
+  if (fit && !fit.loadable) {
+    const why = fit.missing.join("; ") || fit.reason;
+    return why ? `${why} Fetch it again before it can be opened.` : "";
+  }
   if (m.complete === false) {
     return (
       "configs but no weights — an interrupted download rather than a model " +
@@ -104,6 +122,35 @@ function blockedBecause(m: ImageLocalModel | ImageDiscoveredModel): string {
   }
   if (!m.known) return m.reason;
   return "";
+}
+
+/** Will this one run on the card in this machine, as a word and a number.
+ *
+ *  The size column beside it is what the checkpoint weighs ON DISK, and a
+ *  reader comparing that against the GPU they remember buying gets the wrong
+ *  answer twice over: an F32 checkpoint loaded bf16 takes half its file size,
+ *  and a pipeline shipping two copies of one component takes less than its
+ *  folder. So this is a SECOND number rather than a recolouring of the first —
+ *  what it costs once loaded, against what is free right now.
+ *
+ *  `unknown` is rendered, not hidden. A card that does not report its free
+ *  memory is a fact about the machine, and a badge that quietly disappears
+ *  reads as "fine".
+ */
+function FitBadge({ m }: { m: ImageLocalModel | ImageDiscoveredModel }) {
+  const fit = "fit" in m ? m.fit : null;
+  if (!fit) return null;
+  // A row that cannot be loaded already carries `blockedBecause`; a fit badge
+  // beside it would be answering a question the row has stopped asking.
+  if (!fit.loadable) return null;
+  const cost =
+    fit.card_bytes === null ? "size unknown" : `${sizeText(fit.card_bytes)} on card`;
+  return (
+    <span className={`meta image-fit fit-${fit.verdict}`} title={fit.means}>
+      <span className="fit-dot" aria-hidden="true" />
+      {fit.verdict === "unknown" ? "fit unknown" : cost}
+    </span>
+  );
 }
 
 /** Arrow keys move within the list, the way a listbox is supposed to.
@@ -206,6 +253,7 @@ function DiskRow({
         {m.known ? ` · ${m.family}` : ""}
       </span>
       <span className="spacer" />
+      <FitBadge m={m} />
       {/* Never "0.0 GB" for something nobody sized. */}
       <span className={`meta image-size${m.size_bytes === null ? " unknown" : ""}`}>
         {sizeText(m.size_bytes)}
