@@ -52,6 +52,17 @@ from .saes import SAEHandle, SAEStatus
 # still leaves a traceback in the terminal the user is already looking at.
 log = logging.getLogger("modelmri")
 
+# How long the weight prefetch may make NO progress before it is stopped.
+#
+# The stall bound rather than a plain deadline, because bytes arriving means
+# the download is working however long it takes — a 40 GB checkpoint on a slow
+# line must not be killed for being big. Reset on every byte.
+PREFETCH_STALL_SECONDS = 120.0
+
+# And a ceiling, for a child that reports progress it is not making. Generous:
+# this only has to be shorter than "forever", which is what it replaced.
+PREFETCH_MAX_SECONDS = 3600.0
+
 
 def _load_failed(err: BaseException) -> str:
     """What the progress meter is allowed to say when a load breaks.
@@ -1112,6 +1123,34 @@ class ModelRuntime:
             if sys.platform == "win32"
             else 0,
         )
+        # BOUNDED. This loop had no deadline at all: it polled every 0.4s and
+        # waited for the child to exit, forever. `proc.poll()` stays None for a
+        # child stuck inside a network read that never returns, so a stalled
+        # connection to the Hub hung the load — and, because this runs under
+        # `asyncio.to_thread`, hung the request behind it too.
+        #
+        # MEASURED on this branch's CI: two macOS jobs sat here for 150 and 360
+        # minutes and were killed by the runner having produced nothing. The
+        # faulthandler dump named the frame — `_prefetch_weights` in
+        # `threading.Event.wait` — under `test_a_failed_load_does_not_publish_
+        # the_exception`, a test that asks for a model it EXPECTS to be
+        # refused. The child went looking for it on the network and never came
+        # back.
+        #
+        # Two bounds rather than one. The stall bound is the honest one: bytes
+        # arriving means the download is working however long it takes, and a
+        # 40 GB checkpoint on a slow line must not be killed for being big.
+        # The ceiling is the backstop for a child that reports progress it is
+        # not making.
+        #
+        # Expiry is NOT an error. This whole method is an optimisation whose
+        # documented fallback is "let `from_pretrained` download the old way",
+        # so a stalled prefetch returns and the load continues — where the Hub
+        # library's own timeouts apply and a real failure raises a real
+        # exception instead of waiting. It is logged rather than swallowed:
+        # the load that follows will be slower and the terminal says why.
+        started = last_change = time.monotonic()
+        last_bytes = -1
         try:
             while proc.poll() is None:
                 if progress.TRACKER.cancelled.wait(0.4):
@@ -1125,6 +1164,38 @@ class ModelRuntime:
                         f"Download stopped. Removed {freed / 1e6:,.0f} MB of "
                         f"partial files; anything already complete was kept."
                     )
+
+                now = time.monotonic()
+                try:
+                    arrived = int(progress.TRACKER.snapshot().bytes_done)
+                except Exception:
+                    # The tracker is a convenience here, not the mechanism. If
+                    # it cannot be read, the ceiling below still applies.
+                    arrived = last_bytes
+                if arrived != last_bytes:
+                    last_bytes, last_change = arrived, now
+
+                stalled_for = now - last_change
+                if (
+                    stalled_for > PREFETCH_STALL_SECONDS
+                    or now - started > PREFETCH_MAX_SECONDS
+                ):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    from .capacity import _one_line
+
+                    log.warning(
+                        "the prefetch for %s made no progress for %.0fs "
+                        "(%.0fs total) and was stopped; the load continues "
+                        "through from_pretrained, which is slower",
+                        _one_line(hf_id),
+                        stalled_for,
+                        now - started,
+                    )
+                    return
         finally:
             if proc.poll() is None:  # an exception on our side, not the child's
                 proc.terminate()

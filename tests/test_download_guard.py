@@ -642,3 +642,105 @@ def test_the_wire_reports_a_full_disk_as_full_rather_than_as_unknown():
     assert free is None or isinstance(free, int)
     if free is not None:
         assert free >= 0, "a measurement, and 0 is one of them"
+
+
+def test_a_prefetch_child_that_never_exits_is_stopped_rather_than_waited_on(
+    monkeypatch, caplog
+):
+    """The loop polling for the prefetch child had no deadline at all.
+
+    `proc.poll()` stays None for a child stuck inside a network read that never
+    returns, so a stalled connection to the Hub hung the load — and, running
+    under `asyncio.to_thread`, hung the request behind it.
+
+    MEASURED on this branch's CI: two macOS jobs sat in this frame for 150 and
+    360 minutes and were killed by the runner having produced nothing. The
+    faulthandler dump named it — `_prefetch_weights` in `threading.Event.wait`
+    — under a test that asks for a model it EXPECTS to be refused. The child
+    went looking for it on the network and never came back.
+    """
+    import logging
+    import time
+
+    from modelmri import progress
+    from modelmri import runtime as rt
+
+    class _NeverExits:
+        """A child that is alive, forever, and reports no bytes."""
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    child = _NeverExits()
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: child)
+    # Short bounds, so the test measures the MECHANISM rather than the wall
+    # clock. The real values are 120s and 3600s.
+    monkeypatch.setattr(rt, "PREFETCH_STALL_SECONDS", 0.5)
+    monkeypatch.setattr(rt, "PREFETCH_MAX_SECONDS", 5.0)
+    progress.TRACKER.cancelled.clear()
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="modelmri"):
+        rt.ModelRuntime()._prefetch_weights("acme/never-arrives")
+    took = time.monotonic() - started
+
+    assert took < 10, f"the loop did not terminate: {took:.1f}s"
+    assert child.terminated, "the stalled child was left running"
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "made no progress" in said, "a stopped prefetch must be reported"
+
+
+def test_a_prefetch_that_is_making_progress_is_not_killed_for_being_slow(monkeypatch):
+    """The stall bound resets on every byte, so a big download on a slow line
+    survives. A plain deadline would kill it for being big."""
+    import time
+
+    from modelmri import progress
+    from modelmri import runtime as rt
+
+    class _Downloads:
+        """Alive for three ticks, reporting bytes the whole way."""
+
+        def __init__(self) -> None:
+            self.ticks = 0
+
+        def poll(self):
+            self.ticks += 1
+            return None if self.ticks < 4 else 0
+
+        def terminate(self):
+            raise AssertionError("a working download was terminated")
+
+        def wait(self, timeout=None):
+            return 0
+
+    moving = {"n": 0}
+
+    class _Snap:
+        @property
+        def bytes_done(self):
+            moving["n"] += 1_000_000
+            return moving["n"]
+
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: _Downloads())
+    monkeypatch.setattr(progress.TRACKER, "snapshot", lambda: _Snap())
+    monkeypatch.setattr(rt, "PREFETCH_STALL_SECONDS", 0.5)
+    progress.TRACKER.cancelled.clear()
+
+    started = time.monotonic()
+    rt.ModelRuntime()._prefetch_weights("acme/big-but-working")
+
+    assert time.monotonic() - started < 10
