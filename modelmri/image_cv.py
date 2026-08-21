@@ -313,12 +313,35 @@ def _forward_refusal(model, image, err: Exception) -> Refusal:
             f"tensor is on {image.device}. A model spread across devices needs "
             f"its input where its first layer is."
         )
+    # BRANCH ON THE CAUSE. Everything reached this one sentence, so a CUDA
+    # out-of-memory told the reader to go looking for a prompt API on a model
+    # that has none — on the 8 GB card this project targets, which is where
+    # that happens. Reproduced with `torch.OutOfMemoryError`.
+    #
+    # Read by class NAME rather than by import: `torch.OutOfMemoryError` moved
+    # between versions, and this module is reached without torch resident.
+    if type(err).__name__ in ("OutOfMemoryError", "OutOfMemoryError_"):
+        return NotMeasurable(
+            f"this model ran out of memory on {device or 'the accelerator'} "
+            f"during its forward pass. Nothing about the image or the "
+            f"checkpoint is wrong — there is not enough room for it right now. "
+            f"Unload whatever else is resident, or open this on the CPU."
+        )
+    if isinstance(err, ImportError):
+        package = getattr(err, "name", "") or ""
+        return NotMeasurable(
+            "this checkpoint's forward pass needs a package that is not "
+            "installed here"
+            + (f" — `pip install {package}`." if package else ".")
+            + " The weights are fine; nothing needs re-downloading."
+        )
     return NotMeasurable(
         f"this model's forward pass refused the image ({type(err).__name__}). "
-        f"A head that needs more than pixels — a promptable segmenter wants "
-        f"points or boxes, a grounding detector wants text — cannot be run "
-        f"from an image alone, and guessing a prompt would be guessing the "
-        f"answer."
+        f"This MAY be a head that needs more than pixels — a promptable "
+        f"segmenter wants points or boxes, a grounding detector wants text — "
+        f"which cannot be run from an image alone, and guessing a prompt would "
+        f"be guessing the answer. The terminal running `modelmri serve` "
+        f"carries what was actually raised."
     )
 
 

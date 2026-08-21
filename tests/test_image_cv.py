@@ -1056,3 +1056,46 @@ def test_a_genuinely_query_aligned_processor_is_still_preferred(corners):
 
     assert found["scoring"] == "checkpoint_post_processor"
     assert "OWN" in found["scoring_reason"]
+
+
+def test_running_out_of_memory_is_not_reported_as_needing_a_prompt():
+    """`_run`'s bare `except Exception` routed everything to one sentence, so a
+    CUDA out-of-memory told the reader to go looking for a prompt API on a
+    model that has none — on the 8 GB card this project targets, which is
+    exactly where that happens."""
+
+    class _OutOfMemoryError(Exception):
+        pass
+
+    _OutOfMemoryError.__name__ = "OutOfMemoryError"
+
+    said = cv._forward_refusal(
+        _eval(TwoRegionNet()), torch.zeros(1, 3, 8, 8), _OutOfMemoryError("cuda")
+    ).sentence
+
+    assert "ran out of memory" in said
+    assert "prompt" not in said
+    assert "Unload" in said, "and say what to do about it"
+
+
+def test_a_missing_package_is_not_reported_as_needing_a_prompt():
+    err = ImportError("No module named 'timm'")
+    err.name = "timm"
+
+    said = cv._forward_refusal(
+        _eval(TwoRegionNet()), torch.zeros(1, 3, 8, 8), err
+    ).sentence
+
+    assert "pip install timm" in said
+    assert "weights are fine" in said
+
+
+def test_an_unrecognised_failure_hedges_rather_than_asserting():
+    """The residual arm is a guess and now says so — it used to assert a
+    prompt-shaped cause for every exception a third-party forward can raise."""
+    said = cv._forward_refusal(
+        _eval(TwoRegionNet()), torch.zeros(1, 3, 8, 8), RuntimeError("something")
+    ).sentence
+
+    assert "MAY be" in said
+    assert "modelmri serve" in said, "and point at where the real cause is"

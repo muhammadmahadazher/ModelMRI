@@ -812,3 +812,51 @@ def test_every_verdict_comes_with_a_sentence(tmp_path, verdict):
 
     assert got.verdict == verdict
     assert len(got.means) > 30, got.means
+
+
+# --------------------------------------- the remedy has to match the cause
+
+
+def test_a_variant_clash_is_not_told_to_re_download(tmp_path):
+    """ "Re-downloading it will fetch what is missing." sat outside the `or`,
+    so it landed on every unloadable branch — including this one, where the
+    publisher's own files are irreconcilable and re-downloading fetches the
+    identical set forever."""
+    component(tmp_path, "unet", {"w": ("F16", [64, 64])}, variant="fp16")
+    component(tmp_path, "vae", {"w": ("F16", [64, 64])}, variant="bf16")
+    index(tmp_path, {"unet": "UNet2DConditionModel", "vae": "AutoencoderKL"})
+
+    got = priced(tmp_path)
+
+    assert got.loadable is False
+    assert "will fetch the same files" in got.remedy
+    assert "fetch what is missing" not in got.remedy
+
+
+def test_genuinely_missing_weights_are_told_to_re_download(tmp_path):
+    """The branch where that advice is right, so the fix is not "never say it"."""
+    component(tmp_path, "vae", {"w": ("F32", [64, 64])})
+    (tmp_path / "unet").mkdir()
+    (tmp_path / "unet" / "config.json").write_text("{}")
+    index(tmp_path, {"unet": "UNet2DConditionModel", "vae": "AutoencoderKL"})
+
+    got = priced(tmp_path)
+
+    assert got.remedy == "Re-downloading it will fetch what is missing."
+
+
+def test_a_directory_nobody_could_read_is_not_a_download_problem(tmp_path, monkeypatch):
+    real = Path.iterdir
+
+    def blocked(self):
+        if self == tmp_path:
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", blocked)
+    monkeypatch.setattr(image_fit, "_MEMO", {})
+
+    got = priced(tmp_path)
+
+    assert "permission" in got.remedy.lower()
+    assert "re-download" not in got.remedy.lower()

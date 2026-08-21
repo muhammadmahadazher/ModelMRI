@@ -471,10 +471,18 @@ class ImageHandle:
                 # leaves `missing` EMPTY — and gating on the list meant that
                 # case fell straight through to a load with `variant=None`
                 # and died on a raw filename error.
+                # `sizing.remedy`, chosen per cause. The literal that used to
+                # sit here landed on every branch, including the ones where
+                # nothing is missing — a checkpoint whose components ship
+                # irreconcilable variants re-downloads to the same files
+                # forever, and a folder nobody could read has no download to
+                # fetch. `_gaps` and `_choose_variant` end their strings
+                # without punctuation, so the sentence also ran on:
+                # "...did not finish Re-downloading it will fetch...".
+                body = ("; ".join(sizing.missing) or sizing.reason).rstrip(". ")
                 raise Refusal(
-                    f"{repo} is on this disk but cannot be opened: "
-                    + ("; ".join(sizing.missing) or sizing.reason)
-                    + " Re-downloading it will fetch what is missing."
+                    f"{repo} is on this disk but cannot be opened: {body}."
+                    + (f" {sizing.remedy}" if sizing.remedy else "")
                 )
 
             _stop_if_asked("before the pipeline was opened")
@@ -1381,6 +1389,23 @@ def _load_transformers(
             f"loaded.{needs}"
         ) from last
 
+    # REMOTE CODE is not a broken checkpoint either. A config carrying
+    # `auto_map` beside a `vision_config` — the MiniCPM-V / InternVL shape — is
+    # identified as a VLM, both loaders run with `trust_remote_code=False`, and
+    # transformers raises ValueError. That is not an ImportError, so the
+    # residual arm below fired and asserted the weights were the problem. They
+    # are provably untouched: `_WEIGHT_PATTERNS` never even downloads the `.py`.
+    #
+    # Only the MARKER is read from the exception, never its text — that text
+    # carries absolute paths from this machine.
+    if isinstance(last, ValueError) and "trust_remote_code" in str(last):
+        raise Refusal(
+            f"This checkpoint ships its own model code, and ModelMRI never "
+            f"executes code from a checkpoint — so {imaging.label(family)} or "
+            f"not, it cannot be opened here. Nothing is missing and there is "
+            f"nothing to re-download."
+        ) from last
+
     why = (
         type(last).__name__
         if last is not None
@@ -1389,8 +1414,8 @@ def _load_transformers(
     raise Refusal(
         f"This is {imaging.label(family)}, and none of the loaders for that "
         f"family could open it: {why}. The checkpoint was identified from its "
-        f"config before anything was loaded, so this is about the weights "
-        f"rather than about what it is."
+        f"config before anything was loaded, so this is not a question of what "
+        f"it is."
     ) from last
 
 

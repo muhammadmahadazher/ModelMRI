@@ -182,6 +182,13 @@ class ImageFit:
     #: the checkpoint cannot be loaded as it stands.
     variant: str | None = ""
     loadable: bool = True
+    #: WHAT TO DO, chosen per cause. A single literal was appended to every
+    #: unloadable branch — "Re-downloading it will fetch what is missing." —
+    #: including the two where nothing is missing: a checkpoint whose
+    #: components ship irreconcilable variants re-downloads to exactly the
+    #: same files forever, and a directory nobody could read has no download
+    #: to fetch. On a LOCAL folder there is no repo to re-download at all.
+    remedy: str = ""
     exact: bool = True
     activation_headroom: int = ACTIVATION_HEADROOM
     reason: str = ""
@@ -1004,6 +1011,10 @@ def of(
         # `exact=True` on a path that priced no files claims a precision that
         # was never achieved, beside a `disk_bytes` of 0 that is unknown.
         out.exact = False
+        out.remedy = (
+            "Check that the directory is readable — this is a permission or a "
+            "filesystem answer rather than a missing download."
+        )
         out.means = out.reason
         return out
 
@@ -1037,6 +1048,10 @@ def of(
             if _stem_of(f.name) not in _CANONICAL_STEMS
         ]
         if stranded:
+            out.remedy = (
+                "Re-downloading may fetch the file the loader looks for, if "
+                "the publisher ships one."
+            )
             out.reason = (
                 f"the only weight file here is {stranded[0]}, and "
                 f"`from_pretrained` opens `model.safetensors`, "
@@ -1046,6 +1061,7 @@ def of(
                 f"the one that is here may be."
             )
         else:
+            out.remedy = "Re-downloading it will fetch the weights."
             out.reason = (
                 "no weight files anywhere under this directory, so it holds "
                 "configuration and nothing to load — an interrupted download "
@@ -1059,7 +1075,15 @@ def of(
     if variant is None:
         out.loadable = False
         out.reason = why
+        # NOT a re-download. The publisher's own files are irreconcilable —
+        # fetching them again produces the identical set, forever.
+        out.remedy = (
+            "Re-downloading will fetch the same files. This checkpoint cannot "
+            "be opened as published unless one component gains a copy in a "
+            "format the others share."
+        )
     elif out.missing:
+        out.remedy = "Re-downloading it will fetch what is missing."
         out.reason = (
             "this cannot be loaded as it stands: " + "; ".join(out.missing) + "."
         )

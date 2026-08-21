@@ -999,20 +999,63 @@ class ModelRuntime:
                     # TRACKER.finish() ran: the progress meter stayed "active"
                     # for the rest of the session and its watcher thread
                     # polled the disk forever.
-                    progress.TRACKER.finish(
-                        error=f"{type(err).__name__} on {self.accel.name}, then "
-                        f"{type(cpu_err).__name__} on CPU: not enough memory "
-                        f"for this model"
+                    # MEMORY IS ONE CAUSE, not the only one, and both sinks
+                    # asserted it unconditionally under two bare `except`
+                    # arms. Reachable with no hardware fault at all: a repo
+                    # leaving any parameter on `meta` raises
+                    # `NotImplementedError: Cannot copy out of meta tensor` on
+                    # the GPU move, and the CPU retry raises the same — so the
+                    # reader was told to try a smaller model, and the 1.7B ->
+                    # 0.5B retry failed identically.
+                    #
+                    # Read by class NAME: `torch.OutOfMemoryError` moved
+                    # between versions and this must not import torch to
+                    # decide how to word a sentence.
+                    out_of_memory = "OutOfMemoryError" in (
+                        type(err).__name__,
+                        type(cpu_err).__name__,
                     )
+                    # BOTH exceptions logged. Only `err` was, so the CPU
+                    # failure — the one that decided the outcome — left no
+                    # trace anywhere.
+                    log.warning(
+                        "loading %s failed on %s (%s) and on CPU (%s)",
+                        hf_id,
+                        self.accel.name,
+                        type(err).__name__,
+                        type(cpu_err).__name__,
+                        exc_info=cpu_err,
+                    )
+                    if out_of_memory:
+                        finish_note = (
+                            f"{type(err).__name__} on {self.accel.name}, then "
+                            f"{type(cpu_err).__name__} on CPU: not enough "
+                            f"memory for this model"
+                        )
+                        said = (
+                            f"'{hf_id}' does not fit: {type(err).__name__} on "
+                            f"GPU, then {type(cpu_err).__name__} on CPU. Try a "
+                            f"smaller model."
+                        )
+                    else:
+                        finish_note = (
+                            f"{type(err).__name__} on {self.accel.name}, then "
+                            f"{type(cpu_err).__name__} on CPU"
+                        )
+                        said = (
+                            f"'{hf_id}' could not be placed on "
+                            f"{self.accel.name} ({type(err).__name__}), and "
+                            f"the CPU fallback failed too "
+                            f"({type(cpu_err).__name__}). This is about how "
+                            f"the checkpoint loads rather than its size, so a "
+                            f"smaller model of the same kind will most likely "
+                            f"fail the same way."
+                        )
+                    progress.TRACKER.finish(error=finish_note)
                     # A Refusal, not a crash: both attempts are named, only
                     # their exception CLASSES are interpolated (never their
-                    # text), and the sentence ends with what to do. "Out of
-                    # memory" is a capacity answer, and the tool is still
-                    # usable afterwards.
-                    raise Refusal(
-                        f"'{hf_id}' does not fit: {type(err).__name__} on GPU, "
-                        f"then {type(cpu_err).__name__} on CPU. Try a smaller model."
-                    ) from cpu_err
+                    # text), and the sentence ends with what to do.
+                    raise Refusal(said) from cpu_err
             model.eval()
             progress.TRACKER.finish()
             self.epoch += 1
