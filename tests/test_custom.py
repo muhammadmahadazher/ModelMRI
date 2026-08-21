@@ -659,3 +659,111 @@ def test_the_skip_list_still_applies_inside_the_scan_root(tmp_path):
 
     assert "real.pt" in names
     assert "cached.pt" not in names
+
+
+def test_the_candidate_walk_says_what_it_left_out(tmp_path, monkeypatch):
+    """MEASURED: 45 adapter-shaped `.py` files and 45 `.pt` files in one root
+    -> GET /api/custom/candidates returned 40 and 40, and the payload's keys
+    were `['adapters', 'roots', 'torchscript']`. Nothing said anything was
+    dropped, so five of the reader's own models were absent from the one panel
+    that exists to list what they have.
+
+    Both walks `return`ed at the limit, so like `scan_dir` before them they
+    could not have reported a cap even if asked — they never learned what was
+    past it. Counting is free; the expensive part is reading each file.
+    """
+    for i in range(45):
+        (tmp_path / f"adapter_{i:02d}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / f"model_{i:02d}.pt").write_bytes(b"\0" * 32)
+
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == 40
+    assert adapters.n_total == 45
+    assert adapters.truncated is True
+
+    scripts = custom.find_torchscript()
+    assert len(scripts) == 40
+    assert scripts.n_total == 45
+    assert scripts.truncated is True
+
+    # Still lists, so the CLI and the route keep indexing them unchanged.
+    assert isinstance(adapters, list) and isinstance(scripts, list)
+
+
+def test_a_walk_under_the_limit_is_not_reported_as_capped(tmp_path, monkeypatch):
+    """The flag has to mean something: it must be false when nothing was
+    dropped, or a panel that always warns is a panel nobody reads."""
+    for i in range(3):
+        (tmp_path / f"adapter_{i}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == adapters.n_total == 3
+    assert adapters.truncated is False
+
+
+def test_two_candidate_walks_that_disagree_about_the_total_are_not_equal():
+    """CodeQL flagged `Candidates` for adding `n_total` without overriding
+    `__eq__`, and it is right: the class exists so the total travels, and
+    inheriting `list.__eq__` made "40 of 40" compare equal to "40 of 45"."""
+    complete = custom.Candidates([{"name": "a"}], n_total=1)
+    capped = custom.Candidates([{"name": "a"}], n_total=45)
+    assert complete != capped
+    assert complete == custom.Candidates([{"name": "a"}], n_total=1)
+
+    # A plain list carries no claim about the walk, so the rows decide.
+    assert complete == [{"name": "a"}]
+
+
+def test_the_total_counts_rows_not_paths(tmp_path, monkeypatch):
+    """The total added to stop a fabricated count was itself fabricated.
+
+    MEASURED with 45 adapter-shaped `.py` files and 45 `.pt` files in a folder
+    that is BOTH the working directory and MODELMRI_MODELS_DIR — which is the
+    ordinary case, because the allowed roots overlap by design:
+
+        adapters 40 of 90, checkpoints 40 of 90
+
+    Ninety, for forty-five files. The counter incremented on every path the
+    glob yielded: before the skip-directory test, before the template and
+    `test_` exclusions, before the `seen` dedupe that exists precisely because
+    the roots overlap, and before the module-level `def load` test that
+    decides whether a `.py` is a candidate at all.
+
+    "40 of 90" is worse than the plain "40" it replaced — a specific,
+    confident, wrong number that sends a reader looking for fifty models which
+    do not exist. `n_total` has to mean "rows this walk WOULD have listed".
+    """
+    for i in range(45):
+        (tmp_path / f"adapter_{i:02d}.py").write_text(
+            "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / f"model_{i:02d}.pt").write_bytes(b"\0" * 32)
+
+    # The same directory twice, which is what the real roots do.
+    monkeypatch.setattr(custom, "allowed_roots", lambda: [tmp_path, tmp_path])
+
+    adapters = custom.find_adapters(tmp_path)
+    assert len(adapters) == 40
+    assert adapters.n_total == 45, "the same file through two roots counted twice"
+
+    scripts = custom.find_torchscript()
+    assert len(scripts) == 40
+    assert scripts.n_total == 45
+
+    # And a non-candidate `.py` must not inflate it either.
+    (tmp_path / "notes.py").write_text("# just a note\n", encoding="utf-8")
+    (tmp_path / "test_thing.py").write_text(
+        "import torch\ndef load():\n    return torch.nn.Linear(4, 4)\n",
+        encoding="utf-8",
+    )
+    assert custom.find_adapters(tmp_path).n_total == 45

@@ -56,17 +56,38 @@ def test_the_same_input_under_a_different_name_does_not_group():
     assert patterns.analyse(steps).repeats == []
 
 
-def test_a_huge_input_does_not_hash_the_whole_thing():
-    """Hashing megabytes to compare two steps is waste."""
-    big = "x" * 5_000_000
+def test_two_inputs_that_differ_late_are_not_the_same_input():
+    """This asserted the opposite, as a documented consequence of hashing only
+    the first 4,000 characters.
+
+    It is the case that matters. Agent steps share a system prompt — `otel.py`
+    maps `gen_ai.input.messages` onto `input` — so every LLM call in a run
+    begins with the same multi-kilobyte preamble and differs only after it.
+    Under a prefix hash, twenty-seven distinct calls became "ran 27 times with
+    the same input", against sentences promising exact matching, and the count
+    feeds `cli.py --max-repeat` into `check.py` — so it failed builds over
+    calls that were never repeats.
+    """
+    shared = "x" * 20_000  # what a real system prompt looks like here
     steps = [
-        _step("a", payload=big, seq=0),
-        _step("b", payload=big + "different", seq=1),
+        _step("a", payload=shared + "asked about A", seq=0),
+        _step("b", payload=shared + "asked about B", seq=1),
     ]
+
+    assert patterns.analyse(steps).repeats == [], (
+        "two different questions behind one preamble are not a repeat"
+    )
+
+
+def test_genuinely_identical_inputs_still_group():
+    """The other half, so the fix cannot become "nothing ever repeats"."""
+    same = "y" * 20_000
+    steps = [_step("a", payload=same, seq=0), _step("b", payload=same, seq=1)]
+
     found = patterns.analyse(steps)
-    # They share the first INPUT_HASH_CHARS, so they group — a deliberate,
-    # documented consequence of not hashing the whole payload.
+
     assert found.repeats[0].count == 2
+    assert set(found.repeats[0].step_ids) == {"a", "b"}
 
 
 # ----------------------------------------------------------- retry storms

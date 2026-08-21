@@ -94,7 +94,8 @@ def test_shards_are_summed(tmp_path):
 
 
 def test_a_float32_checkpoint_loaded_bf16_halves_on_the_card(tmp_path):
-    """Measured on gpt2: 548.1 MB on disk, 255.3 MB allocated. 2x, silently."""
+    """A float32 checkpoint loaded in bfloat16 takes half its on-disk bytes on
+    the card. 2x, silently."""
     (tmp_path / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
     write_safetensors(tmp_path / "model.safetensors", {"w": ("F32", [1000, 512])})
     w = fit.weights_bytes(tmp_path, dtype_bytes=2)

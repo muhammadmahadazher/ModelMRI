@@ -666,3 +666,42 @@ def test_the_cli_start_path_passes_this_machine_to_the_capacity_check():
     start_call = rest[:end]
     assert "vram_gb=" in start_call, start_call
     assert "accel_name=" in start_call, start_call
+
+
+def test_the_sidecar_gets_base64_not_a_data_url():
+    """The action routes could never succeed, on any dataset or any frame.
+
+    `vla_data.encode_png` returns a DATA URL, which is right — the frame
+    server hands the same string to an `<img src>`. The sidecar's contract
+    says "One base64 PNG" and means it: `decode_frame` calls
+    `base64.b64decode(payload, validate=True)`, which rejects
+    `data:image/png;base64,` as a non-base64 digit.
+
+    MEASURED: every /act call carrying a frame from `reader.frame(...)` failed
+    on that, so /api/vla/actions/{compare,swap,knockout} died on their first
+    pass with the sidecar's own "not a base64 image" refusal — a true message
+    that nothing upstream was listening for.
+    """
+    import base64
+
+    from modelmri import policy as policy_mod
+
+    payload = base64.b64encode(b"\x89PNG fake").decode()
+    data_url = f"data:image/png;base64,{payload}"
+
+    # The prefix is removed, and what is left is what the sidecar decodes.
+    assert policy_mod._raw_base64(data_url) == payload
+    base64.b64decode(policy_mod._raw_base64(data_url), validate=True)
+
+    # A caller already sending raw base64 is untouched.
+    assert policy_mod._raw_base64(payload) == payload
+
+    # And a data: URL that is NOT base64 is left alone rather than being fed
+    # to a base64 decoder, which would swap one wrong answer for another.
+    text_url = "data:text/plain,hello%20world"
+    assert policy_mod._raw_base64(text_url) == text_url
+
+    # Non-strings pass through so the sidecar's own message about what a
+    # camera carried is the one the reader sees.
+    assert policy_mod._raw_base64(None) is None
+    assert policy_mod._raw_base64(17) == 17

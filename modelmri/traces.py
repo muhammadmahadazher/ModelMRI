@@ -485,6 +485,19 @@ class TraceStore:
         # `/api/traces/import` takes a bare dict — there is no model between
         # the wire and here — so these lines are the entire contract, and a
         # hand-written or third-party document has nothing else to go on.
+        meta = doc.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            # A trace whose meta is a string was ACCEPTED and then killed every
+            # reader of the store, permanently and across restarts, because it
+            # is stored verbatim and parsed on the way out. Refused on the way
+            # in, where the person who sent it is still listening.
+            raise BadRequest(
+                f"a trace's 'meta' is an object of your own keys, and this "
+                f"document sent a {type(meta).__name__}. It is stored verbatim "
+                f"and read back on every listing, so a shape nothing can parse "
+                f"would break the panel rather than this request."
+            )
+
         steps = doc.get("steps", [])
         if not isinstance(steps, list) or not steps:
             raise BadRequest("trace document needs a non-empty 'steps' list")
@@ -508,6 +521,16 @@ class TraceStore:
                 raise BadRequest(
                     f"invalid step kind: {s.get('kind')!r} — "
                     f"use one of {', '.join(sorted(VALID_KINDS))}"
+                )
+            parent = s.get("parent_id")
+            if parent is not None and not isinstance(parent, (str, int)):
+                # Goes straight into an sqlite bind parameter, so anything
+                # else raised InterfaceError from the driver — an error about
+                # a database binding, at somebody who sent a nested object.
+                raise BadRequest(
+                    f"step {i}'s 'parent_id' names another step, so it is a "
+                    f"string or a number; this one is a "
+                    f"{type(parent).__name__}."
                 )
             timings.append((_ms(s, "started_ms", i), _ms_or_none(s, "duration_ms", i)))
 
@@ -601,12 +624,33 @@ class TraceStore:
                 " (SELECT COALESCE(MAX(s.started_ms + COALESCE(s.duration_ms,0)),0) FROM step s"
                 "   WHERE s.trace_id=t.id),"
                 " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id AND s.error=1),"
+                # HOW MANY STEPS CARRY A DURATION. `duration_ms` is nullable
+                # on purpose — "not recorded" and "took no measurable time"
+                # are different facts — and the COALESCE above folds the first
+                # into the second. Measured on four runs:
+                #
+                #   one step, no duration   -> 0     rendered "0.0s"
+                #   four steps, none timed  -> 3000  rendered "3.0s"
+                #   last step untimed       -> 1000  rendered "1.0s"
+                #
+                # Every one of those is a FLOOR, and the first is a claim that
+                # a run took no time at all. The count travels so the panel can
+                # say which it is looking at rather than printing a total it
+                # does not have.
+                " (SELECT COUNT(*) FROM step s WHERE s.trace_id=t.id"
+                "   AND s.duration_ms IS NOT NULL),"
                 " t.meta"
                 " FROM trace t ORDER BY t.started_at DESC"
             ).fetchall()
         out = []
         for r in rows:
-            meta = json.loads(r[6] or "{}") or {}
+            # `_loads`, not `json.loads`. Its docstring names this exact
+            # hazard — one damaged row must not take down the whole trace
+            # view — and this line was the reason that sentence was
+            # written and then not honoured here.
+            # r[7], not r[6]: the duration count above was inserted
+            # BEFORE `t.meta` in the SELECT, which moves it along one.
+            meta = _loads(r[7])
             out.append(
                 {
                     "id": r[0],
@@ -615,6 +659,7 @@ class TraceStore:
                     "n_steps": r[3],
                     "total_ms": r[4],
                     "n_errors": r[5],
+                    "n_timed": r[6],
                     # Scripted sample data must never be indistinguishable
                     # from a run you actually recorded.
                     # examples/record_demo.py writes a deliberately failing
@@ -800,7 +845,7 @@ class TraceStore:
             "id": t[0],
             "name": t[1],
             "started_at": t[2],
-            "meta": json.loads(t[3]),
+            "meta": _loads(t[3]),
             "steps": steps,
         }
 

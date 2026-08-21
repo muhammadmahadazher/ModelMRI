@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured, percent } from "./measured";
 import {
   errorText,
   occludeFrame,
@@ -386,7 +387,7 @@ export default function VLACausal({
         {sweepCost && (
           <span className="meta vla-cost">
             {sweepCost.frames} frames of {sweepCost.frames_total} (
-            {(sweepCost.coverage * 100).toFixed(1)}%) · {sweepCost.passes} passes
+            {percent(sweepCost.coverage, 1)}) · {sweepCost.passes} passes
             {/* No seconds unless this machine has been timed. A duration from
                 somebody else's hardware is a number people plan around. */}
             {sweepCost.seconds !== null ? ` · ~${sweepCost.seconds}s` : ""}
@@ -411,6 +412,9 @@ export default function VLACausal({
             frame <i>that was sampled</i>, which is not the same claim.
           </div>
           <ol className="vla-rank">
+            {/* Eight of however many the sweep measured. The count is
+                rendered under the list; a strip that simply stops reads as
+                the whole ranking. */}
             {sweep.rows.slice(0, 8).map((r) => (
               <li key={`${r.episode}-${r.timestep}`}>
                 <span className="mid">
@@ -421,6 +425,8 @@ export default function VLACausal({
                     className="vla-bar"
                     style={{
                       width: `${
+                        sweep.strip.high != null &&
+                        sweep.strip.low != null &&
                         sweep.strip.high > sweep.strip.low
                           ? ((r.value - sweep.strip.low) /
                               (sweep.strip.high - sweep.strip.low)) *
@@ -430,10 +436,16 @@ export default function VLACausal({
                     }}
                   />
                 </span>
-                <span className="mid">{r.value.toFixed(4)}</span>
+                <span className="mid">{measured(r.value, 4)}</span>
               </li>
             ))}
           </ol>
+          {sweep.rows.length > 8 && (
+            <p className="meta">
+              {sweep.rows.length - 8} more frame(s) were measured and ranked
+              lower. The strip shows the top eight; the sweep read them all.
+            </p>
+          )}
           {sweep.rows.length > 8 && (
             <p className="meta">
               Showing the 8 highest of {sweep.rows.length} sampled frames.

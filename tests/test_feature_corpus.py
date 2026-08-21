@@ -178,11 +178,10 @@ def test_every_span_says_where_in_it_the_feature_fired(sae_runtime, swept):
     """The offset, not the first match.
 
     A span is a window either side of the firing position, so the same word
-    can appear in it twice. MEASURED on gpt2 layer 8 with a corpus of court
-    sentences: " appeals court disagreed with the trial court's reading."
-    fired at the SECOND "court", at character 39 -- `text.index(token)` would
-    have pointed at character 8, and highlighting every match would have
-    claimed two firings where there was one.
+    can appear in it twice. In a corpus of court sentences, " appeals court
+    disagreed with the trial court's reading." fired at the SECOND "court" --
+    `text.index(token)` would have pointed at the first one, and highlighting
+    every match would have claimed two firings where there was one.
     """
     _, per_feature = swept
     for feature in list(per_feature)[:20]:
@@ -254,9 +253,9 @@ def test_no_natural_language_label_is_produced(sae_runtime, swept):
 
 
 def test_a_feature_firing_on_most_tokens_is_flagged_as_unselective(sae_runtime, swept):
-    """MEASURED on gpt2 layer 8: the most frequently firing feature fired on
-    68% of tokens and promoted an unrelated scatter of vocabulary. That is not
-    a concept, and reading its top spans as one would be the mistake."""
+    """The most frequently firing feature can fire on a large share of the
+    tokens and promote an unrelated scatter of vocabulary. That is not a
+    concept, and reading its top spans as one would be the mistake."""
     _, per_feature = swept
     busiest = max(per_feature.items(), key=lambda kv: kv[1][0])[0]
     out = fc.evidence(
@@ -342,10 +341,12 @@ def test_no_sae_is_a_refusal_not_an_empty_dashboard(sae_runtime):
 def test_a_sweep_is_findable_after_the_process_ends(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
     stats = _stats(corpus_sha256="deadbeef")
-    written = fc.save(stats, {7: (12, 3.5), 9: (4, 1.25)}, model="gpt2", sae="repo")
+    written = fc.save(
+        stats, {7: (12, 3.5), 9: (4, 1.25)}, model="Qwen/Qwen3-1.7B", sae="repo"
+    )
     assert written == 2
 
-    rows = fc.stored("deadbeef", model="gpt2", sae="repo", layer=8)
+    rows = fc.stored("deadbeef", model="Qwen/Qwen3-1.7B", sae="repo", layer=8)
     assert rows[0] == {"feature": 7, "n_fired": 12, "max_activation": 3.5}
 
 
@@ -354,9 +355,9 @@ def test_re_sweeping_the_same_corpus_replaces_rather_than_duplicates(
 ):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
     stats = _stats(corpus_sha256="same")
-    fc.save(stats, {7: (12, 3.5)}, model="gpt2", sae="repo")
-    fc.save(stats, {7: (99, 9.9)}, model="gpt2", sae="repo")
-    rows = fc.stored("same", model="gpt2", sae="repo", layer=8)
+    fc.save(stats, {7: (12, 3.5)}, model="Qwen/Qwen3-1.7B", sae="repo")
+    fc.save(stats, {7: (99, 9.9)}, model="Qwen/Qwen3-1.7B", sae="repo")
+    rows = fc.stored("same", model="Qwen/Qwen3-1.7B", sae="repo", layer=8)
     assert len(rows) == 1 and rows[0]["n_fired"] == 99
 
 

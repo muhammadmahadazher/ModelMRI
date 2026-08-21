@@ -248,7 +248,7 @@ def test_untimed_steps_are_excluded_and_declared():
     }
     result = check.run(doc, max_ms=100)
     detail = result.assertions[0].detail
-    assert "5 ms across 1 timed step(s)" in detail
+    assert "5.0 ms across 1 timed step(s)" in detail
     assert "1 step(s) recorded no duration and are not in this total" in detail
 
 
@@ -335,3 +335,175 @@ def test_the_json_flag_reports_an_unreadable_trace_as_json(tmp_path, capsys):
     assert check_trace(args) == check.NOTHING_CHECKED
     doc = json.loads(capsys.readouterr().out)
     assert doc["ok"] is False and doc["error"]
+
+
+# ------------------------------------------- the gate that could not go red
+
+
+def _run(steps, **kw):
+    from modelmri import check as check_mod
+
+    result = check_mod.run({"name": "n", "steps": steps}, **kw)
+    return next(a for a in result.assertions if a.name == "max-ms")
+
+
+def test_max_ms_reads_a_duration_recorded_as_a_float():
+    """A MERGE GATE THAT COULD NOT GO RED.
+
+    This kept only `isinstance(_, int)`, so a step recorded as `1500.0` — what
+    `(t1 - t0) * 1000` produces in any recorder that does not round, and what
+    `modelmri-record` stores when the caller passes `duration_ms` directly —
+    was silently discarded. Seven of them, 10,500 ms of real work, summed to 0,
+    `0 <= 5000` passed, and the log read "0 ms across 0 timed step(s)".
+
+    The same document imported into the store is coerced by `traces._ms` and
+    exported by `otel._span_times` as 1500 ms, so three readers agreed about
+    this file and the gate disagreed with all of them.
+    """
+    steps = [
+        {"id": f"s{i}", "kind": "llm_call", "name": "call", "duration_ms": 1500.0}
+        for i in range(7)
+    ]
+    a = _run(steps, max_ms=5000)
+    assert a.ok is False, a.detail
+    assert "10,500 ms across 7 timed step(s)" in a.detail
+
+    # And ints are untouched, so the fix is a widening rather than a swap.
+    ints = [dict(s, duration_ms=1500) for s in steps]
+    assert _run(ints, max_ms=5000).detail == a.detail
+
+
+def test_max_ms_passes_a_run_that_is_actually_under_the_limit():
+    """The guard must not fire on the ordinary case."""
+    a = _run(
+        [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": 1200.0}],
+        max_ms=5000,
+    )
+    assert a.ok is True
+    assert "1,200 ms across 1 timed step(s)" in a.detail
+
+
+def test_a_duration_that_is_present_and_unreadable_fails_the_gate():
+    """Different from a step that recorded none, and it must not pass.
+
+    Something wrote a number-shaped field this cannot read. Folding that into
+    "recorded no duration" and going green is the same failure the float case
+    was: a build passing on the strength of measurements that were discarded.
+    `no-loops` already states the policy — "a green check from a scan that did
+    not run is worse than a red one".
+    """
+    for bad in ("1500", float("nan"), float("inf"), [1500], {"ms": 1500}):
+        a = _run(
+            [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": bad}],
+            max_ms=5000,
+        )
+        assert a.ok is False, f"{bad!r} was admitted: {a.detail}"
+        assert "cannot read" in a.detail
+
+
+def test_true_is_not_one_millisecond():
+    """`isinstance(True, int)` is True, so the bool guard has to come first.
+
+    `session.py` already writes `isinstance(value, int) and not
+    isinstance(value, bool)` for this same field; `check.py` was the one place
+    that skipped it, and admitted `"duration_ms": true` as a 1 ms step.
+    """
+    a = _run(
+        [{"id": "s0", "kind": "llm_call", "name": "c", "duration_ms": True}],
+        max_ms=5000,
+    )
+    assert a.ok is False
+    assert "1 ms across" not in a.detail
+
+
+def test_a_step_that_recorded_no_duration_is_still_just_absent():
+    """Absent is not unreadable, and absent alone does not fail the build."""
+    a = _run([{"id": "s0", "kind": "llm_call", "name": "c"}], max_ms=5000)
+    assert a.ok is True
+    assert "recorded no duration" in a.detail
+    assert "cannot read" not in a.detail
+
+
+def test_a_list_of_three_says_how_many_there_were():
+    """`no-errors` lists five and marks its cut with " …"; these two listed
+    three and said nothing, so a build with twenty retry storms reported three
+    and read as though that was all of them.
+
+    The count is what a reader acts on. Three storms is a flaky dependency;
+    twenty is a broken loop, and the detail line said the same thing for both.
+    """
+    steps = [
+        {
+            "id": f"s{i}",
+            "kind": "tool_call",
+            "name": f"fetch{i // 2}",
+            "error": True,
+            "started_ms": i * 10,
+            "duration_ms": 5,
+        }
+        for i in range(40)
+    ]
+    from modelmri import check as check_mod
+
+    result = check_mod.run({"name": "n", "steps": steps}, no_retry_storms=True)
+    a = next(x for x in result.assertions if x.name == "no-retry-storms")
+    assert a.ok is False
+    assert "20 in total" in a.detail, a.detail
+    assert "and 17 more" in a.detail
+
+    # Three or fewer says nothing extra: "3 in total" under three named ones
+    # is noise, and the sibling above behaves the same way.
+    few = check_mod.run({"name": "n", "steps": steps[:4]}, no_retry_storms=True)
+    b = next(x for x in few.assertions if x.name == "no-retry-storms")
+    assert "in total" not in b.detail, b.detail
+
+
+def test_sub_millisecond_steps_are_not_truncated_to_nothing():
+    """`int(value)` truncated toward zero, and in aggregate that lost the run.
+
+    Fine for 1500.0 and ruinous for a fleet of small ones: 5000 steps of 0.9 ms
+    each is 4.5 seconds of real work, every one of them became 0, the total was
+    0, and the gate passed a 100 ms limit. An in-process tool call routinely
+    takes under a millisecond, and this assertion exists to catch the run that
+    is slower than it should be.
+    """
+    steps = [
+        {
+            "id": f"s{i}",
+            "kind": "tool_call",
+            "name": "lookup",
+            "started_ms": i,
+            "duration_ms": 0.9,
+        }
+        for i in range(5000)
+    ]
+    a = _run(steps, max_ms=100)
+    assert a.ok is False, a.detail
+    assert "4,500 ms" in a.detail
+
+
+def test_a_total_under_ten_milliseconds_keeps_a_decimal():
+    """Rounding to a whole number rendered 0.6 and 1.2 identically as "1 ms"
+    against a limit of 1 — one passing, one failing, the same words for both.
+
+    The same defect as `mri_diff` printing "moved 0.10000 -> 0.10000": a
+    display precision that cannot separate the two cases it is reporting on.
+    """
+
+    def three(each):
+        return [
+            {
+                "id": f"s{i}",
+                "kind": "tool_call",
+                "name": "x",
+                "started_ms": i,
+                "duration_ms": each,
+            }
+            for i in range(3)
+        ]
+
+    under = _run(three(0.2), max_ms=1)
+    over = _run(three(0.4), max_ms=1)
+    assert under.ok is True and "0.6 ms" in under.detail
+    assert over.ok is False and "1.2 ms" in over.detail
+    assert under.detail != over.detail

@@ -51,15 +51,14 @@ Measured on the reference pair, float32, across three architectures:
 
 | model | layers | residual peak | attention peak | MLP peak |
 |---|---|---|---|---|
-| `gpt2` | 12 | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
 | `Qwen/Qwen2.5-0.5B-Instruct` | 24 | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
 | `Qwen/Qwen3-1.7B` | 28 | +0.967 · L3 · `el` | +0.651 · L20 · `of` | **+0.444 · L22 · `of`** |
 | `google/gemma-3-270m-it` | 18 | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
 
-The pattern is the same in all three and it is the standard causal-tracing
-result: **the MLP peak sits on a subject token in an early layer** — `um`,
-`os`, `osseum` are all pieces of "Colosseum" — **while the attention peak sits
-on the last token, late** (75%, 87% and 67% of the way through the stack). Early
+The standard causal-tracing result is visible here: in two of the three the
+**MLP peak sits on a subject token in an early layer** — `os` and `osseum` are
+both pieces of "Colosseum" — **while in all three the attention peak sits on
+the last token, two thirds or more of the way through the stack**. Early
 MLP writes the fact; late attention moves it to where the prediction is made.
 The residual grid contains both and shows you only the destination.
 
@@ -93,8 +92,9 @@ you can see which word split differently.
 
 **The two prompts must predict different tokens.** The score divides by the gap
 between the two answers, and of three casually-written pairs, two produced the
-*same* next token — a denominator of exactly 0.000000. `The capital of France
-is` and `The capital of Germany is` both answer `" the"` on GPT-2.
+*same* next token — a denominator of exactly 0.000000. Two prompts can differ
+in the fact you care about and still agree on the very next token, which is
+what the check catches.
 
 Pairs that work well are minimal and concrete: one name, one number, one place
 changed, everything else identical.
@@ -106,7 +106,6 @@ each of the 24 controlled sites. Measured on an RTX 4060, float32:
 
 | model | passes | time |
 |---|---|---|
-| `gpt2` (12 layers, 11 tokens) | 614 | 5.5 s |
 | `google/gemma-3-270m-it` (18 layers, 10 tokens) | 758 | 29.5 s |
 | `Qwen/Qwen2.5-0.5B-Instruct` (24 layers, 11 tokens) | 1010 | 31.5 s |
 | `Qwen/Qwen3-1.7B` (28 layers, 11 tokens) | 1142 | 203.9 s |
@@ -121,11 +120,11 @@ a tensor with itself does no arithmetic, so the identity check — patching the
 corrupted run with its own activation — comes back at exactly 0.0 in float32,
 bfloat16 and float16 alike.
 
-What precision does change is the *reference*. In bfloat16 GPT-2 answers `" T"`
-to the corrupted prompt where float32 answers `" P"`, and the gap is exactly
-4.000 rather than 4.467 — which also quantises the scores into steps of an
-eighth. Compare within a dtype, not across one. The dtype and both reference
-tokens come back with every result.
+What precision does change is the *reference*. The corrupted prompt can come
+back with a different top token in bfloat16 than in float32, and the gap the
+score divides by moves with it — a coarser mantissa also quantises the scores
+into visible steps. Compare within a dtype, not across one. The dtype and both
+reference tokens come back with every result.
 
 ## API
 

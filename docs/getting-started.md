@@ -64,8 +64,9 @@ no torch. See [sharing what you found](guides/attention.md#sharing-what-you-foun
    to see what it attended to; click to pin it. Change layer and head to watch
    attention sharpen with depth.
 
-4. **Load the SAE** in the features panel (GPT-2 only for now) and click a
-   token to see which of its 24,576 features fired.
+4. **Load the SAE** in the features panel — it finds the release registered
+   for whatever model you have loaded, and says so if there is none — then
+   click a token to see which of its features fired.
 
 ## Hardware
 

@@ -46,6 +46,7 @@ from typing import Any
 
 import torch
 
+from . import fmt
 from .ablate import distribution, kl_nats
 from .errors import BadRequest
 
@@ -126,15 +127,15 @@ class Grounding:
     # materialise the score matrix, and transformers returns an EMPTY TUPLE
     # rather than None for `output_attentions=True` under them -- so the
     # naive loop over it completes, sums nothing, and reports 0.0 for every
-    # passage. Measured exactly that way on a plain gpt2 load.
+    # passage. Measured exactly that way on a plain from_pretrained load.
     attention_available: bool = True
     attention_note: str = ""
     # The repeat pass reproduced the answer BIT FOR BIT, so the floor is
     # exactly 0.0 and "cleared the floor" degrades to "moved the answer at
     # all" -- a much weaker claim wearing the same words.
     #
-    # MEASURED on gpt2 in float32 on CPU: floor 0.0, and all five passages
-    # cleared it, including one at 0.0107 nats against a top of 2.7627. On
+    # MEASURED in float32 on CPU: floor 0.0, and all five passages
+    # cleared it, including one two orders of magnitude below the top score. On
     # cuda/bf16 the same pass does not reproduce and the floor is real. The
     # degenerate case is named rather than papered over with an invented
     # threshold, for the same reason the probe names a saturated null.
@@ -159,7 +160,7 @@ class Grounding:
             f"Each of your {self.n_chunks} passages was masked out of the "
             f"model's attention and the answer re-read at the same position. "
             f"The numbers are NATS, and they do not add up: masking two "
-            f"passages together moved the answer by {self.joint:.4f}, not by "
+            f"passages together moved the answer by {fmt.measured(self.joint)}, not by "
             f"the sum of their separate scores, so none of this is a "
             f"percentage share of the answer.",
         ]
@@ -167,7 +168,7 @@ class Grounding:
             parts.append(
                 "NO PASSAGE CLEARED THE NOISE FLOOR. Removing any one of them "
                 "moved the answer no further than a pass that changed nothing "
-                f"({self.noise_floor:.4f} nats), so on this evidence the "
+                f"({fmt.measured(self.noise_floor)} nats), so on this evidence the "
                 "answer did not depend on the document you attached. That is "
                 "a measurement, not a verdict on whether it is correct."
             )
@@ -177,17 +178,25 @@ class Grounding:
                 "THE NOISE FLOOR IS EXACTLY ZERO: this model reproduced its "
                 "own answer bit for bit, so every passage that moved it at "
                 f"all counts as clearing, and {len(used)} of {self.n_chunks} "
+                # THROUGH `fmt.measured`, like `joint` and `noise_floor`
+                # fourteen lines above. This branch is the one that says "Read
+                # the nats, not the verdict" — and `:.4f` floored those very
+                # nats to "0.0000" for anything under 5e-5, which is the
+                # ordinary size here: the branch is entered precisely when the
+                # model reproduced its answer bit for bit, so the movements
+                # that "cleared" a floor of zero are the tiny ones.
                 "did. Read the nats, not the verdict — the largest here is "
-                f"{top:.4f} and the smallest that 'cleared' is "
-                f"{min((c.dependence for c in used), default=0.0):.4f}. There "
-                "is no significance test on this run."
+                f"{fmt.measured(top, 4)} and the smallest that 'cleared' is "
+                f"{fmt.measured(min((c.dependence for c in used), default=0.0), 4)}"
+                ". There is no significance test on this run."
             )
         else:
             names = ", ".join(f"#{c.index}" for c in used[:4])
             parts.append(
                 f"{len(used)} of {self.n_chunks} passages cleared the floor "
                 f"({names}) — removing those moved the answer further than "
-                f"the model's own run-to-run spread ({self.noise_floor:.4f})."
+                f"the model's own run-to-run spread "
+                f"({fmt.measured(self.noise_floor, 4)})."
             )
         if any(c.looked_not_used is None for c in self.chunks):
             why = (
@@ -410,7 +419,7 @@ def measure(
     # AN EMPTY TUPLE, not None. SDPA and FlashAttention never materialise the
     # score matrix, and `output_attentions=True` under them returns `()` --
     # which loops zero times, sums nothing, and hands back 0.0 for every
-    # passage. Measured on a plain `from_pretrained("gpt2")`, which picks sdpa
+    # passage. Measured on a plain `from_pretrained(...)` load, which picks sdpa
     # by default; ModelRuntime loads eager and does not hit this, but a caller
     # holding its own model does.
     layers = tuple(attn_out.attentions or ())
@@ -461,8 +470,8 @@ def measure(
     # there is no "not depended on" either: every passage that moved the
     # answer clears the gate, the flag can never fire, and leaving it False
     # reports a clean bill of health from a test that never ran. MEASURED —
-    # gpt2 on cuda/bf16 reproduces its own answer bit for bit, so a zero floor
-    # is the ordinary case here and not an edge one.
+    # a model on cuda/bf16 can reproduce its own answer bit for bit, so a zero
+    # floor is the ordinary case here and not an edge one.
     decidable = attention_available and floor > 0.0
     if not decidable:
         for s in scores:

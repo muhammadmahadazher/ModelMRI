@@ -123,15 +123,15 @@ def test_the_final_row_agrees_with_the_model_in_every_dtype(dtype):
     """Regression: the lens double-normed its final row on every bf16 load.
 
     The old check compared LOGITS with `allclose(atol=1e-3, rtol=1e-3)`.
-    Measured on gpt2/cuda: float32 logits differed by 0.00007 and passed;
-    bfloat16 differed by 0.5 and failed — but the logits are ~128 and bf16's
-    precision there is 128 * 2^-8 = 0.5, so 0.5 IS agreement to the last
-    representable digit. The check was reading the dtype, not the model.
+    float32 logits differed far below that tolerance and passed; bfloat16
+    differed far above it and failed — but at the magnitude logits reach, a
+    difference that size IS agreement to the last representable digit in
+    bfloat16. The check was reading the dtype, not the model.
 
-    The consequence was not subtle: the final row read ' the' where gpt2
-    actually says ' Paris', and `final` and `settled_at` are both derived from
-    that row. Every bf16 session shipped a wrong answer on the one row a
-    reader can check by eye.
+    The consequence was not subtle: the final row read a plausible wrong token
+    where the model actually said something else, and `final` and `settled_at`
+    are both derived from that row. Every bf16 session shipped a wrong answer
+    on the one row a reader can check by eye.
 
     The invariant is dtype-free: the last lens row is the model, so its top
     token must be the model's top token.
@@ -158,8 +158,8 @@ def test_the_final_row_agrees_with_the_model_in_every_dtype(dtype):
 
 
 def test_the_normed_check_tolerance_sits_between_rounding_and_a_real_miss():
-    """bf16 rounding lands near 1e-4 nats; a genuine double-norm measured
-    2.12 nats on gpt2. The threshold has to separate those two, with room."""
+    """bf16 rounding lands near 1e-4 nats; a genuine double-norm costs whole
+    nats. The threshold has to separate those two, with room."""
     assert 1e-3 < lens.NORMED_KL_TOLERANCE < 1.0
 
 

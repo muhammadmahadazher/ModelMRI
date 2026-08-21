@@ -10,7 +10,7 @@ cannot: ablation says "this mattered", patching says "this is where it is".
     clean    "The Eiffel Tower is located in the city of"  -> " Paris"
     corrupt  "The Colosseum is located in the city of"     -> " P"
 
-Six things were measured before any of this was written, on gpt2 float32 cuda,
+Six things were measured before any of this was written, in float32 on cuda,
 and four of them decided the shape of what is here.
 
 THE METRIC IS SIGNED, AND SO IT IS NOT KL. Every other panel reports KL nats,
@@ -58,6 +58,8 @@ from typing import Any
 
 import torch
 
+from . import fmt
+
 # Same-norm Gaussian draws per site. Eight, because one is a sample: see the
 # module docstring for the 2.654 spread that decided it. The cost is why
 # controls run on the top sites rather than the whole grid.
@@ -69,7 +71,8 @@ CONTROL_SEED = 0
 
 # How many sites get controls. The grid is n_layers x n_positions and every
 # cell costs a forward pass; controls multiply that by CONTROL_DRAWS + 1. On
-# gpt2 the full grid is 132 passes in 3.00 s, and controlling all of it would
+# a 12-layer model over an 11-token prompt the full grid is 132 passes, and
+# controlling all of it would
 # be 1320. Controlling the top slice instead is 132 + 24 * 9 = 348.
 MAX_CONTROLLED = 24
 
@@ -429,11 +432,20 @@ def trace(
         "sites": sites,
         "controlled": len(sites),
         "dtype": dtype,
-        # Two sites closer than this are tied, not ranked. On gpt2 in bfloat16
-        # the logits reach 128, where one representable step is 1.0, so a
-        # recovery fraction lands on a grid of `step / gap` -- 0.125 on the
-        # reference pair. Every score in `grids` and `sites` shares it.
-        "recovery_resolution": round(resolution, 6),
+        # Two sites closer than this are tied, not ranked. In bfloat16 the
+        # logits can reach a magnitude where one representable step is large,
+        # so a recovery fraction lands on a coarse grid of `step / gap`.
+        # Every score in `grids` and `sites` shares it.
+        # NOT rounded. This is one step of the model's number format on the
+        # recovery scale, and in float32 it lives at 1e-6 and below: measured
+        # at |logit|max 22 over a gap of 4 it is 6.557e-07, which `round(_, 6)`
+        # turned into 1e-06 — most of the figure gone — and which becomes
+        # exactly 0.0 whenever the gap is wider. A tie threshold of 0.0 says
+        # nothing is tied, which is the opposite of what this number is for,
+        # and no formatter downstream can recover a value already flattened
+        # here. bfloat16 was the only dtype this survived, because there the
+        # resolution is ~1e-2.
+        "recovery_resolution": resolution,
         "passes": passes,
         "seconds": round(elapsed, 2),
         # Not decoration. Layer 0's input IS the embedding, so patching every
@@ -549,8 +561,9 @@ def recovery_resolution(model: Any, logits: torch.Tensor, gap: float) -> float:
     step of 1.0 -- so the numerator moves in whole units and the fraction
     lands on a grid of `step / gap`.
 
-    MEASURED, not predicted: on gpt2 with the reference pair, every sender in
-    a path trace scored a multiple of 0.125 and a dozen of them tied exactly.
+    MEASURED, not predicted: with the reference pair, every sender in
+    a path trace scored a multiple of the same step and a dozen of them tied
+    exactly.
     Ranking those against each other is reading noise, and without this number
     on screen there is nothing to say so. It is reported beside the scores so
     a reader can see which part of the ordering is real.
@@ -755,7 +768,8 @@ def path_trace(
         },
         "gap": round(gap, 6),
         # Differences below this are not a ranking. See `recovery_resolution`.
-        "recovery_resolution": round(recovery_resolution(model, clean_logits, gap), 6),
+        # Unrounded, for the reason written at the other call site.
+        "recovery_resolution": recovery_resolution(model, clean_logits, gap),
         "senders": scored,
         "n_senders": len(scored),
         "n_controlled": controlled,
@@ -792,7 +806,7 @@ def path_trace(
             f"neighbouring position — the first says the number is not the size "
             f"of the edit, the second that it is not just this layer being "
             f"loud. RESOLUTION "
-            f"{recovery_resolution(model, clean_logits, gap):.3f}: two senders "
+            f"{fmt.measured(recovery_resolution(model, clean_logits, gap), 3)}: two senders "
             f"closer than that are tied, not ranked — a recovery is a "
             f"difference of logits divided by the gap, and "
             f"{str(next(model.parameters()).dtype).removeprefix('torch.')} "
@@ -1025,7 +1039,7 @@ def patchscope(
         # Differs from both controls as a string AND says at least one word
         # neither of them already said.
         #
-        # The string test alone was not enough, measured on gpt2: a layer-8
+        # The string test alone was not enough, and it was measured: a layer-8
         # state decoded as ", hello, hello, hello" against an untouched target
         # that was also nothing but "hello" repeated. Different strings, so it
         # was flagged informative -- with 100% of its vocabulary already in

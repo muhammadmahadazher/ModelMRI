@@ -73,6 +73,25 @@
 
     <!-- head:end -->
 
+    <!-- OUTSIDE the swapped region on purpose. `head:start..head:end` is
+         regenerated per build target, so a favicon written in there would
+         reach the demo and neither the app nor the viewer.
+
+         Inline rather than a file: the viewer is a single self-contained HTML
+         document that people open from disk, where a relative /favicon.svg
+         resolves to nothing. A data URI travels with the file. It also ends
+         the 404 the server logged on every single page load.
+
+         The mark is the app's own ✳, in the default palette's accent
+         (oklch(0.503 0.219 264), the cobalt the logomark uses), and it carries
+         its own dark-scheme rule because browser tab chrome follows the OS
+         rather than this page's palette. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cstyle%3Eg%7Bstroke:%231e53de%7D@media(prefers-color-scheme:dark)%7Bg%7Bstroke:%237da3ff%7D%7D%3C/style%3E%3Cg stroke-width='3.2' stroke-linecap='round'%3E%3Cpath d='M16 5v22M5 16h22M8.2 8.2l15.6 15.6M23.8 8.2L8.2 23.8'/%3E%3C/g%3E%3C/svg%3E"
+    />
+
     <style>html{background:#0a0e14}</style>
   </head>
   <body>

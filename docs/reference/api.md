@@ -18,6 +18,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 |---|---|---|
 | `GET` | `/api/session/export` | Session Export |
 | `GET` | `/api/session/state` | Session State |
+| `GET` | `/api/session/trace` | Session Trace |
 | `POST` | `/api/session/close` | Session Close |
 | `POST` | `/api/session/open` | Session Open |
 
@@ -110,12 +111,16 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `GET` | `/api/vla` | Vla Status |
+| `GET` | `/api/vla/actions/cost` | Vla Actions Cost |
 | `GET` | `/api/vla/audit` | Vla Audit Dataset |
 | `GET` | `/api/vla/datasets` | Vla Datasets |
 | `GET` | `/api/vla/episodes` | Vla Episodes |
 | `GET` | `/api/vla/frame` | Vla Frame |
 | `GET` | `/api/vla/occlude/cost` | Vla Occlude Cost |
 | `GET` | `/api/vla/sweep/cost` | Vla Sweep Cost |
+| `POST` | `/api/vla/actions/compare` | Vla Actions Compare |
+| `POST` | `/api/vla/actions/knockout` | Vla Actions Knockout |
+| `POST` | `/api/vla/actions/swap` | Vla Actions Swap |
 | `POST` | `/api/vla/analyse` | Vla Analyse |
 | `POST` | `/api/vla/dataset` | Vla Set Dataset |
 | `POST` | `/api/vla/load` | Vla Load |
@@ -135,6 +140,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/traces/{trace_id}` | Trace Get |
 | `GET` | `/api/traces/{trace_id}/bundle/preview` | Bundle Preview |
 | `GET` | `/api/traces/{trace_id}/patterns` | Trace Patterns |
+| `POST` | `/api/traces/dataset` | Traces To Dataset |
 | `POST` | `/api/traces/import` | Traces Import |
 | `POST` | `/api/traces/import/inspect` | Import Inspect |
 | `POST` | `/api/traces/{trace_id}/steps/{step_id}/adopt` | Adopt Step |
@@ -145,9 +151,23 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `DELETE` | `/api/rubric/{name}` | Rubric Delete |
+| `GET` | `/api/devices` | List Devices |
 | `GET` | `/api/gguf` | Read Gguf |
 | `GET` | `/api/gguf/plan` | Plan Gguf |
 | `GET` | `/api/graph` | Graph |
+| `GET` | `/api/image` | Image Status |
+| `GET` | `/api/image/attention/cost` | Image Attention Cost |
+| `GET` | `/api/image/attribution/cost` | Image Attribution Cost |
+| `GET` | `/api/image/available` | Image Available |
+| `GET` | `/api/image/cv/cost` | Image Cv Cost |
+| `GET` | `/api/image/discovered` | Image Discovered |
+| `GET` | `/api/image/filmstrip/cost` | Image Filmstrip Cost |
+| `GET` | `/api/image/local` | Image Local |
+| `GET` | `/api/image/progress` | Image Progress |
+| `GET` | `/api/image/search` | Image Search |
+| `GET` | `/api/image/size` | Image Size |
+| `GET` | `/api/image/steps/cost` | Image Steps Cost |
+| `GET` | `/api/image/tasks` | Image Tasks |
 | `GET` | `/api/lens` | Lens |
 | `GET` | `/api/lens/tuned` | Tuned Lens Status |
 | `GET` | `/api/paths` | Where |
@@ -155,12 +175,31 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/policy` | Policy Status |
 | `GET` | `/api/pull/progress` | Pull Progress |
 | `GET` | `/api/rubric` | Rubric List |
+| `GET` | `/api/scorers` | Scorers Catalogue |
+| `GET` | `/api/sweeps` | Sweeps List |
+| `GET` | `/api/sweeps/{sweep_id}/resume` | Sweeps Resume Plan |
 | `GET` | `/api/telemetry` | Read Telemetry |
+| `GET` | `/api/trajectory/cost` | Trajectory Cost |
+| `GET` | `/api/weights` | Weights View |
+| `GET` | `/api/weights/cost` | Weights Cost |
 | `GET` | `/v1/models` | V1 Models |
 | `GET` | `/v1/mri/{mri_id}` | V1 Mri |
 | `POST` | `/api/diff/models` | Diff Models |
+| `POST` | `/api/experiments/compare` | Experiments Compare |
 | `POST` | `/api/gguf/load` | Load Gguf |
 | `POST` | `/api/ground` | Ground Answer |
+| `POST` | `/api/image/adapter` | Image Adapter |
+| `POST` | `/api/image/attention` | Image Attention Capture |
+| `POST` | `/api/image/attribution` | Image Attribution |
+| `POST` | `/api/image/cancel` | Image Cancel |
+| `POST` | `/api/image/cv/attribute` | Image Cv Attribute |
+| `POST` | `/api/image/cv/predict` | Image Cv Predict |
+| `POST` | `/api/image/cv/readout` | Image Cv Readout |
+| `POST` | `/api/image/filmstrip` | Image Filmstrip |
+| `POST` | `/api/image/knockout` | Image Knockout |
+| `POST` | `/api/image/load` | Image Load |
+| `POST` | `/api/image/steps` | Image Steps Run |
+| `POST` | `/api/image/unload` | Image Unload |
 | `POST` | `/api/judge` | Judge Score |
 | `POST` | `/api/judge/plan` | Judge Plan |
 | `POST` | `/api/lens/tune` | Train Tuned Lens |
@@ -173,6 +212,10 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |
 | `POST` | `/api/rubric` | Rubric Save |
 | `POST` | `/api/rubric/score` | Rubric Score |
+| `POST` | `/api/scorers/run` | Scorers Run |
+| `POST` | `/api/sweeps/{sweep_id}/resume` | Sweeps Resume |
+| `POST` | `/api/trajectory/compare` | Trajectory Compare |
+| `POST` | `/api/weights/scan` | Weights Scan Path |
 | `POST` | `/v1/chat/completions` | V1 Chat |
 | `POST` | `/v1/completions` | V1 Completions |
 
@@ -207,9 +250,7 @@ anything it responds to, and only one of those is about the model.
 
 `selective` is false when a feature fires on more than a fifth of tokens — that
 is not a concept, and its top spans will look like whatever the corpus is
-mostly made of. Measured on gpt2 at layer 8: the most frequently firing feature
-fired on **68% of tokens** and promoted an unrelated scatter of vocabulary, all
-three readouts agreeing it is not a clean concept.
+mostly made of.
 
 **No natural-language labels.** Naming the concept is the reader's job; a
 generated label would be the one thing on the page nothing measured. It also
@@ -240,11 +281,6 @@ there is no principled cut-off for "the same", so the numbers sit beside all
 three decodes and the reader judges. `informative` is only true when the decode
 differs from both as a string **and** says at least one word neither already
 said; complete containment is a test, not a tuned threshold.
-
-Measured on gpt2: a layer-2 state decoded **byte-identically to the random
-control**, and a layer-8 decode differed from the untouched target as a string
-while using **100% of its vocabulary**. Neither is informative, and the tool
-says so rather than interpreting them.
 
 **The target prompt is part of the result** and is returned with every
 response — two decodes under different targets are not comparable, and a hidden
@@ -278,10 +314,9 @@ are on one scale. Both of its controls run here too: eight same-norm random
 draws, and the same edit taken from a neighbouring position.
 
 **`recovery_resolution` is the number to read first.** A recovery is a
-difference of logits divided by the gap, and on gpt2 in bfloat16 the logits
-reach 128 where one representable step is 1.0 — so scores land on a grid.
-Measured on the reference pair: resolution 0.25, with 23 senders inside one
-step of the top. Two senders closer than that are **tied, not ranked**. The
+difference of logits divided by the gap, and in bfloat16 the representable step
+grows with magnitude — so once the logits are large enough, scores land on a
+grid. Two senders closer together than that step are **tied, not ranked**. The
 node grid reports it too; it has the same formula and had the same blind spot.
 
 **`seeding` states which edges were considered at all.** Edge count is
@@ -320,12 +355,12 @@ models worth comparing are exactly the ones near that limit.
 
 **No threshold decides where the streams come apart.** The first version
 compared each layer against a floor of `0.999`, wearing a docstring that
-claimed the floor was measured on the pair. Measured on gpt2 against a copy
-with one head zeroed in block 6: the cosine reads `1.000000000` through layer
-6 and `0.999475` at layer 7 — exactly where that block's output appears — and
-`0.999475` sits *above* `0.999`. A real divergence, correctly measured,
-reported as none. It is now the largest single-step **drop**, with the size of
-the drop printed beside the layer.
+claimed the floor was measured on the pair. Zero a single head in one block and
+compare the model against the original: the cosine moves at exactly the layer
+that block's output appears, and one head's worth of movement can still sit
+*above* `0.999`. A real divergence, correctly measured, reported as none. It is
+now the largest single-step **drop**, with the size of the drop printed beside
+the layer.
 
 **Cosine, not distance.** A finetune that changed a norm gain moves every
 vector's length and none of their meanings, and a distance would report that
@@ -337,14 +372,12 @@ between them rather than naming one. `consensus_share` is out of all prompts,
 not out of the ones that diverged.
 
 **The head half is opt-in and priced.** `rank_heads` is one pass per head plus
-three, times two sides, times every prompt: 1,176 on gpt2 with four prompts,
-5,412 on a 1.7B with six. Both sides' medians are carried rather than the
-difference alone — a head that went from 0.02 to 0.06 and one that went from
-4.00 to 4.04 moved by the same amount and are not the same finding — and the
-list is sorted by the *size* of the move, because a head the finetune started
-leaning on is as much a finding as one it abandoned. Measured on the damaged
-gpt2: zeroing L0H10 dropped it from 0.3583 to 0.0000 and sent L1H11 from
-0.0026 to **1.2494**.
+three, times two sides, times every prompt: 5,412 on a 1.7B with six prompts.
+Both sides' medians are carried rather than the difference alone — a head that
+went from 0.02 to 0.06 and one that went from 4.00 to 4.04 moved by the same
+amount and are not the same finding — and the list is sorted by the *size* of
+the move, because a head the finetune started leaning on is as much a finding
+as one it abandoned.
 
 **The pair is refused when a per-layer table would line up the wrong things** —
 different layer counts, hidden sizes or vocabularies — from the configs alone,
@@ -459,8 +492,7 @@ was never returned. `attention_available` says which happened.
 taken. That is either cause above, or a `noise_floor` of exactly `0.0`, where
 every passage that moved the answer at all counts as depended-on and the flag
 could never fire. `floor_degenerate` marks it. A deterministic model reproduces
-its own answer bit for bit, so on gpt2/cuda/bf16 this is the ordinary case, not
-an edge one.
+its own answer bit for bit, so this is the ordinary case, not an edge one.
 
 Cost is `n_chunks + 4` forward passes. Past `max_chunks` it **refuses** with
 the count rather than truncating: an answer scored against the first twelve
@@ -501,8 +533,7 @@ readable anywhere.
 
 `null_saturated` marks a layer where the shuffled fit reached the top of the
 scale — no accuracy could have cleared it, so the layer is untestable with this
-many examples rather than uninformative. Measured: at six held-out examples the
-null hit 1.00 at five of gpt2's twelve layers.
+many examples rather than uninformative.
 
 `expected_false_positives` is `n_layers × 5%`, because the sweep asks every
 layer against a 95th-percentile band and that is a multiple comparison. On a
@@ -566,10 +597,9 @@ only if the final normalisation is linear, and it is not. TransformerLens makes
 it exact by folding LayerNorm into the weights — which changes the model you
 are studying, and once folded nothing in the output says what the folding cost.
 Here the model is untouched, the normalisation is frozen at the scale a hook
-recorded from the real pass, and the gap is measured and returned: on gpt2
-predicting ` Paris`, the components sum to 14.974 against a real 15.141, a
-residual of **1.11%**. A chart without that number is claiming a decomposition
-it does not have.
+recorded from the real pass, and the gap between the summed components and the
+model's real logit is measured and returned as a percentage residual. A chart
+without that number is claiming a decomposition it does not have.
 
 **The residual is also the floor.** A component contributing less than the
 reconstruction error cannot be told from the reconstruction error, so those are
@@ -639,19 +669,19 @@ set of them into the `.mri`.
 {
   "op": "ablate_heads",
   "request": {"layer": 0, "baseline": "zero", "position": 4},
-  "tool_version": "0.10.1",
-  "model": "gpt2",
-  "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+  "tool_version": "0.11.0",
+  "model": "Qwen/Qwen3-1.7B",
+  "revision": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
   "revision_note": "the commit `refs/main` resolves to in the local cache",
   "dtype": "bfloat16",
   "device": "cuda:0",
   "attn_implementation": "eager",
   "seed": null,
-  "tokenizer_sha256": "11e818f948f43497",
+  "tokenizer_sha256": "41e00eccf531cffc",
   "tokenizer_note": "the full fast-tokenizer definition",
   "prompt_sha256": "bbaff4d2ecd5892d",
-  "n_prompt_tokens": 9,
-  "measured_at": "2026-08-13T16:27:55+00:00"
+  "n_prompt_tokens": 21,
+  "measured_at": "2026-08-18T11:18:20+00:00"
 }
 ```
 

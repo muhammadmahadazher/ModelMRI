@@ -52,6 +52,17 @@ from .saes import SAEHandle, SAEStatus
 # still leaves a traceback in the terminal the user is already looking at.
 log = logging.getLogger("modelmri")
 
+# How long the weight prefetch may make NO progress before it is stopped.
+#
+# The stall bound rather than a plain deadline, because bytes arriving means
+# the download is working however long it takes — a 40 GB checkpoint on a slow
+# line must not be killed for being big. Reset on every byte.
+PREFETCH_STALL_SECONDS = 120.0
+
+# And a ceiling, for a child that reports progress it is not making. Generous:
+# this only has to be shorter than "forever", which is what it replaced.
+PREFETCH_MAX_SECONDS = 3600.0
+
 
 def _load_failed(err: BaseException) -> str:
     """What the progress meter is allowed to say when a load breaks.
@@ -90,8 +101,31 @@ def _require_causal_lm(hf_id: str) -> None:
     mode without this is a multi-screen HuggingFace traceback about
     sentencepiece for a model that has no tokenizer because it is a diffusion
     model. Reading the config first costs a few kilobytes.
+
+    Two questions are asked, in this order, because the architecture STRING is
+    the weaker answer and it used to be the only one. `load()` calls
+    `AutoModelForCausalLM.from_pretrained` a few lines below, so the authority
+    on "can the playground run this" is what that class actually builds, not
+    how the checkpoint spells its own class name. Every multimodal Gemma spells
+    it `...ForConditionalGeneration`, and `AutoModelForCausalLM` maps every one
+    of them straight back to that same class. Measured on transformers 5.14.1,
+    this guard refused google/gemma-4-E4B-it, gemma-4-E2B-it, gemma-4-12B-it,
+    both gemma-4 w4a16 QAT builds and gemma-3-4b-it -- models the very next
+    line loads without complaint. Two code paths were answering one question
+    differently. The single Gemma 4 build that did get through,
+    gemma-4-E4B-it-qat-mobile-transformers, got through by accident: its config
+    publishes no `architectures` key at all, so it fell into the "unknown
+    shape" arm rather than being judged.
+
+    The mapping is consulted for the DECLARED class, never as a bare "is this
+    model_type in the mapping" test. Those are different questions and the
+    loose one is wrong: bert-base-uncased declares `BertForMaskedLM` while the
+    mapping holds `BertLMHeadModel` for it, so `AutoModelForCausalLM` will
+    cheerfully build an encoder with an untrained LM head and generate fluent
+    nonsense from it. Checked against the repos above plus vit, SmolVLM2 and
+    bert: the strict form unblocks the Gemmas and loosens nothing else.
     """
-    from transformers import AutoConfig
+    from transformers import MODEL_FOR_CAUSAL_LM_MAPPING, AutoConfig
 
     try:
         cfg = AutoConfig.from_pretrained(hf_id)
@@ -103,6 +137,21 @@ def _require_causal_lm(hf_id: str) -> None:
         return
     if not archs:
         return  # unknown shape: don't block on a guess
+
+    try:
+        mapped = MODEL_FOR_CAUSAL_LM_MAPPING.get(type(cfg), None)
+    except Exception:
+        # `_LazyAutoMapping.get` imports the modeling module for this one
+        # model_type, so it fails on whatever an import fails on: a
+        # transformers built without that model, or an optional dependency the
+        # module needs at import time. None is the honest answer -- we could
+        # not establish that the loader builds this -- and refusing on that is
+        # the safe direction, because the suffix test above has already
+        # declined to vouch for it. A guard whose whole job is to replace a
+        # traceback must not raise one of its own.
+        mapped = None
+    if mapped is not None and mapped.__name__ in archs:
+        return
 
     kind = archs[0]
     raise BadRequest(
@@ -129,7 +178,8 @@ def _hub_error_message(hf_id: str, err: Exception) -> str:
             f"'{hf_id}' is a gated model: accept its license at "
             f"https://huggingface.co/{hf_id} while signed in, then run "
             f"`huggingface-cli login` so ModelMRI can download it. "
-            f"Ungated alternatives: Qwen/Qwen3-0.6B, Qwen/Qwen2.5-0.5B-Instruct, gpt2."
+            f"Ungated alternatives: Qwen/Qwen3-0.6B, Qwen/Qwen2.5-0.5B-Instruct, "
+            f"Qwen/Qwen3-1.7B."
         )
     if "not a local folder" in text or "Repository Not Found" in text or "404" in text:
         return (
@@ -287,9 +337,9 @@ ignore = [
 
 # `pytorch_model.bin` is byte-for-byte redundant when safetensors is present
 # -- transformers loads the safetensors and never opens the .bin -- so
-# fetching both doubles the transfer for nothing. Measured on gpt2: 523 MB
-# of safetensors, an identical 523 MB .bin, and a 523 MB rust_model.ot, for
-# 1.7 GB downloaded where 523 MB was needed.
+# fetching both doubles the transfer for nothing. A repo that also ships a
+# rust_model.ot pulls a third identical copy, for several times the bytes
+# that were needed.
 #
 # Only dropped when a root-level .safetensors actually exists to load
 # instead. A repo whose weights live only in .bin still gets its .bin, and
@@ -329,15 +379,16 @@ def _user_span(tokenizer: Any, prompt: str, text: str) -> tuple[int, int] | None
     The tokens a fast tokenizer adds for itself report a zero-width `(0, 0)`
     offset, and there is deliberately no separate rule for them: the overlap
     test is half-open at both ends, so `b <= start` already excludes `(0, 0)`
-    from a span starting at character 0 — which is gpt2's span, and the case the
+    from a span starting at character 0 — which is the span a base model with no
+    chat template gets, and the case the
     rule would have been written for. An explicit `b <= a: continue` was here
     and was removed after a mutation test showed it could not change any
     answer: it only ever fires on an index between two overlapping ones, and a
     middle index moves neither end of a range.
 
-    Verified against all three, prompt "The capital of France is" through the
-    same chat template `generate_stream` applies: gpt2 (0, 5) over the whole
-    5-token sequence, Qwen3-0.6B (3, 8) of 13, gemma-3-270m-it (5, 10) of 15 —
+    Verified against both, prompt "The capital of France is" through the
+    same chat template `generate_stream` applies: Qwen3-0.6B (3, 8) of 13,
+    gemma-3-270m-it (5, 10) of 15 —
     each covering exactly ['The', ' capital', ' of', ' France', ' is'], and
     gemma's two leading `<bos>` outside it.
     """
@@ -387,7 +438,7 @@ class ModelStatus:
     # The same signal `generate_stream` already branches on: a tokenizer with
     # a chat template was instruction-tuned, one without was not. It is worth
     # publishing because the difference explains most "why is it answering
-    # nonsense" — gpt2 continues your sentence, it does not answer your
+    # nonsense" — a base model continues your sentence, it does not answer your
     # question, and a UI that does not say so invites the reader to conclude
     # the tool is broken when the tool is working exactly as intended.
     instruct: bool | None = None
@@ -408,6 +459,49 @@ class ModelStatus:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def text_config(cfg):
+    """The sub-config describing the LANGUAGE tower.
+
+    A text-only config describes it directly. A multimodal one (Gemma 3 and 4,
+    PaliGemma, Qwen-VL) has no shape of its own at the top level and nests one
+    config per modality, because "how many layers" has three answers for those
+    models and the tool is asking about the text one.
+
+    Returns `cfg` unchanged when there is nothing nested, so every caller can
+    use it unconditionally rather than each deciding for itself -- which is
+    how the fourteen call sites for this ended up disagreeing.
+    """
+    if getattr(cfg, "num_hidden_layers", None) is not None:
+        return cfg
+    inner = getattr(cfg, "text_config", None)
+    return cfg if inner is None else inner
+
+
+def decoder_blocks(root):
+    """The ModuleList of decoder blocks, or None if this layout is unknown.
+
+    Ordered most specific first: a multimodal model has BOTH
+    `model.language_model.layers` and `model.vision_tower.encoder.layers`, and
+    picking the wrong one draws attention maps for the image encoder while the
+    panel says they are the text model's.
+    """
+    for path in (
+        ("transformer", "h"),  # GPT-2 family
+        ("model", "language_model", "layers"),  # Gemma 3/4, PaliGemma
+        ("language_model", "model", "layers"),
+        ("model", "layers"),  # Llama, Qwen, Mistral, Gemma 1/2
+    ):
+        node = root
+        for name in path:
+            node = getattr(node, name, None)
+            if node is None:
+                break
+        else:
+            if hasattr(node, "__len__") and len(node):
+                return node
+    return None
 
 
 class ModelRuntime:
@@ -556,7 +650,7 @@ class ModelRuntime:
             n_layers=(
                 int(
                     getattr(
-                        getattr(self.model, "config", None),
+                        text_config(getattr(self.model, "config", None)),
                         "num_hidden_layers",
                         0,
                     )
@@ -656,8 +750,52 @@ class ModelRuntime:
             f"({snap.stage}: {snap.detail})"
         )
 
+    def _way_out(self) -> str:
+        """What the reader can actually DO about the load in the way.
+
+        STAGE-DEPENDENT, because Stop is not always an escape and saying it is
+        would be a promise the code does not keep. `load` checks
+        `TRACKER.cancelled` once, immediately before
+        `AutoModelForCausalLM.from_pretrained` — so a stop lands while the
+        weights are still arriving, and does nothing at all once they have.
+        `from_pretrained` and `model.to(device)` are single calls into
+        transformers and torch; neither takes a cancellation token, and a
+        10 GB checkpoint on a smaller card sits in exactly that phase for
+        minutes.
+
+        The first version of this sentence said "Press Stop — this is the one
+        control that works while a load is running", which is true for half of
+        a load's life and false for the half somebody is most likely to be
+        staring at.
+        """
+        snap = progress.TRACKER.snapshot()
+        if snap.stage == "resolving":
+            return (
+                "Press Stop on the progress bar to end it — nothing has "
+                "started downloading yet."
+            )
+        # THE BYTES, not the stage. `stage` stays "weights" from the first
+        # request through to the end of `from_pretrained`, so it cannot tell
+        # "still arriving" from "arrived, now loading" — and those are exactly
+        # the two halves that differ in whether Stop does anything. An earlier
+        # version of this branched on the stage and told a reader to press
+        # Stop in the phase where Stop is ignored.
+        if snap.bytes_total > 0 and snap.bytes_done < snap.bytes_total:
+            return (
+                "Press Stop on the progress bar to end it — the weights are "
+                "still arriving, which is the phase a stop can interrupt."
+            )
+        return (
+            "The weights have finished arriving and this load is now inside "
+            "transformers, which offers no way to interrupt it — Stop will "
+            "not end this phase. It will finish or fail on its own; if it has "
+            "been far longer than the model's size warrants, the model is "
+            "probably larger than this machine can hold and restarting the "
+            "server is the way out."
+        )
+
     @contextmanager
-    def _load_slot(self, hf_id: str) -> Iterator[None]:
+    def _load_slot(self, what: str) -> Iterator[None]:
         """The load lock, with a ceiling on how long a caller waits for it.
 
         A load holds this for as long as it takes, and one that stops
@@ -672,11 +810,21 @@ class ModelRuntime:
         design, so a second request is a 409, not a queue slot.
         """
         if not self._lock.acquire(timeout=LOAD_QUEUE_WAIT_S):
-            busy = self._in_flight() or "another load is running"
-            raise Refusal(
-                f"Cannot load '{hf_id}' yet: {busy}. Stop it first, or wait "
-                f"for it to finish."
-            )
+            # `what` IS THE ACTION, not a model id. It used to be called
+            # `hf_id` and interpolated as "Cannot load '{hf_id}'", which is
+            # true for one of the four callers and gibberish for the rest:
+            # pressing Unload while a load ran answered "Cannot load 'unload'
+            # yet", and the quantisation comparison answered "Cannot load
+            # 'quantisation comparison' yet".
+            #
+            # Unload matters most here, because it is the button somebody
+            # reaches for when a load is taking too long — and it is held
+            # behind the very lock they are trying to get out from under. It
+            # cannot simply skip the lock: freeing the model a load is halfway
+            # through writing is worse than waiting. So the refusal names the
+            # button that DOES work.
+            busy = self._in_flight() or "another load is already running"
+            raise Refusal(f"Cannot {what} yet: {busy}. {self._way_out()}")
         try:
             yield
         finally:
@@ -687,14 +835,37 @@ class ModelRuntime:
         hf_id: str = DEFAULT_MODEL,
         source: str = "hf",
         confirm: bool = False,
+        device: str = "",
     ) -> ModelStatus:
         """Load a model. source="hf" (full introspection) or "ollama" (text only).
 
         `confirm=True` overrides the size guard — the user has been told the
         numbers and chosen anyway.
 
+        `device` names where to put it — "cuda:1", "cpu", or "" to keep doing
+        what this has always done and let `devices.detect()` choose. Empty is
+        the default on purpose: a machine with one GPU behaves exactly as
+        before, and nobody has to learn a new argument to get the old
+        behaviour.
+
+        It is READ BACK rather than assumed. `devices.detect(prefer=...)`
+        returns the device it could actually honour, which is not always the
+        one asked for — "cuda:3" on a two-card box comes back as CPU with a
+        reason saying so. Storing the request instead of the result is how a
+        panel ends up reporting a card the model is not on.
+
         Blocking — call from a worker thread.
         """
+        # Re-resolved on EVERY load, including the ones that name nothing.
+        # An earlier version only touched `self.accel` when a device was
+        # named, so a single deliberate CPU load stuck: the next load with no
+        # device went to the CPU too, on a machine with a working GPU, and the
+        # only symptom was everything being slower for the rest of the
+        # session. "Let the tool choose" has to mean choosing, not remembering
+        # somebody else's choice.
+        chosen = devices.detect(prefer=device or "auto")
+        self.accel = chosen
+        self.device = chosen.torch_device
         if source not in ("hf", "ollama"):
             raise BadRequest(f"unknown source {source!r} (use 'hf' or 'ollama')")
 
@@ -736,7 +907,7 @@ class ModelRuntime:
                 self._last_ground = {}
             return self.status()
 
-        with self._load_slot(hf_id):
+        with self._load_slot(f"load {hf_id!r}"):
             dtype = devices.torch_dtype(self.accel)
             progress.TRACKER.start(hf_id)
             try:
@@ -784,7 +955,7 @@ class ModelRuntime:
                     attn_implementation="eager",  # materialises attention
                 )
             except LoadCancelled as err:
-                progress.TRACKER.finish(error=str(err))
+                progress.TRACKER.finish(error=str(err), cancelled=True)
                 raise
             except OSError as err:
                 # Gated repos, typos and private models all land here with a
@@ -839,20 +1010,63 @@ class ModelRuntime:
                     # TRACKER.finish() ran: the progress meter stayed "active"
                     # for the rest of the session and its watcher thread
                     # polled the disk forever.
-                    progress.TRACKER.finish(
-                        error=f"{type(err).__name__} on {self.accel.name}, then "
-                        f"{type(cpu_err).__name__} on CPU: not enough memory "
-                        f"for this model"
+                    # MEMORY IS ONE CAUSE, not the only one, and both sinks
+                    # asserted it unconditionally under two bare `except`
+                    # arms. Reachable with no hardware fault at all: a repo
+                    # leaving any parameter on `meta` raises
+                    # `NotImplementedError: Cannot copy out of meta tensor` on
+                    # the GPU move, and the CPU retry raises the same — so the
+                    # reader was told to try a smaller model, and the 1.7B ->
+                    # 0.5B retry failed identically.
+                    #
+                    # Read by class NAME: `torch.OutOfMemoryError` moved
+                    # between versions and this must not import torch to
+                    # decide how to word a sentence.
+                    out_of_memory = "OutOfMemoryError" in (
+                        type(err).__name__,
+                        type(cpu_err).__name__,
                     )
+                    # BOTH exceptions logged. Only `err` was, so the CPU
+                    # failure — the one that decided the outcome — left no
+                    # trace anywhere.
+                    log.warning(
+                        "loading %s failed on %s (%s) and on CPU (%s)",
+                        hf_id,
+                        self.accel.name,
+                        type(err).__name__,
+                        type(cpu_err).__name__,
+                        exc_info=cpu_err,
+                    )
+                    if out_of_memory:
+                        finish_note = (
+                            f"{type(err).__name__} on {self.accel.name}, then "
+                            f"{type(cpu_err).__name__} on CPU: not enough "
+                            f"memory for this model"
+                        )
+                        said = (
+                            f"'{hf_id}' does not fit: {type(err).__name__} on "
+                            f"GPU, then {type(cpu_err).__name__} on CPU. Try a "
+                            f"smaller model."
+                        )
+                    else:
+                        finish_note = (
+                            f"{type(err).__name__} on {self.accel.name}, then "
+                            f"{type(cpu_err).__name__} on CPU"
+                        )
+                        said = (
+                            f"'{hf_id}' could not be placed on "
+                            f"{self.accel.name} ({type(err).__name__}), and "
+                            f"the CPU fallback failed too "
+                            f"({type(cpu_err).__name__}). This is about how "
+                            f"the checkpoint loads rather than its size, so a "
+                            f"smaller model of the same kind will most likely "
+                            f"fail the same way."
+                        )
+                    progress.TRACKER.finish(error=finish_note)
                     # A Refusal, not a crash: both attempts are named, only
                     # their exception CLASSES are interpolated (never their
-                    # text), and the sentence ends with what to do. "Out of
-                    # memory" is a capacity answer, and the tool is still
-                    # usable afterwards.
-                    raise Refusal(
-                        f"'{hf_id}' does not fit: {type(err).__name__} on GPU, "
-                        f"then {type(cpu_err).__name__} on CPU. Try a smaller model."
-                    ) from cpu_err
+                    # text), and the sentence ends with what to do.
+                    raise Refusal(said) from cpu_err
             model.eval()
             progress.TRACKER.finish()
             self.epoch += 1
@@ -909,6 +1123,34 @@ class ModelRuntime:
             if sys.platform == "win32"
             else 0,
         )
+        # BOUNDED. This loop had no deadline at all: it polled every 0.4s and
+        # waited for the child to exit, forever. `proc.poll()` stays None for a
+        # child stuck inside a network read that never returns, so a stalled
+        # connection to the Hub hung the load — and, because this runs under
+        # `asyncio.to_thread`, hung the request behind it too.
+        #
+        # MEASURED on this branch's CI: two macOS jobs sat here for 150 and 360
+        # minutes and were killed by the runner having produced nothing. The
+        # faulthandler dump named the frame — `_prefetch_weights` in
+        # `threading.Event.wait` — under `test_a_failed_load_does_not_publish_
+        # the_exception`, a test that asks for a model it EXPECTS to be
+        # refused. The child went looking for it on the network and never came
+        # back.
+        #
+        # Two bounds rather than one. The stall bound is the honest one: bytes
+        # arriving means the download is working however long it takes, and a
+        # 40 GB checkpoint on a slow line must not be killed for being big.
+        # The ceiling is the backstop for a child that reports progress it is
+        # not making.
+        #
+        # Expiry is NOT an error. This whole method is an optimisation whose
+        # documented fallback is "let `from_pretrained` download the old way",
+        # so a stalled prefetch returns and the load continues — where the Hub
+        # library's own timeouts apply and a real failure raises a real
+        # exception instead of waiting. It is logged rather than swallowed:
+        # the load that follows will be slower and the terminal says why.
+        started = last_change = time.monotonic()
+        last_bytes = -1
         try:
             while proc.poll() is None:
                 if progress.TRACKER.cancelled.wait(0.4):
@@ -922,6 +1164,38 @@ class ModelRuntime:
                         f"Download stopped. Removed {freed / 1e6:,.0f} MB of "
                         f"partial files; anything already complete was kept."
                     )
+
+                now = time.monotonic()
+                try:
+                    arrived = int(progress.TRACKER.snapshot().bytes_done)
+                except Exception:
+                    # The tracker is a convenience here, not the mechanism. If
+                    # it cannot be read, the ceiling below still applies.
+                    arrived = last_bytes
+                if arrived != last_bytes:
+                    last_bytes, last_change = arrived, now
+
+                stalled_for = now - last_change
+                if (
+                    stalled_for > PREFETCH_STALL_SECONDS
+                    or now - started > PREFETCH_MAX_SECONDS
+                ):
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    from .capacity import _one_line
+
+                    log.warning(
+                        "the prefetch for %s made no progress for %.0fs "
+                        "(%.0fs total) and was stopped; the load continues "
+                        "through from_pretrained, which is slower",
+                        _one_line(hf_id),
+                        stalled_for,
+                        now - started,
+                    )
+                    return
         finally:
             if proc.poll() is None:  # an exception on our side, not the child's
                 proc.terminate()
@@ -964,7 +1238,7 @@ class ModelRuntime:
             # an architecture it cannot walk, and asking it for layer 0 first
             # turns "unsupported layout" into that message rather than into an
             # IndexError from a range built on the wrong number.
-            n_layers = int(self.model.config.num_hidden_layers)
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
                 result = patch.trace(
@@ -1005,11 +1279,34 @@ class ModelRuntime:
 
     def _block(self, layer: int) -> torch.nn.Module:
         """The decoder block whose *input* is the residual stream at `layer`."""
-        root = self.model
-        if hasattr(root, "transformer") and hasattr(root.transformer, "h"):
-            return root.transformer.h[layer]  # GPT-2 family
-        if hasattr(root, "model") and hasattr(root.model, "layers"):
-            return root.model.layers[layer]  # Llama/Qwen/Gemma family
+        blocks = decoder_blocks(self.model)
+        if blocks is not None:
+            # BOUNDS, here rather than at the routes. This is the only place
+            # that knows how many blocks the resident model actually has, and
+            # the layer arrives from several directions — a path parameter, a
+            # JSON field, and `variant=ablate:N` parsed out of a query string,
+            # which is the one that had no check at all.
+            #
+            # MEASURED: GET /api/attention?variant=ablate:9999.0 answered 500
+            # with `IndexError: index 9999 is out of range` from inside
+            # torch.nn.ModuleList — an error about a container, at somebody
+            # who typed a number into a URL.
+            #
+            # Negative indices are refused rather than quietly wrapping.
+            # Python would read -1 as the LAST block, and a reader who meant
+            # "layer -1" as "unset" would silently measure the top of the
+            # network and be told nothing about it.
+            if not isinstance(layer, int) or isinstance(layer, bool):
+                raise BadRequest(
+                    f"a layer index has to be a whole number, and this asked "
+                    f"for {layer!r}."
+                )
+            if not 0 <= layer < len(blocks):
+                raise BadRequest(
+                    f"layer {layer} is outside this model, which has "
+                    f"{len(blocks)} of them — 0 to {len(blocks) - 1}."
+                )
+            return blocks[layer]
         # A refusal, not an internal error, and the same one lens.py gives for
         # a missing final norm: this architecture is not one of the layouts
         # ModelMRI knows how to walk. It is user-reachable — POST
@@ -1023,7 +1320,9 @@ class ModelRuntime:
         raise Refusal(
             f"could not find this model's decoder blocks, so there is no layer "
             f"{layer} to read. Supported layouts: transformer.h (the GPT-2 "
-            f"family) and model.layers (Llama, Qwen, Gemma). If this "
+            f"family), model.layers (Llama, Qwen, Gemma 1/2) and "
+            f"model.language_model.layers (the multimodal Gemma 3/4 and "
+            f"PaliGemma shape). If this "
             f"architecture keeps its blocks somewhere else, open an issue "
             f"with the model id and it becomes one line here."
         )
@@ -1097,7 +1396,7 @@ class ModelRuntime:
                 messages, tokenize=False, add_generation_prompt=True
             )
         else:
-            text = prompt  # base models (e.g. GPT-2) have no chat template
+            text = prompt  # base models have no chat template
         inputs = self.tokenizer([text], return_tensors="pt").to(self.device)
         # timeout: if the generate worker ever stalls or dies, the streamer
         # raises instead of blocking its consumer forever (a hang observed
@@ -1159,8 +1458,8 @@ class ModelRuntime:
         self.last_telemetry = run.finish(
             prompt_tokens=n_prompt,
             generated_tokens=generated,
-            n_layers=int(getattr(cfg, "num_hidden_layers", 0) or 0),
-            n_heads=int(getattr(cfg, "num_attention_heads", 0) or 0),
+            n_layers=int(getattr(text_config(cfg), "num_hidden_layers", 0) or 0),
+            n_heads=int(getattr(text_config(cfg), "num_attention_heads", 0) or 0),
             dtype_bytes=2 if self.accel.dtype in ("float16", "bfloat16") else 4,
             device=self.accel.torch_device,
             dtype=self.accel.dtype,
@@ -1274,8 +1573,8 @@ class ModelRuntime:
         # unguarded turned "this architecture has no attention" into an
         # AttributeError and a 500 — the panel said the tool was broken when
         # the honest answer is that there is nothing here to show.
-        n_layers = getattr(cfg, "num_hidden_layers", None)
-        n_heads = getattr(cfg, "num_attention_heads", None)
+        n_layers = getattr(text_config(cfg), "num_hidden_layers", None)
+        n_heads = getattr(text_config(cfg), "num_attention_heads", None)
         if n_layers is None or n_heads is None:
             return {
                 "available": False,
@@ -1322,7 +1621,7 @@ class ModelRuntime:
                         f"cannot read {variant!r} — expected ablate:LAYER.HEAD"
                     ) from err
                 block = self._block(a_layer)
-                n_heads = self.model.config.num_attention_heads
+                n_heads = text_config(self.model.config).num_attention_heads
                 # AblationError is a refusal — its own docstring says "we
                 # cannot take this measurement, and we say why rather than
                 # guess" — but it is still a plain RuntimeError, and this is
@@ -1528,7 +1827,7 @@ class ModelRuntime:
         """Rank heads by how far removing one moves the next-token answer.
 
         `layer=None` sweeps every layer, which is n_layers x n_heads + 2
-        forward passes: 146 for gpt2, 450 for Qwen3-0.6B. That count is the
+        forward passes: 450 for Qwen3-0.6B. That count is the
         portable part of the cost.
 
         What a pass costs is not. On one RTX 4060 the same model measured
@@ -1572,7 +1871,10 @@ class ModelRuntime:
                 "Generate something first, then rank its heads."
             )
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             if layer is not None and not 0 <= layer < n_layers:
                 raise BadRequest(f"layer must be in [0,{n_layers})")
             layers = list(range(n_layers)) if layer is None else [layer]
@@ -1690,7 +1992,8 @@ class ModelRuntime:
         """What would this sweep cost here? One probe pass, then arithmetic.
 
         Exists because `baseline="resample"` is `RESAMPLE_DRAWS` times the work
-        of the other two — 98 passes against 14 for one gpt2 layer — and the
+        of the other two — one layer goes from n_heads + 2 passes to
+        n_heads * RESAMPLE_DRAWS + 2 — and the
         panel should be able to say so before the user waits for it rather
         than after.
         """
@@ -1707,7 +2010,10 @@ class ModelRuntime:
         with self._lock:
             self._require_live_generation("Generate something first.")
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             if layer is not None and not 0 <= layer < n_layers:
                 raise BadRequest(f"layer must be in [0,{n_layers})")
             layers = list(range(n_layers)) if layer is None else [layer]
@@ -1905,7 +2211,10 @@ class ModelRuntime:
 
         with self._lock:
             cfg = self.model.config
-            n_layers, n_heads = cfg.num_hidden_layers, cfg.num_attention_heads
+            n_layers, n_heads = (
+                text_config(cfg).num_hidden_layers,
+                text_config(cfg).num_attention_heads,
+            )
             layers = list(range(n_layers)) if layer is None else [layer]
             ids = self.last_ids.unsqueeze(0).to(self.device)
             size = int(self.last_ids.shape[0])
@@ -2004,9 +2313,9 @@ class ModelRuntime:
         """Run every baseline on the same layer and report how much they differ.
 
         The panel has always shown one baseline at a time with nothing saying
-        the others existed. Measured on gpt2 layer 0 the three disagree badly —
-        Spearman 0.34 to 0.47, and the top five share only two or three heads —
-        so which one is selected has been quietly deciding the answer.
+        the others existed. The three can disagree badly — weak rank
+        correlation across a layer, and a top five sharing only two or three
+        heads — so which one is selected has been quietly deciding the answer.
         """
         rankings = {}
         for name in ablate.BASELINES:
@@ -2047,7 +2356,8 @@ class ModelRuntime:
         if self.model is None:
             raise Refusal("No model loaded — pick one first.")
 
-        # A padless tokenizer cannot batch, and gpt2's is the common case.
+        # A padless tokenizer cannot batch, and base-model tokenizers commonly
+        # ship without a pad token.
         # Set on the tokenizer we already hold rather than reloading it.
         if getattr(self.tokenizer, "pad_token", None) is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -2323,6 +2633,25 @@ class ModelRuntime:
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
 
+            # A patchscope makes THREE decodes and compares them, so a bad
+            # token budget is spent three times before anything raises.
+            # MEASURED: `max_new_tokens: -1` did not answer for 180 seconds
+            # and then returned a 500 — transformers' own
+            # "`max_new_tokens` must be greater than 0" arrived after the
+            # setup for a run that could never produce a sentence.
+            if max_new_tokens < 1:
+                raise BadRequest(
+                    f"a patchscope has to be allowed at least one token to "
+                    f"answer in, and this asked for {max_new_tokens}. The "
+                    f"whole reading is the SENTENCE the model produces when "
+                    f"handed the state; with no tokens there is nothing to "
+                    f"read."
+                )
+            if draws < 1:
+                raise BadRequest(
+                    f"a patchscope needs at least one draw, and this asked for {draws}."
+                )
+
             def decode(prompt: str) -> str:
                 # GREEDY, and commit=False. Three decodes are being compared,
                 # so sampling would put a second source of difference between
@@ -2343,7 +2672,7 @@ class ModelRuntime:
                     self.tokenizer,
                     [
                         self._block(i)
-                        for i in range(self.model.config.num_hidden_layers)
+                        for i in range(text_config(self.model.config).num_hidden_layers)
                     ],
                     decode,
                     source_prompt,
@@ -2394,7 +2723,7 @@ class ModelRuntime:
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
 
-            n_layers = int(self.model.config.num_hidden_layers)
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             blocks = [self._block(i) for i in range(n_layers)]
             try:
                 out = patch.path_trace(
@@ -2471,7 +2800,7 @@ class ModelRuntime:
         grid = self.patch_trace(clean, corrupt)
         sites = list(grid.get("sites") or [])
 
-        n_layers = int(self.model.config.num_hidden_layers)
+        n_layers = int(text_config(self.model.config).num_hidden_layers)
         blocks = [self._block(i) for i in range(n_layers)]
 
         def trace_fn(layer: int, position: int) -> dict:
@@ -2564,7 +2893,34 @@ class ModelRuntime:
                 texts.append(text)
                 labels.append(label)
 
-            n_layers = int(self.model.config.num_hidden_layers)
+            # REFUSED BEFORE A FORWARD PASS, and before torch sees an empty
+            # list. `POST /api/probe {"examples": []}` reached
+            # `torch.stack([])` and answered 500 with "stack expects a
+            # non-empty TensorList" — an error about a tensor library, at
+            # somebody who clicked Train with the box empty. The route's own
+            # per-row checks were thorough and never ran, because there were
+            # no rows to check.
+            if not texts:
+                raise BadRequest(
+                    "a probe is trained on YOUR labelled examples and none "
+                    "were sent. Give it at least one text for each class — "
+                    "label them 0 and 1 — and it will report where in the "
+                    "network those two become separable."
+                )
+            # And a set that cannot separate anything. `probe_mod.sweep` would
+            # fit a classifier on one class and report an accuracy of 1.0,
+            # which is a number that means nothing and looks like a result.
+            if len(set(labels)) < 2:
+                only = sorted(set(labels))[0]
+                raise BadRequest(
+                    f"every example here is labelled {only}, so there is no "
+                    f"second class to separate it from. A probe measures "
+                    f"where two classes become distinguishable; with one "
+                    f"class it would report perfect accuracy and mean "
+                    f"nothing by it."
+                )
+
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
             layers = list(range(n_layers))
             ids_list = [
                 self.tokenizer(t, return_tensors="pt")["input_ids"].to(self.device)
@@ -2810,13 +3166,12 @@ class ModelRuntime:
 
         Cost is `tested tokens + 7` forward passes: six inside the ranking plus
         one here, to read the model's own answer at `position`. Measured through
-        the endpoint on this machine: 10 on gpt2 with "The capital of France is"
-        (3 tested), 20 on gemma-3-270m-it (13 tested), 23 on Qwen3-0.6B
-        attributing at token 17 (16 tested). The count is the portable part. The
-        seconds are not, and on one RTX 4060 they did not even transfer between
-        those three: warm and back to back, 0.12-0.14 s, 0.84-0.92 s and
-        1.00-1.04 s, or roughly 13, 44 and 44 ms a pass. The first call after a
-        load pays CUDA warm-up on top — 0.40 s for the same gpt2 work. So
+        the endpoint on this machine: 20 on gemma-3-270m-it (13 tested), 23 on
+        Qwen3-0.6B attributing at token 17 (16 tested). The count is the
+        portable part. The seconds are not: on one RTX 4060, warm and back to
+        back, those two ran 0.84-0.92 s and
+        1.00-1.04 s. The first call after a
+        load pays CUDA warm-up on top of that. So
         `passes` and `elapsed_s` both come back and the caller derives a rate on
         its own machine rather than trusting one from mine.
 
@@ -2949,7 +3304,8 @@ class ModelRuntime:
                 "claim that all of them are yours."
             )
         elif span == (0, self.last_n_prompt_tokens):
-            # gpt2's case: no chat template, so the prompt is the whole prompt.
+            # A base model's case: no chat template, so the prompt is the whole
+            # prompt.
             # Saying "the rest is the template" here would invent one.
             note = (
                 f"Tokens {span[0]}-{span[1] - 1} are the words you typed, and "
@@ -2992,8 +3348,8 @@ class ModelRuntime:
         `scope="position"` (the default) puts on trial the features firing at
         the attributed token; `scope="prompt"` removes each feature wherever it
         fires at or before it, which is a different and larger question —
-        measured on gpt2 at blocks.8.hook_resid_pre, 4 of that ranking's top-8
-        fire ONLY at earlier tokens and reach the prediction through attention,
+        features in that ranking's top-8 can fire ONLY at earlier tokens and
+        reach the prediction through attention,
         so the current panel cannot show them at all.
 
         `top_k` trims the ROWS IN THE RESPONSE and nothing else. A row it drops
@@ -3010,15 +3366,12 @@ class ModelRuntime:
         Cost is `2 x features tested + 6` forward passes. Two per row, not one:
         the feature's own edit and a random direction of the same norm at the
         same tokens, because part of a score is the SIZE of the edit — a
-        Gaussian direction at the top feature's norm costs about 0.09 nats
-        against that feature's own 0.417, and 9 of the 43 rows on the reference
-        prompt do not clear their own control. Measured through this module on
-        this machine, gpt2 in float32 on CPU — which the dtype gate below makes
-        the only configuration this answers in — "The Eiffel Tower is located
-        in the city of" attributed at position 10: 92 passes and 10.09 s at
-        position scope (43 candidates), 518 passes and 49.44 s at prompt scope
-        (494 candidates, 256 tested). The pass count is the portable part; the
-        seconds are this CPU's. `passes` and `elapsed_s` both come back so a
+        Gaussian direction at the top feature's norm can cost a sizeable
+        fraction of that feature's own score, and rows that fail to clear their
+        own control are routine rather than rare. Prompt scope tests several
+        times as many candidates as position scope and costs proportionally
+        more. The pass count is the portable part; the
+        seconds are the machine's. `passes` and `elapsed_s` both come back so a
         caller derives a rate on its own machine, the same contract the other
         two rankings carry.
 
@@ -3027,7 +3380,7 @@ class ModelRuntime:
         stream back unchanged, which is bit-exact in every dtype and scores 0.0
         in every dtype — so nothing inside the measurement can notice that in
         bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats on its
-        own. Measured on gpt2 here, an edit whose true effect is 4.9e-07 nats
+        own. Measured here, an edit whose true effect is 4.9e-07 nats
         reads 0.02836 in bfloat16 and outranks a feature with 100x its
         activation. The long version, with the numbers and with what float16
         does differently, is on the check itself.
@@ -3080,7 +3433,7 @@ class ModelRuntime:
             # below, which is why this one exists.
             #
             # Same ids, same SAE, same hook, same position; only the model's
-            # dtype differs. gpt2, cuda, eager, jbloom/GPT2-Small-SAEs-Reformatted
+            # dtype differs. cuda, eager, jbloom/GPT2-Small-SAEs-Reformatted
             # @ blocks.8.hook_resid_pre calibrated centered+b_dec, "The Eiffel
             # Tower is located in the city of Paris", position 10:
             #
@@ -3119,7 +3472,7 @@ class ModelRuntime:
                 raise Refusal(
                     f"this model is loaded in {name}, and a feature ranking "
                     f"taken in {name} is a ranking of rounding error below its "
-                    "top two or three rows. Measured here on gpt2 at "
+                    "top two or three rows. Measured here at "
                     "blocks.8.hook_resid_pre, the same 43 features scored in "
                     "both dtypes: feature 3841, activation 0.051, moves the "
                     "answer 4.9e-07 nats in float32 and 0.02836 in bfloat16 — "
@@ -3175,8 +3528,8 @@ class ModelRuntime:
         # cannot be negative, so each of these is float32 summation over the
         # vocabulary showing itself, and it is the evidence for why the line a
         # panel greys out on is `resolution_kl` and not `noise_floor_kl` —
-        # measured through this endpoint on gpt2/CPU/float32, the floor is
-        # exactly 0.0 while 4 of 43 rows came back below it.
+        # measured through this endpoint on CPU/float32, the floor is
+        # exactly 0.0 while rows still come back below it.
         n_negative = sum(1 for row in ranked if row["kl"] < 0)
         out["ranked"] = ranked[:top_k]
         out["n_returned"] = len(out["ranked"])
@@ -3456,8 +3809,8 @@ class ModelRuntime:
         NO EPOCH CHECK, alone among the export helpers here. Every other
         section describes the model in this file and dies when the model
         changes; a diff names its own two models and survives, because
-        unloading gpt2 does not make "these two checkpoints differ at layer 4"
-        untrue.
+        unloading a model does not make "these two checkpoints differ at layer
+        4" untrue.
 
         `means` and `receipt` are dropped for the same reason the grounding
         export drops them: the sentence is regenerated from the numbers and
@@ -3573,6 +3926,30 @@ class ModelRuntime:
                 "n_nodes": len(self.replay.patch_graph.get("nodes", [])),
                 "n_edges": len(self.replay.patch_graph.get("edges", [])),
             },
+            # And the fourth, which was missing while its three siblings were
+            # here. `session.py` parses an agent run out of a `.mri` and
+            # `mcp_server` already reports whether one is present; the web UI
+            # did not, so a bundle built around a failing step opened to an
+            # agents panel reading "0 recordings" with the run sitting inside
+            # the file. `step_ref` is the step the bundle was built around —
+            # the reason it was sent — and it is carried here so the panel can
+            # open on it rather than on step one.
+            "trace": {
+                "available": self.replay.has_trace(),
+                # The run's own id, so a panel showing one carried run can
+                # tell that the file underneath it has been swapped for
+                # another rather than merely re-read.
+                "id": self.replay.trace.get("id", ""),
+                "name": self.replay.trace.get("name", ""),
+                "n_steps": len(self.replay.trace.get("steps", [])),
+                # What the SENDER's run held, which is not what this file
+                # holds when the section was capped on the way in.
+                "n_steps_total": self.replay.trace.get(
+                    "n_steps_total", len(self.replay.trace.get("steps", []))
+                ),
+                "truncated": self.replay.trace.get("truncated", 0),
+                "step_ref": self.replay.trace.get("step_ref") or None,
+            },
         }
 
     # ---------------- SAE features ----------------
@@ -3581,6 +3958,49 @@ class ModelRuntime:
         if self.sae is None:
             return SAEStatus(loaded=False)
         return self.sae.status()
+
+    def sae_releases(self, repo: str, layer: int | None = None) -> dict:
+        """What this repo publishes, so a picker can offer it rather than guess.
+
+        A Gemma Scope release is addressed by (layer, dictionary width, average
+        L0), and those are choices with consequences — four times the features
+        at width_65k, an order of magnitude of sparsity between average_l0 22
+        and 294. A panel that cannot show the alternatives cannot let anyone
+        make the choice, so this hands over the whole index.
+
+        `listed` is the honest half. False means the Hub could not be read, and
+        `layers` is then None rather than {} — "unknown" and "this repo
+        publishes nothing" are different answers and a picker must not render
+        the first as the second.
+        """
+        from . import saes
+
+        index = saes.release_index(repo)
+        if index is None:
+            return {
+                "repo": repo,
+                "listed": False,
+                "layers": None,
+                "note": (
+                    "The list of published releases lives on the HuggingFace "
+                    "Hub and could not be read just now. Naming a width and an "
+                    "average L0 still loads one without it."
+                ),
+            }
+        if layer is not None:
+            index = {layer: index[layer]} if layer in index else {}
+        return {
+            "repo": repo,
+            "listed": True,
+            # JSON has no integer keys; a picker reading "20" back as a layer
+            # index is doing string->int either way, and being explicit here
+            # beats a dict whose keys change type on the wire.
+            "layers": {str(n): index[n] for n in sorted(index)},
+            "note": (
+                "Widths and average-L0 values as published. Defaulting either "
+                "one is reported in the loaded SAE's release.chosen_by."
+            ),
+        }
 
     # ------------------------------------------------------------------ GGUF
 
@@ -3632,7 +4052,7 @@ class ModelRuntime:
         from . import gguf_load
 
         want = dtype or self.accel.dtype
-        with self._load_slot(f"gguf {Path(path).name}"):
+        with self._load_slot(f"load the GGUF {Path(path).name!r}"):
             # start_external, NOT start. `start` spawns a watcher that polls
             # the HuggingFace cache for a directory named after its argument
             # and calls HfApi().model_info() on it -- so a local filename went
@@ -3697,7 +4117,7 @@ class ModelRuntime:
         """
         from . import behavdiff
 
-        with self._load_slot("quantisation comparison"):
+        with self._load_slot("run the quantisation comparison"):
             # Before the slot does anything else: the caller's model is dead
             # weight for this measurement and its memory is what makes the
             # measurement possible.
@@ -3740,8 +4160,22 @@ class ModelRuntime:
             progress.TRACKER.finish()
             return result.to_dict()
 
-    def load_sae(self, repo: str, hook: str) -> SAEStatus:
-        """Load an SAE and validate it against the current model. Blocking."""
+    def load_sae(
+        self,
+        repo: str,
+        hook: str,
+        *,
+        width: str | None = None,
+        average_l0: int | None = None,
+    ) -> SAEStatus:
+        """Load an SAE and validate it against the current model. Blocking.
+
+        `width` and `average_l0` address a Gemma Scope release, which is
+        published per (layer, dictionary width, average L0) rather than per
+        hook point. Both default to None, meaning "choose by the rule and say
+        which rule" — the answer comes back in `status().release.chosen_by`,
+        so a defaulted coordinate is never a silent one.
+        """
         if self.backend == "ollama":
             raise Refusal(
                 "SAE features need model internals — unavailable via Ollama. "
@@ -3749,14 +4183,14 @@ class ModelRuntime:
             )
         if not self.loaded:
             raise Refusal("Load a model first.")
-        sae = SAEHandle.load(repo, hook)
+        sae = SAEHandle.load(repo, hook, width=width, average_l0=average_l0)
         d_model = self.model.config.hidden_size
         if sae.d_in != d_model:
             raise BadRequest(
                 f"SAE d_in={sae.d_in} does not match model hidden_size={d_model} "
                 f"({self.hf_id}). This SAE was trained on a different model."
             )
-        n_layers = self.model.config.num_hidden_layers
+        n_layers = text_config(self.model.config).num_hidden_layers
         if not 0 <= sae.layer < n_layers:
             raise BadRequest(f"SAE layer {sae.layer} out of range [0,{n_layers})")
         self._block(sae.layer)  # raises early if architecture unsupported

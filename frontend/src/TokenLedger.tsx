@@ -1,4 +1,5 @@
 import { TokenCount, TokenRollup, TraceCost } from "./api";
+import { measured } from "./measured";
 
 /**
  * Token counts a provider reported — and a cost column only when the user
@@ -57,7 +58,22 @@ export function TokenTable({
   rollup?: TokenRollup;
   title: string;
 }) {
-  if (!rollup || !rollup.n_llm_steps) {
+  // ABSENT AND ZERO ARE DIFFERENT FACTS, and one sentence covered both. The
+  // rollup is computed by `ledger.roll_up` server-side; the standalone viewer
+  // has no Python and omits it rather than shipping a second implementation
+  // of the token arithmetic. So a bundled run with an 812 → 140 token call
+  // arrived with `rollup === undefined` and this said "no LLM calls here" —
+  // about a run whose steps say otherwise, on the one page that cannot check.
+  if (!rollup) {
+    return (
+      <p className="meta">
+        {title}: the token roll-up is computed by ModelMRI and is not carried
+        in a shared file, so it is not counted here. The per-step counts above
+        are the file's own.
+      </p>
+    );
+  }
+  if (!rollup.n_llm_steps) {
     return (
       <p className="meta">
         {title}: no LLM calls here, so there are no tokens to count.
@@ -98,10 +114,12 @@ export function CostBanner({ cost }: { cost?: TraceCost }) {
       {cost.total !== null && (
         <b className="mid">
           {cost.currency}
-          {cost.total.toLocaleString(undefined, {
-            minimumFractionDigits: 4,
-            maximumFractionDigits: 4,
-          })}
+          {/* Through `measured`, because a run that really cost money printed a
+              bold "0.0000": `minimumFractionDigits: 4` floors every total
+              under 0.00005, and the server keeps six decimals
+              (`round(out.total, 6)`) precisely so the small end survives. A
+              few hundred input tokens on a cheap model is about $0.000025. */}
+          {measured(cost.total, 4)}
         </b>
       )}{" "}
       {/* The sentence is authored server-side beside the arithmetic, so the

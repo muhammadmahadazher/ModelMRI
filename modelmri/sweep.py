@@ -449,6 +449,259 @@ def save(job: Job, rows: list[Row], *, started_at: str, sweep_id: str) -> str:
     return sweep_id
 
 
+def saved_sweeps(limit: int = 50) -> list[dict]:
+    """Every sweep on this machine, newest first, with how far each one got.
+
+    `save` has existed since the sweep did and nothing ever read it back, so a
+    saved sweep was write-only: findable in the database and unreachable from
+    the tool that wrote it.
+    """
+    db = _db()
+    try:
+        rows = db.execute(
+            "SELECT id, started_at, model, metric, n_prompts, n_measured, "
+            "n_refused FROM sweep ORDER BY started_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+    finally:
+        db.close()
+    return [
+        {
+            "sweep_id": r[0],
+            "started_at": r[1],
+            "model": r[2],
+            "metric": r[3],
+            "n_prompts": r[4],
+            "n_measured": r[5],
+            "n_refused": r[6],
+            # The number that decides whether resuming is worth anything.
+            "n_remaining": max(0, r[4] - r[5]),
+            "complete": r[4] > 0 and r[5] >= r[4],
+        }
+        for r in rows
+    ]
+
+
+def load_sweep(sweep_id: str) -> tuple:
+    """`(job, rows)` for a saved sweep, or a refusal naming the id."""
+    db = _db()
+    try:
+        found = db.execute(
+            "SELECT job, rows_json FROM sweep WHERE id = ?", (str(sweep_id),)
+        ).fetchone()
+    finally:
+        db.close()
+    if found is None:
+        raise BadRequest(
+            f"there is no saved sweep with id {sweep_id!r} on this machine. "
+            f"Sweeps are stored beside the traces, so one run on another "
+            f"machine is not here."
+        )
+    raw_job = json.loads(found[0])
+    out_dir = raw_job.get("out_dir") or ""
+    try:
+        job = Job(**{**raw_job, "out_dir": Path(out_dir) if out_dir else None})
+        rows = [Row(**r) for r in json.loads(found[1])]
+    except TypeError as err:
+        # A sweep saved by a version whose `Job` or `Row` had different fields.
+        # `Job(**raw)` raises TypeError on both an unexpected key and a missing
+        # one, and that reached the route as an unexplained 500 — a fact about
+        # the FILE reported as a fault in the server.
+        raise BadRequest(
+            f"the saved sweep {sweep_id!r} was written by a different version "
+            f"of ModelMRI and its stored shape no longer matches this one "
+            f"({type(err).__name__}). Re-run it rather than resuming it; the "
+            f"prompts are in the record and the measurements are not "
+            f"transferable across a schema change."
+        ) from None
+    return job, rows
+
+
+def _started_at(sweep_id: str) -> str:
+    """When the sweep FIRST ran, kept across a resume.
+
+    Finishing a run does not change when it began, and overwriting this with
+    the resume's own clock would reorder `saved_sweeps` — putting a sweep
+    started on Monday and finished on Friday above one that ran wholly on
+    Thursday.
+    """
+    db = _db()
+    try:
+        found = db.execute(
+            "SELECT started_at FROM sweep WHERE id = ?", (str(sweep_id),)
+        ).fetchone()
+    finally:
+        db.close()
+    return found[0] if found else ""
+
+
+def remaining(job: Job, rows: list[Row]) -> list[int]:
+    """Which prompt indices still need running.
+
+    A row that was MEASURED is done. A row that was not is not a result — "the
+    sweep was cancelled before this prompt ran" and "this prompt could not be
+    measured" are both reasons to try again, and a resume that skipped them
+    would report a partial sweep as finished.
+
+    Retrying a prompt that genuinely cannot be measured costs one more attempt
+    per resume and writes the same sentence again, which is the honest
+    outcome: the alternative is a sweep that silently never covers it.
+    """
+    done = {r.index for r in rows if r.measured}
+    return [i for i in range(len(job.prompts)) if i not in done]
+
+
+def resume_plan(sweep_id: str, runtime=None) -> dict:
+    """What finishing a saved sweep would cost, before it starts.
+
+    Priced first like everything else here, and it also checks the three ways
+    a resume can be WRONG rather than merely expensive — see `_resumable`.
+    """
+    job, rows = load_sweep(sweep_id)
+    left = remaining(job, rows)
+    blocked = _resumable(job, rows, runtime)
+    return {
+        "sweep_id": sweep_id,
+        "model": job.model,
+        "metric": job.metric,
+        "n_prompts": len(job.prompts),
+        "n_measured": sum(1 for r in rows if r.measured),
+        "n_remaining": len(left),
+        "remaining_indices": left,
+        # `None` when nothing blocks it. A string is the reason it must not
+        # run, and it is never merely a warning.
+        "blocked": blocked,
+        "means": (
+            f"{len(job.prompts) - len(left)} of {len(job.prompts)} prompt(s) "
+            f"already measured, {len(left)} left."
+            + (f" This cannot be resumed: {blocked}" if blocked else "")
+        ),
+    }
+
+
+def _resumable(job: Job, rows: list[Row], runtime) -> str | None:
+    """Why this sweep must not be resumed, or `None`.
+
+    Three checks, and each exists because failing it produces one table of
+    numbers that came from two different runs — which looks exactly like a
+    table of numbers that came from one.
+
+    The prompt check is by DIGEST rather than by count. A set with the same
+    number of prompts and one of them edited would otherwise attach the old
+    row to the new prompt, and every number in it would be about text that is
+    no longer there.
+    """
+    for row in rows:
+        # Checked for EVERY row, not only measured ones. An unmeasured row
+        # whose index is past the end is still evidence the prompt set moved,
+        # and skipping it let a shortened set through the guard.
+        if not isinstance(row.index, int) or isinstance(row.index, bool):
+            return f"a saved row has index {row.index!r}, which is not a position"
+        if row.index < 0:
+            # Python indexes backwards from a negative, so -1 would quietly
+            # read the LAST prompt and compare its digest against a row about
+            # the first.
+            return (
+                f"a saved row has index {row.index}, and a negative position "
+                f"reads backwards from the end rather than failing"
+            )
+        if row.index >= len(job.prompts):
+            return (
+                f"a saved row is index {row.index} and this set has only "
+                f"{len(job.prompts)} prompt(s), so the prompts have changed. "
+                f"Run this set as a new sweep — the saved rows measured a "
+                f"different set and cannot be carried into it"
+            )
+        # Only a MEASURED row's digest matters: an unmeasured one carries no
+        # numbers to attach to the wrong prompt.
+        if not row.measured:
+            continue
+        if row.prompt_sha256 != receipts.digest(job.prompts[row.index]):
+            return (
+                f"prompt {row.index} is not the text that was measured — the "
+                f"set has been edited, and reusing the old row would attach a "
+                f"measurement to a prompt it was never about. Restore that "
+                f"prompt to its original text to resume, or run the edited set "
+                f"as a new sweep"
+            )
+    if runtime is not None:
+        live = getattr(runtime, "hf_id", "") or ""
+        if live and job.model and live != job.model:
+            return (
+                f"the saved run measured `{job.model}` and `{live}` is loaded "
+                f"now. Finishing it would put two models' numbers in one "
+                f"table. Load `{job.model}` to resume this one"
+            )
+    return None
+
+
+def resume(sweep_id: str, runtime, *, on_row=None, cancel=None) -> tuple:
+    """Finish a saved sweep, keeping what was already measured.
+
+    A sweep that died at prompt 180 of 200 currently starts over, and losing
+    four hours to a sleeping laptop is a worse failure than any missing
+    feature. This runs the remainder and returns `(job, rows)` in prompt
+    order, so the result is indistinguishable from a run that never stopped —
+    except that it happened faster.
+    """
+    job, rows = load_sweep(sweep_id)
+    blocked = _resumable(job, rows, runtime)
+    if blocked is not None:
+        raise BadRequest(f"this sweep cannot be resumed: {blocked}.")
+
+    keep = {r.index: r for r in rows if r.measured}
+    left = remaining(job, rows)
+    if not left:
+        return job, [keep[i] for i in sorted(keep)]
+
+    # PRICED, like a fresh run. A resume that skipped the projection let
+    # somebody finish a 40,000-pass remainder without ever being shown the
+    # number — the one thing `plan` exists to prevent, bypassed by the path
+    # that is most likely to be long.
+    partial = Job(**{**asdict(job), "prompts": [job.prompts[i] for i in left]})
+    plan(partial, runtime)
+
+    # Every prompt kept its ORIGINAL text and its original position. `run`
+    # numbers rows from 0 over the job it is given, so the indices are
+    # restored afterwards — without that, every resumed row would claim to be
+    # prompt 0..n of the original set and the join back would be silently
+    # wrong.
+    #
+    # `out_dir` is dropped for the same reason: `run` names one `.mri` per
+    # prompt by POSITION, so a resume writing prompt 180 as position 0 would
+    # overwrite the first prompt's file and leave two rows pointing at one
+    # analysis. The files for the prompts being re-run are rewritten below,
+    # under their real positions.
+    resumed = Job(**{**asdict(partial), "out_dir": None})
+    fresh = run(resumed, runtime, on_row=on_row, cancel=cancel)
+
+    if len(fresh) != len(left):
+        # `Job.validated` drops prompts that are empty or whitespace, so `run`
+        # can return fewer rows than positions asked for. `zip(strict=True)`
+        # turned that into a bare ValueError; it is a fact about the saved
+        # prompt set and it gets a sentence.
+        raise BadRequest(
+            f"this sweep asked to finish {len(left)} prompt(s) and the run "
+            f"produced {len(fresh)} row(s), which happens when a saved prompt "
+            f"is empty or whitespace. Re-run it rather than resuming: the "
+            f"positions no longer line up and pairing them would attach each "
+            f"measurement to the wrong prompt."
+        )
+
+    for row, original in zip(fresh, left, strict=True):
+        row.index = original
+
+    merged = {**keep, **{r.index: r for r in fresh}}
+    ordered = [merged[i] for i in sorted(merged)]
+
+    # PERSISTED under the same id. Without this the database still advertised
+    # the work that had just been done — `saved_sweeps` kept reporting
+    # `n_remaining: 2` for a sweep that was finished, and resuming it again
+    # would re-run the same prompts.
+    save(job, ordered, started_at=_started_at(sweep_id), sweep_id=sweep_id)
+    return job, ordered
+
+
 def load_prompts(path: str | Path) -> list[str]:
     """Prompts from a .jsonl (one object with `prompt`) or a .txt (one a line).
 
@@ -458,9 +711,27 @@ def load_prompts(path: str | Path) -> list[str]:
     target = Path(path)
     try:
         text = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # NOT an OSError, so the arm below never caught it. `UnicodeDecodeError`
+        # is a `ValueError`, and `cli.py` catches only `(BadRequest, Refusal)`
+        # — so pointing `file` at a `.safetensors` answered 500 on
+        # `/api/diff/models`, `/api/ground`, `/api/lens/tune` and
+        # `/api/features/evidence`, and printed a raw traceback in the
+        # terminal, while a malformed `.jsonl` line one branch down correctly
+        # answered 422. One wrong file type, two entirely different answers,
+        # depending on which byte offended.
+        #
+        # `datasets.py` already does exactly this, with a test pinning it;
+        # `sweep.load_prompts` was missed by that pass.
+        raise BadRequest(
+            f"{target.name} is not UTF-8 text. This reads a `.txt` (one prompt "
+            f"a line) or a `.jsonl` (one object a line with a `prompt` key). "
+            f"If it is a checkpoint or an archive, it belongs to a different "
+            f"reader."
+        ) from None
     except OSError as err:
         raise BadRequest(
-            f"{target.name} could not be read ({err.strerror or err})"
+            f"{target.name} could not be read ({err.strerror or type(err).__name__})"
         ) from None
 
     prompts: list[str] = []

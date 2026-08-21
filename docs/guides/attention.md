@@ -23,9 +23,9 @@ interesting behaviour lives:
 - **Late layers** are sharp. The same measure runs past 59%: specific heads
   have found specific things to look at.
 
-If you generate `The Eiffel Tower is located in the city of` with GPT-2 and
-walk to the later layers, you can watch the token that produces " Paris" attend
-back to " capital" and " France".
+If you generate `The Eiffel Tower is located in the city of` and walk to the
+later layers, you can watch the token that produces " Paris" attend back to
+" capital" and " France".
 
 ## What is actually computed
 
@@ -79,8 +79,8 @@ deliberate — it quotes what the sweep will cost, and it cannot quote a number
 it has not measured *on your machine*.
 
 The portable part is the pass count: `n_heads + 2` for one layer,
-`n_layers × n_heads + 2` for the model. gpt2 is 146 passes; Qwen3-0.6B and
-Qwen3-1.7B are both 450, being the same 28 x 16 shape at different widths.
+`n_layers × n_heads + 2` for the model. Qwen3-0.6B and Qwen3-1.7B are both 450
+passes, being the same 28 x 16 shape at different widths.
 
 What a pass costs is not portable, and this surprised me. On one RTX 4060, the
 same model measured between **12 and 71 ms/pass** depending on the session —
@@ -102,29 +102,29 @@ actually make.
 
 !!! warning "Three ways this number can be a confident lie"
     - **`head_dim` is not `hidden_size // n_heads`.** That quotient is right
-      for gpt2 (768/12) and Qwen2.5-0.5B (896/14), and wrong on Qwen3-0.6B
-      (64 against a real 128) and gemma-3-270m-it (160 against 256). It is
-      read off the output projection's own width instead, and a mismatch is
-      refused rather than guessed — the quotient would ablate half of one head
-      plus half of the next and rank the result confidently.
+      for Qwen2.5-0.5B (896/14), and wrong on Qwen3-0.6B (64 against a real
+      128) and gemma-3-270m-it (160 against 256). It is read off the output
+      projection's own width instead, and a mismatch is refused rather than
+      guessed — the quotient would ablate half of one head plus half of the
+      next and rank the result confidently.
     - **KL, not a logit difference.** Softmax is shift-invariant, and ablation
-      moves whole logit vectors. Zeroing gpt2's L0H0 on "The capital of France
-      is" moves the top token's logit by −0.258, but the whole vocabulary
-      moves by −0.145 — so the honest residual is −0.113, and a raw logit
-      difference would call that head 2.3× more important than it is.
+      moves whole logit vectors. A head can pull the top token's logit down
+      while pulling the whole vocabulary down with it, and only what is left
+      after that common shift is a real change to the prediction — a raw logit
+      difference would score the shift as importance the head does not have.
     - **The baseline is part of the answer.** Zeroing a head and replacing it
-      with its own mean over positions are different questions. On gpt2 layer
-      0 they give different answers: zero ranks heads 7, 10, 9; mean ranks 3,
-      1, 10, dropping head 7 to sixth. Both are offered and the one you used
-      is named on screen.
+      with its own mean over positions are different questions, and on the same
+      layer they can return different heads in a different order. Both are
+      offered and the one you used is named on screen.
 
 And the claim it refuses to make: these are **not** each head's share of the
 prediction, and the error runs in **both** directions depending on the model.
-On gpt2 layer 0 the twelve per-head scores sum to 1.995 while zeroing the whole
-layer gives 0.208 — roughly ten times too much. On Qwen3-1.7B layer 0 it
-inverts: sixteen per-head scores sum to 2.325 against 14.394 for the layer, six
-times too little. On gemma-3-270m-it it inverts harder still, 0.0007 against
-6.57, so every head looks irrelevant alone while the layer is load-bearing.
+Heads are redundant, so on some layers removing them one at a time adds up to
+many times what removing the whole layer costs. On Qwen3-1.7B layer 0 it runs
+the other way: sixteen per-head scores sum to 2.325 against 14.394 for the
+layer, six times too little. On gemma-3-270m-it it inverts harder still,
+0.0007 against 6.57, so every head looks irrelevant alone while the layer is
+load-bearing.
 
 There is no correction factor to apply here, which is the point. Whether the
 parts over- or under-shoot the whole is a property of the model in front of
@@ -164,7 +164,7 @@ attention, the generation, the decode settings, and a one-line note saying
 what you think you found.
 
 ```
-Share this view → "L8 H3 copies the subject token" → gpt2.mri (54 KB)
+Share this view → "L8 H3 copies the subject token" → qwen3-1.7b.mri
 ```
 
 The person you send it to needs **nothing at all**: the
@@ -175,12 +175,13 @@ that page to upload to.
 If they do have ModelMRI installed, the same page is bundled with it:
 
 ```bash
-modelmri open gpt2.mri     # ~0.3s, no model, no torch
+modelmri open qwen3-1.7b.mri   # ~0.3s, no model, no torch
 ```
 
 That serves the viewer from the standard library on the loopback interface
 and hands it the one file. It is deliberately *not* `modelmri serve`: reading
-a 54 KB recording should not import torch, which used to cost 26 seconds.
+a recording of a few tens of kilobytes should not import torch, which used to
+cost 26 seconds.
 
 Or, if they already have ModelMRI running: click **Open a shared analysis**,
 or drop the file anywhere on the page. It works with **no model loaded** — the panels read the recording
@@ -196,10 +197,10 @@ in replay — SAE features need activations, which means it needs the model.
 !!! note "Attention is stored lossily, and the file says so"
     Attention values are quantised to one byte against each matrix's own
     maximum, then gzipped — that is what turns tens of megabytes into tens of
-    kilobytes. Worst measured error on a real gpt2 run is 0.002, and the
-    strongest attention in every row survives, so the picture you send is the
-    picture they see. But if you plan to do arithmetic on the numbers rather
-    than look at them, read `meta.precision` in the file first.
+    kilobytes. The strongest attention in every row survives that, so the
+    picture you send is the picture they see. But if you plan to do arithmetic
+    on the numbers rather than look at them, read `meta.precision` in the file
+    first.
 
 Loading a model, or generating your own run, closes an open session. Your
 output above someone else's heat map would be a discrepancy nothing on screen

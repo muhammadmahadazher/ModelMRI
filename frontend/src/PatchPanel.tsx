@@ -1,4 +1,6 @@
 import { CSSProperties, useState } from "react";
+import { measured } from "./measured";
+import RunsOn, { useModelReady } from "./RunsOn";
 import {
   errorText,
   pathTrace,
@@ -41,13 +43,13 @@ const CORRUPT_DEFAULT = "The Colosseum is located in the city of";
 
 /** Which senders are worth a row.
  *
- *  A path trace on gpt2 returns 143 of them and 130 sit at one representable
- *  step above zero, untested — measured, not guessed. Printing all of them
- *  buries the one that beat its controls under a hundred rows that say the
- *  same thing, and dropping them silently would claim the list is complete.
- *  So the default is the ones that carry a claim — anything tested against
- *  chance, plus anything the resolution can actually separate from zero — and
- *  the rest are folded behind a COUNTED button.
+ *  Most of what a path trace returns sits at one representable step above
+ *  zero, untested. Printing all of them buries the one that beat its controls
+ *  under rows that all say the same thing, and dropping them silently would
+ *  claim the list is complete. So the default is the ones that carry a claim
+ *  — anything tested against chance, plus anything the resolution can
+ *  actually separate from zero — and the rest are folded behind a COUNTED
+ *  button.
  */
 function shownSenders(path: PathTrace, all: boolean): PathTrace["senders"] {
   if (all) return path.senders;
@@ -81,6 +83,10 @@ export default function PatchPanel({
    *  refuse. */
   recorded?: { clean: string; corrupt: string };
 }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [clean, setClean] = useState(recorded?.clean || CLEAN_DEFAULT);
   const [corrupt, setCorrupt] = useState(recorded?.corrupt || CORRUPT_DEFAULT);
   const [data, setData] = useState<PatchTrace | null>(null);
@@ -172,6 +178,7 @@ export default function PatchPanel({
         <h2 className="h-patch">PATCHING — WHERE THE ANSWER IS DECIDED</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Two prompts that differ in one fact. Every other panel asks what
         mattered by taking something away; this moves an activation from the
@@ -199,7 +206,19 @@ export default function PatchPanel({
       </div>
 
       <div className="row" style={{ marginBottom: 10 }}>
-        <button className="cta" onClick={() => void run()} disabled={busy}>
+        <button
+          className="cta"
+          onClick={() => void run()}
+          // `ready === false` and not `!ready`: null means the session could
+          // not be read, and taking a working control away over a network
+          // blip is worse than letting the route refuse in its own words.
+          disabled={busy || ready === false}
+          title={
+            ready === false
+              ? "Load a model in Run at the top of the page first — this measurement runs it."
+              : undefined
+          }
+        >
           {busy ? "Patching every site…" : recorded ? "Show the recorded trace" : "Trace it"}
         </button>
         <span className="meta">
@@ -248,6 +267,27 @@ export default function PatchPanel({
             ))}
             <span className="meta">{BLURB[comp]}</span>
           </div>
+
+          {/* WHAT THIS ARCHITECTURE DID NOT EXPOSE. The trace catches a
+              PatchError per component and carries on so the rest is still
+              measured — a Mixtral or an OLMoE names its sublayer
+              `block_sparse_moe` and has no `mlp` to patch. `patch.py` put
+              `skipped` in the payload with a comment saying why: without it
+              "two grids would have arrived looking like the whole answer".
+              The payload was fixed and the panel still did not read it, so
+              two grids still arrived looking like the whole answer. */}
+          {data.skipped && data.skipped.length > 0 && (
+            <p className="hint">
+              {data.skipped.length} component
+              {data.skipped.length === 1 ? " was" : "s were"} not traced on this
+              model, so the tabs above are not the whole picture:
+              <ul className="withheld">
+                {data.skipped.map((why) => (
+                  <li key={why}>{why}</li>
+                ))}
+              </ul>
+            </p>
+          )}
 
           <div className="patch-grid-wrap">
             <table className="patch-grid" aria-label="recovery by layer and position">
@@ -299,8 +339,8 @@ export default function PatchPanel({
                                 void trace(li, pi);
                               }
                             }}
-                            aria-label={`layer ${li}, token ${data.corrupt.tokens[pi]}, recovery ${v.toFixed(3)} — trace what wrote here`}
-                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${v.toFixed(3)}. Click to trace what wrote here.`}
+                            aria-label={`layer ${li}, token ${data.corrupt.tokens[pi]}, recovery ${measured(v, 3)} — trace what wrote here`}
+                            title={`layer ${li}, ${data.corrupt.tokens[pi]} — ${measured(v, 3)}. Click to trace what wrote here.`}
                           >
                             {Math.abs(v) >= 0.1 ? v.toFixed(2) : ""}
                           </td>
@@ -331,8 +371,18 @@ export default function PatchPanel({
               <>
                 Blue recovered the clean answer, red pushed it further away. 1.0
                 is the clean answer and 0.0 the corrupted one. Outlined cells are
-                the {data.controlled} strongest sites, and they are the only ones
-                that were tested against chance — hover for the verdict.{" "}
+                the {controlled.size} strongest sites in THIS grid, and they are
+                the only ones that were tested against chance — hover for the
+                verdict.
+                {/* `controlled.size`, not `data.controlled`. The outlines are
+                    filtered to the component whose tab is open; the sentence
+                    quoted the total across ALL components, so the `attn` tab
+                    could show eight outlines under a sentence claiming
+                    twenty-four. The total is still worth saying — it just has
+                    to say that it is the total. */}
+                {data.controlled > controlled.size &&
+                  ` ${data.controlled} were controlled across all ` +
+                    `${data.components.length} components.`}{" "}
                 <b>Click any cell</b> to ask what wrote into it: a residual
                 stream carries everything that ever wrote there, so this grid
                 cannot say which component put it there.
@@ -385,16 +435,21 @@ export default function PatchPanel({
               {path && path.senders.length > 0 && (
                 <>
                   {/* Ties, not a ranking. Recovery is quantised by the
-                      model's dtype, and on gpt2 in bf16 one representable
-                      step is worth 0.25 of the gap — 23 senders came back
-                      within one step of the top, which as a ranked list would
-                      have read as a 1st, 2nd and 3rd place that the numbers
-                      cannot support. */}
+                      model's dtype, and senders come back within one
+                      representable step of the top, which as a ranked list
+                      would have read as a 1st, 2nd and 3rd place that the
+                      numbers cannot support. */}
                   <p className="meta">
                     {path.n_senders} components tested, {path.n_controlled}{" "}
                     against chance, in {path.passes} passes ({path.seconds}s).
                     Two senders closer than{" "}
-                    <b>{path.recovery_resolution.toFixed(3)}</b> are{" "}
+                    {/* Through `measured`, not `toFixed(3)`. This is one step
+                        of the model's number format on the recovery scale, and
+                        in float32 it is around 1e-6 — so the sentence that
+                        exists to publish the tie threshold printed it as
+                        "0.000", which says nothing is tied. bfloat16 was the
+                        only dtype it read correctly on. */}
+                    <b>{measured(path.recovery_resolution, 3)}</b> are{" "}
                     <b>tied</b>, not ranked — that is what one step of this
                     model's number format is worth on this scale.
                   </p>
@@ -461,8 +516,9 @@ export default function PatchPanel({
                     >
                       show the other {path.senders.length -
                         shownSenders(path, allSenders).length}{" "}
-                      — all below the {path.recovery_resolution.toFixed(3)}{" "}
-                      resolution and none tested against chance
+                      — all below the{" "}
+                      {measured(path.recovery_resolution, 3)} resolution and
+                      none tested against chance
                     </button>
                   )}
                   {allSenders && (

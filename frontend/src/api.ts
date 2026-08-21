@@ -23,10 +23,26 @@ export interface ModelStatus {
   n_layers?: number | null;
 }
 
+/** One held thing, trimmed to what a header needs. The full status of each
+ *  is on its own route; this is the answer to "is anything loaded". */
+export interface HeldModel {
+  loaded: boolean;
+  repo: string;
+  device: string;
+  family?: string;
+}
+
 export interface SessionInfo {
   app: string;
   version: string;
+  /** The TEXT model. Unchanged, and still the only one most panels care
+   *  about. */
   model: ModelStatus;
+  /** The image pipeline and the robot policy. The process can hold all three
+   *  at once, and the header used to know about one — so a resident 3.3 GB
+   *  pipeline sat under a badge reading "no model loaded". */
+  image?: HeldModel;
+  vla?: HeldModel;
 }
 
 export interface AttentionMeta {
@@ -34,6 +50,14 @@ export interface AttentionMeta {
   n_layers?: number;
   n_heads?: number;
   n_tokens?: number;
+  /** WHY there is none, when there is none. The server distinguishes five
+   *  cases — no model, nothing generated yet, the model changed since that
+   *  generation, Ollama, and an architecture that publishes no attention at
+   *  all — and they ask the reader for opposite things: "pick a model" versus
+   *  "press the button you are looking at" versus "nothing here can show you
+   *  this". Undeclared here, all five were dropped and the panel removed
+   *  itself from the page instead. */
+  reason?: string;
   /** True when these numbers came from an opened `.mri`, not a live model. */
   replay?: boolean;
 }
@@ -82,6 +106,29 @@ export interface SessionState {
    *  previews, deliberately, because a grounded document is usually the
    *  private half of the pair. */
   ground?: { available: boolean; question: string };
+  /** Whether the recording carries an AGENT RUN, and how much of one.
+   *
+   *  The three fields above all exist so a panel can show the recorded
+   *  finding instead of a button that can only refuse. This one was missing
+   *  while its siblings were here, so a bundle built around a failing step
+   *  opened to an agents panel reading "0 recordings" with the run sitting
+   *  inside the file.
+   *
+   *  `n_steps` is what the file holds; `n_steps_total` is what the sender's
+   *  run held, and they differ when the section was capped on the way in.
+   *  `step_ref` is the step the bundle was built AROUND — the reason it was
+   *  sent — so the panel can open on it rather than on step one. */
+  trace?: {
+    available: boolean;
+    /** The carried run's id, so a panel can tell a swapped file from a
+     *  re-read one. */
+    id: string;
+    name: string;
+    n_steps: number;
+    n_steps_total: number;
+    truncated: number;
+    step_ref: string | null;
+  };
   /** "layer:head" keys this session actually captured. */
   slices?: string[];
 }
@@ -146,9 +193,23 @@ function explain(body: string): string {
     if (typeof parsed?.error === "string") return parsed.error;
     if (typeof parsed?.detail === "string") return parsed.detail;
     // FastAPI request-validation failures: [{loc, msg, type}, …]
+    //
+    // NAMED. `msg` alone is "Field required", and a call missing two of them
+    // rendered "Field required; Field required" — a sentence that tells the
+    // reader a field is missing without telling them which. `loc` carries the
+    // parameter, so it goes in front: "height: Field required".
     if (Array.isArray(parsed?.detail)) {
       const msgs = parsed.detail
-        .map((d: { msg?: string }) => d?.msg)
+        .map((d: { msg?: string; loc?: unknown[] }) => {
+          if (!d?.msg) return "";
+          // `loc` is ["query", "height"] or ["body", "steps"]; the last entry
+          // is the field, and the first is where it belongs.
+          const field =
+            Array.isArray(d.loc) && d.loc.length
+              ? String(d.loc[d.loc.length - 1])
+              : "";
+          return field && field !== "body" ? `${field}: ${d.msg}` : d.msg;
+        })
         .filter(Boolean);
       if (msgs.length) return msgs.join("; ");
     }
@@ -178,15 +239,55 @@ export interface LoadCancelled {
   message: string;
 }
 
+/** One device a model could be sent to.
+ *
+ *  `free_bytes` is `null` where the backend cannot report it -- Apple's
+ *  unified memory, Intel XPU, and system RAM on every platform. Null is
+ *  UNKNOWN; rendering it as 0 would say the machine is out of memory when
+ *  nobody asked it.
+ */
+export interface DeviceOption {
+  /** What to send as `device` on a load: "cuda:0", "cpu". */
+  id: string;
+  kind: string;
+  name: string;
+  vram_gb: number | null;
+  dtype: string;
+  reason: string;
+  free_bytes: number | null;
+  total_bytes: number | null;
+  /** Where a load with no device named goes -- i.e. what has always happened. */
+  is_default: boolean;
+}
+
+export interface DeviceList {
+  devices: DeviceOption[];
+  default: string;
+  means: string;
+}
+
+/** Every device on this machine, not just the one in use.
+ *
+ *  `/api/session` reports the ONE device a model is on, which is a different
+ *  question and the only one the app could answer before this.
+ */
+export const getDevices = () =>
+  fetch("/api/devices").then((r) => json<DeviceList>(r));
+
 export const loadModel = (
   hf_id?: string,
   source: "hf" | "ollama" = "hf",
   confirm = false,
+  /** "" keeps the existing behaviour exactly: the server chooses, as it always
+   *  has. Only a deliberate choice sends anything else. */
+  device = "",
 ) =>
   fetch("/api/model/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(hf_id ? { hf_id, source, confirm } : { source, confirm }),
+    body: JSON.stringify(
+      hf_id ? { hf_id, source, confirm, device } : { source, confirm, device },
+    ),
   }).then((r) => json<ModelStatus | LoadCancelled>(r));
 
 /** Stop an in-flight download.
@@ -233,8 +334,8 @@ export const getAttention = (layer: number, head: number) =>
  *
  *  Deliberately not called "importance". These are marginal sensitivities to
  *  removing one head alone; they are not additive and not shares of the
- *  prediction — measured on gpt2 layer 0, the twelve per-head scores sum to
- *  1.995 while ablating the whole layer gives 0.208.
+ *  prediction — the per-head scores of a layer do not sum to what ablating
+ *  the whole layer costs.
  */
 export type Baseline = "zero" | "mean" | "resample";
 
@@ -247,9 +348,9 @@ export interface HeadScore {
   /** Null under `resample`: there is no single "after" across eight draws. */
   p_top_after: number | null;
   flips_top: boolean;
-  /** Resample only — the spread across draws. Head 10 on gpt2 layer 0 ranged
-   *  0.027 to 0.335 around a median of 0.036, so one draw could have reported
-   *  any of those as the head's score. */
+  /** Resample only — the spread across draws, which can run several times
+   *  wider than the median it surrounds, so a single draw could have reported
+   *  a very different number as the head's score. */
   kl_min?: number;
   kl_max?: number;
   draws?: number;
@@ -401,9 +502,8 @@ export const compareBaselines = (layer: number) =>
  *  Same units as `HeadScore.kl` — both come from `kl_nats` in ablate.py, so a
  *  head score and a token score on one screen mean the same thing. What they
  *  are NOT is comparable in behaviour: `modelmri/attribute.py` measured the
- *  singles over-stating one joint mask by 1.82x on gpt2 over the rows this
- *  list shows, and under-stating it by 0.35x on gemma-3-270m-it over the typed
- *  span. The panel prints both live numbers rather than a factor.
+ *  singles under-stating one joint mask by 0.35x on gemma-3-270m-it over the
+ *  typed span. The panel prints both live numbers rather than a factor.
  */
 export interface TokenScore {
   index: number;
@@ -419,10 +519,10 @@ export interface TokenScore {
    *  Four values, and each of the three that are not `typed` exists because
    *  collapsing it into another one made the panel state something nobody
    *  measured. `generated` is the model's OWN output — folded into `template`
-   *  it put gpt2's own words under a heading reading "chat template scaffold",
-   *  on a model whose span_note says in the same breath that it has no chat
-   *  template. `unknown` is "the server could not locate your words" — folded
-   *  into `typed` it put the chat template under "what you typed". */
+   *  it put the model's own words under a heading reading "chat template
+   *  scaffold", on a model whose span_note says in the same breath that it has
+   *  no chat template. `unknown` is "the server could not locate your words"
+   *  — folded into `typed` it put the chat template under "what you typed". */
   group: "typed" | "template" | "generated" | "unknown";
 }
 
@@ -439,8 +539,8 @@ export interface TokenAttribution {
   position: number;
   target_token: string;
   /** The same forward pass twice, nothing masked. Measured at exactly 0.0 on
-   *  gpt2, Qwen3-0.6B and gemma-3-270m-it; anything at or below it is
-   *  arithmetic rather than the model. */
+   *  Qwen3-0.6B and gemma-3-270m-it; anything at or below it is arithmetic
+   *  rather than the model. */
   noise_floor_kl: number;
   passes: number;
   elapsed_s: number;
@@ -460,8 +560,7 @@ export interface TokenAttribution {
   /** Half-open index window that was actually tested. When `truncated`, the
    *  candidates below `tested_span[0]` were asked nothing — and on the strip
    *  they would otherwise be indistinguishable from tokens that were tested
-   *  and scored nothing. Measured on gpt2 with a 73-token prompt: 64 of 71
-   *  candidates tested, and indices 1..7 rendered with no mark at all. */
+   *  and scored nothing. */
   tested_span: [number, number];
   /** Where the prompt ends. Rows at or past it are the model's own output,
    *  which is a third thing from "your words" and "the chat template". */
@@ -662,16 +761,6 @@ export const fastestRate = (
   return prev === null ? rate : Math.min(prev, rate);
 };
 
-/** A KL small enough that fixed decimals would print it as zero.
- *
- *  Not cosmetic. Feature scores span from 0.4174529 down to -3e-08 on the one
- *  prompt this was measured on, and five decimal places render most of that
- *  list as 0.00000 — a measured value displayed as nothing. Whether a number
- *  that small MEANS anything is what `below_resolution` is for.
- */
-export const fmtKL = (kl: number) =>
-  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
-
 // ------------------------------------------------------- feature ablation
 
 /** One feature's causal effect, exactly as `modelmri/feature_ablate.py`
@@ -681,34 +770,30 @@ export interface FeatureScore {
   feature_id: number;
   /** Peak activation over the positions that were edited — re-encoded in
    *  float32 by the ablation, NOT read from the float16 cache the bar chart
-   *  plots. Measured on gpt2: fp16 rounding moved the top feature's KL by
-   *  0.09%, with a max activation error of 0.0916, so the two numbers can
-   *  differ in the first decimal and neither is wrong. */
+   *  plots. fp16 rounding moves what the cache holds, so the two numbers can
+   *  differ and neither is wrong. */
   activation: number;
   /** Every token index the feature was removed at. One entry at
    *  `scope="position"`. At `scope="prompt"` this is the field that lets the
    *  panel show a feature which fires nowhere near the token being attributed
-   *  and still reaches the answer through attention — measured on gpt2, 4 of
-   *  the causal top-8 across the prompt fire only at earlier tokens. */
+   *  and still reaches the answer through attention. */
   positions: number[];
   kl: number;
   /** What a RANDOM direction of the same norm, subtracted at the same tokens,
-   *  cost. It is not zero and it is not small: at the top feature's norm of
-   *  35.5 on gpt2, five draws spanned 0.0666-0.1093 nats against that
-   *  feature's own 0.4175. A row below its own control has a score that is the
-   *  size of its edit rather than the identity of its feature. */
+   *  cost. It is not zero and it is not small. A row below its own control has
+   *  a score that is the size of its edit rather than the identity of its
+   *  feature. */
   control_kl: number;
-  /** `kl > control_kl`. Measured on gpt2 at the attributed token, 34 of 43
-   *  rows clear it — and two that do not, #22852 and #1288, sit 5th and 6th in
-   *  the bar chart above. */
+  /** `kl > control_kl`. A row that fails it can still sit near the top of the
+   *  bar chart above — activation rank and clearing the control are two
+   *  different orderings. */
   clears_control: boolean;
   /** Share of this feature's original activation the SAE's ENCODER still
    *  reports after the feature's own contribution was subtracted, at the worst
    *  of the edited positions. Not a failure of the edit — the stream moves by
    *  exactly one rank-1 term, which `removal_verified` checks — but a property
    *  of this SAE: W_enc[:,f] and W_dec[f] are not dual, so the encoder reads
-   *  other features' contributions through f's direction. Measured on gpt2
-   *  blocks.8.hook_resid_pre it runs 0% to 60.3%, above 1% on 38 of 43 rows. */
+   *  other features' contributions through f's direction. */
   encoder_residual: number;
   p_top_before: number;
   p_top_after: number;
@@ -716,7 +801,7 @@ export interface FeatureScore {
   /** The server's verdict against `resolution_kl`, and never recomputed here
    *  against `noise_floor_kl`. The floor is exactly 0.0 on this path and two
    *  measured scores came back NEGATIVE (-1e-08, -3e-08) — float32 summation
-   *  over 50257 vocabulary entries — so a client greying out "at or below the
+   *  over the whole vocabulary — so a client greying out "at or below the
    *  floor" would grey out nothing. Measured: 2 of 43 scores are at or below
    *  the floor, 8 of 43 are below the resolution. */
   below_resolution: boolean;
@@ -727,9 +812,9 @@ export interface FeatureScore {
  *  Every caveat rendered by the panel is either a field here or is computed
  *  from two fields here. Nothing is remembered: the additivity direction in
  *  particular is READ OFF THIS RUN, because features miss in the opposite
- *  direction from heads — the head panel's singles over-count 8x on gpt2 layer
- *  0 while these under-count 3.2x — and a remembered direction would be
- *  exactly backwards.
+ *  direction from heads — the head panel's singles over-count the joint while
+ *  these under-count it — and a remembered direction would be exactly
+ *  backwards.
  */
 export interface FeatureAblation {
   /** Which edit was made, named rather than assumed. "Removing a feature" is
@@ -794,8 +879,8 @@ export interface FeatureAblation {
   rel_err: number;
   /** The WORST share of a token's norm the SAE fails to model, over the window
    *  these edits actually landed in. At position scope that is the attributed
-   *  token (0.2036 on gpt2); at prompt scope it is the worst of eleven tokens
-   *  (0.4253, at token 3). Null when the stream has no norm there. */
+   *  token; at prompt scope it is the worst token in the window. Null when the
+   *  stream has no norm there. */
   residual_share: number | null;
   /** The same quantity at the attributed token alone, kept beside the
    *  scope-matched one rather than replaced by it. */
@@ -1057,6 +1142,1240 @@ export const analyseVLA = (episode: number, t: number) =>
 export const getVLAAttention = (layer: number, head = -1) =>
   fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
 
+// ------------------------------------------------------------ image models
+//
+// Eight routes over one handle, and deliberately the same shape as the VLA
+// block above: a status that always answers, a load and an unload, two cost
+// routes that answer BEFORE anything is spent, and two measurements that
+// refuse by name when the architecture has no such thing to measure.
+//
+// The field a panel must read before drawing any control is `capabilities`.
+// It comes from `imaging.detect`, keyed on what the checkpoint IS rather than
+// on what it is called, and a family the server cannot name arrives with an
+// EMPTY list. So a control is offered because the server said the measurement
+// exists, never because a repo id looked like Stable Diffusion.
+
+/** One image model already on this disk, as `imaging.ImageModel` reports it.
+ *
+ *  `known: false` is a first-class answer rather than a gap: it arrives with
+ *  `reason`, and with an empty `capabilities`, because a family this cannot
+ *  identify must offer nothing rather than everything. The list is what is on
+ *  the disk, not what the server happens to understand.
+ */
+export interface ImageModelInfo {
+  /** The repo id, `owner/name`. */
+  path: string;
+  /** The identifier: `unet_diffusion`, `dit_diffusion`, `vit`, … */
+  family: string;
+  /** The same thing in words — "a UNet diffusion model". The server writes
+   *  it, so a panel never has to turn an identifier into prose itself. */
+  label: string;
+  architecture: string;
+  pipeline: string;
+  /** `{unet: "UNet2DConditionModel", vae: "AutoencoderKL", …}`. Empty for a
+   *  plain transformers model, which is a fact rather than a gap. */
+  components: Record<string, string>;
+  /** Three states and never two. A positive width means the denoiser attends
+   *  to prompt tokens; **0 means UNCONDITIONAL** — there are no word-to-pixel
+   *  maps to draw at all; `null` means the denoiser's config did not say, so
+   *  nothing here knows. Rendering `null` as 0 would turn "not stated" into
+   *  "this model ignores your prompt". */
+  cross_attention_dim: number | null;
+  image_size: number | null;
+  capabilities: string[];
+  /** {capability: why it cannot be measured on THIS checkpoint}. A control
+   *  that is simply absent reads as a missing feature; the reason says
+   *  whether another checkpoint would answer. */
+  unavailable?: Record<string, string>;
+  /** "text" | "class" | "none" — what steers it. A class-conditioned model
+   *  takes a number from a fixed list and has no prompt at all. */
+  conditioning?: string;
+  n_classes?: number | null;
+  known: boolean;
+  reason: string;
+  means: string;
+}
+
+export interface ImageAvailable {
+  models: ImageModelInfo[];
+  known: number;
+  /** The cache walk stops at `scan_limit`, so a flat count is a claim that
+   *  this is everything. `means` carries the sentence; these carry the fact. */
+  truncated: boolean;
+  scan_limit: number;
+  means: string;
+}
+
+/** What `ImageHandle` is holding, or why it is holding nothing.
+ *
+ *  Never raises server-side: a resting panel asks this on every load and
+ *  `loaded: false` on its own is not an answer, so `reason` and `means` are
+ *  populated in that case rather than left blank.
+ */
+export interface ImageStatus {
+  loaded: boolean;
+  repo: string;
+  family: string;
+  architecture: string;
+  device: string;
+  dtype: string;
+  /** What may be measured on this pipeline: `cross_attention`,
+   *  `token_knockout`, `step_commit`, `latent_trace`, `patch_attention`, …
+   *  A capability that is absent is a control that is not shown. */
+  capabilities: string[];
+  /** {capability: why it cannot be measured on THIS checkpoint} — checked
+   *  against the loaded pipeline, not guessed from the family. A control that
+   *  is simply absent reads as a missing feature; the reason says whether
+   *  another checkpoint would answer. */
+  unavailable?: Record<string, string>;
+  /** "text" | "class" | "none". A class-conditioned model takes a number from
+   *  a fixed list and has no prompt, so a prompt box asks it a question it
+   *  cannot be asked. */
+  conditioning?: string;
+  n_classes?: number | null;
+  /** The same tri-state as `ImageModelInfo.cross_attention_dim`. */
+  cross_attention_dim: number | null;
+  image_size: number | null;
+  components: Record<string, string>;
+  /** Read from the checkpoint's own safetensors headers rather than estimated
+   *  from a parameter count. 0 when nothing is held. */
+  bytes_resident: number;
+  /** `null` when nothing was loaded, which is not a load that took no time. */
+  load_seconds: number | null;
+  /** The most words one request may MARK, from the module that enforces it.
+   *  NOT a bound on the work: the knockout runs an arm for every word in the
+   *  prompt and this list only says which rows the caller asked about. The
+   *  panel discloses it before the click rather than letting the route refuse
+   *  afterwards. */
+  max_knockout_words: number;
+  /** The largest data URL `image_input.decode` will accept, in bytes, and the
+   *  largest picture it will decode, in pixels.
+   *
+   *  Published for the same reason as `max_knockout_words` above: both were
+   *  enforced at decode time and stated nowhere, so somebody choosing a 40 MB
+   *  photo paid the read and the base64 encode before learning the bound
+   *  existed. The pixel bound is separate from the byte bound on purpose — a
+   *  decompression bomb is a few kilobytes of PNG that expands to gigabytes,
+   *  which a bound on the compressed size cannot catch. */
+  max_image_bytes: number;
+  max_image_pixels: number;
+  reason: string;
+  means: string;
+}
+
+/** One denoising step's cross-attention, already reduced by the server.
+ *
+ *  `per_token` is attention mass per prompt token, summed over pixels and
+ *  averaged over heads AND over the cross-attention blocks that contributed.
+ *  The mean over heads is a choice that hides head-level disagreement, and
+ *  `blocks` is how many maps went into this row — a step where fewer blocks
+ *  reported is a partial capture, visible in the data rather than silent.
+ */
+export interface ImageStepMap {
+  step: number;
+  /** The scheduler's own timestep. Carried because "step 12" means nothing
+   *  across two schedulers with different step counts. */
+  timestep: number;
+  per_token: number[];
+  blocks: number;
+}
+
+export interface ImageAttentionRun {
+  tokens: string[];
+  steps: ImageStepMap[];
+  /** `null` means no seed was fixed, which is NOT seed 0 — another run then
+   *  gives another trajectory and nothing downstream is comparable. */
+  seed: number | null;
+  model: string;
+  revision: string;
+  /** Where the padding starts. CLIP pads to 77 and the padded tail attracts
+   *  real attention mass, which is a genuine finding and a terrible chart, so
+   *  it travels as an index rather than as sixty blank columns. */
+  padding_from: number;
+  steps_requested: number;
+  steps_measured: number;
+  /** The attention resolutions the maps were averaged over. */
+  resolutions: number[];
+  /** How wide the denoiser's conditioning actually was, read off the maps —
+   *  not the tokenizer's length and not the 77-token label cap. PixArt-Alpha
+   *  is 120 and Sigma is 300. */
+  conditioning_width: number;
+  /** Columns that were MEASURED and have no word to label them, because the
+   *  label list is capped. A limit on what can be shown, not on what was
+   *  measured — `means` says so in words. */
+  columns_unlabelled: number;
+  means: string;
+}
+
+/** One arm of a knockout: the prompt with one word removed, and how far the
+ *  image moved. `distance` is RMS over pixels — arithmetic anybody can check,
+ *  rather than one model's opinion of how different two pictures look. */
+export interface ImageKnockoutArm {
+  word: string;
+  index: number;
+  prompt_without: string;
+  distance: number;
+}
+
+export interface ImageKnockout {
+  /** Already sorted by `distance`, furthest first. */
+  arms: ImageKnockoutArm[];
+  seed: number;
+  steps: number;
+  /** Echoed back: the words the caller asked about. The RUN measures every
+   *  word of the prompt in turn regardless — see `imageKnockout`. */
+  tokens: string[];
+  means: string;
+}
+
+/** Renders and passes, before any are spent. `arms` is `words + 1`: every
+ *  word plus the unmodified prompt each arm is compared against. */
+export interface ImageAttentionCost {
+  arms: number;
+  steps_each: number;
+  passes: number;
+  means: string;
+}
+
+/** What keeping a latent per step would hold.
+ *
+ *  Every byte figure is `null` — never 0 — when the latent shape could not be
+ *  read off the pipeline. A run whose memory could not be priced is not a run
+ *  that costs nothing, and `fits: null` is "unknown", not "no".
+ */
+export interface ImageTraceCost {
+  steps: number;
+  denoiser_passes: number;
+  vae_decodes: number;
+  latents_kept: number;
+  latent_bytes: number | null;
+  total_bytes: number | null;
+  fits: boolean | null;
+  threshold: number;
+  means: string;
+}
+
+/** Plain fetches, all eight of them, for the reason written over `getPolicy`:
+ *  the demo and the `.mri` viewer answer through `demo.ts`'s patched fetch, so
+ *  `tests/demo_check.py` can see the handler. An answer written here instead
+ *  is invisible to that check and is reported as an unhandled endpoint — and
+ *  the demo answers `/api/image` with a NOT-LOADED status rather than a
+ *  refusal, because a static page holding no pipeline is exactly what
+ *  "nothing is loaded" describes. */
+export const getImage = () => fetch("/api/image").then((r) => json<ImageStatus>(r));
+
+/** Every image model already on this disk. Downloads nothing. */
+export const getImageAvailable = () =>
+  fetch("/api/image/available").then((r) => json<ImageAvailable>(r));
+
+/** Hold one pipeline. No default repo: the checkpoint decides which controls
+ *  apply, so guessing one would silently decide what the reader is looking at.
+ *
+ *  `confirm` overrides the refusals that are overridable — a pipeline beside
+ *  a resident text model, mainly, which the server refuses first because both
+ *  are wanted resident at once and neither can be offloaded to rescue the
+ *  other. A refusal that is NOT overridable answers again with the same
+ *  sentence, which is the right outcome rather than a silent OOM.
+ */
+export const loadImage = (repo: string, confirm = false, device = "") =>
+  fetch("/api/image/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo: repo.trim(), device, dtype: "", confirm }),
+    // `LoadCancelled` rather than an error, because a load somebody stopped
+    // is not a failure: the route answers 200 with a sentence and the panel
+    // shows it plainly instead of painting a red box over a deliberate act.
+  }).then((r) => json<ImageStatus | LoadCancelled>(r));
+
+/** What the in-flight image load is doing.
+ *
+ *  The same `LoadProgress` shape as `/api/model/progress`, deliberately —
+ *  the stages differ (a diffusion pipeline is scanned for live pickle
+ *  opcodes; a language model is not) but everything around them is the same
+ *  question, and one shape means one `LoadBar` renders both. */
+export const getImageProgress = () =>
+  fetch("/api/image/progress").then((r) => json<LoadProgress>(r));
+
+/** Stop an in-flight image load.
+ *
+ *  `means` is the server being honest about the limit of its own button: the
+ *  download runs in a child process and dies immediately, but if the pipeline
+ *  is already opening, that call cannot be interrupted and the stop lands
+ *  when it returns. */
+export const cancelImageLoad = () =>
+  fetch("/api/image/cancel", { method: "POST" }).then((r) =>
+    json<{ stopping: boolean; means: string }>(r),
+  );
+
+/** Drop it and hand the memory back, not merely forget it. */
+export const unloadImage = () =>
+  fetch("/api/image/unload", { method: "POST" }).then((r) => json<ImageStatus>(r));
+
+/** Price the renders before running any.
+ *
+ *  `words=0` prices ONE render — the capture. `words=n` prices a knockout of
+ *  an n-word prompt, which is n arms plus the unmodified one they are each
+ *  compared against. Same arithmetic, two questions.
+ */
+export const imageAttentionCost = (steps: number, words: number) =>
+  fetch(`/api/image/attention/cost?steps=${steps}&words=${words}`).then((r) =>
+    json<ImageAttentionCost>(r),
+  );
+
+/** What keeping a latent per step would hold, priced off the loaded
+ *  pipeline's own latent shape when there is one. */
+export const imageStepsCost = (steps: number) =>
+  fetch(`/api/image/steps/cost?steps=${steps}`).then((r) => json<ImageTraceCost>(r));
+
+/** Which prompt tokens the image attends to, per denoising step.
+ *
+ *  `seed` is optional and `null` is NOT 0: `null` means the sampler was not
+ *  fixed, so another run gives another trajectory. Refuses 409 when nothing is
+ *  loaded, and 409 again — with a different sentence — when the loaded family
+ *  has no cross-attention to capture.
+ */
+export const captureImageAttention = (
+  prompt: string,
+  steps: number,
+  seed: number | null,
+) =>
+  fetch("/api/image/attention", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, steps, seed }),
+  }).then((r) => json<ImageAttentionRun>(r));
+
+/** Remove one prompt word at a time and measure what actually moved.
+ *
+ *  The seed is required rather than optional here, and it is doing the work:
+ *  every arm runs at the identical seed, so the difference between two images
+ *  is the word rather than the sampler.
+ *
+ *  `words` is what the caller asks ABOUT and the route refuses an empty list —
+ *  which words matter is the question, not an implementation detail. It does
+ *  not narrow the run: `image_attention.knockout` splits the prompt itself and
+ *  measures every word in turn, and echoes `words` back as `tokens`. The panel
+ *  says so rather than implying the picks limited the work.
+ */
+export const imageKnockout = (
+  prompt: string,
+  words: string[],
+  seed: number,
+  steps: number,
+) =>
+  fetch("/api/image/knockout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, words, seed, steps }),
+  }).then((r) => json<ImageKnockout>(r));
+
+// ------------------------------------------ occlusion attribution (images)
+//
+// The interventional saliency map, and the reason it is here rather than a
+// gradient: covering a region and re-running MEASURES what the model loses,
+// where a gradient or an attention weight only correlates with it. Gated on
+// the `attribution` capability — ViT, detection and segmentation heads have
+// it; a diffusion pipeline does NOT, because there is no class logit to move.
+//
+// Two routes, in the order they must be called. `cost` needs no model and is
+// asked first, because the number it returns is the one that decides whether
+// to run at all: the same image at stride 1 rather than stride 16 is not a
+// slower run, it is a different afternoon.
+
+/** Windows and passes, before a single one is taken.
+ *
+ *  `seconds` is `null` unless a per-pass time was measured, and `null` here
+ *  is **"nobody measured"** rather than "instant" — this route deliberately
+ *  publishes no forecast of its own, because a wait invented from a constant
+ *  somebody typed would be a number this tool made up.
+ *
+ *  `within_ceiling: false` means `POST /api/image/attribution` will REFUSE
+ *  this geometry. `estimate` still prices it, on purpose: a caller about to
+ *  be refused needs the number that got them refused, or they are left
+ *  guessing at the stride.
+ */
+export interface ImageAttributionCost {
+  map_rows: number;
+  map_cols: number;
+  n_windows: number;
+  /** Every window plus the one unoccluded reference run. */
+  passes: number;
+  forward_calls: number;
+  /** The batch actually used, already clamped to what the module allows. */
+  batch: number;
+  /** What was ASKED for, which is not always what will be used.
+   *
+   *  Both numbers travel because a silent cap is a defect. `vision_attr.
+   *  estimate` has always returned this and the preflight type dropped it on
+   *  the way to the browser, so a caller asking for a batch of 200 was priced
+   *  at 64 with nothing saying the request had been reduced. The sweep
+   *  response reports both (`ImagePanel` draws "The batch was reduced");
+   *  only the estimate lost it. The panel's own slider stops at 64, so this
+   *  fires for direct API callers rather than from the UI — the type was
+   *  wrong either way. */
+  batch_requested: number;
+  patch: number;
+  stride: number;
+  /** The occluded copies of the input alone. The activations behind them are
+   *  a multiple of it that nothing can know without running the model, so
+   *  they are absent here rather than estimated. */
+  input_bytes_per_call: number;
+  seconds: number | null;
+  within_ceiling: boolean;
+  ceiling: number;
+  means: string;
+}
+
+/** Where the occluders went, and at what resolution the map therefore is. */
+export interface ImageAttributionGrid {
+  /** The dimensions of the tensor the model SAW, after its own processor
+   *  resized the picture — not the dimensions of the file that was picked. */
+  height: number;
+  width: number;
+  patch: number;
+  stride: number;
+  map_rows: number;
+  map_cols: number;
+  n_windows: number;
+  passes: number;
+  /** Pixels shared by neighbouring windows, from the stride alone. Positive
+   *  means the map's cells are not disjoint regions of the image. */
+  overlap: number;
+  /** The last row (or column) had to be pulled back to the edge, so it
+   *  overlaps its neighbour by more than `patch - stride`. A fact about this
+   *  map rather than a defect — without the clamp a strip of the image would
+   *  be under no window at all while the map still looked complete. */
+  edge_row_clamped: boolean;
+  edge_col_clamped: boolean;
+}
+
+/** One occluded region, and what covering it did to the target class.
+ *
+ *  **`logit_drop` is SIGNED.** Positive means covering this window COST the
+ *  class evidence. Negative means covering it HELPED — a region that was
+ *  arguing against the class, which is a finding rather than an error. An
+ *  absolute value prints the same number for both, so nothing here may take
+ *  one.
+ */
+export interface ImageAttributionWindow {
+  row: number;
+  col: number;
+  top: number;
+  left: number;
+  height: number;
+  width: number;
+  logit_drop: number;
+  /** The same movement in softmax probability, which is a different quantity
+   *  and not a better one — it moves when any other class moves. `null` for a
+   *  single-output head, where a softmax is 1.0 by construction. */
+  prob_drop: number | null;
+}
+
+/** One occlusion map, and everything it is not allowed to claim. */
+export interface ImageAttribution {
+  grid: ImageAttributionGrid;
+  /** `map_rows` x `map_cols` of signed logit drops, every cell filled. */
+  map: number[][];
+  windows: ImageAttributionWindow[];
+  /** `grey`, `black`, `white` or `image_mean`. There is no neutral fill: a
+   *  flat square is a specific baseline, not removal. */
+  fill: string;
+  /** What that word was in numbers, per channel where it varies. */
+  fill_value: number[];
+  value_range: [number, number];
+  /** **True means the range was GUESSED from this one image's extremes**
+   *  rather than read from the checkpoint's own processor. One picture's
+   *  extremes are a lower bound on the model's input range, not the range —
+   *  so "grey" landed somewhere that is not necessarily the midpoint, and
+   *  the fill that was actually applied is a weaker claim than it looks. */
+  value_range_inferred: boolean;
+  target: number;
+  target_label: string;
+  /** Whether the class was the model's own top prediction or one that was
+   *  named. Attributing the model's answer and auditing a label you supplied
+   *  are different questions with the same picture. */
+  target_chosen_by_model: boolean;
+  classes: number;
+  base_logit: number;
+  /** `null` for a single-output head. */
+  base_prob: number | null;
+  /** **The scale the peak has to be read against**: largest drop minus
+   *  smallest, over the whole map. A spread at or below the reported
+   *  precision is a map made of rounding, and ranking its windows is ranking
+   *  rounding — `means` says so, and a panel must not draw a confident peak
+   *  over that sentence. */
+  spread: number;
+  /** `null` — not the first window — when the map is exactly flat. A model
+   *  returning the same logits for every occlusion has said it did not use
+   *  the image, and naming a peak there is reading rank order out of a tie. */
+  strongest: ImageAttributionWindow | null;
+  /** The window that most INCREASED the class when covered. **`null` means
+   *  NOTHING argued against the class**, which is a different answer from a
+   *  drop of 0.0 and must not render as an empty slot. */
+  most_negative: ImageAttributionWindow | null;
+  passes: number;
+  forward_calls: number;
+  /** Both travel because a silent cap is a defect: `batch_used` below
+   *  `batch_requested` is a different run time from the one that was asked
+   *  for, and somebody will time it. */
+  batch_requested: number;
+  batch_used: number;
+  seconds: number;
+  model_name: string;
+  /** Class names were supplied and did not match the head's width, so they
+   *  were dropped ENTIRELY rather than applied by position. */
+  class_names_dropped: boolean;
+  means: string;
+}
+
+/** Price the sweep before running it. Needs no model — it is arithmetic over
+ *  the geometry — so it answers on a resting server too.
+ *
+ *  `stride` of 0 is the query-string way of saying "not stated", which the
+ *  module then reads as the patch size: non-overlapping windows, the cheapest
+ *  schedule that covers every pixel exactly once.
+ */
+export const imageAttributionCost = (
+  height: number,
+  width: number,
+  patch: number,
+  stride: number,
+  batch: number,
+) =>
+  fetch(
+    `/api/image/attribution/cost?height=${height}&width=${width}` +
+      `&patch=${patch}&stride=${stride}&batch=${batch}`,
+  ).then((r) => json<ImageAttributionCost>(r));
+
+/** Cover each window of one image, re-run, and report what moved.
+ *
+ *  The picture travels as a data URL rather than as a path, deliberately: a
+ *  path in a request body names a file on the SERVER's disk, which is
+ *  somebody else's machine as often as it is yours — and a browser cannot
+ *  produce one for a file the user picked anyway.
+ *
+ *  `target` of `null` asks the ordinary question: attribute whatever the
+ *  model itself predicted. Naming a class asks a different one — auditing a
+ *  label you supplied — and the result says which of the two it answered.
+ */
+export const imageAttribution = (
+  image: string,
+  patch: number,
+  stride: number,
+  fill: string,
+  batch: number,
+  target: number | null,
+) =>
+  fetch("/api/image/attribution", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image, patch, stride, fill, batch, target }),
+  }).then((r) => json<ImageAttribution>(r));
+
+// ------------------------------------------------- finding an image model
+//
+// The four routes over `image_catalog`, and they exist because the image side
+// had a cache scan and nothing else: the only way to open a diffusion model
+// was to already know its name. The text side has had `hub.search` and
+// `discover.scan` for a long time; this is the same pair for pictures.
+//
+// ## A row here never claims a family
+//
+// A Hub pipeline tag is a TASK, not an architecture: `text-to-image` covers a
+// UNet and a DiT, and those two keep their cross-attention in different
+// places. So a row says what the model DOES, names the families that tag is
+// CONSISTENT with, and leaves the architecture to `imaging.detect`, which
+// reads the checkpoint's own config at load. A confident wrong family word in
+// a list is exactly what `ImageStatus.capabilities` exists to prevent.
+//
+// ## `size_bytes` is `null` for unknown, and it is never 0
+//
+// `hub.weight_bytes` does arithmetic on the per-dtype parameter counts the
+// Hub publishes, and most GGUF and pickle repos publish none. The server
+// passes that through as `null` rather than 0 because a picker rendering
+// "0.0 GB" for an unknown invites the exact click a size column exists to
+// prevent. Every reader of these fields must branch on `null` before it
+// formats.
+
+/** One task the Hub publishes that this tool can open. */
+export interface ImageTask {
+  /** The Hub's own pipeline tag: `text-to-image`, `image-segmentation`, … */
+  task: string;
+  label: string;
+  /** The families `imaging.detect` MIGHT name once a checkpoint of this task
+   *  is read. Not a property of any one model — see the note above. */
+  families: string[];
+  means: string;
+}
+
+export interface ImageTasks {
+  tasks: ImageTask[];
+  /** Which task a search runs when none is chosen. Every tag at once is not a
+   *  valid Hub filter, so one is named rather than silently picked. */
+  default: string;
+  means: string;
+}
+
+/** One row of a Hub search: what it does, what it weighs, whether it is here. */
+export interface ImageHubModel {
+  id: string;
+  task: string;
+  task_label: string;
+  /** What the TASK is consistent with. Never this checkpoint's family. */
+  families_possible: string[];
+  downloads: number;
+  likes: number;
+  /** Its licence has to be accepted, and a token has to be on this machine,
+   *  before the weights will move. */
+  gated: boolean;
+  /** `YYYY-MM-DD`, or empty when the listing carried no date. */
+  updated: string;
+  /** `null` is UNKNOWN and must never render as a size. */
+  size_bytes: number | null;
+  /** Answered by looking at this machine's cache, not guessed from the
+   *  listing. `null` when the cache could not be walked at all — "nobody
+   *  could look" is a different answer from "we looked and it is not here",
+   *  and only one of them justifies quoting the reader a download. */
+  cached: boolean | null;
+  /** A cache entry holding configs and NO weights: an interrupted download.
+   *  It looks present to a directory listing and has its entire transfer
+   *  still ahead of it, which is why the server separates it. */
+  partial?: boolean | null;
+}
+
+export interface ImageSearch {
+  models: ImageHubModel[];
+  /** The task actually searched, which is the default when none was sent. */
+  task: string;
+  means: string;
+}
+
+/** One image model on this disk, with what it actually weighs.
+ *
+ *  `ImageModelInfo` answers what a cached model IS. This answers what it
+ *  COSTS, read off the files rather than the Hub — including the state a
+ *  browse list cannot show, which is `complete: false`.
+ */
+/** One denoising step's latent movement.
+ *
+ *  `rms_change` and `cumulative` are `null` on the FIRST step: there is no
+ *  previous latent for it to have moved from, so the change is unknown rather
+ *  than zero. A bar chart that treats them as 0 draws a claim nobody made.
+ */
+export interface ImageStepRow {
+  step: number;
+  timestep: number | null;
+  rms_change: number | null;
+  cumulative: number | null;
+  rms_to_final: number | null;
+  latent_rms: number | null;
+}
+
+/** Where the denoiser committed. NOTHING here was decoded.
+ *
+ *  `vae_decodes` is 0 and is a checkable claim, not a promise: a decode would
+ *  make the answer a property of the VAE as much as of the denoiser, so the
+ *  same denoiser behind two decoders would appear to commit at two different
+ *  steps. `ImageFilmstripRun` is the one that draws pictures.
+ */
+export interface ImageStepTrace {
+  model: string;
+  prompt: string;
+  seed: number | null;
+  scheduler: string;
+  steps_requested: number;
+  steps_measured: number;
+  threshold: number;
+  /** `null` when no step met the threshold — not 0, which would name step 0. */
+  commit_step: number | null;
+  total_change: number | null;
+  vae_decodes: number;
+  latent_shape: number[] | null;
+  bytes_held: number | null;
+  steps: ImageStepRow[];
+  means: string;
+}
+
+/** One decoded step. */
+export interface ImageFrame {
+  /** The step this latent was handed over at, NOT its position in the strip.
+   *  A gap in these numbers is the whole point. */
+  step: number;
+  timestep: number | null;
+  /** A data URL, or `null` when there are no bytes. Never "" — an empty data
+   *  URL is a broken image and looks like a decode that produced black rather
+   *  than one that never happened. */
+  png: string | null;
+  png_bytes: number;
+  width: number | null;
+  height: number | null;
+  decoded_width: number | null;
+  decoded_height: number | null;
+  /** True when the emitted frame is smaller than what the decoder produced. A
+   *  picture silently shrunk is a picture of a resolution the model never
+   *  worked at. */
+  downsampled: boolean;
+  latent_rms: number | null;
+}
+
+export interface ImageFilmstripRun {
+  model: string;
+  prompt: string;
+  seed: number | null;
+  scheduler: string;
+  frames_decoded: number;
+  steps_requested: number;
+  steps_run: number;
+  decoded_steps: number[];
+  /** Listed, not implied. Eight frames from a fifty-step run is eight frames,
+   *  and a reader must not be able to mistake the strip for the run. */
+  skipped_steps: number[];
+  steps_never_reached: number[];
+  vae_decodes: number;
+  frame_pixels: number;
+  png_bytes_total: number;
+  peak_device_bytes: number | null;
+  frames: ImageFrame[];
+  means: string;
+}
+
+export interface ImageFilmstripPlan {
+  steps: number;
+  frames: number;
+  decoded_steps: number[];
+  skipped_steps: number[];
+  vae_decodes: number;
+  frame_pixels: number;
+  means: string;
+}
+
+export const imageStepsRun = (body: {
+  prompt: string;
+  steps: number;
+  seed: number | null;
+  threshold?: number;
+}) =>
+  fetch("/api/image/steps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageStepTrace>(r));
+
+export const imageFilmstrip = (body: {
+  prompt: string;
+  steps: number;
+  every: number;
+  seed: number | null;
+}) =>
+  fetch("/api/image/filmstrip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageFilmstripRun>(r));
+
+export const imageFilmstripCost = (q: { steps: number; every: number }) =>
+  fetch(`/api/image/filmstrip/cost?steps=${q.steps}&every=${q.every}`).then((r) =>
+    json<ImageFilmstripPlan>(r),
+  );
+
+/** Occlusion over a prediction this model actually made.
+ *
+ *  Richer than `/api/image/attribution`, which can only attribute a class
+ *  logit: this also takes a detector's box (`query`) and a segmenter's mask
+ *  area (`region`), and it says WHICH of the model's answers the map is of.
+ */
+export interface ImageCvAttribution {
+  attribution: ImageAttribution | null;
+  task: string;
+  task_label: string;
+  /** "model" when the tool took the top answer, "caller" when you named one.
+   *  The difference between explaining the answer given and auditing one you
+   *  supplied — and they are different questions. */
+  region_chosen_by: string;
+  what: string;
+  query: number | null;
+  region: number[] | null;
+  target_label: string;
+  map_height: number;
+  map_width: number;
+  dtype: string;
+  names_dropped_by_the_sweep: boolean;
+  means: string;
+}
+
+export interface ImageCvCost {
+  predict: { forward_passes: number };
+  readout: Record<string, number | null>;
+  attribution: Record<string, unknown>;
+}
+
+/** What the three CV measurements cost, before any is spent. */
+export const imageCvCost = (
+  height: number,
+  width: number,
+  patch = 16,
+  stride: number | null = null,
+  batch = 32,
+) =>
+  fetch(
+    `/api/image/cv/cost?height=${height}&width=${width}&patch=${patch}` +
+      `${stride === null ? "" : `&stride=${stride}`}&batch=${batch}`,
+  ).then((r) => json<ImageCvCost>(r));
+
+export const imageCvAttribute = (body: {
+  image: string;
+  target?: number | null;
+  /** A detector's box slot, from `ImageCvBox.query`. */
+  query?: number | null;
+  /** A per-pixel segmenter's region of the map, from `ImageCvSegment.bbox` —
+   *  (top, left, height, width) in map cells. `CVAttributeRequest` has always
+   *  taken it and this signature omitted it, so the segmenter half of the
+   *  route was unreachable from the typed client.
+   *
+   *  Only one of `query` and `region` is ever set: the two heads are
+   *  attributed through different reductions and the route refuses the wrong
+   *  one by name. */
+  region?: number[] | null;
+  patch?: number;
+  stride?: number | null;
+  fill?: string;
+  batch?: number;
+}) =>
+  fetch("/api/image/cv/attribute", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvAttribution>(r));
+
+/** One class the model scored. */
+export interface ImageCvClass {
+  index: number;
+  /** The checkpoint's own `id2label` entry, or the index as text when it
+   *  publishes none. Never a name borrowed from another checkpoint that
+   *  happens to have the same number of classes. */
+  label: string;
+  logit: number;
+  probability: number;
+}
+
+export interface ImageCvBox {
+  /** The head's query slot — the ONLY handle `/api/image/cv/attribute` takes
+   *  for a detector box. */
+  query: number;
+  index: number;
+  label: string;
+  score: number;
+  /** `null` when the scoring convention could not be established. NOT a score
+   *  of zero — see `ImageCvPrediction.scoring_reason`. */
+  logit: number | null;
+  /** `box: number[]` used to be declared here and is in no response this
+   *  server can produce: `Box.to_dict` emits these two. Harmless only because
+   *  nothing read it — a trap for the next writer rather than a live bug. */
+  box_xyxy: number[];
+  box_cxcywh: number[];
+}
+
+/** One label present in a mask, and how much of the picture it claims. */
+export interface ImageCvSegment {
+  index: number;
+  label: string;
+  cells: number;
+  /** Of the MAP's cells, not the image's pixels — the map is coarser. */
+  fraction: number;
+  /** How decisively this label won its cells. The QUANTITY differs by head, so
+   *  never read it without `ImageCvPrediction.margin_kind`: a per-pixel head's
+   *  margin is the gap to the runner-up class, a mask head's is how far past
+   *  the threshold its mask sat. `null` when it could not be computed. */
+  mean_margin: number | null;
+  /** (top, left, height, width) in map cells — the handle `attribute` takes
+   *  as `region`. */
+  bbox: number[];
+  /** The query slot for a mask-query head, `null` for a per-pixel one. The two
+   *  are attributed through different reductions. */
+  query: number | null;
+}
+
+export interface ImageCvPrediction {
+  task: string;
+  task_label: string;
+  model_name: string;
+  dtype: string;
+  height: number;
+  width: number;
+  classes: number;
+  /** False when the checkpoint published no `id2label`. The labels are then
+   *  indices, and `labels_note` says so in the server's own words. */
+  labels_read: boolean;
+  labels_published: number | null;
+  labels_note: string;
+  classes_top: ImageCvClass[];
+  boxes?: ImageCvBox[];
+  /** What a SEGMENTER says. `classes_top` is only ever filled by the
+   *  classification path, so a segmenter left it empty — and this interface
+   *  declared 12 of the 25 keys `Prediction.to_dict` sends, omitting every
+   *  segmentation field. The panel rendered a header, an empty list, and
+   *  "Click a class to see what supports it" with nothing clickable: no
+   *  error, no refusal, an honest-looking answer of nothing.
+   *
+   *  `tsc --noEmit` cannot catch that — an interface narrower than the JSON is
+   *  legal TypeScript. */
+  segments: ImageCvSegment[];
+  /** How many segments the model produced, before `MAX_SEGMENTS` truncated
+   *  the list above. The cap disclosure. */
+  segments_total: number;
+  /** The per-cell winning label, as a grid. */
+  label_map: number[][];
+  map_height: number;
+  map_width: number;
+  /** How many image pixels one map cell covers. */
+  map_stride: number;
+  /** `null` for a head with no threshold. */
+  mask_threshold: number | null;
+  /** How the scores above were arrived at, and why — read from the checkpoint
+   *  where it says, derived where it does not. */
+  scoring: string;
+  scoring_reason: string;
+  /** Which quantity `mean_margin` is. Never read a margin without it. */
+  margin_kind: string;
+  queries_total: number;
+  top_k_requested: number;
+  forward_passes: number;
+  seconds: number;
+  means: string;
+}
+
+export interface ImageCvLayer {
+  layer: number;
+  rows: number;
+  cols: number;
+  values: number[][];
+}
+
+export interface ImageCvReadout {
+  /** "attention" when there was something to read. Anything else means this
+   *  architecture has none — a convolutional backbone has no per-layer
+   *  attention — and `reason` says which. */
+  kind: string;
+  reason: string;
+  model_name: string;
+  dtype: string;
+  layers: ImageCvLayer[];
+  n_layers: number | null;
+  heads: number | null;
+  grid_rows: number | null;
+  grid_cols: number | null;
+  means: string;
+}
+
+export const imageCvPredict = (body: { image: string; top_k: number }) =>
+  fetch("/api/image/cv/predict", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvPrediction>(r));
+
+/** Just the picture. `top_k` used to travel here and the route discarded it —
+ *  `layer_readout` returns per-layer maps, not a class ranking, so there is
+ *  nothing for it to cut. Sending it now is a 422 naming the field. */
+export const imageCvReadout = (body: { image: string }) =>
+  fetch("/api/image/cv/readout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<ImageCvReadout>(r));
+
+/** One module a LoRA targets, and how far it moves it. */
+export interface AdapterModule {
+  name: string;
+  component: string;
+  role: string;
+  rank: number | null;
+  /** `alpha / rank`. `null` when the adapter published neither, in which case
+   *  `delta_norm` is UNSCALED and not comparable with the scaled rows. */
+  scale: number | null;
+  scaled: boolean;
+  /** Frobenius norm of the delta. A MAGNITUDE, never an effect: a large move
+   *  in a layer the sampler barely exercises can matter less than a small one
+   *  in a layer it leans on. */
+  delta_norm: number;
+  /** `||dW|| / ||W||`, or `null` when the base model was not resident. Never
+   *  approximated — the denominator is the point of the ratio. */
+  relative: number | null;
+}
+
+export interface AdapterGroup {
+  component: string;
+  role: string;
+  modules: number;
+  delta_norm: number;
+}
+
+export interface AdapterReport {
+  path: string;
+  /** A LIST: an adapter may mix ranks per module, and one number would be
+   *  picking which. */
+  ranks: number[];
+  modules_total: number;
+  modules_listed: number;
+  components: string[];
+  roles: string[];
+  groups: AdapterGroup[];
+  top: AdapterModule[];
+  all_scaled: boolean;
+  base_model: string | null;
+  notes: string[];
+  means: string;
+}
+
+/** Read a LoRA on THIS machine. A path, not an upload: the file is already on
+ *  the server's disk and pushing 400 MB through the page to read a header
+ *  would be absurd. The route refuses requests that did not come from here. */
+export const readAdapter = (path: string, top = 40) =>
+  fetch("/api/image/adapter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, top }),
+  }).then((r) => json<AdapterReport>(r));
+
+/** One weighted part of a pipeline, priced from the files it actually has. */
+export interface ImageFitComponent {
+  name: string;
+  /** The variant chosen for pricing — `""` for the unsuffixed files. */
+  variant: string;
+  /** Every variant on disk, so a reader can see what was NOT chosen. */
+  variants: string[];
+  files: number;
+  disk_bytes: number;
+  /** `null` is UNKNOWN, never 0 — 0 would read as "this part is free". */
+  card_bytes: number | null;
+  /** Priced from a tensor table (`true`) or from file sizes (`false`). */
+  exact: boolean;
+  note: string;
+}
+
+/** Whether one image model will actually run on the card in this machine.
+ *
+ *  `size_bytes` on the row beside this is what the checkpoint weighs ON DISK,
+ *  which is a different number from what it costs once loaded and says nothing
+ *  at all about whether the load can succeed. An F32 checkpoint loaded bf16
+ *  allocates half its file size; `stabilityai/sd-turbo` keeps two copies of
+ *  its VAE in one folder; and a component holding a config with no weights is
+ *  a model listed as ready that fails at the click. All three are answered
+ *  here and none of them are visible in the disk figure.
+ */
+export interface ImageFit {
+  path: string;
+  components: ImageFitComponent[];
+  /** Components on disk deliberately not counted, with the reason. Rendered
+   *  rather than dropped: a total that silently omits a folder somebody can
+   *  see on their own disk reads as an arithmetic error. */
+  excluded: string[];
+  /** Declared components whose folder is here and CONTRADICTS ITSELF — a
+   *  config with no weights, or weights with no config. Non-empty means the
+   *  load FAILS, however comfortably the sizes fit. */
+  missing: string[];
+  /** Declared components whose folder is not here at all. Reported, never
+   *  blocking: a component can be handed to `from_pretrained` directly, and
+   *  the server cannot see that from the files on disk. */
+  absent: string[];
+  /** Components whose directory could not be listed at all — a permission,
+   *  an ACL, or a sync client's virtual filesystem.
+   *
+   *  Neither counted nor assumed absent. With one of these `card_bytes` is
+   *  `null`, because a total that silently omits a component is not a total.
+   *  This used to read as "empty", which flipped `loadable` to false, halved
+   *  the published size, and told the reader to re-download a model that was
+   *  sitting there complete. */
+  unreadable: string[];
+  disk_bytes: number;
+  /** Resident weight bytes at `dtype`. `null` when any component could not be
+   *  priced — a total missing one part is not a total. */
+  card_bytes: number | null;
+  dtype: string;
+  device: string;
+  device_name: string;
+  /** `null` is UNKNOWN. Apple's unified memory reports no free figure, and 0
+   *  free would say the machine is out of memory when nobody asked it. */
+  free_bytes: number | null;
+  total_bytes: number | null;
+  headroom_bytes: number | null;
+  /** `"fits"` | `"tight"` | `"over"` | `"unknown"`, and `"unknown"` is a real
+   *  answer rather than a cheerful default. */
+  verdict: string;
+  /** The variant `from_pretrained` must be given, `""` when the plain files
+   *  are complete, and `null` when no variant covers every component — which
+   *  means the checkpoint cannot be loaded as it stands. */
+  variant: string | null;
+  loadable: boolean;
+  exact: boolean;
+  /** The room left for latents and attention maps that the verdict used.
+   *  REPORTED so a reader can check the arithmetic rather than taking a
+   *  threshold on faith. */
+  activation_headroom: number;
+  reason: string;
+  means: string;
+}
+
+export interface ImageLocalModel {
+  /** The repo id, and the string `loadImage` takes. */
+  path: string;
+  family: string;
+  label: string;
+  known: boolean;
+  architecture: string;
+  capabilities: string[];
+  reason: string;
+  /** `null` is UNKNOWN. A cache entry that could not be sized is still worth
+   *  listing, and it is not a model that weighs nothing. */
+  size_bytes: number | null;
+  /** Three states, and `!complete` is the wrong test for all of them.
+   *
+   *  `true` — the weights are on this disk.
+   *  `false` — they are not: an interrupted download, and offering a Load
+   *  button on one is offering a click that cannot work.
+   *  `null` — the entry could not be sized at all, so neither claim is
+   *  available. Reporting that as `false` sends somebody to re-download a
+   *  model they may already have. */
+  complete: boolean | null;
+  /** Will it run HERE. `null` when the row could not be priced at all — the
+   *  model still lists, because dropping it would hide a checkpoint the
+   *  reader can see on their own disk. */
+  fit: ImageFit | null;
+}
+
+export interface ImageLocal {
+  models: ImageLocalModel[];
+  /** Summed over the COMPLETE rows only: an interrupted download's bytes are
+   *  not a model on this disk. */
+  bytes_on_disk: number;
+  /** How many entries could not be sized at all — a third state, not zero
+   *  bytes. Carried in `means` as a sentence; here as the fact. */
+  unsized: number;
+  /** The cache walk stopped at `scan_limit`. `/api/image/available` has
+   *  reported this on the same walk for months and this route did not — and
+   *  this is the one the panel renders. A list that silently stops at 200
+   *  reads as "everything on this disk", which is the one thing it is not. */
+  truncated: boolean;
+  scan_limit: number;
+  means: string;
+}
+
+/** What downloading one model would cost, before any of it moves. */
+export interface ImageSize {
+  id: string;
+  size_bytes: number | null;
+  gated: boolean;
+  /** `null` when the local cache could not be walked at all. "We looked and
+   *  it is not here" and "nobody could look" are different answers, and only
+   *  one of them justifies telling somebody to spend the download. */
+  cached: boolean | null;
+  partial: boolean | null;
+  /** Whether the walk ran. `means` already says so in words; this is here so
+   *  nothing branches on `cached === false` and gets it wrong. */
+  cache_readable: boolean;
+  /** The entry IS here and could not be measured — a permission error, an
+   *  ACL, a sync client's virtual filesystem.
+   *
+   *  A third state beside `cached` and `partial`, and both of those are
+   *  `null` when this is true. It used to be filed as `partial: true`, so the
+   *  panel stated as fact that the repo "has a cache entry on this machine but
+   *  NO WEIGHTS in it — an interrupted download", from a permission error, and
+   *  sent the reader to re-download something that may be complete. */
+  cache_unsized: boolean;
+  means: string;
+}
+
+/** Which kinds of image model can be searched for. Reads no disk and makes no
+ *  Hub call — it is `image_catalog.TASKS`, so a task added there appears here
+ *  without a second edit. */
+export const getImageTasks = () =>
+  fetch("/api/image/tasks").then((r) => json<ImageTasks>(r));
+
+/** Image models on the Hub, annotated with size and whether they are here.
+ *
+ *  Downloads nothing. Refuses 422 for a task outside `image_catalog.TASKS` —
+ *  which would return checkpoints nothing here can load — and 503 when the
+ *  Hub cannot be reached, with the sentence that says the models already on
+ *  this machine still open. Both arrive as `ApiError`, so both go through
+ *  `errorText` and reach the reader in the server's own words.
+ */
+export const searchImageModels = (q: string, task: string, limit = 24) =>
+  fetch(
+    `/api/image/search?q=${encodeURIComponent(q)}&task=${encodeURIComponent(
+      task,
+    )}&limit=${limit}`,
+  ).then((r) => json<ImageSearch>(r));
+
+/** Every image model on this disk, with what it weighs and whether it
+ *  finished downloading. Reads files; asks the Hub nothing. */
+export const getImageLocal = () =>
+  fetch("/api/image/local").then((r) => json<ImageLocal>(r));
+
+/** One image model found in an ORDINARY FOLDER rather than in the Hub cache.
+ *
+ *  The same fields `ImageLocalModel` carries and one different meaning: `path`
+ *  is a DIRECTORY on this machine, not a repo id. `loadImage` takes either, so
+ *  a row from here loads the same way a cached one does — but there is no repo
+ *  to re-fetch it from, which is why the two lists are reported separately
+ *  rather than merged into one.
+ */
+export interface ImageDiscoveredModel {
+  /** The directory the weights were read from, and the string `loadImage`
+   *  takes for it. */
+  path: string;
+  family: string;
+  label: string;
+  known: boolean;
+  architecture: string;
+  capabilities: string[];
+  reason: string;
+  /** `null` is UNKNOWN — see `ImageLocalModel.size_bytes`. Never render it as
+   *  a size. */
+  size_bytes: number | null;
+  /** The same three states as `ImageLocalModel.complete`, and `!complete` is
+   *  the wrong test for all of them. */
+  complete: boolean | null;
+}
+
+export interface ImageDiscovered {
+  models: ImageDiscoveredModel[];
+  /** Every directory that was actually walked. RETURNED rather than assumed,
+   *  and it is the half of the answer that makes an empty list usable: "found
+   *  nothing" without "and here is where I looked" tells somebody their model
+   *  is missing when the truth may be that the directory holding it was never
+   *  searched. */
+  roots: string[];
+  /** The walk hit its budget, so the list is what was reached rather than
+   *  everything there is. A truncation nobody is told about reads as "this is
+   *  all there is". */
+  truncated: boolean;
+  /** The budget `truncated` refers to. The walk's OWN limit, which is not the
+   *  cache walk's — they are separate numbers and quoting one for the other
+   *  states a wrong figure with full confidence. */
+  scan_limit: number;
+  means: string;
+}
+
+/** Image models in ordinary folders — the running directory included.
+ *
+ *  `getImageLocal` reads the Hub cache. This walks the same roots the text
+ *  picker walks, so a checkpoint cloned into the working directory turns up
+ *  here rather than nowhere. Reads files; asks the Hub nothing.
+ */
+export const getImageDiscovered = () =>
+  fetch("/api/image/discovered").then((r) => json<ImageDiscovered>(r));
+
+/** How big one named repo is, before a byte of it moves.
+ *
+ *  The question a reader asks first, and the one the name box could not
+ *  answer: whether it FITS is separate, and is answered against this
+ *  machine's free memory when you load it.
+ */
+export const imageSize = (repo: string) =>
+  fetch(`/api/image/size?repo=${encodeURIComponent(repo)}`).then((r) =>
+    json<ImageSize>(r),
+  );
+
 export interface HubAuth {
   signed_in: boolean;
   user: string | null;
@@ -1138,7 +2457,10 @@ export const pullOllama = (name: string, confirm = false) =>
 export interface OllamaSize {
   name: string;
   bytes: number;
-  free_bytes: number;
+  /** `null` when the volume could not be read. NOT 0 — 0 on the wire says the
+   *  disk is full, which is the one reading that would stop a download the
+   *  tool did not mean to stop. */
+  free_bytes: number | null;
   ok: boolean;
   overridable: boolean;
   warning: string;
@@ -1159,7 +2481,9 @@ export interface OllamaResolved {
   found: boolean;
   name: string;
   bytes: number;
-  free_bytes?: number;
+  /** Absent before the disk is consulted; `null` when it was and could not be
+   *  read. Two different unknowns, and neither is 0. */
+  free_bytes?: number | null;
   ok: boolean;
   overridable: boolean;
   warning: string;
@@ -1225,7 +2549,14 @@ export interface TraceSummary {
   name: string;
   started_at: string;
   n_steps: number;
+  /** A FLOOR when `n_timed < n_steps`, not a total: the store sums
+   *  `started_ms + COALESCE(duration_ms, 0)`, so a step whose duration was
+   *  never recorded contributes nothing to it. */
   total_ms: number;
+  /** How many steps carry a duration. `duration_ms` is nullable on purpose —
+   *  "not recorded" and "took no measurable time" are different facts — and
+   *  without this the panel cannot tell a real 0.0s from a run nobody timed. */
+  n_timed: number;
   n_errors: number;
 }
 
@@ -1321,13 +2652,31 @@ export interface RubricRule {
   means?: string;
 }
 
+export interface RubricRow {
+  trace_id: string;
+  name: string;
+  matched: string[];
+  hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
+  /** ISO 8601, formatted in the reader's own timezone rather than the
+   *  server's — the server has no idea what that is. */
+  started_at: string;
+  /** `null` when the store has no duration for this run, which is not the
+   *  same as a run that took no time. */
+  total_ms: number | null;
+  n_steps: number;
+  n_errors: number;
+  /** "app" for a generation made in the playground, "" for a trace written
+   *  before the store carried the key. A playground generation and a run of
+   *  your own agent code both belong in this list and are not the same
+   *  thing, so the row says which. */
+  source: string;
+  /** Scripted sample data. It must never be indistinguishable from a run you
+   *  actually recorded. */
+  demo: boolean;
+}
+
 export interface RubricReport {
-  rows: {
-    trace_id: string;
-    name: string;
-    matched: string[];
-    hits: { rule: string; matched: boolean; detail: string; step_ids: string[] }[];
-  }[];
+  rows: RubricRow[];
   n_traces: number;
   n_traces_available: number;
   truncated: number;
@@ -1377,7 +2726,19 @@ export interface InspectImport {
     status: string;
     n_samples: number;
   };
+  /** The samples LISTED, capped server-side. Use `samples_total` for how many
+   *  the log carries — this array is what the picker can offer, not a count
+   *  of the reader's file. */
   samples: { name: string; id: string; epoch: number }[];
+  /** Every sample in the archive, counted before the cap.
+   *
+   *  `samples.length` was being printed as this, so a 6,000-sample log
+   *  rendered "5000 samples" as a fact about the reader's own archive, while
+   *  the picker held an arbitrary subset in zip order and a later sample was
+   *  simply unselectable with nothing saying why. */
+  samples_total: number;
+  /** Whether the list above is short of `samples_total`. */
+  samples_truncated: boolean;
   means: string;
 }
 
@@ -1423,6 +2784,29 @@ export interface TraceDoc {
 export const getTraces = () => fetch("/api/traces").then((r) => json<TraceSummary[]>(r));
 export const getTrace = (id: string) =>
   fetch(`/api/traces/${id}`).then((r) => json<TraceDoc>(r));
+
+/** The agent run carried INSIDE the open `.mri`, rather than one in the store.
+ *
+ *  Two sources answer "what runs can I look at", and they are not the same
+ *  set: `getTraces` lists what this machine recorded or imported, and this is
+ *  what arrived in the file somebody sent. A carried run is read, never
+ *  written to the store — importing it would file a stranger's run in this
+ *  machine's history as though it had been captured here.
+ *
+ *  `available: false` is the ordinary answer. Most sessions carry no run.
+ */
+export interface SessionTraceDoc extends TraceDoc {
+  available: boolean;
+  /** What the sender's run held, against `steps.length` here. */
+  n_steps_total: number;
+  /** How many steps the file dropped to fit its cap. */
+  truncated: number;
+  /** The step the bundle was built around, if it names one. */
+  step_ref?: string | null;
+}
+
+export const getSessionTrace = () =>
+  fetch("/api/session/trace").then((r) => json<SessionTraceDoc>(r));
 
 /** What the last generation cost, including what watching it cost.
  *
@@ -1649,9 +3033,11 @@ export interface CustomStatus {
   source: string | null;
   name: string | null;
   device: string;
-  n_params: number;
-  n_trainable: number;
-  n_modules: number;
+  /** `null` until something is loaded — nothing has been counted, and 0 is
+   *  a count. */
+  n_params: number | null;
+  n_trainable: number | null;
+  n_modules: number | null;
   input_shape: number[] | null;
   input_origin: string;
   input_reason: string;
@@ -1700,6 +3086,10 @@ export interface GgufSummary {
   head_count_kv: number | null;
   tokenizer: string | null;
   higher_precision_tensors: { name: string; type: string; bpw: number }[];
+  /** How many there ARE. The array above is the twelve highest and the panel
+   *  shows six of those, so without this the list reads as the whole set when
+   *  it can be a small fraction of it. */
+  n_higher_precision_tensors: number;
   unmeasured_tensors: number;
   means: string;
 }
@@ -1969,14 +3359,20 @@ export interface CustomRun {
 export const getCustom = () =>
   fetch("/api/custom").then((r) => json<CustomStatus>(r));
 
+export interface CustomCandidates {
+  adapters: CustomCandidate[];
+  torchscript: CustomCandidate[];
+  roots: string[];
+  /** How many the walk SAW, against how many it returned. Both walks stop at
+   *  40, and a panel whose whole job is "here is what is on your disk" showed
+   *  40 of 45 with nothing to say five were missing. */
+  n_adapters_found: number;
+  n_torchscript_found: number;
+  truncated: boolean;
+}
+
 export const getCustomCandidates = () =>
-  fetch("/api/custom/candidates").then((r) =>
-    json<{
-      adapters: CustomCandidate[];
-      torchscript: CustomCandidate[];
-      roots: string[];
-    }>(r),
-  );
+  fetch("/api/custom/candidates").then((r) => json<CustomCandidates>(r));
 
 export const loadCustom = (path: string) =>
   fetch("/api/custom/load", {
@@ -2033,6 +3429,14 @@ export interface LensRow {
   tokens: string[];
   probs: number[];
   entropy: number;
+  /** KL(truth ‖ lens) in nats: how much information is lost by reading THIS
+   *  layer instead of the model's own final answer.
+   *
+   *  `lens.py` computes it in "the same direction and same floor as
+   *  `ablate.kl_nats`, so a lens error and a head score on one screen are the
+   *  same quantity" — a deliberate choice that only pays off if the number
+   *  reaches the screen, and it was not in this type at all. */
+  kl_to_final?: number;
 }
 
 /** #44 — one occluded block of the camera frame. */
@@ -2105,12 +3509,25 @@ export interface VLASweep {
   episode_stride: number;
   frame_stride: number;
   seconds: number;
+  /** A SAMPLE of the frames that could not be measured, capped server-side.
+   *  Use `n_failed` for how many there were — this list is what to look at,
+   *  not the measurement. */
   failed: { episode: number; timestep: number; why: string }[];
+  /** How many frames failed in total.
+   *
+   *  Separate from `failed.length` because that list is truncated, and the
+   *  server's own sentence used to count the truncated list: with PyAV absent
+   *  over six episodes of a hundred frames, all 600 failed and the report read
+   *  "20 frame(s) could not be measured". The true figure was not derivable
+   *  from the payload at all. */
+  n_failed: number;
   means: string;
   strip: {
     rows: { episode: number; timesteps: number[]; values: number[] }[];
-    low: number;
-    high: number;
+    /** `null` when no row was measured — the RANGE of a metric nobody
+     *  observed. 0.0 there read as a flat result rather than as no result. */
+    low: number | null;
+    high: number | null;
     frame_stride: number;
     /** Episodes have different lengths, so the strip is ragged rather than
      *  padded with zeros that would read as measured lows. */
@@ -2339,6 +3756,11 @@ export interface LayerProbe {
 export interface ProbeReport {
   layers: LayerProbe[];
   majority: number;
+  /** `{"0": nA, "1": nB}` — the class sizes the majority line is computed
+   *  FROM. Shown beside it, because "majority 62%" is a different reading
+   *  when it comes from 8 examples against 5 than from 800 against 500, and
+   *  the percentage alone cannot say which. */
+  counts?: Record<string, number>;
   n_train: number;
   n_test: number;
   n_permutations: number;
@@ -2814,6 +4236,10 @@ export interface PathInfo {
   hub_token: string;
   undelivered_traces: string;
   models_dirs: string[];
+  /** Where MODELMRI_MODELS_DIR points, or `null` when it was never set. */
+  models_home: string | null;
+  /** Every other cache root this process will read from. */
+  inherited_caches: string[];
   cwd: string;
   legacy: string | null;
   platform: string;
@@ -2855,6 +4281,12 @@ export interface PatchTrace {
   n_layers: number;
   n_positions: number;
   components: string[];
+  /** Components this architecture does not expose, each with the refusal that
+   *  named it — `"mlp: …"`. The trace catches a PatchError per component and
+   *  carries on so the rest is still measured, and `patch.py`'s own comment
+   *  says why this must be shown: without it "two grids would have arrived
+   *  looking like the whole answer". */
+  skipped?: string[];
   /** One grid per component. `resid` says where; `attn` and `mlp` say through
    *  what, and on the reference pair they disagree — MLP peaks at +0.365 on a
    *  subject token in layer 0, attention at +0.232 on the last token in
@@ -2901,16 +4333,586 @@ export const unloadModel = () =>
  *  them. A local tool that will import any path handed to it is a nastier
  *  primitive than it looks.
  */
+/** The same walk `/api/custom/candidates` runs, plus the folder that was
+ *  added. One type for both, because the panel renders whichever answered
+ *  last and a shape that differs between them would drop the truncation
+ *  notice depending on which button was pressed. */
 export const scanFolder = (path: string) =>
   fetch("/api/custom/scan", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ path }),
-  }).then((r) =>
-    json<{
-      added: string;
-      adapters: CustomCandidate[];
-      torchscript: CustomCandidate[];
-      roots: string[];
-    }>(r),
-  );
+  }).then((r) => json<CustomCandidates & { added: string }>(r));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE JUDGE, AND WHAT THE ROBOT POLICY WOULD DO
+   ──────────────────────────────────────────────────────────────────────────
+   Six routes that were tested, documented and unreachable. Everything below
+   keeps the habits the rest of this file already keeps: a `null` is an
+   UNKNOWN and never a zero, a cap travels beside the thing it capped, and the
+   server's own `means` sentence is carried through verbatim because that is
+   where the caveats live.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** A deliberate no, raised on this side because the page cannot make the call.
+ *
+ *  `noModelHere` says "there is no model behind this page", which is the right
+ *  sentence for a forward pass and the wrong one for a dataset audit — that
+ *  reads FILES already on disk, and what a static bundle lacks there is a
+ *  filesystem, not a checkpoint. Same 409 and same JSON shape, so `explain`,
+ *  `errorText` and every refusal renderer treat it exactly as they treat the
+ *  server's own.
+ */
+function refusedHere(sentence: string): Promise<never> {
+  return Promise.reject(new ApiError(409, JSON.stringify({ error: sentence })));
+}
+
+// ------------------------------------------------------------------- judge
+//
+// LLM-as-judge, except the number is READ rather than sampled: one forward
+// pass per paraphrase, softmax over the verdict token ids at the final
+// position, no generation. Holding the weights is what makes that possible,
+// and it is the whole argument for the feature.
+
+/** One paraphrase, one forward pass. */
+export interface JudgePass {
+  paraphrase: number;
+  /** p(yes) AMONG the verdict tokens — which of the two, GIVEN it answered.
+   *  Read it beside `mass`, never alone: the ratio between two rounding
+   *  errors is still a number and still looks like a considered answer. */
+  p_yes: number;
+  p_no: number;
+  /** How much of the model's whole probability mass landed on a verdict token
+   *  at all. THIS is the number that says whether it answered. */
+  mass: number;
+  /** Above the server's floor. A `false` here is CARRIED rather than dropped —
+   *  that this model does not answer this phrasing is a fact about the
+   *  rubric — and it is NOT in the median. */
+  answered: boolean;
+}
+
+/** Which surface forms of the verdict this tokenizer can express in one token.
+ *
+ *  Reported because it is a fact about the measurement: `" yes"` and `"yes"`
+ *  are different ids, several casings can share one id, and the mass is summed
+ *  over the DISTINCT ids found here.
+ */
+export interface JudgeTokens {
+  yes_ids: number[];
+  no_ids: number[];
+  yes_forms: string[];
+  no_forms: string[];
+}
+
+export interface JudgeScore {
+  rubric: string;
+  passes: JudgePass[];
+  /** `null` when the verdict tokens were never resolved — not an empty set. */
+  tokens: JudgeTokens | null;
+  /** The judge's name, attached to every score. A small local model is a weak
+   *  evaluator and a well-calibrated report of a weak judge's opinion is still
+   *  a weak judge's opinion; the name is what lets a reader weigh it. Empty
+   *  when the checkpoint did not name itself. */
+  judge_model: string;
+  dtype: string;
+  device: string;
+  /** `null` is "no seed was fixed", which is NOT seed 0. */
+  seed: number | null;
+  means: string;
+  /** Absent when nothing was scored — never 0. The server writes these five
+   *  only when there is at least one pass, so an absent `median` means there
+   *  is no median rather than a median of zero. */
+  low?: number;
+  median?: number;
+  high?: number;
+  spread?: number;
+  /** How many paraphrases are IN that median — the answered ones. Read it
+   *  against `passes.length`, which is how many were run. */
+  n_paraphrases?: number;
+}
+
+/** The prompts that would be run, before any of them is. No model is touched. */
+export interface JudgePlan {
+  prompts: string[];
+  n_passes: number;
+}
+
+const JUDGE_NEEDS =
+  "Reading a rubric off a model's probability mass is one forward pass per " +
+  "paraphrase against weights this page does not hold.";
+
+export const judgePlan = (body: {
+  text: string;
+  rubric: string;
+  n_paraphrases: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        JUDGE_NEEDS +
+          " Pricing that run means listing the prompts it would make, and " +
+          "there is nothing here to make them against.",
+      )
+    : fetch("/api/judge/plan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<JudgePlan>(r));
+
+export const judgeScore = (body: {
+  text: string;
+  rubric: string;
+  n_paraphrases: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(JUDGE_NEEDS)
+    : fetch("/api/judge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<JudgeScore>(r));
+
+// ------------------------------------------------------ robot dataset audit
+
+/** One proof, its verdict, and the numbers behind it. */
+export interface AuditCheck {
+  name: string;
+  /** `ok`, `broken` or `unchecked`. Three, deliberately: a check either proved
+   *  the thing, proved the opposite, or could not be run on this machine, and
+   *  collapsing those into a score is what a grade does. Typed as the server's
+   *  own string so a verdict added later renders as itself, not as nothing. */
+  verdict: string;
+  detail: string;
+  /** What it measured and what it compared against. The keys are each check's
+   *  own, so this is rendered generically — and an `n_<name>` beside a
+   *  `<name>` list is that list's TRUE length, which is how a capped list
+   *  says it was capped. */
+  measured: Record<string, unknown>;
+}
+
+export interface AuditReport {
+  repo_id: string;
+  /** `null` is UNKNOWN and is NOT 0. "This dataset has no frames" and "the
+   *  frame table could not be read" are different answers, and the second is
+   *  the whole reason somebody opened an audit. */
+  n_episodes: number | null;
+  n_frames: number | null;
+  checks: AuditCheck[];
+  seconds: number;
+  means: string;
+}
+
+export const vlaAudit = () =>
+  DEMO || VIEWER
+    ? refusedHere(
+        "Auditing a robot dataset reads the parquet, the video files and the " +
+          "recorded statistics already on disk — nothing is downloaded, no " +
+          "policy is loaded and no GPU is touched. This page is a static " +
+          "bundle with no filesystem behind it, so there is nothing here to " +
+          "prove intact. `pip install modelmri` and audit a dataset of your " +
+          "own.",
+      )
+    : fetch("/api/vla/audit").then((r) => json<AuditReport>(r));
+
+// ------------------------------------------------------ what it would DO
+//
+// All three need the action expert, which lives in a second process with its
+// own venv because lerobot's pins cannot share an environment with this one.
+// Each refuses BEFORE spending any forward passes whenever the answer would
+// not have depended on them.
+
+/** Forward passes before any are spent. Frames and passes, never seconds. */
+export interface VLAActionCost {
+  episode: number;
+  frames_in_episode: number;
+  frames_measured: number;
+  /** What the stride will miss. A divergence between sampled frames is not in
+   *  the chart, and this is how many chances it had to hide. */
+  frames_skipped: number;
+  stride: number;
+  passes: number;
+  means: string;
+}
+
+/** One frame's policy action beside the human's, and the gap between. */
+export interface VLADivergence {
+  t: number;
+  predicted: number[];
+  recorded: number[];
+  /** Signed, per dimension. "The policy consistently reaches further" and "the
+   *  policy is noisy" are different findings; an absolute value erases the
+   *  first. */
+  delta: number[];
+  distance: number;
+}
+
+export interface VLACompare {
+  rows: VLADivergence[];
+  /** EMPTY when the dataset named no dimensions, or named a count that
+   *  disagreed with the policy's width — the server drops the whole list
+   *  rather than mislabelling one joint. */
+  joint_names: string[];
+  dimensions: number;
+  frames_measured: number;
+  frames_in_episode: number;
+  stride: number;
+  frames_skipped: number;
+  worst_frame: number;
+  worst_distance: number;
+  /** Per-dimension mean of the SIGNED delta. Bias, not error. */
+  bias: number[];
+  policy_repo: string;
+  revision: string;
+  /** `null` means no seed was fixed, so re-running gives a different curve. */
+  seed: number | null;
+  means: string;
+}
+
+export interface VLASwapArm {
+  instruction: string;
+  is_own: boolean;
+  action: number[];
+  distance_from_own: number;
+  /** Against the policy's OWN sampling spread, never a threshold from a paper
+   *  about a different policy. */
+  ratio_to_sampling: number;
+}
+
+export interface VLASwap {
+  arms: VLASwapArm[];
+  instruction_spread: number;
+  sampling_spread: number;
+  ratio: number;
+  listens: boolean;
+  seeds: number;
+  instructions_tried: number;
+  /** A CAP. Distinct instructions in this dataset that were NOT tried, so
+   *  above zero the spread across instructions is a lower bound. */
+  instructions_dropped: number;
+  means: string;
+}
+
+export interface VLAKnockoutRow {
+  stream: string;
+  label: string;
+  action: number[];
+  distance: number;
+  /** `null` when this policy's sampling spread could not be measured. The bar
+   *  is still a real measurement; there is simply no denominator, and
+   *  inventing one would be worse than leaving it out. NOT 0. */
+  ratio_to_sampling: number | null;
+  /** `null` for the same reason — "nothing here says whether this bar is
+   *  larger than the policy's own noise", which is not `false`. */
+  above_noise: boolean | null;
+}
+
+export interface VLAKnockout {
+  rows: VLAKnockoutRow[];
+  baseline: number[];
+  streams: number;
+  /** `null` when it could not be measured. */
+  sampling_spread: number | null;
+  means: string;
+}
+
+const POLICY_NEEDS =
+  "This asks what the robot policy would DO, which runs the action expert in " +
+  "its own process against a dataset on disk.";
+
+export const vlaActionCost = (episode: number, stride: number) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " Pricing a run this page cannot make would describe a wait nobody " +
+          "here is going to have.",
+      )
+    : fetch(`/api/vla/actions/cost?episode=${episode}&stride=${stride}`).then(
+        (r) => json<VLAActionCost>(r),
+      );
+
+export const vlaCompareActions = (body: {
+  episode: number;
+  stride: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " One forward pass per sampled frame, and a baked curve would be a " +
+          "fabricated comparison sitting beside real recordings. `pip install " +
+          "modelmri` to run it on a policy of your own.",
+      )
+    : fetch("/api/vla/actions/compare", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLACompare>(r));
+
+export const vlaSwapInstruction = (body: {
+  episode: number;
+  t: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " It re-runs one frame under every distinct task string the dataset " +
+          "contains, and again under several seeds, none of which this page " +
+          "can do.",
+      )
+    : fetch("/api/vla/actions/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLASwap>(r));
+
+export const vlaKnockoutInputs = (body: {
+  episode: number;
+  t: number;
+  seed: number | null;
+}) =>
+  DEMO || VIEWER
+    ? refusedHere(
+        POLICY_NEEDS +
+          " It replaces each input in turn with that episode's mean and runs " +
+          "the policy again, which needs the policy.",
+      )
+    : fetch("/api/vla/actions/knockout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<VLAKnockout>(r));
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE CONTROL, THE SAVED SWEEPS, AND A FINDING COUNTED OVER MANY RUNS
+   ──────────────────────────────────────────────────────────────────────────
+   Three tested routes with nothing on the page able to call them. Appended
+   as a block rather than filed beside their neighbours above for a mechanical
+   reason: several people are editing this 4,000-line module at once, and an
+   insertion in the middle of it is how two of them lose each other's work.
+
+   Same habits as the rest of the file: a `null` is an UNKNOWN and never a
+   zero, a cap travels beside the thing it capped, and the server's own
+   `means` sentence is carried through verbatim because that is where the
+   caveats live.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/** The same head ranking, run again on an untrained twin of this architecture.
+ *
+ *  The question underneath every ranking in this tool: would this measurement
+ *  have produced a confident, ordered list anyway? The twin is built from
+ *  `config.json` alone — no weights fetched, works offline — seeded, and put
+ *  through the IDENTICAL `rank_heads` over the same tokens. Both sides go
+ *  through one function deliberately: a second implementation of the
+ *  measurement could differ from the one being checked, and then agreement
+ *  would mean nothing in either direction.
+ */
+export interface ControlRanking {
+  /** The seed the twin's weights came from. Echoed by the server rather than
+   *  chosen here, so the number on screen is the one that was used. */
+  seed: number;
+  baseline: string;
+  /** The loaded model's ranking, re-run through the same public method — so
+   *  it obeys every gate the panel's own ranking does. ONE layer. */
+  model: Ablation;
+  /** The untrained twin's ranking over the same tokens at the same position. */
+  untrained: Ablation;
+  /** Rank correlation between the two orderings.
+   *
+   *  NULL when the twin produced no ranking to correlate against — its scores
+   *  were all equal. That is not zero: "the two are uncorrelated" and "one
+   *  side is not a ranking at all" are different statements about the data,
+   *  and rendering the second as 0.00 invents a measurement. */
+  spearman: number | null;
+  /** How many of the top heads were compared, and how many are in both. Both
+   *  can legitimately be 0 — a ranking too short for a top-k has nothing to
+   *  say about shared heads, and the verdict says so rather than implying it. */
+  top_k: number;
+  top_k_shared: number;
+  /** The server's own reading of the two numbers above, thresholds stated.
+   *  Shown verbatim: it is written to be disagreed with, beside the
+   *  correlation it came from. */
+  verdict: string;
+}
+
+/** Run the control. `seed` is omitted unless asked for, so the server's own
+ *  default is what answers and the response says what it was. */
+export const controlRanking = (
+  layer: number,
+  /** The baseline that produced the ranking on screen — taken from that
+   *  ranking's own response, not from the panel's select, so the control is
+   *  about what the reader is looking at. */
+  baseline: string,
+  seed?: number,
+) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "The control builds a SECOND model — this architecture with random " +
+          "weights — and runs the identical head ranking over the same " +
+          "tokens, so it costs two full sweeps and a second model resident " +
+          "for the duration.",
+      )
+    : fetch(
+        `/api/attention/control?layer=${layer}&baseline=${encodeURIComponent(
+          baseline,
+        )}` + (seed == null ? "" : `&seed=${seed}`),
+      ).then((r) => json<ControlRanking>(r));
+
+/** One sweep saved on this machine, and how far it got. */
+export interface SavedSweep {
+  sweep_id: string;
+  /** ISO 8601 as the store wrote it, or "" for a row that carries none. An
+   *  empty string is UNKNOWN and must not be rendered as an epoch date. */
+  started_at: string;
+  model: string;
+  metric: string;
+  n_prompts: number;
+  n_measured: number;
+  /** A prompt the measurement could not be taken on is a ROW, not a gap —
+   *  see modelmri/sweep.py rule 2 — so this can be non-zero on a sweep that
+   *  is nonetheless complete. */
+  n_refused: number;
+  n_remaining: number;
+  complete: boolean;
+}
+
+/** Every sweep saved on this machine, newest first.
+ *
+ *  THE RESPONSE CARRIES NO TOTAL. `/api/sweeps` takes a `limit` and returns
+ *  at most that many rows with no field saying how many exist — so a list of
+ *  exactly `limit` rows is indistinguishable from a complete one, and the
+ *  only honest thing a caller can do is state the cap it asked for. Its
+ *  `means` sentence counts the rows it RETURNED, not the rows there are.
+ */
+export interface SweepList {
+  sweeps: SavedSweep[];
+  means: string;
+}
+
+export const savedSweeps = (limit: number) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Saved sweeps are read out of the trace database on your own " +
+          "machine. This page is a static recording with no database behind " +
+          "it, so any list here would be a list of somebody else's runs.",
+      )
+    : fetch(`/api/sweeps?limit=${limit}`).then((r) => json<SweepList>(r));
+
+/** What finishing a stopped sweep would cost, and whether it may run at all. */
+export interface ResumePlan {
+  sweep_id: string;
+  model: string;
+  metric: string;
+  n_prompts: number;
+  n_measured: number;
+  n_remaining: number;
+  /** Which prompt indices still need running. Can be as long as the sweep. */
+  remaining_indices: number[];
+  /** NULL when nothing blocks it. A string is the reason this resume would be
+   *  WRONG rather than merely expensive — a prompt set that has been edited, a
+   *  row indexed past the end, a different model loaded now — and it is never
+   *  a warning to override. */
+  blocked: string | null;
+  means: string;
+}
+
+export const sweepResumePlan = (sweepId: string) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "A resume plan is priced against the saved rows of a sweep on your " +
+          "machine, and checked against the model that is loaded now.",
+      )
+    : fetch(`/api/sweeps/${encodeURIComponent(sweepId)}/resume`).then((r) =>
+        json<ResumePlan>(r),
+      );
+
+/** What a finished sweep looks like when a resume completes it. */
+export interface ResumedSweep {
+  sweep_id: string;
+  model: string;
+  metric: string;
+  rows: unknown[];
+  stats: unknown[];
+  n_prompts: number;
+  n_measured: number;
+  /** Prompts still unmeasured AFTER the resume — a refusal stays a refusal.
+   *  This is why a sweep containing one could be listed as unfinished
+   *  forever: `remaining()` counts every unmeasured row as still-to-run. */
+  n_unmeasured: number;
+  means: string;
+}
+
+/** Finish a stopped sweep, keeping every prompt already measured.
+ *
+ *  `sweep.resume` was written, tested and PRICED — `sweepResumePlan` above
+ *  answers what finishing would cost — and had no way to run: no route, no
+ *  CLI flag, no button. The panel rendered "Nothing blocks this resume…
+ *  Finishing it costs only the N prompt(s) below" beside no control at all.
+ *
+ *  The server re-checks `_resumable` itself, so the price and the run cannot
+ *  disagree about whether it may proceed.
+ */
+export const sweepResume = (sweepId: string) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Finishing a sweep runs the model on the prompts it has not measured " +
+          "yet, which needs one loaded on your own machine.",
+      )
+    : fetch(`/api/sweeps/${encodeURIComponent(sweepId)}/resume`, {
+        method: "POST",
+      }).then((r) => json<ResumedSweep>(r));
+
+/** One structural finding, and how many of the recorded runs contain it. */
+export interface RecurringFinding {
+  kind: string;
+  label: string;
+  /** Runs this finding appears in, out of the runs that were READ. Twice in
+   *  one run still counts as one run; `total_count` is the occurrences. */
+  n_runs: number;
+  of_runs: number;
+  total_count: number;
+  /** The finding's own identity — the input hash for a repeat, the name for a
+   *  storm, the sequence for a cycle. What the grouping was done on. */
+  signature: string;
+  trace_ids: string[];
+  means: string;
+}
+
+/** The same structural finding, counted over many recorded runs. */
+export interface PatternsAcrossRuns {
+  findings: RecurringFinding[];
+  /** How many runs were actually read. */
+  n_runs: number;
+  /** How many there were to read. */
+  n_runs_available: number;
+  /** Available minus read. Non-zero means "12 of 19" is 12 of the 19 NEWEST,
+   *  which is a different claim — the server reports it rather than leaving
+   *  the caller to subtract. */
+  truncated: number;
+  /** The trace name this was narrowed to, echoed back. "" is every run. */
+  name: string;
+}
+
+/** Count findings across runs. `name` narrows to one agent by trace name — a
+ *  pattern in 12 of 19 runs of the SAME agent is a different claim from one
+ *  seen across 19 unrelated runs. */
+export const patternsAcross = (name: string, limit: number) =>
+  DEMO || VIEWER
+    ? Promise.reject(
+        // Not `noModelHere`: what is missing on a static page is the database
+        // of recorded runs, not a checkpoint, and a refusal that names the
+        // wrong absent thing sends the reader to the wrong place. Same 409 and
+        // same JSON shape, so `explain` and `errorText` treat it identically.
+        new ApiError(
+          409,
+          JSON.stringify({
+            error:
+              "Counting a finding across runs queries every run recorded on " +
+              "a machine. This page carries a single recording, so any " +
+              "answer would be a pattern of one — install ModelMRI " +
+              "(`pip install modelmri`) to run it over your own.",
+          }),
+        ),
+      )
+    : fetch(
+        `/api/patterns/across?name=${encodeURIComponent(name)}&limit=${limit}`,
+      ).then((r) => json<PatternsAcrossRuns>(r));

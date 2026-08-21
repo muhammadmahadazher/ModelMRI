@@ -91,7 +91,7 @@ def test_a_model_far_past_the_gpu_needs_confirmation(monkeypatch):
 
 @pytest.mark.parametrize(
     "gb",
-    [0.55, 1.5, 16.0, 30.0],  # gpt2, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
+    [0.55, 1.5, 16.0, 30.0],  # a 0.1B, Qwen3-0.6B, Qwen3-8B, a 15B in bf16
 )
 def test_ordinary_models_are_not_blocked(monkeypatch, gb):
     """A guard that fires on normal work gets switched off."""
@@ -292,11 +292,11 @@ def _run_prefetch(monkeypatch, repo_files, repo="acme/model"):
 
 
 def test_a_redundant_second_copy_of_the_weights_is_not_downloaded(monkeypatch):
-    """gpt2 ships model.safetensors AND an identical pytorch_model.bin AND a
-    rust_model.ot. Measured: 1.7 GB pulled where 523 MB was needed, because
-    the ignore list covered TensorFlow, Flax, ONNX and TFLite but not Rust or
-    the redundant .bin. transformers loads the safetensors and never opens
-    the others."""
+    """A repo can ship model.safetensors AND an identical pytorch_model.bin
+    AND a rust_model.ot. Measured: several times the needed bytes came down,
+    because the ignore list covered TensorFlow, Flax, ONNX and TFLite but not
+    Rust or the redundant .bin. transformers loads the safetensors and never
+    opens the others."""
     got = _run_prefetch(
         monkeypatch,
         [
@@ -497,3 +497,250 @@ def test_a_readable_gpu_still_reports_its_size(tmp_path):
             free_override=10**15,
         )
     assert "NVIDIA RTX 4060 has 8.0 GB" in str(caught.value)
+
+
+def test_a_refusal_survives_being_copied_and_pickled():
+    """`BaseException.__reduce__` rebuilds an exception by calling the class
+    with `self.args` POSITIONALLY, and `overridable` is keyword-only — so it
+    is not in `args` and all three of copy, deepcopy and pickle raised:
+
+        TypeError: TooBig.__init__() missing 1 required keyword-only
+        argument: 'overridable'
+
+    A refusal that cannot be copied dies on any path that moves it between
+    contexts, and the failure arrives as a confusing TypeError about the
+    exception rather than the sentence it was carrying.
+    """
+    import copy
+    import pickle
+
+    from modelmri.capacity import TooBig
+
+    original = TooBig("needs 5.0 GB and C: has 1.0 GB free", overridable=True)
+    for rebuilt in (
+        copy.copy(original),
+        copy.deepcopy(original),
+        pickle.loads(pickle.dumps(original)),
+    ):
+        assert isinstance(rebuilt, TooBig)
+        assert rebuilt.overridable is True
+        assert rebuilt.sentence == original.sentence
+        assert str(rebuilt) == str(original)
+
+    # And the flag genuinely round-trips rather than defaulting to a truthy
+    # value: an unoverridable disk refusal must not come back overridable.
+    hard = pickle.loads(pickle.dumps(TooBig("no room", overridable=False)))
+    assert hard.overridable is False
+
+
+def test_a_disk_that_could_not_be_measured_is_said_out_loud(caplog):
+    """`free_space` returns `None` for a volume it could not read, and the disk
+    refusal is correctly SKIPPED — refusing on no evidence would ban a
+    legitimate download.
+
+    THE SENTINEL CHANGED, AND THE ARGUMENT DID NOT. This passed 0 for
+    "unmeasurable", which is also what a genuinely full volume reports —
+    `f_bavail * f_frsize` is exactly 0 for a non-root process on a full ext4.
+    So the one disk the guard most needed to refuse for was indistinguishable
+    from a disk it could not read, and the non-overridable rule was skipped
+    for it. `None` is unmeasurable now; 0 is full.
+
+    What was missing is that nobody was told the check did not happen, so a
+    download proceeded looking exactly like one that had been cleared.
+    """
+    import logging
+    from pathlib import Path
+
+    from modelmri import capacity
+
+    with caplog.at_level(logging.WARNING, logger="modelmri.capacity"):
+        capacity.guard(
+            5_000_000_000,
+            Path("."),
+            label="some/model",
+            vram_gb=8.0,
+            free_override=None,
+            confirm=True,
+        )
+    said = caplog.text
+    assert "could not be measured" in said
+    assert "some/model" in said
+    assert "NOT" in said
+
+
+def test_a_crafted_model_name_cannot_forge_a_log_line(caplog):
+    """CodeQL's log-injection rule, and it is right about my own new code.
+
+    `label` is a repo id and `target` a path, and both arrive from a request.
+    A newline in either would end the real entry and start a forged one — so a
+    model called `x\nWARNING:root:ALL CLEAR` could write a reassuring line
+    into the log a reader is checking to find out what happened.
+
+    `%r` escapes it, and it also makes a trailing space or a zero-width
+    character visible rather than invisible.
+    """
+    import logging
+    from pathlib import Path
+
+    from modelmri import capacity
+
+    forged = "innocent/model" + chr(10) + "WARNING:root:ALL CLEAR"
+    with caplog.at_level(logging.WARNING, logger="modelmri.capacity"):
+        capacity.guard(
+            5_000_000_000,
+            Path("."),
+            label=forged,
+            vram_gb=8.0,
+            free_override=None,
+            confirm=True,
+        )
+
+    assert len(caplog.records) == 1
+    written = caplog.records[0].getMessage()
+    assert chr(10) not in written, "the newline reached the log unescaped"
+    # The name is still readable, escaped — dropping it would lose the one
+    # thing that says WHICH download was not checked.
+    assert "innocent/model" in written
+
+
+def test_a_disk_with_exactly_no_room_is_refused_rather_than_called_unknown():
+    """0 free bytes is a MEASUREMENT, and the most important one this guard can
+    receive.
+
+    `free_space` used 0 as its "could not measure" sentinel, and a genuinely
+    full volume reports exactly that — `f_bavail * f_frsize` is 0 for a
+    non-root process on a full ext4. So the one disk the guard most needed to
+    refuse for was indistinguishable from a disk it could not read, and
+    `guard` wrote a log line saying the check had not happened and skipped the
+    one rule this module's header calls non-overridable.
+    """
+    from pathlib import Path
+
+    with pytest.raises(capacity.TooBig) as caught:
+        capacity.guard(
+            50_000_000_000,
+            Path("."),
+            label="acme/big",
+            vram_gb=8.0,
+            free_override=0,
+        )
+
+    assert caught.value.overridable is False, "the disk rule has no override"
+    assert "free" in str(caught.value)
+
+
+def test_the_wire_reports_a_full_disk_as_full_rather_than_as_unknown():
+    """`free = measured or None` at the route boundary turned a real 0 into
+    `{"free_bytes": null, "ok": true}` — a green "it fits" on a disk with zero
+    bytes free. The two states are distinguished at the source now, so the
+    boundary no longer converts."""
+    from pathlib import Path
+
+    volume, free = capacity.free_space(Path("."))
+
+    assert volume is not None
+    assert free is None or isinstance(free, int)
+    if free is not None:
+        assert free >= 0, "a measurement, and 0 is one of them"
+
+
+def test_a_prefetch_child_that_never_exits_is_stopped_rather_than_waited_on(
+    monkeypatch, caplog
+):
+    """The loop polling for the prefetch child had no deadline at all.
+
+    `proc.poll()` stays None for a child stuck inside a network read that never
+    returns, so a stalled connection to the Hub hung the load — and, running
+    under `asyncio.to_thread`, hung the request behind it.
+
+    MEASURED on this branch's CI: two macOS jobs sat in this frame for 150 and
+    360 minutes and were killed by the runner having produced nothing. The
+    faulthandler dump named it — `_prefetch_weights` in `threading.Event.wait`
+    — under a test that asks for a model it EXPECTS to be refused. The child
+    went looking for it on the network and never came back.
+    """
+    import logging
+    import time
+
+    from modelmri import progress
+    from modelmri import runtime as rt
+
+    class _NeverExits:
+        """A child that is alive, forever, and reports no bytes."""
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    child = _NeverExits()
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: child)
+    # Short bounds, so the test measures the MECHANISM rather than the wall
+    # clock. The real values are 120s and 3600s.
+    monkeypatch.setattr(rt, "PREFETCH_STALL_SECONDS", 0.5)
+    monkeypatch.setattr(rt, "PREFETCH_MAX_SECONDS", 5.0)
+    progress.TRACKER.cancelled.clear()
+
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="modelmri"):
+        rt.ModelRuntime()._prefetch_weights("acme/never-arrives")
+    took = time.monotonic() - started
+
+    assert took < 10, f"the loop did not terminate: {took:.1f}s"
+    assert child.terminated, "the stalled child was left running"
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "made no progress" in said, "a stopped prefetch must be reported"
+
+
+def test_a_prefetch_that_is_making_progress_is_not_killed_for_being_slow(monkeypatch):
+    """The stall bound resets on every byte, so a big download on a slow line
+    survives. A plain deadline would kill it for being big."""
+    import time
+
+    from modelmri import progress
+    from modelmri import runtime as rt
+
+    class _Downloads:
+        """Alive for three ticks, reporting bytes the whole way."""
+
+        def __init__(self) -> None:
+            self.ticks = 0
+
+        def poll(self):
+            self.ticks += 1
+            return None if self.ticks < 4 else 0
+
+        def terminate(self):
+            raise AssertionError("a working download was terminated")
+
+        def wait(self, timeout=None):
+            return 0
+
+    moving = {"n": 0}
+
+    class _Snap:
+        @property
+        def bytes_done(self):
+            moving["n"] += 1_000_000
+            return moving["n"]
+
+    monkeypatch.setattr(rt.subprocess, "Popen", lambda *a, **k: _Downloads())
+    monkeypatch.setattr(progress.TRACKER, "snapshot", lambda: _Snap())
+    monkeypatch.setattr(rt, "PREFETCH_STALL_SECONDS", 0.5)
+    progress.TRACKER.cancelled.clear()
+
+    started = time.monotonic()
+    rt.ModelRuntime()._prefetch_weights("acme/big-but-working")
+
+    assert time.monotonic() - started < 10

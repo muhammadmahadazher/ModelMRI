@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured, percent } from "./measured";
 import { DirectAttribution, errorText, getDirectAttribution } from "./api";
 import ReceiptLine from "./ReceiptLine";
 
@@ -15,9 +16,9 @@ import ReceiptLine from "./ReceiptLine";
  * Two things this renders that a normal bar chart would not:
  *
  *   - The RECONSTRUCTION RESIDUAL, always. Direct attribution is exact only if
- *     the final normalisation is linear, and it is not. On GPT-2 the pieces
- *     sum to about 99% of the real logit, and a chart that did not say so
- *     would be claiming a decomposition it does not have.
+ *     the final normalisation is linear, and it is not. The pieces do not sum
+ *     to the real logit, and a chart that did not say so would be claiming a
+ *     decomposition it does not have.
  *   - Components under that residual as UNREADABLE rather than small. A bar
  *     shorter than the error the approximation already makes cannot be told
  *     from that error.
@@ -76,7 +77,7 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
         <>
           <div className="direct-head">
             <b>{data.token.replace(/ /g, "·") || "␀"}</b> at position{" "}
-            {data.position} — logit <b>{data.real_logit.toFixed(3)}</b>
+            {data.position} — logit <b>{measured(data.real_logit, 3)}</b>
           </div>
 
           <div className="dla-bars stagger">
@@ -106,7 +107,7 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
                 </span>
                 <span className="dla-val">
                   {c.logits > 0 ? "+" : ""}
-                  {c.logits.toFixed(3)}
+                  {measured(c.logits, 3)}
                 </span>
               </div>
             ))}
@@ -127,10 +128,10 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
               decomposition it does not have. */}
           <div className="hint residual">
             The pieces sum to{" "}
-            <b>{(data.real_logit - data.residual).toFixed(3)}</b> against the
-            model's real <b>{data.real_logit.toFixed(3)}</b> — a reconstruction
-            residual of <b>{data.residual.toFixed(4)}</b> (
-            {(data.residual_share * 100).toFixed(2)}%), which is what freezing
+            <b>{measured(data.real_logit - data.residual, 3)}</b> against the
+            model's real <b>{measured(data.real_logit, 3)}</b> — a reconstruction
+            residual of <b>{measured(data.residual, 4)}</b> (
+            {percent(data.residual_share, 2)}), which is what freezing
             the {data.norm_kind} scale cost on this run. The model was not
             modified to make this exact.
           </div>

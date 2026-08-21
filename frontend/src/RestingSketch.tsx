@@ -17,7 +17,7 @@
  *  learns to discard, and `prefers-reduced-motion` removes it entirely
  *  through the global rule in styles.css.
  */
-export type SketchKind = "custom" | "vla" | "agent" | "patch";
+export type SketchKind = "custom" | "vla" | "agent" | "patch" | "image";
 
 /** Deterministic pseudo-random, so the sketch is the same on every render and
  *  a re-render never looks like new information. */
@@ -37,12 +37,14 @@ export default function RestingSketch({ kind }: { kind: SketchKind }) {
                 {kind === "vla" && <Frame />}
                 {kind === "agent" && <Timeline />}
                 {kind === "patch" && <Grid />}
+                {kind === "image" && <StepsByWord />}
             </svg>
             <span className="sketch-cap">
                 {kind === "custom" && "one forward pass, layer by layer"}
                 {kind === "vla" && "what the policy looked at, per frame"}
                 {kind === "agent" && "every step, nested, on one timeline"}
                 {kind === "patch" && "every layer against every token"}
+                {kind === "image" && "every word, at every denoising step"}
             </span>
         </div>
     );
@@ -128,6 +130,49 @@ function Timeline() {
                 />
             ))}
             <line className="sk-axis" x1="8" y1="112" x2="212" y2="112" />
+        </g>
+    );
+}
+
+/** Words across, denoising steps down — the shape of a cross-attention run.
+ *
+ *  Deliberately the same cell vocabulary as `Grid` and a different geometry,
+ *  because the two panels answer different questions in the same picture: that
+ *  one is layers against tokens, this one is steps against words. A wide short
+ *  grid also carries the one fact the caption cannot: there are far more steps
+ *  than words, which is why the step axis is kept rather than averaged away.
+ */
+function StepsByWord() {
+    const cells = bars(41, 56);
+    return (
+        <g>
+            {cells.map((v, i) => (
+                <rect
+                    key={i}
+                    className="sk-cell"
+                    x={30 + (i % 8) * 22}
+                    y={12 + Math.floor(i / 8) * 14}
+                    width={19}
+                    height={11}
+                    rx={1}
+                    style={{
+                        animationDelay: `${Math.floor(i / 8) * 80}ms`,
+                        opacity: 0.16 + v * 0.58,
+                    }}
+                />
+            ))}
+            {/* The step axis, unlabelled like everything else here. */}
+            <line className="sk-axis" x1="22" y1="10" x2="22" y2="110" />
+            {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                <line
+                    key={i}
+                    className="sk-tick"
+                    x1="18"
+                    y1={17 + i * 14}
+                    x2="26"
+                    y2={17 + i * 14}
+                />
+            ))}
         </g>
     );
 }

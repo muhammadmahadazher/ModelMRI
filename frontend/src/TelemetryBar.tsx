@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { percent } from "./measured";
 import { getTelemetry, TelemetryReport } from "./api";
 
 /** Bytes at a unit that does not round them away.
@@ -45,7 +46,7 @@ export default function TelemetryBar({ epoch }: { epoch: number }) {
   if (!t || !t.available) return null;
 
   const pct =
-    t.context_fraction != null ? `${(t.context_fraction * 100).toFixed(1)}%` : null;
+    t.context_fraction != null ? `${percent(t.context_fraction, 1)}` : null;
 
   return (
     <div className="telemetry">

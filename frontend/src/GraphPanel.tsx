@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { measured } from "./measured";
 import { GraphView, getGraph } from "./api";
 
 /** An attribution graph somebody else computed.
@@ -48,9 +49,15 @@ export default function GraphPanel() {
     typeof v === "number" && Number.isFinite(v) ? v : null;
   const density = num(s.density);
   const peakWeight = num(s.max_abs_weight);
-  const nonzero = num(s.nonzero_edges) ?? 0;
-  const possible = num(s.possible_edges) ?? 0;
-  const nodes = num(g.n_nodes) ?? 0;
+  // Kept NULLABLE, like `density` and `peakWeight` beside them. These used to
+  // collapse to 0, and 0 is a measurement here: "this graph has no nodes" and
+  // "the node count could not be read" render identically as `0`, and the
+  // first is a claim about the model while the second is a claim about the
+  // file. The two stats below already refuse to be drawn when unknown; these
+  // three were being drawn as zeros.
+  const nonzero = num(s.nonzero_edges);
+  const possible = num(s.possible_edges);
+  const nodes = num(g.n_nodes);
   const notes = Array.isArray(g.notes) ? g.notes.filter((n) => typeof n === "string") : [];
 
   const edges = (Array.isArray(g.edges) ? g.edges : []).filter(
@@ -99,14 +106,24 @@ export default function GraphPanel() {
       </div>
 
       <div className="gguf-head">
-        <span className="gguf-stat">
-          <b>{nodes.toLocaleString()}</b>
-          <span className="meta">nodes</span>
-        </span>
-        <span className="gguf-stat">
-          <b>{nonzero.toLocaleString()}</b>
-          <span className="meta">non-zero of {possible.toLocaleString()}</span>
-        </span>
+        {nodes !== null && (
+          <span className="gguf-stat">
+            <b>{nodes.toLocaleString()}</b>
+            <span className="meta">nodes</span>
+          </span>
+        )}
+        {nonzero !== null && (
+          <span className="gguf-stat">
+            <b>{nonzero.toLocaleString()}</b>
+            {/* The denominator is a second reading and can be absent on its
+                own, so it is drawn on its own terms rather than as "of 0". */}
+            <span className="meta">
+              {possible === null
+                ? "non-zero edges"
+                : `non-zero of ${possible.toLocaleString()}`}
+            </span>
+          </span>
+        )}
         {density !== null && (
           <span className="gguf-stat">
             <b>{density.toExponential(2)}</b>
@@ -115,7 +132,7 @@ export default function GraphPanel() {
         )}
         {peakWeight !== null && (
           <span className="gguf-stat gguf-bpw">
-            <b>{peakWeight.toFixed(4)}</b>
+            <b>{measured(peakWeight, 4)}</b>
             <span className="meta">strongest edge</span>
           </span>
         )}
@@ -151,7 +168,7 @@ export default function GraphPanel() {
                     }}
                   />
                 </span>
-                <span className="graph-w">{e.weight.toFixed(4)}</span>
+                <span className="graph-w">{measured(e.weight, 4)}</span>
               </div>
             ))}
           </div>

@@ -1,4 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { percent } from "./measured";
+import RunsOn, { useModelReady } from "./RunsOn";
 import { errorText, LayerProbe, ProbeReport, runProbe } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -122,6 +124,10 @@ function verdict(p: LayerProbe): { text: string; cls: string } {
 }
 
 export default function ProbePanel({ epoch }: { epoch: number }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [a, setA] = useState(A_DEFAULT);
   const [b, setB] = useState(B_DEFAULT);
   const [name, setName] = useState("");
@@ -154,8 +160,8 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
 
   // A probe is fitted to YOUR examples and does not depend on the current
   // generation — but it does depend on the loaded model, and the epoch moves
-  // on load and unload. Keeping a curve across that would put gpt2's layers
-  // under a different model's name.
+  // on load and unload. Keeping a curve across that would put Qwen3-1.7B's
+  // layers under a different model's name.
   useEffect(() => {
     setData(null);
     setErr("");
@@ -168,6 +174,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
         <h2 className="h-probe">PROBES — WHERE A PROPERTY BECOMES READABLE</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Two groups of your own sentences, and a linear fit at every layer that
         tries to tell them apart from the residual stream. The accuracy is the
@@ -205,7 +212,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
         <button
           className="cta"
           onClick={() => void run()}
-          disabled={busy || !nA || !nB}
+          disabled={busy || !nA || !nB || ready === false}
         >
           {busy ? "Fitting every layer…" : "Fit the probe"}
         </button>
@@ -283,7 +290,15 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                 className="probe-majority-key"
                 style={{ left: `${data.majority * 100}%` }}
               >
-                majority {(data.majority * 100).toFixed(0)}%
+                majority {percent(data.majority, 0)}
+                {data.counts && (
+                  <span className="meta">
+                    {" "}
+                    ({Object.entries(data.counts)
+                      .map(([k, v]) => `${v} of class ${k}`)
+                      .join(", ")})
+                  </span>
+                )}
               </span>
               <span className="probe-axis-hi">100%</span>
             </span>
@@ -311,7 +326,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                           left: `${p.null_low * 100}%`,
                           width: `${Math.max(0, p.null_high - p.null_low) * 100}%`,
                         }}
-                        title={`shuffled labels reached ${(p.null_low * 100).toFixed(0)}–${(p.null_high * 100).toFixed(0)}%`}
+                        title={`shuffled labels reached ${(p.null_low * 100).toFixed(0)}–${percent(p.null_high, 0)}`}
                       />
                       <span
                         className="probe-majority"
@@ -323,7 +338,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
                       />
                     </span>
                     <span className="mid probe-acc">
-                      {(p.accuracy * 100).toFixed(0)}%
+                      {percent(p.accuracy, 0)}
                     </span>
                     <span className="meta probe-verd">{v.text}</span>
                   </li>

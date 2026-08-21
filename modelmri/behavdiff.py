@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import fmt
 from .errors import BadRequest, Refusal
 
 # Above this many tokens the captured distributions get large: the tensor is
@@ -382,7 +383,7 @@ def _cap_prompt(prompt: str, tokenizer, notes: list[str]) -> str:
         f"prompt is {len(ids)} tokens; compared the first {MAX_POSITIONS}. "
         f"The retained distributions are positions x vocabulary, so the whole "
         f"prompt would hold roughly "
-        f"{len(ids) * getattr(tokenizer, 'vocab_size', 32000) * 4 / 1e9:.1f} GB "
+        f"{fmt.bytes_si(len(ids) * getattr(tokenizer, 'vocab_size', 32000) * 4)} "
         f"per side."
     )
     return tokenizer.decode(ids[:MAX_POSITIONS])
@@ -437,6 +438,22 @@ def side(spec: str) -> Side:
     p = Path(spec)
     if p.suffix.lower() == ".gguf" or (p.is_dir() and any(p.glob("*.gguf"))):
         return Side(spec=spec, kind="gguf")
+
+    # A FILE that is not a GGUF is not a HuggingFace side either, and calling
+    # it one is this function failing at the job its own docstring names. A
+    # Hub id is a NAME; a local model is a DIRECTORY of config and weights.
+    # MEASURED: pointing `quantised` at README.md classified it "hf", handed
+    # it to `AutoTokenizer.from_pretrained`, and answered 500 carrying
+    # transformers' own "It looks like the config file at '…README.md' is not
+    # a valid JSON file" — an error about JSON, at somebody who picked the
+    # wrong file.
+    if p.is_file():
+        raise BadRequest(
+            f"`{p.name}` is a single file and not a GGUF, so there is no model "
+            f"here to run. This side takes a `.gguf`, a directory holding a "
+            f"model's config and weights, or a Hub id — {p.suffix or 'that name'} "
+            f"is none of them."
+        )
     return Side(spec=spec, kind="hf")
 
 

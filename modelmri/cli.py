@@ -12,6 +12,64 @@ from pathlib import Path
 from . import __version__
 
 
+def compare_experiments(
+    before,
+    after,
+    *,
+    metric: str,
+    higher_is_better: bool,
+    dataset=None,
+    floor: float | None = None,
+    fail_on_worse: int = 0,
+    as_json: bool = False,
+) -> int:
+    """Two runs of one dataset, case by case, as a CI gate.
+
+    Pays for NO torch, like `diff` and unlike `verify`: both sides are already
+    measured and the comparison is arithmetic over JSONL. That is the point —
+    the roadmap wants this runnable on every pull request in milliseconds, on
+    a machine with no accelerator.
+
+    The exit code is the gate. Non-zero when more than `fail_on_worse` cases
+    got worse, and the default is 0 because any regression should fail a gate
+    — a threshold above zero is somebody deciding in advance how much breakage
+    is acceptable, which is a decision to make out loud rather than by
+    default.
+    """
+    from . import datasets
+    from .errors import BadRequest, Refusal
+
+    try:
+        comparison = datasets.compare_experiments(
+            datasets.read_experiment(before),
+            datasets.read_experiment(after),
+            metric=metric,
+            higher_is_better=higher_is_better,
+            dataset=datasets.read_dataset(dataset) if dataset else None,
+            floor=floor,
+        )
+    except (BadRequest, Refusal) as err:
+        # 2, not 1. A gate that cannot run is not a gate that passed, and it
+        # must not be confused with one that ran and found regressions.
+        print(f"modelmri experiments: {err}", file=sys.stderr)
+        return 2
+
+    if as_json:
+        print(json.dumps(comparison.to_dict(), indent=2))
+    else:
+        print(datasets.render(comparison))
+
+    worse = comparison.counts.get(datasets.WORSE, 0)
+    if worse > fail_on_worse:
+        print(
+            f"\n{worse} case(s) got worse on {metric}, above the "
+            f"{fail_on_worse} this gate allows.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def diff_sessions(
     path_a, path_b, *, fail_over: float | None = None, as_json: bool = False
 ) -> int:
@@ -38,6 +96,83 @@ def diff_sessions(
         else mri_diff.render(report, fail_over)
     )
     return report.exit_code(fail_over)
+
+
+def resume_sweep(sweep_id: str, *, as_json: bool = False) -> int:
+    """Finish a saved sweep, keeping every prompt already measured.
+
+    `sweep.resume` was written, tested and PRICED — `resume_plan` answers what
+    finishing would cost — and had no way to run from anywhere: no route, no
+    flag, no button. A sweep that stopped could be listed as unfinished, priced
+    cleanly, and never finished.
+
+    The reachable case is not a crash, which leaves nothing saved because
+    `save()` runs after `run()` returns. It is REFUSALS: `remaining()` counts
+    every unmeasured row as still-to-run, so one prompt the model refused
+    leaves a sweep permanently unfinished.
+
+    Priced and checked before it runs, like everything else here — and it is
+    `sweep.resume` that re-checks, so the price and the run cannot disagree.
+    """
+    from . import sweep as sweep_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    try:
+        plan = sweep_mod.resume_plan(sweep_id)
+    except (BadRequest, Refusal) as err:
+        print(err.sentence, file=sys.stderr)
+        return 2
+
+    if plan["blocked"] is not None:
+        # A sentence, never a warning to override. The three things it checks
+        # make a resume WRONG rather than expensive.
+        print(f"this sweep must not be resumed: {plan['blocked']}", file=sys.stderr)
+        return 2
+    if not plan["n_remaining"]:
+        print(plan["means"])
+        return 0
+
+    print(plan["means"])
+    print(f"  loading {plan['model']} to measure {plan['n_remaining']} prompt(s)…")
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load(plan["model"])
+        job, rows = sweep_mod.resume(sweep_id, runtime)
+    except (BadRequest, Refusal) as err:
+        print(err.sentence, file=sys.stderr)
+        return 2
+
+    stats = sweep_mod.aggregate(rows, metric=job.metric)
+    measured = sum(1 for r in rows if r.measured)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "sweep_id": sweep_id,
+                    "model": job.model,
+                    "metric": job.metric,
+                    "n_prompts": len(rows),
+                    "n_measured": measured,
+                    "n_unmeasured": len(rows) - measured,
+                    "stats": [st.to_dict() for st in stats],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(sweep_mod.render(job, rows, stats))
+        if measured < len(rows):
+            # A refusal stays a refusal, and it is why this sweep could sit
+            # unfinished forever. Said rather than left to be inferred from a
+            # count that did not reach the total.
+            print(
+                f"\n  {len(rows) - measured} prompt(s) still could not be "
+                f"measured and are absent from the ranking rather than scored "
+                f"zero. Resuming again will retry them."
+            )
+    return 0
 
 
 def run_sweep(
@@ -710,11 +845,23 @@ def list_traces() -> int:
     for r in rows[:40]:
         flag = "demo" if r.get("demo") else ""
         errs = f"  {r['n_errors']} failed" if r.get("n_errors") else ""
-        secs = (r.get("total_ms") or 0) / 1000
-        print(
-            f"  {r['name'][:30]:<30} {r['n_steps']:>4} steps  {secs:>7.1f}s"
-            f"{errs}  {flag}"
-        )
+        # `n_timed`, which the store ships beside `total_ms` for exactly this.
+        # A step's `duration_ms` is optional — `otel.py` leaves it None when the
+        # span carried no end time, and `/api/traces/import` documents it as
+        # optional — so a run where nothing was timed has `total_ms` 0, and
+        # this printed "0.0s" as a measurement of a run that took some real
+        # amount of time nobody recorded. `AgentsPanel` gets this right; the
+        # CLI was the one consumer ignoring the field.
+        n_timed = int(r.get("n_timed") or 0)
+        n_steps = int(r["n_steps"])
+        if not n_timed:
+            took = "  not timed"
+        else:
+            # ">=" when only some steps were timed: the total is a floor, not
+            # the run's duration.
+            mark = ">=" if n_timed < n_steps else " "
+            took = f"{mark}{r['total_ms'] / 1000:>6.1f}s"
+        print(f"  {r['name'][:30]:<30} {n_steps:>4} steps  {took:>9}{errs}  {flag}")
     if len(rows) > 40:
         print(f"  ... and {len(rows) - 40} more")
     print("\n  Open them in the browser:  modelmri serve")
@@ -1033,6 +1180,64 @@ def policy_command(args) -> int:
     return 2
 
 
+def scan_weights(target, *, as_json: bool = False, limit: int = 200) -> int:
+    """`modelmri scan` — look inside weights before anything loads them.
+
+    Exit 1 when something dangerous is found, so this drops into CI. An
+    UNSCANNED file is exit 0 and is still printed: refusing every format the
+    scanner cannot read would make the gate a function of its own coverage,
+    and most of what it cannot read is harmless. What it must never do is
+    print "safe" for a file nobody looked inside.
+    """
+    from pathlib import Path
+
+    from . import weights_scan
+
+    where = Path(target).expanduser()
+    reports = (
+        weights_scan.scan_dir(where, limit=limit)
+        if where.is_dir()
+        else [weights_scan.scan(where)]
+    )
+    if as_json:
+        print(json.dumps([r.to_dict() for r in reports], indent=2))
+        return 1 if any(r.dangerous for r in reports) else 0
+
+    print(f"ModelMRI {__version__} — what is inside {where}")
+    print()
+    if not reports:
+        print("  nothing weight-shaped here.")
+        return 0
+
+    mark = {
+        weights_scan.DANGEROUS: "DANGER",
+        weights_scan.UNSCANNED: "  --  ",
+        weights_scan.SAFE: "  ok  ",
+    }
+    for r in reports:
+        print(f"  {mark[r.verdict]} {Path(r.path).name}")
+        for f in r.findings:
+            for line in _wrap(f"{f.kind}: {f.detail}", 66):
+                print(f"           {line}")
+        if r.verdict == weights_scan.UNSCANNED and r.reason:
+            for line in _wrap(r.reason, 66):
+                print(f"           {line}")
+
+    bad = [r for r in reports if r.dangerous]
+    unknown = [r for r in reports if r.verdict == weights_scan.UNSCANNED]
+    print()
+    if bad:
+        for line in _wrap(bad[0].means(), 76):
+            print(f"  {line}")
+    else:
+        print(
+            f"  {len(reports)} file(s) read, nothing executable found. "
+            f"{len(unknown)} could not be read and are reported as unscanned "
+            f"rather than clean."
+        )
+    return 1 if bad else 0
+
+
 def uninstall(*, yes: bool = False, models: bool = False) -> int:
     """Remove everything ModelMRI has written, after showing what that is.
 
@@ -1277,13 +1482,82 @@ def main() -> None:
     )
     differ.add_argument("--json", action="store_true", help="emit JSON")
 
+    experiments = sub.add_parser(
+        "experiments",
+        help="Compare two runs of one dataset, case by case, and exit "
+        "non-zero when cases got worse",
+    )
+    experiments.add_argument("before", help="the baseline experiment .jsonl")
+    experiments.add_argument("after", help="the experiment to check against it")
+    experiments.add_argument(
+        "--metric",
+        required=True,
+        metavar="NAME",
+        help="which recorded metric to compare. Required: a run can carry "
+        "several, and picking one for you would pick the conclusion.",
+    )
+    # No default and no name map. KL divergence is better lower and
+    # faithfulness better higher; guessing inverts every conclusion in half of
+    # all comparisons and the output looks entirely right either way.
+    direction = experiments.add_mutually_exclusive_group(required=True)
+    direction.add_argument(
+        "--higher-is-better",
+        dest="higher_is_better",
+        action="store_true",
+        help="a larger number is an improvement (faithfulness, accuracy)",
+    )
+    direction.add_argument(
+        "--lower-is-better",
+        dest="higher_is_better",
+        action="store_false",
+        help="a smaller number is an improvement (KL divergence, loss)",
+    )
+    experiments.add_argument(
+        "--dataset",
+        default=None,
+        metavar="PATH",
+        help="the dataset both runs cover, so the report can quote what each "
+        "case asked. Omitted means nothing looked, which is reported as "
+        "unknown rather than as none.",
+    )
+    experiments.add_argument(
+        "--floor",
+        type=float,
+        default=None,
+        metavar="X",
+        help="smallest difference worth calling a change, in the metric's own "
+        "units. Omit to use the coarser floor the two files themselves state, "
+        "or exact arithmetic when neither states one.",
+    )
+    experiments.add_argument(
+        "--fail-on-worse",
+        type=int,
+        default=0,
+        metavar="N",
+        help="exit 1 when more than N cases got worse. Default 0 — any "
+        "regression fails, which is what a gate is for.",
+    )
+    experiments.add_argument("--json", action="store_true", help="emit JSON")
+
     sweeper = sub.add_parser(
         "sweep",
         help="Run one measurement over many prompts and report the "
         "distribution, not one number",
     )
-    sweeper.add_argument("prompts", help="a .jsonl (objects with `prompt`) or .txt")
-    sweeper.add_argument("--model", required=True, help="which model to load")
+    sweeper.add_argument(
+        "prompts",
+        nargs="?",
+        default=None,
+        help="a .jsonl (objects with `prompt`) or .txt. Omitted with --resume.",
+    )
+    sweeper.add_argument(
+        "--resume",
+        default=None,
+        metavar="SWEEP_ID",
+        help="finish a saved sweep, keeping every prompt already measured. "
+        "`modelmri sweeps` lists the ids.",
+    )
+    sweeper.add_argument("--model", help="which model to load")
     sweeper.add_argument(
         "--metric",
         default="heads",
@@ -1469,6 +1743,19 @@ def main() -> None:
     )
     policy_status.add_argument("--json", action="store_true", help="machine-readable")
 
+    scanner = sub.add_parser(
+        "scan",
+        help="Look inside weights for anything that executes on load",
+    )
+    scanner.add_argument("path", help="a checkpoint, or a directory of them")
+    scanner.add_argument("--json", action="store_true", help="machine-readable")
+    scanner.add_argument(
+        "--limit",
+        type=int,
+        default=200,
+        help="how many files a directory walk may read (default 200)",
+    )
+
     remove = sub.add_parser(
         "uninstall", help="Remove everything ModelMRI has written to this machine"
     )
@@ -1568,7 +1855,32 @@ def main() -> None:
         raise SystemExit(
             diff_sessions(args.a, args.b, fail_over=args.fail_over, as_json=args.json)
         )
+    elif args.command == "experiments":
+        raise SystemExit(
+            compare_experiments(
+                args.before,
+                args.after,
+                metric=args.metric,
+                higher_is_better=args.higher_is_better,
+                dataset=args.dataset,
+                floor=args.floor,
+                fail_on_worse=args.fail_on_worse,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "sweep" and args.resume:
+        raise SystemExit(resume_sweep(args.resume, as_json=args.json))
     elif args.command == "sweep":
+        if not args.prompts:
+            print(
+                "sweep needs a prompt file, or --resume with a saved sweep id "
+                "(`modelmri sweeps` lists them).",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if not args.model:
+            print("sweep needs --model.", file=sys.stderr)
+            raise SystemExit(2)
         raise SystemExit(
             run_sweep(
                 args.prompts,
@@ -1595,6 +1907,8 @@ def main() -> None:
         raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
     elif args.command == "policy":
         raise SystemExit(policy_command(args))
+    elif args.command == "scan":
+        raise SystemExit(scan_weights(args.path, as_json=args.json, limit=args.limit))
     elif args.command == "models":
         raise SystemExit(list_models())
     elif args.command == "traces":

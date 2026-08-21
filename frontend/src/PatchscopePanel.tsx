@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import RunsOn, { useModelReady } from "./RunsOn";
 import { errorText, getSession, Patchscope, runPatchscope } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -20,10 +21,9 @@ import { useScanOnData } from "./useScanOnData";
  *   random     the target prompt with a same-norm random vector
  *
  * A decode matching either is the TARGET PROMPT TALKING. And because a decode
- * can differ from a control as a string while using none of its own words —
- * measured on gpt2 at layer 8, 100% vocabulary overlap with a different
- * string — the vocabulary overlap is printed as a number rather than left to
- * a string comparison.
+ * can differ from a control as a string while using none of its own words, the
+ * vocabulary overlap is printed as a number rather than left to a string
+ * comparison.
  */
 
 const SOURCE_DEFAULT = "The Eiffel Tower is located in the city of Paris";
@@ -44,6 +44,10 @@ function overlapText(v: number): string {
 }
 
 export default function PatchscopePanel({ epoch }: { epoch: number }) {
+  // Nothing loaded means every button here can only be refused. Shares
+  // `RunsOn`'s cached session, so the badge and the control it disables
+  // read one answer rather than two requests that can disagree.
+  const ready = useModelReady(epoch);
   const [prompt, setPrompt] = useState(SOURCE_DEFAULT);
   const [layer, setLayer] = useState(0);
   const [position, setPosition] = useState(-1);
@@ -120,6 +124,7 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
         <h2 className="h-scope">PATCHSCOPE — THE STATE, DESCRIBED IN WORDS</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         Take a hidden state from one run and splice it into a second prompt
         built to make the model describe whatever it is holding. Everything
@@ -229,7 +234,16 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
       </label>
 
       <div className="row" style={{ margin: "10px 0" }}>
-        <button className="cta" onClick={() => void run()} disabled={busy}>
+        <button
+          className="cta"
+          onClick={() => void run()}
+          disabled={busy || ready === false}
+          title={
+            ready === false
+              ? "Load a model in Run at the top of the page first — this measurement runs it."
+              : undefined
+          }
+        >
           {busy ? "Decoding three times…" : "Describe the state"}
         </button>
         <span className="meta">

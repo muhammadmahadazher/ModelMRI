@@ -224,6 +224,17 @@ def hub_root(hf_home: str | Path | None = None) -> Path:
 
 
 def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
+    if "/" not in (repo or ""):
+        # The commonest way to get this wrong, and it used to crash on the
+        # unpacking below with "not enough values to unpack" — a message about
+        # this function's internals rather than about what was typed. The
+        # sibling case (a well-formed id that is not cached) has always
+        # answered with a sentence; this one now matches it.
+        raise Refusal(
+            f"`{repo.strip() or '(nothing)'}` is not a repository id. A "
+            f"HuggingFace id is `owner/name` — `lerobot/smolvla_base`, not "
+            f"`smolvla_base` — so there is no owner here to look under."
+        )
     owner, name = repo.split("/", 1)
     base = hub_root(hf_home) / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []
@@ -271,14 +282,28 @@ class VLAHandle:
 
         t0 = time.time()
         policy_snap = _snapshot(repo, hf_home)
+        # SHARDS TOO. `model.safetensors` was the only filename this module
+        # looked for, and any policy above safetensors' 5 GB threshold ships
+        # `model-0000N-of-0000M.safetensors` plus an index instead. The refusal
+        # then said the repo had "no weights here" and told the reader to
+        # re-download — which fetches the identical layout, so the reader
+        # loops. The check also fires before `_vision_config`, which explicitly
+        # supports the Qwen2-VL / LLaVA / PaliGemma shapes that are exactly the
+        # ones large enough to shard.
+        #
+        # `discover.py`, `fit.py` and `quantdiff.py` are all shard-aware; this
+        # module was the outlier.
+        shards = sorted(policy_snap.glob("model-*-of-*.safetensors"))
         weights_file = policy_snap / "model.safetensors"
-        if not weights_file.is_file():
+        if not weights_file.is_file() and not shards:
             # Names the repo and the fix rather than the snapshot directory:
             # this sentence is published at 409, and a Refusal does not put a
             # path from this machine in front of the reader.
             raise Refusal(
-                f"{repo} is cached but has no model.safetensors, so there are "
-                f"no weights here to load a vision tower from. Re-download it "
+                f"{repo} is cached but has no safetensors weights in it — "
+                f"neither `model.safetensors` nor a `model-0000N-of-0000M` "
+                f"shard set — so there is nothing here to load a vision tower "
+                f"from. Re-download it "
                 f"(huggingface-cli download {repo})."
             )
 
@@ -293,7 +318,15 @@ class VLAHandle:
         # produces the right module for a SigLIP or CLIP tower too.
         model = AutoModel.from_config(cfg)
 
-        state = load_file(str(weights_file))
+        if shards and not weights_file.is_file():
+            # Merged in shard order. The index maps tensor names to files and
+            # every shard is disjoint, so a plain update is the whole job —
+            # what mattered was looking for them at all.
+            state = {}
+            for shard in shards:
+                state.update(load_file(str(shard)))
+        else:
+            state = load_file(str(weights_file))
         prefix, found = discover_vision_prefix(state.keys())
         vision_state = {
             k[len(prefix) :]: v for k, v in state.items() if k.startswith(prefix)

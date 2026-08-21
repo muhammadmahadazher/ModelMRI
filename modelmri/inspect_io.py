@@ -202,7 +202,32 @@ def header(path) -> EvalHeader:
         )
 
 
-def samples(path) -> list:
+class SampleList(list):
+    """The listed samples, and how many there really are.
+
+    A plain list could not carry the cap, so `MAX_SAMPLES_LISTED` was applied
+    and then reported as the log's size: a 6,000-sample file rendered "5000
+    samples" as a fact about the reader's own archive, and the "open another
+    sample" dropdown silently held an arbitrary subset in whatever order the
+    zip happened to store them — a later sample simply unselectable, with
+    nothing saying why.
+
+    The same shape `weights_scan.ScanTree` and `custom.Candidates` use, and the
+    same reason. This module's REFUSAL path already got this right and says so
+    in its own comment; the listing path did not.
+    """
+
+    def __init__(self, refs=(), *, n_total: int = 0) -> None:
+        super().__init__(refs)
+        #: Every sample in the archive, counted — not just the listed ones.
+        self.n_total = n_total or len(self)
+
+    @property
+    def truncated(self) -> bool:
+        return self.n_total > len(self)
+
+
+def samples(path) -> SampleList:
     """Every sample's identity, WITHOUT parsing any of them.
 
     Reading the names off the archive's directory is the difference between
@@ -210,6 +235,7 @@ def samples(path) -> list:
     to answer a question about its table of contents.
     """
     out = []
+    n_total = 0
     with _open(path) as archive:
         for name in archive.namelist():
             if not name.startswith(SAMPLES_DIR) or not name.endswith(".json"):
@@ -224,11 +250,15 @@ def samples(path) -> list:
                 if sep and tail.isdigit():
                     sample_id, epoch = head, int(tail)
                     break
-            out.append(SampleRef(name=name, id=sample_id, epoch=epoch))
-            if len(out) >= MAX_SAMPLES_LISTED:
-                break
+            # COUNTED before the cap is applied. Reading one more name off
+            # the archive's directory costs nothing — the expensive thing
+            # this function avoids is parsing samples, not seeing that they
+            # exist — so there is no reason for the total to be unknown.
+            n_total += 1
+            if len(out) < MAX_SAMPLES_LISTED:
+                out.append(SampleRef(name=name, id=sample_id, epoch=epoch))
     out.sort(key=lambda s: (s.id, s.epoch))
-    return out
+    return SampleList(out, n_total=n_total)
 
 
 def _text(value) -> str:

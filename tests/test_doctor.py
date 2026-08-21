@@ -108,11 +108,25 @@ def test_ram_is_read_without_a_third_party_dependency():
     """psutil is not a dependency and must not become one: this package is
     already a 2.5 GB torch install, and the recorder beside it is stdlib-only
     on purpose."""
-    source = (doctor.__file__ or "").replace(".pyc", ".py")
-    text = Path(source).read_text(encoding="utf-8")
-    assert "psutil" not in text
+    from modelmri import devices
+
+    # The probes live in `devices` now, with the other hardware reads. They
+    # moved because `doctor` imports `devices` to ask what accelerator is
+    # present, and `devices` was importing `_ram_bytes` back — a cycle CodeQL
+    # flagged. Reading them here rather than in `doctor` keeps this test about
+    # what it was always about: that all three platforms are covered, and that
+    # none of it arrived via a third-party package.
+    for module in (doctor, devices):
+        source = (module.__file__ or "").replace(".pyc", ".py")
+        assert "psutil" not in Path(source).read_text(encoding="utf-8")
+
+    text = Path((devices.__file__ or "").replace(".pyc", ".py")).read_text(
+        encoding="utf-8"
+    )
     # All three branches have to be present, or one platform silently reports
     # "could not measure" forever.
     assert "SC_PHYS_PAGES" in text  # posix
     assert "GlobalMemoryStatusEx" in text  # windows
     assert "hw.memsize" in text  # macos
+    # And `doctor` must still be able to answer, wherever the reads live.
+    assert doctor._ram_bytes is devices._ram_bytes

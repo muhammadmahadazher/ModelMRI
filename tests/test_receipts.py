@@ -43,7 +43,7 @@ class _Tokenizer:
 
 class _Runtime:
     def __init__(self, **kw):
-        self.hf_id = kw.get("hf_id", "gpt2")
+        self.hf_id = kw.get("hf_id", "Qwen/Qwen3-1.7B")
         self.model = kw.get("model")
         self.tokenizer = kw.get("tokenizer", _Tokenizer())
         self.device = kw.get("device", "cpu")
@@ -335,7 +335,7 @@ def test_a_receipts_section_that_is_not_a_list_is_refused():
 def test_a_receipt_without_an_op_is_refused():
     """A receipt that does not say what it describes describes nothing."""
     with pytest.raises(BadRequest, match="which measurement"):
-        receipts.parse([{"model": "gpt2"}])
+        receipts.parse([{"model": "Qwen/Qwen3-1.7B"}])
     with pytest.raises(BadRequest, match="which measurement"):
         receipts.parse([{"op": "   "}])
 

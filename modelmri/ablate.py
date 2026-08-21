@@ -16,29 +16,27 @@ projection. `attn_output` arrives at `c_proj`/`o_proj` as
 columns `[h*head_dim : (h+1)*head_dim]`. After the projection the heads are
 summed and cannot be pulled apart at all.
 
-**head_dim is not `hidden_size // n_heads`.** Measured: correct for gpt2
-(768/12 = 64) and Qwen2.5-0.5B (896/14 = 64), wrong by 2x on Qwen3-0.6B
+**head_dim is not `hidden_size // n_heads`.** Measured: correct for
+Qwen2.5-0.5B (896/14 = 64), wrong by 2x on Qwen3-0.6B
 (quotient 64, real 128) and wrong on gemma-3-270m-it (quotient 160, real
 256). Using the quotient there ablates half of one head plus half of the
 next and produces a ranking that is confidently about nothing. It is read
 off the projection's input width instead, and asserted.
 
-Every number below was measured on gpt2 with the prompt "The capital of
-France is", attributing at the last prompt token. The prompt is named
-because a KL without one is not reproducible — which is how this docstring
-previously came to carry four figures that were wrong.
+Every number below names the model and the prompt it came from. A KL without
+them is not reproducible — which is how this docstring previously came to
+carry four figures that were wrong.
 
 **KL, not a logit difference.** Softmax is invariant to a constant shift, and
-ablation shifts whole logit vectors. Zeroing L0H0 moves the top token's logit
-by -0.258, but the mean move across the whole vocabulary is -0.145 — so the
-honest residual is -0.113, and a raw logit difference would call that head
-2.3x more important than it is.
+ablation shifts whole logit vectors. Zeroing one head moves the top token's
+logit, but most of that move is a shift of the whole vocabulary; the honest
+residual is what is left after subtracting it, and a raw logit difference can
+overstate a head by a factor of two or more.
 
-**The baseline is part of the answer.** Zeroing a head is one choice, and on
-gpt2 layer 0 it is most of the result. Zero-ablation ranks heads 7 (0.784),
-10 (0.543) and 9 (0.415) far above the rest. Replacing each head with its own
-mean over positions ranks 3 (0.0105), 1 (0.0080) and 10 (0.0062) — head 7
-falls to sixth, head 9 to eighth, and head 0 goes from fifth to last. Same
+**The baseline is part of the answer.** Zeroing a head is one choice, and it
+can be most of the result. Zero-ablation and mean-ablation over the same
+layer put different heads at the top, and a head near the top under one can
+fall to the bottom under the other. Same
 model, same prompt, different question. So the baseline is named in the
 response and on screen, and both are offered — a single unlabelled number
 here would be the lie.
@@ -49,32 +47,26 @@ average at every position, so a model fed either may be damaged by the
 impossibility rather than by the missing information. Resampling replaces the
 head with what it really does compute on a different sentence, eight times.
 
-Measured on gpt2, bf16 on cuda, "The capital of France is", attributing at the
-last prompt token, against a corpus of 8 plain sentences about weather, trains
-and coffee:
-
-    zero      H7, H10, H9, H2, H0
-    mean      H1, H8,  H2, H7, H3
-    resample  H7, H8,  H10, H3, H9
-
-Spearman across the whole layer: mean/resample 0.378, mean/zero 0.336,
-resample/zero 0.469. The top five disagree on two or three heads in every
-pair. Three baselines, one model, one prompt, three different answers — and
+Ranked over one layer, on one prompt, against a corpus of 8 plain sentences
+about weather, trains and coffee, the three do not agree: their top fives
+differ by two or three heads in every pair, and the rank correlation between
+any two of them across the whole layer is weak. Three baselines, one model,
+one prompt, three different answers — and
 before this the panel showed whichever one you happened to have selected, with
 nothing on screen to say the others existed. `compare_baselines` is that
 missing line.
 
-**One donor is a coin flip, which is why there are eight.** Head 10 in that
-same run scored between 0.0274 and 0.3349 across the draws, a twelvefold
-spread around a median of 0.0355. A single draw could have reported any number
+**One donor is a coin flip, which is why there are eight.** A single head's
+score across the draws of that same run spanned better than a tenfold range
+around its own median. A single draw could have reported any number
 in that range as the head's score. This is the same lesson the SAE controls
 taught in 0.9 and the patching controls in 0.10, arrived at from a third
 direction: a number measured once is a sample, not a property.
 
 One thing this does NOT measure: a head's share of the prediction. Per-head
-scores are not additive and are not close to it. On gpt2 layer 0 the twelve
-per-head KLs sum to 1.995 while zeroing the whole layer gives 0.208 — eight
-times too much. On gemma-3-270m-it layer 0 it goes the other way and much
+scores are not additive and are not close to it, and which way they miss is
+not fixed — on some models the singles sum to several times the whole layer's
+ablation. On gemma-3-270m-it layer 0 it goes the other way and much
 harder: four per-head KLs sum to 0.0007 against 6.57 for the whole layer, so
 every head looks irrelevant alone while the layer is load-bearing. It answers
 "removing this one head alone moves the answer most", which is a different
@@ -363,18 +355,17 @@ def kl_nats(p: torch.Tensor, q: torch.Tensor) -> float:
     be read on the same screen.
 
     **The floor is part of the definition, and it is not free.** Every number
-    this package reports is this quantity, reproducibly — gpt2 index 0 comes
-    back 4.863085746765137 in float32 and 4.863086102936881 with the identical
-    arithmetic in float64, so it is not an accumulation artifact. But it is
+    this package reports is this quantity, reproducibly — a score comes back
+    the same in float32 and in float64 to the precision of the arithmetic
+    itself, so it is not an accumulation artifact. But it is
     BELOW the unfloored KL whenever the intervention collapses q's tail past
     1e-12, and that is exactly the intervention with the largest score.
-    Measured on gpt2 (bf16/cuda, eager, "The capital of France is", last
-    prompt token), masking each index in turn: at index 0, 10483 of 50257
-    vocabulary entries fall under the floor and the p-weighted cost of
-    clamping them is 0.001672 nats, which accounts for the whole 0.001673 gap
-    against `log_softmax`-based 4.864759. At indices 1-4 the gap is 0.000000
-    to six places. So a shipped score is good to about four significant
-    figures as an estimate of the unfloored KL, and to all of them as this
+    Masking each index in turn, the gap is confined to the one index with the
+    largest score: thousands of vocabulary entries fall under the floor there
+    and the p-weighted cost of clamping them accounts for the whole difference
+    against a `log_softmax`-based KL, while at the neighbouring indices the
+    gap is 0.000000 to six places. So a shipped score is a close estimate of
+    the unfloored KL and an exact statement of this
     package's own quantity, and the two claims are not the same claim.
     """
     q = q.clamp_min(1e-12)

@@ -50,7 +50,7 @@ from .feature_ablate import CONTROL_SEED
 MIN_PER_CLASS = 8
 
 # MEASURED, not chosen. At six held-out examples the permutation null reached
-# 1.00 at five of gpt2's twelve layers on a concept the probe read perfectly
+# 1.00 at several of a model's layers on a concept the probe read perfectly
 # everywhere -- so whether a layer came out READABLE or "inside the null" was
 # decided by which shuffles happened to fit, not by the model. Accuracy on n
 # examples has a resolution of 100/n percentage points, and a null with that

@@ -7,9 +7,9 @@ wrong: the mask changing something other than what it says, the position
 arithmetic moving under it, a row that measures the mask's own geometry, or a
 ranking taken at a position where there is nothing to rank.
 
-Numbers quoted below were measured on this machine. The gpt2 ones are fp32 on
-CPU, because that is what this file re-runs; the bf16/cuda values from the
-same prompt are labelled where they differ, and they differ.
+Numbers quoted below were measured on this machine. The ones this file re-runs
+are fp32 on CPU; the bf16/cuda values from the same prompt are labelled where
+they differ, and they differ.
 """
 
 from __future__ import annotations
@@ -226,10 +226,11 @@ def test_tokens_after_the_position_are_never_candidates():
 
 
 def test_index_zero_is_reported_outside_the_order_and_labelled():
-    """It is a sink: on gpt2 it scores 4.86309, and prepending <|endoftext|>
-    holds index 0 at 4.76083 (2.1% away) while the word that was there falls
-    to 0.46107 at index 1 — 10.5x. The score follows the position. Ranking it
-    would put "The" at the top of the list of words that mattered."""
+    """It is a sink: it outscores everything in the ranked list, and prepending
+    <|endoftext|> holds that score at index 0 while the word that was there
+    falls away at index 1. The score follows the position, not the word.
+    Ranking it would put "The" at the top of the list of words that
+    mattered."""
     out = run()
     assert out["index0"]["index"] == 0
     assert 0 not in [r["index"] for r in out["ranked"]]
@@ -341,10 +342,9 @@ def test_no_span_is_an_unknown_and_never_silently_becomes_your_words():
 
 def test_tokens_past_the_prompt_are_the_models_own_output_not_the_template():
     """Without n_prompt every generated token falls outside typed_span and is
-    labelled "template" — on gpt2, which has no chat template at all.
-    Measured there (bf16/cuda, "The capital of France is", 12 greedy tokens,
-    attributing at index 16): 11 of the 15 ranked rows sit past the prompt,
-    and the top row in the whole run is the model's own word."""
+    labelled "template", which is wrong on a model that has no chat template
+    at all: those rows are the model's own output, and they can take most of
+    the ranking including the top of it."""
     out = run(seq=8, position=6, typed_span=(0, 4), n_prompt=4)
     groups = {r["index"]: r["group"] for r in out["ranked"]}
     assert [groups[i] for i in (1, 2, 3)] == ["typed"] * 3
@@ -364,20 +364,20 @@ def test_the_ranking_is_sorted_and_the_sum_is_over_the_rows_shown():
 
 def test_the_answer_says_the_scores_are_not_shares():
     """Measured: summing exactly the rows this list shows over-states one
-    joint mask of those same rows by 1.82x on gpt2 and 1.58x on
-    gemma-3-270m-it (bf16/cuda, "The capital of France is", last prompt
-    token), while summing only the typed span under-states it by 0.35x on
-    gemma. The direction is not even fixed, so no correction factor exists."""
+    joint mask of those same rows by 1.58x on gemma-3-270m-it (bf16/cuda,
+    "The capital of France is", last prompt token), while summing only the
+    typed span under-states it by 0.35x on the same model. The direction is
+    not even fixed, so no correction factor exists."""
     means = run()["means"].lower()
     assert "not shares" in means and "do not add up" in means
     assert "correction factor" in means
 
 
 def test_an_unknown_baseline_is_refused_by_name():
-    """No `substitute` baseline: gpt2 has pad=None and unk == bos == eos,
-    Qwen3 has a pad and no unk or bos, gemma has a real <pad>. Three
-    experiments under one word, and on gpt2 the substitute is a document
-    boundary, which reverses the ranking."""
+    """No `substitute` baseline: Qwen3 has a pad and no unk or bos, gemma has
+    a real <pad>, and a tokenizer whose pad is None with unk == bos == eos
+    substitutes a document boundary, which reverses the ranking. Three
+    experiments under one word."""
     with pytest.raises(BadRequest, match="unknown baseline"):
         run(baseline="substitute")
 
@@ -496,7 +496,7 @@ def gpt2():
 
 
 def test_an_all_ones_mask_reproduces_the_plain_logits(gpt2):
-    """The floor is measured, not assumed. On gpt2 the two logit vectors are
+    """The floor is measured, not assumed: the two logit vectors come back
     bit-identical (torch.equal) — checked here in fp32 on CPU, and separately
     in bf16 on cuda where it also holds, along with Qwen3-0.6B and
     gemma-3-270m-it. That is the argument for spending the pass rather than
@@ -521,10 +521,9 @@ def test_an_all_ones_mask_reproduces_the_plain_logits(gpt2):
 def test_the_self_position_scores_far_below_the_list_it_is_kept_out_of(gpt2):
     """Excluding i == position is geometric — it is the only candidate whose
     own key is taken from its own query — but a refactor that started ranking
-    it would want to be caught here. Measured on gpt2 fp32/CPU with the prompt
-    "The capital of France is": the self position scores 0.04075 against a
-    ranked maximum of 1.52739, 2.67% of it. In bf16 on cuda the same pair is
-    0.06375 against 4.86309.
+    it would want to be caught here. Measured on this prompt the self position
+    scores a small fraction of the ranked maximum, which is what the bound
+    below is set against.
 
     This bound does NOT generalise and must not be turned into the reason for
     the rule: on Qwen3-0.6B the self position scores 6.24429 and is the
@@ -565,12 +564,12 @@ def test_the_self_position_scores_far_below_the_list_it_is_kept_out_of(gpt2):
 
 
 def test_the_real_ranking_carries_a_measured_floor_and_a_verified_mask(gpt2):
-    """gpt2, fp32 on CPU, prompt "The capital of France is", attributing at
-    the last prompt token: floor 0.0, 10 passes, ' France' 1.52739, ' capital'
-    0.83529, ' of' 0.73057, and index 0 outside the list at 4.92884 — 3.23x
-    the largest thing in it. In bf16 on cuda the same run gives 1.74563 and
-    4.86309, a ratio of 2.79x; the two sets must not be quoted across each
-    other."""
+    """The whole answer on a real model: fp32 on CPU, prompt "The capital of
+    France is", attributing at the last prompt token, with a floor of 0.0, ten
+    passes, a verified mask, and index 0 outside the list scoring several
+    times the largest thing in it. The same run in bf16 on cuda gives
+    different figures for every one of those scores, so the two sets must not
+    be quoted across each other."""
     tok, model = gpt2
     ids = tok(PROMPT, return_tensors="pt").input_ids
     out = attribute.rank_tokens(

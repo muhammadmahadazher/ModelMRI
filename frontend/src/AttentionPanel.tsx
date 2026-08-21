@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { fmtKL, measured, pair } from "./measured";
 import { useScanOnData } from "./useScanOnData";
 import {
   Ablation,
@@ -20,6 +21,7 @@ import {
   rankHeads,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
+import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
@@ -34,6 +36,10 @@ export default function AttentionPanel({
 }) {
   const scanRef = useScanOnData(epoch);
   const [layers, setLayers] = useState(0);
+  // Why there is nothing to show, when the server said. `null` means it has
+  // not answered yet, which is not the same as "there is no reason" and must
+  // not draw a box.
+  const [why, setWhy] = useState<string | null>(null);
   const [heads, setHeads] = useState(0);
   const [layer, setLayer] = useState(0);
   const [head, setHead] = useState(0);
@@ -279,7 +285,19 @@ export default function AttentionPanel({
     let live = true;
     void (async () => {
       const meta = await getAttentionMeta().catch(() => null);
-      if (!live || !meta?.available) return;
+      if (!live) return;
+      // The server writes a DIFFERENT sentence for each way this can be
+      // unavailable — no model, nothing generated yet, the model changed since
+      // that generation, an architecture with no attention at all — and every
+      // one of them was dropped here, after which `layers === 0` removed the
+      // whole panel from the page. Generate with Mamba or RWKV and the section
+      // simply was not there, which reads as the tool being broken rather than
+      // as the architecture having no attention to read.
+      if (!meta?.available) {
+        setWhy(meta?.reason ?? null);
+        return;
+      }
+      setWhy(null);
       setErr("");
       setLayers(meta.n_layers!);
       setHeads(meta.n_heads!);
@@ -322,7 +340,22 @@ export default function AttentionPanel({
     };
   }, [layers, layer, head, epoch]);
 
-  if (layers === 0) return null;
+  if (layers === 0) {
+    // Nothing until the server has said why. A box that appears for the
+    // half-second before the first answer arrives is a flicker that teaches
+    // the reader to distrust it.
+    if (!why) return null;
+    return (
+      <div className="panel">
+        <div className="sect">
+          <span className="dot d-attn" />
+          <h2 className="h-attn">ATTENTION — WHERE EACH TOKEN LOOKED</h2>
+          <span className="rule" />
+        </div>
+        <div className="hint">{why}</div>
+      </div>
+    );
+  }
 
   const options = (n: number) =>
     Array.from({ length: n }, (_, i) => (
@@ -346,7 +379,12 @@ export default function AttentionPanel({
       .sort((a, b) => b[1].kl - a[1].kl)
       .map(([h, score]) => (
         <option key={h} value={h}>
-          {h} · KL {score.kl < ranked.noise_floor_kl ? "—" : score.kl.toFixed(3)}
+          {/* `<=`, matching the ranked list and the attribution list.
+              This alone used `<`, so a head whose KL is EXACTLY the floor
+              showed a number here and "below the noise floor" one line
+              down — one head, two verdicts, from one character. A value
+              at the floor is not above it. */}
+          {h} · KL {score.kl <= ranked.noise_floor_kl ? "—" : measured(score.kl, 3)}
           {score.flips_top ? " · flips" : ""}
         </option>
       ));
@@ -409,10 +447,10 @@ export default function AttentionPanel({
               </span>
             </button>
             {/* Only offered once one layer has been timed on THIS model. A
-                whole-model sweep is seconds on gpt2 and can be minutes on a
-                28-layer model, and the difference is not something the user
-                can guess — so the button does not exist until it can state
-                which one this is, from a measurement on this machine. */}
+                whole-model sweep can be minutes on a 28-layer model, and how
+                long it will take here is not something the user can guess —
+                so the button does not exist until it can say, from a
+                measurement on this machine. */}
             {secPerPass !== null && layers > 1 && (
               <button
                 className="ghost sm"
@@ -444,14 +482,28 @@ export default function AttentionPanel({
                 times the work of the other two. The number it produces is the
                 one the panel could never show — how much the answer depends
                 on which baseline happens to be selected. */}
+            {/* GATED ON A RANKING EXISTING, because its result is drawn
+                inside `{ranked && (…)}` further down. Without one the click
+                ran all three baselines — resample is eight times the work of
+                the other two, and this button prices itself at about ten
+                times a single ranking — the label returned to idle, and
+                NOTHING appeared. No result, no error, no explanation.
+
+                Worse, it was unreachable afterwards: `rank()` clears
+                `agree`, so ranking second did not surface it either. The only
+                order that ever showed anything was rank-then-compare, and
+                nothing on screen said so. */}
             <button
               className="ghost sm"
               onClick={() => void compareAllBaselines()}
-              disabled={ranking || comparing}
+              disabled={ranking || comparing || !ranked}
               title={
-                "Run all three baselines on this layer and report how far " +
-                "apart they rank the same heads. Costs about ten times a " +
-                "single ranking."
+                !ranked
+                  ? "Rank this layer first — the comparison is drawn against " +
+                    "that ranking, so there is nowhere to put it until one exists."
+                  : "Run all three baselines on this layer and report how far " +
+                    "apart they rank the same heads. Costs about ten times a " +
+                    "single ranking."
               }
             >
               {comparing ? "comparing…" : "compare baselines"}
@@ -577,16 +629,36 @@ export default function AttentionPanel({
                     <span className="mid">
                       {noise
                         ? "below the noise floor"
-                        : `KL ${r.kl.toFixed(3)}`}
+                        : `KL ${measured(r.kl, 3)}`}
                       {/* The median is not the measurement, the spread is.
-                          Head 10 on gpt2 layer 0 ranged 0.027 to 0.335 over
-                          eight draws: one donor could have reported any of
-                          those as this head's score. */}
+                          A single donor sentence could have reported any point
+                          inside that spread as this head's score.
+
+                          WHICH IS WHY `?? 0` WAS WRONG HERE. `session.py`
+                          copies `kl_min`, `kl_max` and `draws` independently,
+                          and its own comment says why: "an absent field must
+                          not become 0 — that would state a measured spread of
+                          nothing where none was taken". A row carrying draws
+                          without bounds then rendered "median of 8,
+                          0.000–0.000" — a zero-width spread, presented as a
+                          measurement, directly under the sentence saying the
+                          spread IS the measurement. */}
                       {r.draws != null && (
                         <span className="meta">
                           {" "}
-                          median of {r.draws}, {r.kl_min?.toFixed(3)}–
-                          {r.kl_max?.toFixed(3)}
+                          {r.kl_min != null && r.kl_max != null ? (
+                            <>
+                              median of {r.draws}, {measured(r.kl_min, 3)}–
+                              {measured(r.kl_max, 3)}
+                            </>
+                          ) : (
+                            <>
+                              median of {r.draws}, spread not recorded — this
+                              file carries the draws without their bounds, so
+                              how far the score moved between them is unknown
+                              rather than zero
+                            </>
+                          )}
                         </span>
                       )}
                     </span>
@@ -596,12 +668,13 @@ export default function AttentionPanel({
                         // there is no honest number to print here.
                         <>
                           p({JSON.stringify(ranked.target_token)}){" "}
-                          {r.p_top_before.toFixed(3)} → varies by draw
+                          {measured(r.p_top_before, 3)} → varies by draw
                         </>
                       ) : (
                         <>
                           p({JSON.stringify(ranked.target_token)}){" "}
-                          {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+                          {pair(r.p_top_before, r.p_top_after)[0]} →{" "}
+                          {pair(r.p_top_before, r.p_top_after)[1]}
                         </>
                       )}
                       {r.flips_top &&
@@ -621,6 +694,24 @@ export default function AttentionPanel({
                 );
               })}
           </ol>
+          {/* THE CAP, SAID. A whole-model sweep on a 28x16 model computes 448
+              scores, prices itself at minutes of GPU, and showed five rows
+              with nothing to say five of how many. This file already gets it
+              right for the token ranking four hundred lines down — "{n} more
+              were tested and scored lower" — so the rule was stated here and
+              broken for the more expensive of the two measurements. */}
+          {(() => {
+            const all = wholeModel
+              ? ranked.ranked
+              : ranked.ranked.filter((r) => r.layer === layer);
+            return all.length > 5 ? (
+              <p className="meta">
+                {all.length - 5} more head{all.length - 5 === 1 ? " was" : "s were"}{" "}
+                ranked and scored lower. Every one was measured; this list is
+                the top five.
+              </p>
+            ) : null;
+          })()}
           {/* The caveat travels with the numbers. An ordered list reads as
               truth, and two of these scores are not what a reader assumes. */}
           <div className="hint">
@@ -633,8 +724,7 @@ export default function AttentionPanel({
           </div>
           {/* The measurement the panel could never show: how much of this
               ranking is the model, and how much is the baseline that happened
-              to be selected. Measured on gpt2 layer 0 the three agree only
-              weakly (Spearman 0.34-0.47), so this is not a formality. */}
+              to be selected. */}
           {agree && (
             <div className="hint agreement">
               <strong>
@@ -665,6 +755,31 @@ export default function AttentionPanel({
               </ul>
               <span className="meta">{agree.means}</span>
             </div>
+          )}
+          {/* THE CONTROL, and it belongs to the list above it rather than to a
+              panel of its own.
+
+              The baseline comparison one block up asks how much of this order
+              was decided by what a removed head is replaced with. This asks
+              the harder one: whether an untrained model of the same shape
+              would have produced an ordered list just as convincing. Every
+              argument this tool makes for controls applies to its own
+              rankings, and this was the measurement that had no button.
+
+              `!replay` because the server refuses a recording in its own
+              words — a `.mri` does not carry a second model — and a control
+              that can only ever refuse teaches the wrong lesson. The demo and
+              viewer builds refuse in `api.ts`, naming what the run costs. The
+              baseline this passes is the one that produced the ranking on
+              screen (`ranked.baseline`), not the select's current value: the
+              select can have moved since, and a control for a ranking nobody
+              is looking at is worse than none. */}
+          {!replay && (
+            <ControlTwin
+              layer={layer}
+              baseline={ranked.baseline}
+              wholeModel={wholeModel}
+            />
           )}
           {/* The setup that produced this ranking. It sits at the bottom of
               the block rather than the top because it answers a question you
@@ -730,7 +845,7 @@ export default function AttentionPanel({
                 </strong>
                 <span className="meta">
                   {diff.moved} of {diff.cells} cells moved · largest{" "}
-                  {diff.max_abs.toFixed(3)}
+                  {measured(diff.max_abs, 3)}
                 </span>
                 <span className="spacer" />
                 <span className="diff-key" aria-hidden="true">
@@ -775,12 +890,10 @@ export default function AttentionPanel({
               {/* Two claims, and the second used to be a closed list of two
                   reasons that did not cover the commonest one. When the
                   64-candidate cap bites, every candidate below the tested
-                  window renders bar-less as well — measured on gpt2 with a
-                  73-token prompt, 64 of 71 candidates were tested and indices
-                  1..7 came back unmarked while the sentence below told the
-                  reader they must be outside the causal cone. They are now
-                  dashed like `after-attr` and enumerated here only when there
-                  actually are any. */}
+                  window renders bar-less as well, and those came back unmarked
+                  while the sentence below told the reader they must be outside
+                  the causal cone. They are now dashed like `after-attr` and
+                  enumerated here only when there actually are any. */}
               {attr && (
                 <div className="hint">
                   The bar on a chip's left edge is that token's score against
@@ -788,9 +901,8 @@ export default function AttentionPanel({
                   on some models the tallest bar is the sink rather than a
                   word, and its row above says so. The ramp is linear in nats
                   and the scores span orders of magnitude, so most bars sit on
-                  the floor: measured on a 73-token gpt2 prompt, 60 of the 65
-                  bars were under 5% of the tallest and 34 under 2%. Read the
-                  strip for the ordering and the lists for the nats.
+                  the floor. Read the strip for the ordering and the lists for
+                  the nats.
                   <br />A chip with NO bar was never tested — everything after
                   token {attr.position} is outside the causal cone, and token{" "}
                   {attr.position} itself is excluded by rule rather than by its
@@ -813,9 +925,10 @@ export default function AttentionPanel({
  *  Normalised against the largest score in the run, INDEX 0 INCLUDED. The
  *  alternative — normalising over the ranked rows only and leaving index 0
  *  blank — would have the strip and the list disagreeing about what was
- *  measured, and a blank chip is this component's word for "never asked". On
- *  gpt2 that means the first chip carries the tallest bar; the row above the
- *  lists says why that is a property of the position rather than of the word.
+ *  measured, and a blank chip is this component's word for "never asked".
+ *  Where the sink is the largest score in the run, that means the first chip
+ *  carries the tallest bar; the row above the lists says why that is a
+ *  property of the position rather than of the word.
  */
 function strip(a: TokenAttribution, n: number): (number | null)[] {
   const rows = [a.index0, ...a.ranked];
@@ -826,16 +939,6 @@ function strip(a: TokenAttribution, n: number): (number | null)[] {
   }
   return out;
 }
-
-/** A KL small enough that fixed decimals would print it as zero.
- *
- *  Not cosmetic. On Qwen3-0.6B every token the user typed scores between
- *  3.1e-05 and 7.9e-05 nats, and five decimal places render most of that list
- *  as 0.00003 or 0.00000 — a measured value displayed as nothing. The
- *  exponent keeps the reader looking at what was measured; whether a number
- *  that small MEANS anything is what the caveat below the lists is for. */
-const fmtKL = (kl: number) =>
-  kl !== 0 && Math.abs(kl) < 0.001 ? kl.toExponential(2) : kl.toFixed(5);
 
 /** How many rows of each list are printed. Every tested token still carries
  *  its bar in the strip above, so nothing measured is hidden — this only
@@ -866,7 +969,8 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
             </span>
             <span className="meta">
               #{r.index} · p({JSON.stringify(a.target_token)}){" "}
-              {r.p_top_before.toFixed(3)} → {r.p_top_after.toFixed(3)}
+              {pair(r.p_top_before, r.p_top_after)[0]} →{" "}
+              {pair(r.p_top_before, r.p_top_after)[1]}
               {r.flips_top && " · changes the top token"}
             </span>
           </li>
@@ -886,8 +990,7 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
   // and is not "all of it is yours" either, so `unknown` rows go under a
   // heading that claims nothing; and rows past the prompt are the model's own
   // output, which used to be printed under "chat template scaffold" on gpt2 —
-  // a model whose span_note says two lines above that it has no chat
-  // template, and whose own words were the three highest scores in the run.
+  // a model whose span_note says two lines above that it has no chat template.
   const byGroup = (g: TokenScore["group"]) => a.ranked.filter((r) => r.group === g);
   // `typed`/`template` and `unknown` are mutually exclusive by construction —
   // the server emits the first pair when it located the user's words and the
@@ -917,9 +1020,9 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
   /** Why a group is empty — and never "they were not candidates" when they
    *  were candidates that the cap simply did not reach. That distinction is
    *  the whole job of `coverage`, and the sentence here used to contradict
-   *  it: measured on gpt2 at position 100 of a 125-token generation, the
-   *  typed span was [0,5], all five were candidates, none was tested because
-   *  the window started at 36 — and the panel said they were not candidates. */
+   *  it: when the tested window opens after the typed span, every token in
+   *  that span was a candidate the run never reached — and the panel said
+   *  they were not candidates at all. */
   const whyEmpty = (heading: string) => {
     if (heading === "what you typed" && a.typed_span) {
       const [lo, hi] = a.typed_span;
@@ -968,8 +1071,8 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
         <span className="mid">KL {fmtKL(a.index0.kl)}</span>{" "}
         <span className="meta">
           #0 · p({JSON.stringify(a.target_token)}){" "}
-          {a.index0.p_top_before.toFixed(3)} →{" "}
-          {a.index0.p_top_after.toFixed(3)}
+          {pair(a.index0.p_top_before, a.index0.p_top_after)[0]} →{" "}
+          {pair(a.index0.p_top_before, a.index0.p_top_after)[1]}
           {a.index0.flips_top && " · changes the top token"}
         </span>
         <div className="hint">{a.index0.note}</div>
@@ -998,9 +1101,9 @@ function TokenRanking({ a }: { a: TokenAttribution }) {
 
       {/* The caveat travels with the numbers, and the third clause is the one
           that cannot be copied from the head ranking above. Head ablation
-          over-counts 8x on gpt2 and under-counts on gemma; token masking is a
-          different phenomenon and misses in a direction that depends on the
-          model AND on which tokens you sum. So the panel prints this run's own
+          under-counts on gemma; token masking is a different phenomenon and
+          misses in a direction that depends on the model AND on which tokens
+          you sum. So the panel prints this run's own
           two numbers rather than a factor — the reader can see which way it
           goes on THEIR model instead of transferring a rule that does not
           hold. */}

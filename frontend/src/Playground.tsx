@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import LoadBar from "./LoadBar";
+import { invalidateSession } from "./RunsOn";
+import DevicePicker from "./DevicePicker";
 import {
   cancelLoad,
   errorText,
@@ -69,6 +72,10 @@ export default function Playground({
   const [source, setSource] = useState<"hf" | "ollama">("hf");
   const [pick, setPick] = useState(FALLBACK_MODEL);
   const [pickerOpen, setPickerOpen] = useState(false);
+  // "" is Automatic: nothing is sent and the server chooses, which is
+  // what every load did before this control existed. Only a deliberate
+  // choice names a device.
+  const [device, setDevice] = useState("");
   const [prompt, setPrompt] = useState(
     "The Eiffel Tower is located in the city of",
   );
@@ -238,7 +245,7 @@ export default function Playground({
     setOversize(null);
     try {
       const t = performance.now();
-      const result = await loadModel(id, src, confirm);
+      const result = await loadModel(id, src, confirm, device);
       // A stopped load is not a failure. Say what happened and stay put.
       if ("cancelled" in result) {
         setMeta(result.message);
@@ -246,6 +253,12 @@ export default function Playground({
       }
       setMeta(`loaded in ${((performance.now() - t) / 1000).toFixed(1)}s`);
       await onModelChange();
+      // THE SIX PANELS BELOW read the session through a shared cache keyed on
+      // `epoch`, and `setEpoch(0)` is a no-op when it is already 0 — which it
+      // is on a fresh page, because epoch counts GENERATIONS. Without this
+      // they keep the answer fetched before the model existed and go on
+      // telling the reader to load one.
+      invalidateSession();
       setEpoch(0);
       return true;
     } catch (err) {
@@ -332,7 +345,8 @@ export default function Playground({
   // generate. Showing those controls would be offering three buttons that
   // can only answer "install ModelMRI".
   if (VIEWER) {
-    return epoch > 0 ? <AttentionPanel epoch={epoch} replay /> : null;
+    // Same rule in the zero-install viewer, which only ever shows recordings.
+    return <AttentionPanel epoch={epoch} replay />;
   }
 
   return (
@@ -354,6 +368,13 @@ export default function Playground({
           <span className="model-btn-caret">⌄</span>
         </button>
         {source === "ollama" && <span className="chip">via Ollama</span>}
+        {/* Renders nothing unless this machine has more than one device: a
+            select with one option implies a decision nobody has. Empty value
+            means Automatic, so a machine that never touches it behaves
+            exactly as it did before the control existed. */}
+        {source !== "ollama" && (
+          <DevicePicker value={device} onChange={setDevice} disabled={busy !== ""} />
+        )}
         <button className="ghost" onClick={() => void ensureLoaded()} disabled={busy !== "" || !!isLoadedPick}>
           {isLoadedPick ? "Loaded ✓" : busy === "loading" ? "Loading…" : "Load"}
         </button>
@@ -415,7 +436,7 @@ export default function Playground({
           This warning existed and rendered beneath the output, which is after
           the reader has already typed a question, waited, and read something
           confidently wrong. By then they have concluded the tool is broken --
-          asking gpt2 "whats 2+2" and being told about respecting each other
+          asking a base model "whats 2+2" and getting a confident non-answer
           is not a bug report anybody writes as "I used a base model".
           A caveat that arrives after the surprise is a footnote; the same
           sentence before it is a warning. */}
@@ -462,11 +483,10 @@ export default function Playground({
         {/* Why the answer can be wrong, said before anyone has to wonder.
             Two different causes get mistaken for a broken tool:
 
-            a base model is a text CONTINUER — gpt2 finishes your sentence, it
+            a base model is a text CONTINUER — it finishes your sentence, it
             was never trained to answer a question — and any temperature above
             zero SAMPLES, so the same prompt gives a different answer each
-            time. gpt2 on "The Eiffel Tower is located in the city of" gives
-            Paris at T=0 and Amsterdam at T=0.7, measured.
+            time.
 
             ModelMRI shows what the model did; it does not improve it. That is
             the product. But a reader who knows neither of these concludes the
@@ -479,9 +499,9 @@ export default function Playground({
             And `sampled` is false on a replay: the demo and an opened .mri
             play back one fixed recording, so claiming a different answer each
             run is exactly wrong there. That inversion shipped: on the hosted
-            demo the true half (gpt2 is a base model) was suppressed because
-            the payload carried no `instruct`, while the false half was
-            asserted. */}
+            demo the true half (the replayed model was a base model) was
+            suppressed because the payload carried no `instruct`, while the
+            false half was asserted. */}
         {(() => {
           const sampled = DECODE.temperature > 0 && !DEMO && !replay;
           const base = model?.instruct === false;
@@ -535,7 +555,14 @@ export default function Playground({
           a `.mri` carries no timings, and the numbers would belong to
           somebody else's machine. */}
       {epoch > 0 && !replay && <TelemetryBar epoch={epoch} />}
-      {epoch > 0 && introspectable && (
+      {/* `|| replay` is not redundant. A recording with no attention slices
+          leaves `epoch` at 0 — the meta call that sets it says `available:
+          false` — so the section vanished from a page that is otherwise all
+          about a file somebody sent, with nothing anywhere saying the file
+          carries no attention. It carries its own explanation now, and the
+          live side is unchanged: with no model and no generation the RUN
+          section above is the answer, and a second box saying so is noise. */}
+      {(epoch > 0 || replay) && introspectable && (
         <AttentionPanel epoch={epoch} replay={replay} />
       )}
       {/* Features need the model's activations, which a `.mri` does not carry
@@ -652,79 +679,3 @@ function Generation({ text }: { text: string }) {
   );
 }
 
-const STAGES: Record<string, string> = {
-  resolving: "Resolving on the Hub",
-  weights: "Fetching weights",
-  device: "Moving to the accelerator",
-  ready: "Ready",
-  error: "Failed",
-};
-
-/** Progress for an in-flight load: named stage, bytes when we know them,
- *  and an indeterminate sweep when we don't. */
-function LoadBar({
-  p,
-  id,
-  onStop,
-}: {
-  p: LoadProgress | null;
-  id: string;
-  onStop: () => void;
-}) {
-  const total = p?.bytes_total ?? 0;
-  // Clamped, and not only in the bar. The width was already capped at 100%
-  // while the text beside it was not, so a mis-count showed as a full bar
-  // labelled "5.0 GB / 2.5 GB" — the number that gave the bug away.
-  const done = Math.min(p?.bytes_done ?? 0, total || Infinity);
-  const pct = total > 0 ? Math.min(100, (done / total) * 100) : null;
-  const stopping = (p?.detail ?? "").startsWith("stopping");
-  // The model the server is loading, which is not necessarily the one the
-  // picker is showing: pick a second model while the first is still loading
-  // and `id` is already the new one, so the running load's bytes and elapsed
-  // time appeared under a model that had not started.
-  const loading = p?.hf_id ?? id;
-  return (
-    <div className="loadbar glass-inset" role="status" aria-live="polite">
-      <div className="loadbar-row">
-        <span className="loadbar-stage">{STAGES[p?.stage ?? ""] ?? "Loading"}</span>
-        <span className="mid loadbar-id">{loading}</span>
-        <span className="spacer" />
-        <span className="meta">
-          {pct !== null && `${gb(done)} / ${gb(total)} · ${gb(total - done)} left · `}
-          {(p?.elapsed_s ?? 0).toFixed(0)}s
-          {/* Only when the server is willing to estimate. It withholds the
-              number until there is enough history to divide by, because a
-              countdown that opens with "4 hours" and settles at "40 seconds"
-              is one the reader learns to ignore. */}
-          {p?.eta_s != null && ` · ~${remaining(p.eta_s)} left`}
-        </span>
-        {/* The whole reason this component was revisited. A minutes-long
-            download with no way out is a trap, and this one could run for
-            days before failing. */}
-        <button className="ghost sm stop" onClick={onStop} disabled={stopping}>
-          {stopping ? "stopping…" : "Stop"}
-        </button>
-      </div>
-      <div className={`loadbar-track ${pct === null ? "indeterminate" : ""}`}>
-        <div
-          className="loadbar-fill"
-          style={pct === null ? undefined : { width: `${pct}%` }}
-        />
-      </div>
-      {p?.detail && <div className="meta loadbar-detail">{p.detail}</div>}
-    </div>
-  );
-}
-
-const gb = (n: number) =>
-  n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
-
-/** A duration somebody can act on. Seconds under a minute, then minutes, then
- *  hours and minutes — "312 minutes" is a number you have to do arithmetic on
- *  before it means anything. */
-export function remaining(seconds: number): string {
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
-  return `${Math.floor(s / 3600)}h ${Math.round((s % 3600) / 60)}m`;
-}

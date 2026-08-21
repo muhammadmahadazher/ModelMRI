@@ -50,8 +50,12 @@ def _doc(**over):
                 "error": False,
                 "seq": 0,
                 "meta": {"model": "qwen3"},
-                "truncated_in": False,
-                "truncated_out": False,
+                # REAL COUNTS. Seeded `False`, the round-trip test below
+                # walked every mapped field and passed anyway, because
+                # `False` survives a bool round trip intact. A fixture
+                # that cannot fail is not coverage.
+                "truncated_in": 0,
+                "truncated_out": 18_412,
             }
         ],
     }
@@ -483,3 +487,31 @@ def test_the_token_fields_are_namespaced_rather_than_squatting_on_semconv():
     # The two that ARE standard keep their semconv names.
     assert keys["tokens_in"] == "gen_ai.usage.input_tokens"
     assert keys["tokens_out"] == "gen_ai.usage.output_tokens"
+
+
+def test_a_truncation_count_survives_as_a_number():
+    """These are COUNTS, not flags. `traces._unclip` returns how many
+    characters were not stored — 18,412, not True — and the agents panel prints
+    that number while the judge panel picks "was" or "were" from it. Declared
+    "bool", `_value` collapsed it to `true`: the export said a payload had been
+    cut and destroyed by how much."""
+    doc = _doc()
+    doc["steps"][0]["truncated_out"] = 18_412
+
+    attrs = _attrs(_spans(otel.to_otlp(doc))[0])
+
+    # proto3's JSON mapping encodes int64 as a string, same as the timestamps.
+    assert attrs["modelmri.truncated.output"] == "18412"
+    assert otel.from_otlp(otel.to_otlp(doc))[0]["truncated_out"] == 18_412
+
+
+def test_nothing_truncated_is_zero_rather_than_absent():
+    """0 is a MEASUREMENT here, unlike a token count: the store always knows
+    whether it clipped. Omitting it would make "nothing was cut" read as
+    "written by a version that did not record it"."""
+    doc = _doc()
+    doc["steps"][0]["truncated_in"] = 0
+
+    attrs = _attrs(_spans(otel.to_otlp(doc))[0])
+
+    assert attrs["modelmri.truncated.input"] == "0"

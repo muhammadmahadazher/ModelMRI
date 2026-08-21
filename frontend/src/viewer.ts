@@ -220,6 +220,20 @@ function state() {
     n_tokens: (open.tokens ?? []).length,
     n_slices: Object.keys(open.attention ?? {}).length,
     slices: Object.keys(open.attention ?? {}).sort(),
+    // THE CARRIED RUN, in the shape `runtime.session_info` publishes. This is
+    // how the agents panel learns a run exists, and it is the path that opens
+    // on `step_ref` — the step the bundle was built AROUND, which is the
+    // reason it was sent. Serving the run through `/api/traces` instead made
+    // it an ordinary store row: it rendered, and it opened on step one.
+    trace: {
+      available: Boolean(open.trace?.steps?.length),
+      id: open.trace?.id ?? "",
+      name: open.trace?.name ?? "",
+      n_steps: open.trace?.steps?.length ?? 0,
+      n_steps_total: open.trace?.n_steps_total ?? open.trace?.steps?.length ?? 0,
+      truncated: open.trace?.truncated ?? 0,
+      step_ref: open.trace?.step_ref || null,
+    },
   };
 }
 
@@ -228,6 +242,38 @@ const NEEDS_A_MACHINE =
   "This is the viewer — it reads a shared analysis and nothing else. " +
   "Install ModelMRI (`pip install modelmri`) to point these instruments at " +
   "your own models.";
+
+/** The step shape the panels read, from the smaller one a `.mri` carries.
+ *
+ *  MIRRORS `server.py`'s `/api/session/trace`, which does exactly this for the
+ *  app. A bundle stores a deliberately reduced step — no `seq`, no cache or
+ *  reasoning token counts, no `adoptable` — and the panels treat a MISSING key
+ *  and a null one very differently:
+ *
+ *    step.tokens_cache_read !== null   is TRUE for undefined, and the ledger
+ *                                      printed "undefined cache read"
+ *    step {sel.seq}                    printed "step undefined"
+ *
+ *  `null` is the value that already means "the recorder said nothing", and
+ *  `seq` is positional so it is derived rather than left blank. Fixed in the
+ *  app first; the viewer served the raw steps and kept the bug, which is what
+ *  a fix on one side of a wire looks like.
+ */
+function viewerSteps(steps: Record<string, unknown>[]): Record<string, unknown>[] {
+  return steps.map((step, i) => ({
+    truncated_in: 0,
+    truncated_out: 0,
+    tokens_cache_read: null,
+    tokens_cache_write: null,
+    tokens_reasoning: null,
+    // Never adoptable, and false rather than absent: a `.mri` carries a run's
+    // shape and not the token ids underneath it, so there is nothing here for
+    // the mechanistic panels to reopen.
+    adoptable: false,
+    ...step,
+    seq: i,
+  }));
+}
 
 export async function viewerFetch(
   path: string,
@@ -309,14 +355,37 @@ export async function viewerFetch(
   }
 
   if (p === "/api/attention/meta") {
-    if (!open) return ok({ available: false });
+    // `reason` on both branches, mirroring `Session.attention_meta`. The panel
+    // prints it and renders NOTHING without one, so a bundle exported around
+    // an agent run — which carries no attention slices — made the whole
+    // attention section vanish with nothing saying why. That was fixed in the
+    // Python half and this shim, which serves the same route to the same
+    // panel, kept the old shape: the fix reached the app and not the page it
+    // was written for.
+    if (!open) {
+      return ok({
+        available: false,
+        reason:
+          "no file is open yet. Drop a `.mri` on this page and its attention " +
+          "maps, if it carries any, appear here.",
+      });
+    }
+    const slices = Object.keys(open.attention ?? {}).length;
     return ok({
-      available: Object.keys(open.attention ?? {}).length > 0,
+      available: slices > 0,
       n_prompt: open.n_prompt ?? 0,
       n_layers: open.n_layers ?? 0,
       n_heads: open.n_heads ?? 0,
       n_tokens: (open.tokens ?? []).length,
       replay: true,
+      ...(slices > 0
+        ? {}
+        : {
+            reason:
+              "this session carries no attention maps. A `.mri` stores the " +
+              "slices that were captured, and this one was exported for what " +
+              "it does carry rather than for a layer and head.",
+          }),
     });
   }
 
@@ -381,20 +450,97 @@ export async function viewerFetch(
   if (p === "/api/custom") return ok({ loaded: false, roots: [] });
   if (p === "/api/vla") return ok({ loaded: false });
   if (p === "/api/vla/datasets") return ok({ datasets: [] });
+  // THE CARRIED RUN, through the same route the app serves it on. The agents
+  // panel asks for this before the store list, and a bundle IS a carried run —
+  // it is the one source this page has. `available: false` when the file holds
+  // none, which is the ordinary answer and not an error.
+  if (p === "/api/session/trace") {
+    const t = open?.trace;
+    if (!t?.steps?.length) return ok({ available: false });
+    return ok({
+      available: true,
+      id: t.id || "bundled",
+      name: t.name || "the bundled run",
+      started_at: t.started_at || "",
+      steps: viewerSteps(t.steps),
+      step_ref: t.step_ref || "",
+      truncated: t.truncated || 0,
+      n_steps_total: t.n_steps_total ?? t.steps.length,
+      // Rolled up server-side in the app, by `ledger.roll_up`. This page has
+      // no Python, and a second implementation of the token arithmetic is
+      // exactly the drift `viewer_check.py` exists to prevent — so the keys
+      // are ABSENT rather than computed here, and `TokenLedger` renders
+      // nothing for an absent rollup rather than a table of zeroes.
+    });
+  }
+  // A store this page does not have. Every one of these writes to, searches,
+  // or re-runs something the viewer has no machine for, and each refusal says
+  // which — a 404 would read as "the viewer is broken" rather than "this is
+  // not a thing a file can do".
+  if (p === "/api/traces/search") {
+    return {
+      status: 409,
+      payload: {
+        error:
+          "search runs across the trace store on a machine with ModelMRI " +
+          "installed. This page holds one run — the one inside the file you " +
+          "opened — so there is nothing to search across.",
+      },
+    };
+  }
+  if (p.startsWith("/api/traces/import")) {
+    return {
+      status: 409,
+      payload: {
+        error:
+          "importing a run writes it to a store, and this page writes " +
+          "nothing. Install ModelMRI to import an Inspect log or a trace of " +
+          "your own.",
+      },
+    };
+  }
+  if (p.endsWith("/bundle/preview")) {
+    return {
+      status: 409,
+      payload: {
+        error:
+          "you are already reading the bundle this would produce. Exporting " +
+          "one is done from the tool that recorded the run.",
+      },
+    };
+  }
+  if (p.endsWith("/adopt")) {
+    return {
+      status: 409,
+      payload: {
+        error:
+          "a `.mri` carries a run's shape and not the token ids underneath " +
+          "it, so there is nothing here to reopen in the mechanistic panels " +
+          "— and this page holds no weights to reopen it with.",
+      },
+    };
+  }
+  if (p === "/api/rubric/score") {
+    return {
+      status: 409,
+      payload: {
+        error:
+          "a rubric scores every run in the store against rules you wrote. " +
+          "This page holds one run and no store, so there is nothing to rank " +
+          "it against.",
+      },
+    };
+  }
   // A LIST, not `{traces: []}`. The real route returns a bare array and
   // `api.ts` types it as one, so the object this used to return made the
   // agents panel call `.map` on a non-array in the standalone viewer.
+  // ALWAYS EMPTY. This is the trace STORE — what a machine recorded or
+  // imported — and this page has no store. The run inside the file is served
+  // as the CARRIED run above, which is what it is: not in a store, not
+  // deletable, and gone when the file closes. Listing it here promised all
+  // three, and cost the `step_ref` the bundle was built around.
   if (p === "/api/traces") {
-    const t = open?.trace;
-    if (!t?.steps?.length) return ok([]);
-    return ok([
-      {
-        id: t.id || "bundled",
-        name: t.name || "the bundled run",
-        started_at: t.started_at || "",
-        n_steps: t.steps.length,
-      },
-    ]);
+    return ok([]);
   }
   if (p.startsWith("/api/traces/")) {
     const t = open?.trace;
@@ -415,7 +561,7 @@ export async function viewerFetch(
       id: t.id || "bundled",
       name: t.name || "the bundled run",
       started_at: t.started_at || "",
-      steps: t.steps,
+      steps: viewerSteps(t.steps),
       step_ref: t.step_ref || "",
       truncated: t.truncated || 0,
       n_steps_total: t.n_steps_total ?? t.steps.length,

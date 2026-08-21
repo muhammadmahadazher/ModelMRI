@@ -95,6 +95,35 @@ vla-lite = [
     "pillow>=10",
     "pyarrow>=15",
 ]
+# Running an image model, as opposed to READING one. `modelmri/imaging.py`
+# identifies a checkpoint from its JSON and its safetensors header with no
+# dependency at all — that is what lets the picker list your diffusion models
+# on a machine with none of this installed. Everything below is only needed to
+# take a forward pass through one.
+#
+# diffusers is not pinned tightly: unlike lerobot it shares torch's release
+# cadence rather than fighting it, so it can live in ModelMRI's own
+# environment instead of needing the sidecar treatment.
+image = [
+    "diffusers>=0.31",
+    "pillow>=10",
+    "safetensors>=0.4",
+    # Text encoders for every conditional pipeline are transformers models,
+    # and transformers is already a base dependency — named here anyway so
+    # `pip install modelmri[image]` states its whole requirement rather than
+    # relying on another extra's leftovers.
+    "transformers>=4.48",
+    # What a NON-diffusion image model needs to preprocess a picture.
+    # transformers backs its fast image processors with torchvision, and
+    # without it `AutoImageProcessor.from_pretrained` raises ImportError for
+    # every ViT, detector and segmenter this extra exists to open — measured
+    # on `facebook/sam3`, whose processor is published and unreadable.
+    #
+    # A preprocessor is not a nicety here. A ViT is trained at one size with
+    # one per-channel normalisation, and an image prepared any other way
+    # produces logits that are a real number about the wrong tensor.
+    "torchvision>=0.16",
+]
 # Only for measuring quantisation damage, which has to dequantise real weights.
 # `modelmri.gguf_read` reads a GGUF's header with the stdlib and needs none of
 # this — reading the table describing tensors and unpacking the tensors
@@ -155,6 +184,20 @@ dev = [
     # without this it would simply not run on the 3.10 CI cell — the one cell
     # where an import error is most likely to be mistaken for "unsupported".
     "tomli>=2; python_version < '3.11'",
+    # The image extra, for the same reason pillow and h5py are here: without
+    # it `tests/test_image_attention.py` sits behind an `importorskip` and
+    # goes dark on every runner, which is how three suites in this repo were
+    # already silently not running.
+    "diffusers>=0.31",
+    # And the OTHER half of the image extra, which the diffusers line above
+    # does not cover. transformers backs its fast image processors with
+    # torchvision, so without this every non-diffusion image checkpoint —
+    # ViT, detector, segmenter — loads with `processor: None` on every
+    # runner. The tests would then all exercise the "no preprocessor" branch
+    # and none of them the real one, which is a suite that passes without
+    # testing the feature. Measured on `facebook/sam3`: the checkpoint
+    # publishes a processor and it was unreadable for want of this package.
+    "torchvision>=0.16",
     # The sidecar's BASE package — stdlib-only, no lerobot. Its input rules
     # decide whether a frame reaching a policy is the frame the policy was
     # trained on, which is a question worth testing on every runner rather
@@ -218,6 +261,23 @@ addopts = [
   # `tmp_path` first, so workers cannot collide on a shared path.
   "--dist", "loadfile",
 ]
+
+# A HANG HAS TO SAY WHERE IT HUNG.
+#
+# Under xdist a stuck worker produces nothing at all: it stops, the controller
+# waits, and the job sits until the runner's own ceiling kills it. Measured on
+# this branch's CI — two macOS jobs ran 150 and 360 minutes against a 5-8
+# minute baseline, and both were cancelled with zero output. Six hours of
+# runner time bought no information about which test stopped.
+#
+# `faulthandler_timeout` makes the interpreter dump every thread's stack after
+# this many seconds with no test completing, then carry on. So a deadlock
+# prints the two frames holding the locks, in the log, on the machine where it
+# actually reproduced — which is the only place some of these appear.
+#
+# 300s is comfortably above the slowest single test here (the image-model
+# fixtures build real pipelines) and far below any sane job ceiling.
+faulthandler_timeout = 300
 
 # Pass `-n 0` to turn all of that off, which is what you want when a test is
 # actually failing: serial output stays in order, `-x` stops where you expect,

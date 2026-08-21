@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Discovery,
   errorText,
@@ -19,7 +20,12 @@ import {
   pullOllama,
   resolveOllama,
 } from "./api";
-import { remaining } from "./Playground";
+// `gb` as well as `remaining`. This file took the duration helper from
+// LoadBar and re-implemented the byte one, reproducing the bug LoadBar's own
+// comment records as fixed: a pull under half a megabyte, and the whole first
+// stretch of any live download, read "0 MB". Two meters for the same download
+// cannot disagree if there is one formatter.
+import { gb, remaining } from "./LoadBar";
 
 /** What a pull is doing, right now. Bytes, a bar, and a time — the three
  *  things somebody watching a download wants and the picker used to answer
@@ -27,8 +33,6 @@ import { remaining } from "./Playground";
 function PullProgress({ p }: { p: LoadProgress | null }) {
   if (!p || !p.active) return null;
   const pct = p.bytes_total > 0 ? (100 * p.bytes_done) / p.bytes_total : null;
-  const gb = (n: number) =>
-    n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB` : `${Math.round(n / 1e6)} MB`;
   return (
     <div className="pull-progress" role="status" aria-live="polite">
       <div className={`pull-track ${pct === null ? "indeterminate" : ""}`}>
@@ -74,7 +78,7 @@ interface Props {
  *  drive. Showing the shape of the answer makes the wait legible, and the
  *  widths are staggered so it reads as a list rather than a loading bar.
  */
-function ModelSkeleton({ label }: { label: string }) {
+export function ModelSkeleton({ label }: { label: string }) {
   const widths = [62, 44, 71, 38, 55, 67, 41, 58];
   return (
     <>
@@ -329,7 +333,17 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
     }
   }
 
-  return (
+  // Portalled to <body>. MEASURED: the scrim is `position: fixed; inset: 0`,
+  // and it was rendering 935x546 at (36,136) inside a 1006x626 viewport --
+  // the panel's own box. `.panel` carries `transform: matrix(1,0,0,1,0,0)`
+  // and `filter: blur(0px)` left over from its entrance animation, and EITHER
+  // of those makes a descendant's `fixed` resolve against that ancestor
+  // instead of the viewport. So the dim-and-blur only ever covered the panel
+  // it was opened from, which is exactly what "only blur in a small part of
+  // the background" looks like. An identity transform still creates the
+  // containing block, so there is nothing to "turn off" -- the sheet has to
+  // leave the panel.
+  return createPortal(
     <div className="sheet-scrim" onClick={onClose}>
       <div
         className="sheet glass"
@@ -729,7 +743,8 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
 
         {err && <div className="hint err">{err}</div>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

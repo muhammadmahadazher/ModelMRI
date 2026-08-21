@@ -57,7 +57,7 @@ def _diff(**over) -> dict:
 
 def _build(**over) -> bytes:
     args = dict(
-        model_id="gpt2",
+        model_id="Qwen/Qwen3-1.7B",
         device="cpu",
         dtype="float32",
         n_params=1,
@@ -244,8 +244,8 @@ def test_a_file_with_no_comparison_and_no_receipt_produces_no_check():
 
 
 def test_the_export_survives_a_model_change():
-    """NO EPOCH CHECK, alone among the export helpers. Unloading gpt2 does not
-    make "these two checkpoints differ at layer 4" untrue."""
+    """NO EPOCH CHECK, alone among the export helpers. Unloading the model does
+    not make "these two checkpoints differ at layer 4" untrue."""
     from modelmri.runtime import ModelRuntime
 
     rt = ModelRuntime()

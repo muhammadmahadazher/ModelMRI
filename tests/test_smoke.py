@@ -135,7 +135,7 @@ class _OffsetTok:
 
 
 def test_user_span_leaves_out_an_added_token_at_index_zero():
-    """gpt2's span starts at character 0, where the (0, 0) offset a fast
+    """The user's span starts at character 0, where the (0, 0) offset a fast
     tokenizer gives its own added tokens also starts. The overlap test is
     half-open, so index 0 stays out and the span is the five words."""
     from modelmri.runtime import _user_span
@@ -283,11 +283,11 @@ def test_feature_ablation_refuses_a_model_that_is_not_float32():
 
     `feature_ablate` proves its floor by writing the captured stream back
     unchanged — bit-exact in every dtype, 0.0 in every dtype. So it cannot see
-    that in bfloat16 a 1-ulp change to the stream is worth ~0.01-0.03 nats by
-    itself. Measured on gpt2 at blocks.8.hook_resid_pre, position 10: feature
-    3841 (activation 0.051) moves the answer 4.9e-07 nats in float32 and
-    0.02836 in bfloat16, outranking a feature with 100x its activation, while
-    noise_floor_kl still reads 0.0 beside it.
+    that in bfloat16 a 1-ulp change to the stream is worth a real fraction of a
+    nat by itself. On a real run a feature whose float32 effect is
+    indistinguishable from zero moved the answer measurably in bfloat16 and
+    outranked features with far more activation, while noise_floor_kl still
+    read 0.0 beside it.
 
     Half-precision is the DEFAULT on a GPU — `devices.detect` picks bfloat16
     for any Ampere-or-newer NVIDIA card — so without this the ordinary path on
@@ -511,7 +511,9 @@ def test_load_progress_reports_stages_and_bytes(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 4096)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 8192))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 8192)
+    )
 
     tracker = progress._Tracker()
     tracker.start("acme/tiny")
@@ -542,7 +544,9 @@ def test_load_progress_flags_a_stalled_download(tmp_path, monkeypatch):
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 128)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 3000))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 3000)
+    )
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)  # stall immediately
 
     tracker = progress._Tracker()
@@ -570,7 +574,9 @@ def test_load_progress_does_not_cry_stall_over_a_cached_model(tmp_path, monkeypa
     blobs.mkdir(parents=True)
     (blobs / "w").write_bytes(b"x" * 1000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 1000)
+    )
     monkeypatch.setattr(progress, "STALL_AFTER_S", 0.0)
 
     tracker = progress._Tracker()
@@ -590,13 +596,12 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
     """ "No download needed" is decided from the directory's size at t=0, and
     a directory can be big for reasons that are not "we already have it".
 
-    Seen for real on gpt2: the cache held a legacy `pytorch_model.bin` beside
-    the safetensors, so the tree measured 1045 MB against an expected 551 MB
-    and was declared complete. The loader then downloaded `rust_model.ot` for
-    275 seconds behind a message reading "reading from local cache, no
-    download needed", with the byte counter climbing past 100%. Every number
-    on screen was wrong in the same direction, which is the only kind of
-    wrong nobody catches.
+    Seen for real: the cache held a legacy `pytorch_model.bin` beside the
+    safetensors, so the tree measured well past the expected total and was
+    declared complete. The loader then downloaded `rust_model.ot` for minutes
+    behind a message reading "reading from local cache, no download needed",
+    with the byte counter climbing past 100%. Every number on screen was wrong
+    in the same direction, which is the only kind of wrong nobody catches.
     """
     from modelmri import progress
 
@@ -605,7 +610,9 @@ def test_a_cache_that_turns_out_to_be_downloading_stops_saying_it_is_not(
     # Bigger than expected, exactly like a cache holding a second format.
     (blobs / "old").write_bytes(b"x" * 2000)
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 1000))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 1000)
+    )
 
     tracker = progress._Tracker()
     tracker.start("acme/stale")
@@ -676,7 +683,9 @@ def test_the_previous_loads_watcher_cannot_write_into_the_next_one(
     from modelmri import progress
 
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
-    monkeypatch.setattr(progress, "_expected_files", lambda _id: (frozenset(), 4242))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 4242)
+    )
 
     tracker = progress._Tracker()
     tracker.start("acme/first")
@@ -835,8 +844,9 @@ def test_load_progress_never_raises_on_a_missing_cache(tmp_path, monkeypatch):
 
 
 def test_expected_bytes_counts_only_what_a_load_downloads(monkeypatch):
-    """gpt2 ships tflite/rust/h5/flax copies of itself. Counting them made a
-    fully-cached model report 26% forever."""
+    """Some repos ship tflite/rust/h5/flax copies of the same weights.
+    Counting them made a fully-cached model report a fraction of itself
+    forever."""
     from types import SimpleNamespace
 
     import huggingface_hub
@@ -1147,14 +1157,14 @@ def test_vla_snapshot_path_reads_non_main_ref(tmp_path):
 
 
 def test_local_models_endpoint(tmp_path, monkeypatch):
-    hub = tmp_path / "hub" / "models--openai-community--gpt2"
+    hub = tmp_path / "hub" / "models--Qwen--Qwen3-1.7B"
     hub.mkdir(parents=True)
     (hub / "w.bin").write_bytes(b"x" * 1000)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
     r = client().get("/api/models/local")
     assert r.status_code == 200
     ids = [m["id"] for m in r.json()]
-    assert "openai-community/gpt2" in ids
+    assert "Qwen/Qwen3-1.7B" in ids
 
 
 def test_ollama_endpoint_down(monkeypatch):
@@ -1415,7 +1425,32 @@ def test_a_failed_cpu_fallback_does_not_leave_the_progress_meter_running(monkeyp
     monkeypatch.setattr(
         "transformers.AutoModelForCausalLM.from_pretrained", lambda *a, **k: Boom()
     )
-    rt.accel.kind = "cuda"  # so the CPU fallback branch is taken
+
+    # Patched at the DETECTOR, not by assigning `rt.accel.kind` after
+    # construction. `load` re-resolves the device on every call now — it has
+    # to, or one deliberate CPU load makes every later load CPU too — so a
+    # field set on the instance beforehand is overwritten before the fallback
+    # branch is ever reached.
+    #
+    # This also stops the test asking about the machine it runs on. Assigning
+    # the field passed here (a GPU box) and failed on CI (no GPU), where
+    # `detect("auto")` truthfully answered CPU and the fallback under test was
+    # therefore never entered. `prefer="cpu"` still goes to the real detector,
+    # because the fallback's own answer is part of what is being tested.
+    from modelmri import devices as devices_mod
+
+    real_detect = devices_mod.detect
+
+    def as_if_cuda(prefer: str = "auto"):
+        if prefer == "cpu":
+            return real_detect(prefer="cpu")
+        found = real_detect(prefer="cpu")
+        found.kind = "cuda"
+        found.name = "pretend CUDA card"
+        found.vram_gb = 8.0
+        return found
+
+    monkeypatch.setattr(devices_mod, "detect", as_if_cuda)
 
     with pytest.raises(RuntimeError, match="does not fit"):
         rt.load("acme/enormous")
@@ -1862,3 +1897,127 @@ def test_the_guard_only_covers_the_branch_that_names_a_path(route: str):
         route, json={"texts": ["a"], "question": "q", "prompts": ["a"]}
     )
     assert r.status_code != 403, "a request naming no path was refused as if it did"
+
+
+# ---------------------------------------------------------------------------
+# Multimodal configs.
+#
+# MEASURED on google/gemma-4-E4B-it-qat-mobile-transformers: `Gemma4Config`
+# has no `num_hidden_layers` at all. The shape lives in `text_config` (42
+# layers, 8 heads) beside `vision_config` (16) and `audio_config` (12), and the
+# decoder blocks are at `model.language_model.layers` rather than
+# `model.layers`. Every Gemma 3 and Gemma 4 is shaped this way, so before this
+# the newest models the tool can load reported `n_layers: None` and no
+# introspection feature worked on them.
+# ---------------------------------------------------------------------------
+
+
+def test_a_multimodal_config_reports_the_text_towers_shape():
+    from modelmri.runtime import text_config
+
+    class Vision:
+        num_hidden_layers = 16
+        num_attention_heads = 12
+
+    class Text:
+        num_hidden_layers = 42
+        num_attention_heads = 8
+
+    class Multimodal:
+        text_config = Text()
+        vision_config = Vision()
+
+    found = text_config(Multimodal())
+
+    assert found.num_hidden_layers == 42, "took the vision tower, or nothing"
+    assert found.num_attention_heads == 8
+
+
+def test_a_plain_config_is_returned_unchanged():
+    """Every caller uses the helper unconditionally, so it has to be a no-op on
+    the single-tower models that were working before."""
+    from modelmri.runtime import text_config
+
+    class Plain:
+        num_hidden_layers = 28
+        num_attention_heads = 16
+
+    cfg = Plain()
+    assert text_config(cfg) is cfg
+
+
+def test_a_config_with_neither_does_not_raise():
+    """A shape that cannot be read is `None` downstream, not an exception on
+    the load path."""
+    from modelmri.runtime import text_config
+
+    class Empty:
+        pass
+
+    cfg = Empty()
+    assert text_config(cfg) is cfg
+    assert getattr(text_config(cfg), "num_hidden_layers", None) is None
+
+
+def test_the_language_tower_is_preferred_over_the_vision_tower():
+    """A multimodal model has BOTH `model.language_model.layers` and
+    `model.vision_tower.encoder.layers`. Picking the wrong one draws the image
+    encoder's attention while the panel says it is the text model's."""
+    from modelmri.runtime import decoder_blocks
+
+    class Root:
+        class model:
+            class language_model:
+                layers = ["text"] * 42
+
+            class vision_tower:
+                class encoder:
+                    layers = ["vision"] * 16
+
+    blocks = decoder_blocks(Root())
+
+    assert blocks is not None and len(blocks) == 42
+    assert blocks[0] == "text"
+
+
+def test_an_unknown_layout_reports_none_rather_than_guessing():
+    from modelmri.runtime import decoder_blocks
+
+    class Exotic:
+        pass
+
+    assert decoder_blocks(Exotic()) is None
+
+
+def test_ws_answers_a_frame_that_is_not_json_rather_than_dropping_the_socket():
+    """`/ws/generate` had no arm for a malformed frame.
+
+    Measured against this file: `hello` raised JSONDecodeError, `[1,2]` raised
+    AttributeError on `.get`, and each escaped to uvicorn, which closes 1011
+    with no `error` and no `done`. Starlette routes the app-level `Exception`
+    handler exclusively through `ServerErrorMiddleware`, which returns early
+    for non-http scopes, so a websocket gets no backstop from it — and
+    `docs/reference/api.md` documents this endpoint as public API that answers
+    with an error frame. The shipped playground registers no `onclose`, so its
+    Generate button would stay disabled forever.
+    """
+    with client().websocket_connect("/ws/generate") as ws:
+        ws.send_text("hello")
+        answer = ws.receive_json()
+        assert answer["type"] == "error"
+        assert "not JSON" in answer["message"]
+
+        # AND THE SOCKET SURVIVES. One client's bad frame is not a reason to
+        # drop a connection the panel is still using.
+        ws.send_text(json.dumps({"prompt": "hi"}))
+        assert ws.receive_json()["type"] in ("error", "token", "done")
+
+
+def test_ws_answers_a_json_frame_that_is_not_an_object():
+    """`[1, 2]` parses fine and then raises AttributeError on `.get`."""
+    with client().websocket_connect("/ws/generate") as ws:
+        ws.send_text(json.dumps([1, 2]))
+        answer = ws.receive_json()
+        assert answer["type"] == "error"
+        assert "list" in answer["message"]
+        assert "`prompt`" in answer["message"]

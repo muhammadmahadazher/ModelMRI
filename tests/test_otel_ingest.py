@@ -411,3 +411,69 @@ def test_reimporting_the_same_export_produces_the_same_step_ids():
     a = otel.ingest(_body([span]))["steps"][0]["id"]
     b = otel.ingest(_body([span]))["steps"][0]["id"]
     assert a == b
+
+
+# --------------------- a span with no start is not a span at the start
+
+
+def _dated(name: str, start_ns: int | None) -> dict:
+    span: dict = {"name": name, "spanId": name, "attributes": []}
+    if start_ns is not None:
+        span["startTimeUnixNano"] = str(start_ns)
+    return span
+
+
+def _ingest(spans: list[dict]) -> dict:
+    from modelmri import otel
+
+    return otel.ingest({"resourceSpans": [{"scopeSpans": [{"spans": spans}]}]})
+
+
+_BASE = 1_700_000_000_000_000_000
+
+
+def test_a_span_with_no_start_time_is_dropped_and_counted():
+    """It was filed at offset 0, reading as the first thing that happened.
+
+    `base_ns` already excludes these from the baseline — `if s > 0` — because a
+    zero stamp is not a time. Filing them anyway put every undated span before
+    everything that WAS timed.
+
+    `traces._ms` refuses a step with no `started_ms` in exactly those words:
+    "filing it at 0 would put it at the start of the run". This manufactured
+    what that guard exists to reject, one module over, and the store then
+    accepted it because the field was present.
+    """
+    out = _ingest([_dated("undated", None), _dated("real", _BASE + 9_000_000_000)])
+    names = [s["name"] for s in out["steps"]]
+    assert names == ["real"], "an undated span is still in the trace"
+    assert out["meta"]["spans"] == 1
+
+    note = " ".join(out["meta"]["notes"])
+    assert "no usable startTimeUnixNano" in note
+    assert "NOT in this trace" in note
+
+
+def test_dropping_them_does_not_lose_the_spans_that_were_timed():
+    """The alternative — omitting `started_ms` — makes `import_trace` refuse
+    the whole document, which loses every span that had a time."""
+    out = _ingest(
+        [
+            _dated("a", _BASE),
+            _dated("undated", None),
+            _dated("b", _BASE + 2_000_000_000),
+        ]
+    )
+    assert [s["name"] for s in out["steps"]] == ["a", "b"]
+    assert [s["started_ms"] for s in out["steps"]] == [0, 2000]
+
+
+def test_spans_are_ordered_by_their_timestamps_not_by_the_text_of_them():
+    """`sorted(key=str(...))` compares nanosecond stamps as TEXT, so a stamp
+    with fewer digits sorts after a longer one — and `seq`, derived from this
+    loop, then contradicts the timestamps it summarises."""
+    early = 9_000_000_000_000_000_000
+    late = 10_000_000_000_000_000_000  # more digits, sorts FIRST as text
+    out = _ingest([_dated("late", late), _dated("early", early)])
+    assert [s["name"] for s in out["steps"]] == ["early", "late"]
+    assert [s["seq"] for s in out["steps"]] == [0, 1]

@@ -66,7 +66,6 @@ SUGGESTED = [
     "HuggingFaceTB/SmolLM2-360M-Instruct",
     "allenai/OLMo-2-0425-1B-Instruct",
     "microsoft/Phi-4-mini-instruct",
-    "gpt2",
 ]
 
 

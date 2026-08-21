@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { howLong } from "./measured";
+import { VIEWER } from "./viewer";
 import { useScanOnData } from "./useScanOnData";
 import { CostBanner, StepTokens, TokenTable } from "./TokenLedger";
 import ShareRun from "./ShareRun";
 import InspectDrop from "./InspectDrop";
+import PatternsAcross from "./PatternsAcross";
 import RubricPanel from "./RubricPanel";
+import JudgePanel from "./JudgePanel";
 import {
   Adopted,
   adoptStep,
   clearTraces,
   errorText,
+  getSessionState,
+  getSessionTrace,
   getTrace,
   getTraces,
   SearchResult,
   searchTraces,
+  SessionState,
+  SessionTraceDoc,
   TraceDoc,
   TraceStep,
   TraceSummary,
@@ -59,6 +67,14 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<SearchResult | null>(null);
   const [searchErr, setSearchErr] = useState("");
+  // The run carried INSIDE the open `.mri`, which is a different source from
+  // the store this panel lists. A bundle built around a failing step used to
+  // open here to "0 recordings" with the run sitting in the file.
+  const [carried, setCarried] = useState<SessionState["trace"] | null>(null);
+  // Whether what is on screen came from the file rather than the store. It
+  // changes what a refusal is allowed to say: a carried step is not adoptable
+  // for a reason that has nothing to do with where it ran.
+  const [fromSession, setFromSession] = useState(false);
   // Above every conditional return. This panel returns early for its empty
   // and loading states, so a hook placed after that ran on some renders and
   // not others — React error #310, and the whole page blank. Hooks are not
@@ -96,7 +112,35 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
     };
   }, []);
 
+  // A carried run belongs to the file that is open, so it must not outlive
+  // it. Close the session — or open a different one — while its run is on
+  // screen and the timeline used to stay exactly as it was, under a sentence
+  // reading "the session file you have open", about a file that is not.
+  useEffect(() => {
+    if (!fromSession) return;
+    if (!carried?.available) {
+      setDoc(null);
+      setSel(null);
+      setFromSession(false);
+      return;
+    }
+    // A DIFFERENT file, not merely a re-read of the same one. Compared by the
+    // run's id rather than by object identity, because the state is refetched
+    // on a timer and every poll produces a new object.
+    if (doc && doc.id !== carried.id) {
+      setDoc(null);
+      setSel(null);
+    }
+    // `doc` is in the deps and this sets it, which is only stable because the
+    // condition is false once it has run: the next pass sees `doc === null`.
+  }, [carried, fromSession, doc]);
+
   const load = useCallback(() => {
+    // Asked on the same schedule as the store list, because opening a `.mri`
+    // is exactly as much of an arrival as recording a run is.
+    void getSessionState()
+      .then((st) => live.current && setCarried(st.trace ?? null))
+      .catch(() => undefined);
     void getTraces()
       .then((l) => {
         if (!live.current) return;
@@ -203,7 +247,43 @@ export default function AgentsPanel({ runs = 0, onAdopted }: Props) {
     return doc.steps.map((s) => ({ step: s, lane: depth.get(s.id) ?? 0 }));
   }, [doc]);
 
-  if (!list || list.length === 0) {
+  // The empty branch is for "there is nothing to look at", and a `.mri`
+  // carrying an agent run means there IS. Returning early on the store alone
+  // is the same mistake the drop zone below already had to be fixed for: this
+  // panel returns before the list renders, so anything mounted only in the
+  // populated branch is invisible to exactly the reader who has no store
+  // entries — here, somebody who was sent a bundle and opened it.
+  const empties = !list || list.length === 0;
+  // A DIFFERENT EMPTY IN THE VIEWER. The branch below tells a reader how to
+  // fill this panel — generate above, or add three lines to their agent — and
+  // neither is available to somebody reading a file on a machine with nothing
+  // installed. The honest answer there is that this particular bundle carries
+  // no run, which is an ordinary thing for a bundle to do.
+  if (empties && !carried?.available && VIEWER) {
+    return (
+      <div className="panel">
+        <div className="sect">
+          <span className="dot d-agent" />
+          <h2 className="h-agent">AGENTS — RECORDED RUNS</h2>
+          <span className="rule" />
+        </div>
+        <div className="agents-empty">
+          <p>
+            <b>This file carries no agent run.</b> A `.mri` holds whatever was
+            captured when it was written — attention, a logit lens, a patching
+            trace, an agent run, or any combination — and this one was
+            exported without one.
+          </p>
+          <p className="meta">
+            A bundle that does carry a run opens here with its timeline, every
+            step's input and output, and what the run cost in tokens. Nothing
+            is installed to read it: the file is the whole of it.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  if (empties && !carried?.available) {
     return (
       <div className="panel">
         <div className="sect">
@@ -252,7 +332,8 @@ with trace("my-agent"):
           <InspectDrop
             onImported={(id) => {
               void getTraces().then(setList);
-              void getTrace(id).then(setDoc);
+              setFromSession(false);
+          void getTrace(id).then(setDoc);
             }}
           />
         </div>
@@ -262,7 +343,8 @@ with trace("my-agent"):
 
   // Bundled samples in the list, so the panel can name them and offer to
   // remove them rather than leaving a red "1 error" nobody recognises.
-  const demos = list.filter((t) => t.demo).length;
+  const rows = list ?? [];
+  const demos = rows.filter((t) => t.demo).length;
 
   async function search(text: string) {
     setQ(text);
@@ -285,9 +367,27 @@ with trace("my-agent"):
   async function openHit(traceId: string, stepId: string) {
     const d = await getTrace(traceId);
     setDoc(d);
+    setFromSession(false);
     setSel(d.steps.find((s) => s.id === stepId) ?? null);
     setAdopted(null);
     setAdoptErr("");
+  }
+
+  /** Open the run the `.mri` carries, on the step it was built around. */
+  async function openCarried() {
+    const d = await getSessionTrace();
+    if (!d.available) {
+      // The file was closed between the list refresh and this click.
+      setCarried(null);
+      return;
+    }
+    setDoc(d);
+    setFromSession(true);
+    setAdopted(null);
+    setAdoptErr("");
+    // `step_ref` is the reason the bundle was sent. Landing on step one and
+    // making the reader hunt for it wastes the one thing the sender said.
+    setSel(d.step_ref ? (d.steps.find((x) => x.id === d.step_ref) ?? null) : null);
   }
 
   async function adopt(step: TraceStep) {
@@ -351,15 +451,34 @@ with trace("my-agent"):
           reader would look for their own generation and be told it is not
           here, while it sits in the list underneath. Both sources, one line,
           and the `this app` pill on the rows says which is which. */}
+      {/* Both sources name something the viewer does not have: there is no
+          playground above it to generate in, and `modelmri-record` is a
+          package on a machine with ModelMRI installed. A reader who was sent
+          a file has neither, and telling them how to fill a panel that is
+          already full is the same dead end the empty state was fixed for. */}
       <p className="agents-what meta">
-        A flight recorder for runs: each generation you make above lands here
-        as one <b>llm_call</b>, and a program of your own calling{" "}
-        <b>modelmri-record</b> lands here with its tool calls and sub-agents
-        nested underneath it.
+        {VIEWER ? (
+          <>
+            The agent run this file carries, with every step's input and
+            output and what the run cost in tokens. Nothing is installed to
+            read it — the file is the whole of it.
+          </>
+        ) : (
+          <>
+            A flight recorder for runs: each generation you make above lands
+            here as one <b>llm_call</b>, and a program of your own calling{" "}
+            <b>modelmri-record</b> lands here with its tool calls and
+            sub-agents nested underneath it.
+          </>
+        )}
       </p>
 
       {/* Search is over STEPS, not runs — what somebody is looking for is the
-          tool call that failed, not the hour it happened in. */}
+          tool call that failed, not the hour it happened in. Across the
+          STORE, though, which the viewer does not have: one run needs no
+          search across it, and the box would only ever refuse. */}
+      {!VIEWER && (
+        <>
       <div className="row trace-search" style={{ marginBottom: 10 }}>
         <input
           className="sm"
@@ -416,13 +535,28 @@ with trace("my-agent"):
           )}
         </div>
       )}
+        </>
+      )}
 
       <div className="row" style={{ marginBottom: 10 }}>
         <span className="meta">
-          {list.length} recording{list.length === 1 ? "" : "s"}
+          {/* `rows` is the STORE, and the viewer has none — the run it shows
+              is the carried one. Counting rows there printed "0 runs in this
+              file" directly above the row displaying the run, which is a
+              count contradicting the thing beneath it. Introduced when the
+              viewer stopped listing the carried run as a store row, and
+              caught by reading the count rather than the change. */}
+          {VIEWER
+            ? `${carried?.available ? 1 : 0} run${carried?.available ? "" : "s"} in this file`
+            : `${rows.length} recording${rows.length === 1 ? "" : "s"}`}
           {demos > 0 && ` · ${demos} bundled sample${demos === 1 ? "" : "s"}`}
         </span>
         <span className="spacer" />
+        {/* Both buttons DELETE from the store. This page writes nothing, and
+            the run on screen is inside the file — there is no copy of it here
+            to remove. */}
+        {!VIEWER && (
+        <>
         <button
           className="ghost sm"
           disabled={clearing}
@@ -444,6 +578,8 @@ with trace("my-agent"):
             Remove sample
           </button>
         )}
+        </>
+        )}
       </div>
 
       {demos > 0 && (
@@ -455,6 +591,17 @@ with trace("my-agent"):
         </p>
       )}
 
+      {/* EVERY BLOCK BELOW NEEDS A STORE, A DISK OR WEIGHTS, and the
+          standalone viewer has none of the three. They are not mounted there
+          rather than mounted and refusing: a control that can only ever
+          refuse teaches a reader that the feature is broken, which is the
+          rule `Playground` states three times for the same situation.
+
+          What the viewer keeps is everything that reads the file it was
+          given — the run, its timeline, the step inspector and the token
+          tables. That is the whole of what a bundle carries. */}
+      {!VIEWER && (
+        <>
       {/* Sited above the list, because what it produces IS a row in that
           list — an Inspect sample becomes an ordinary trace and everything
           below reads it without knowing where it came from. */}
@@ -466,6 +613,7 @@ with trace("my-agent"):
           // scoped inside the polling effect, so this calls the same two
           // clients directly rather than reaching into it.
           void getTraces().then(setList);
+          setFromSession(false);
           void getTrace(id).then(setDoc);
         }}
       />
@@ -473,9 +621,67 @@ with trace("my-agent"):
       <RubricPanel
         onPick={(id) => {
           setSel(null);
+          setFromSession(false);
           void getTrace(id).then(setDoc);
         }}
       />
+
+      {/* Directly beneath the deterministic scorer, because the pair is the
+          argument. The rubric above asks exact predicates and never touches a
+          model, so a match is a match. This one asks the loaded model — and
+          reads its probability mass rather than sampling a label off it, which
+          is only possible because the weights are on this machine. The step
+          selected on the timeline is offered as the text to judge, so what was
+          scored is something you can read. */}
+      <JudgePanel step={sel} />
+
+      {/* ACROSS runs, above the list of runs. The rubric block scores each run
+          against rules you wrote; this counts what the runs have in common
+          without being told what to look for, and both answer questions about
+          the whole store rather than about whichever run is open below.
+
+          The agent names come from the list this panel already holds, so the
+          filter offers the names that exist rather than a box that can only be
+          got wrong — and its counts are the same counts the rows show. */}
+      <PatternsAcross
+        agents={groups.map((g) => ({ name: g.name, runs: g.runs.length }))}
+        onPick={(id) => {
+          setSel(null);
+          setFromSession(false);
+          void getTrace(id).then(setDoc);
+        }}
+      />
+        </>
+      )}
+
+      {/* THE OTHER SOURCE. The list below is what this machine recorded or
+          imported; this is what arrived inside the `.mri` somebody sent. It
+          is deliberately outside the list rather than merged into it: a
+          carried run is not in the store, cannot be deleted from it, and
+          disappears when the file is closed, so showing it as an ordinary row
+          would promise three things that are not true of it. */}
+      {carried?.available && (
+        <button
+          className={`trace-row carried ${fromSession ? "sel" : ""}`}
+          onClick={() => void openCarried()}
+          title="the agent run inside the session file that is open"
+        >
+          <span className="tname">
+            {carried.name || "agent run"}
+            <span className="pill tiny" title="carried by the open .mri, not stored on this machine">
+              in this file
+            </span>
+          </span>
+          <span className="meta">
+            {carried.n_steps} step{carried.n_steps === 1 ? "" : "s"}
+            {/* Only when they differ. "4 of 4" is noise; "4 of 9" is the
+                whole point — the sender's run was longer than what fits. */}
+            {carried.n_steps_total > carried.n_steps &&
+              ` of ${carried.n_steps_total}`}
+            {carried.step_ref && " · opens on the step it was sent for"}
+          </span>
+        </button>
+      )}
 
       <div className="trace-list">
         {groups.map(({ name, runs }) => {
@@ -495,6 +701,7 @@ with trace("my-agent"):
                   }`}
                   onClick={() => {
                     setSel(null);
+                    setFromSession(false);
                     void getTrace(t.id).then(setDoc);
                   }}
                 >
@@ -524,9 +731,41 @@ with trace("my-agent"):
                   <span className="tmeta">
                     {/* A generation is exactly one step, so "1 steps" is now
                         the common case rather than a rarity. */}
-                    {t.n_steps} step{t.n_steps === 1 ? "" : "s"} ·{" "}
-                    {(t.total_ms / 1000).toFixed(1)}s
-                    {t.n_errors > 0 && <em> · {t.n_errors} error</em>}
+                    {t.n_steps} step{t.n_steps === 1 ? "" : "s"}
+                    {/* NOT A TOTAL when a step carries no duration. The store
+                        sums `started_ms + COALESCE(duration_ms, 0)`, so an
+                        untimed step contributes nothing — measured on four
+                        runs, a single untimed step rendered "0.0s", four
+                        untimed steps rendered the last one's start, and a run
+                        whose final step was untimed lost that step entirely.
+                        A floor printed as a total is the same defect as an
+                        unknown printed as a zero. */}
+                    {t.n_timed === 0 ? (
+                      <span title="no step in this run recorded a duration">
+                        {" "}
+                        · not timed
+                      </span>
+                    ) : (
+                      <>
+                        {" "}
+                        ·{" "}
+                        {t.n_timed < t.n_steps && (
+                          <span title={`${t.n_steps - t.n_timed} of ${t.n_steps} steps recorded no duration, so this is a floor`}>
+                            ≥
+                          </span>
+                        )}
+                        {howLong(t.total_ms)}
+                      </>
+                    )}
+                    {/* Pluralised, like the step count two lines up. "3
+                        error" beside "3 steps" reads as a truncated word
+                        rather than a count. */}
+                    {t.n_errors > 0 && (
+                      <em>
+                        {" "}
+                        · {t.n_errors} error{t.n_errors === 1 ? "" : "s"}
+                      </em>
+                    )}
                   </span>
                 </button>
               ))}
@@ -556,18 +795,47 @@ with trace("my-agent"):
 
       {doc && (
         <>
+          {/* Beside the timeline, not only on the row that opened it. A
+              reader looking at four blocks is looking at a run that had nine
+              steps, and the cap is invisible from here — the timeline draws
+              what it was given and looks complete either way. */}
+          {fromSession && (doc as SessionTraceDoc).truncated > 0 && (
+            <div className="hint">
+              This is {doc.steps.length} of{" "}
+              {(doc as SessionTraceDoc).n_steps_total} steps.{" "}
+              {(doc as SessionTraceDoc).truncated} did not fit in the session
+              file, so the timeline below is a section of the run rather than
+              the run.
+            </div>
+          )}
           <div className="timeline" style={{ height: nLanes * 36 + 8 }}>
             {lanes.map(({ step, lane }) => (
               <button
                 key={step.id}
-                className={`tl-block ${step.error ? "err" : ""} ${sel?.id === step.id ? "sel" : ""}`}
+                // `no-dur` is not decoration. A step with no recorded
+                // duration used to be drawn at the 0.8% minimum width, which
+                // is exactly what a genuinely instant call looks like — so
+                // the bar said "this took no time" about a fact nobody wrote
+                // down. The detail panel beside it already refuses to do
+                // that, in its own words: "0ms reads as an instant call
+                // rather than as a fact nobody wrote down". Two views of one
+                // step disagreeing about what is known is the defect, not the
+                // width.
+                className={`tl-block ${step.error ? "err" : ""} ${
+                  sel?.id === step.id ? "sel" : ""
+                } ${step.duration_ms == null ? "no-dur" : ""}`}
                 style={{
                   left: `${(step.started_ms / maxMs) * 100}%`,
                   width: `${Math.max(((step.duration_ms ?? 0) / maxMs) * 100, 0.8)}%`,
                   top: lane * 36 + 4,
                   background: KIND_COLOR[step.kind],
                 }}
-                title={`${step.kind} · ${step.name}`}
+                title={
+                  `${step.kind} · ${step.name} · ` +
+                  (step.duration_ms == null
+                    ? "duration not recorded"
+                    : `${step.duration_ms}ms`)
+                }
                 onClick={() => {
                   setSel(step);
                   // Belongs to the step that produced it, not to the panel.
@@ -595,11 +863,25 @@ with trace("my-agent"):
           {/* The share half. Sited under the run summary rather than beside
               the timeline: what leaves the machine is a decision about the
               whole run, not about whichever step happens to be selected. */}
-          <ShareRun
-            traceId={doc.id}
-            selected={sel}
-            ready={Boolean(sel?.adoptable)}
-          />
+          {/* Not for a carried run. `ShareRun` builds a `.mri` by asking the
+              STORE for the trace, and a run read out of an opened file is not
+              in the store — the preview call 404'd with "trace not found",
+              which reads as the run being broken rather than as the button
+              not applying to it. The reader is already holding the bundle
+              this would produce. */}
+          {fromSession || VIEWER ? (
+            <div className="hint">
+              This run arrived inside the session file you have open, so there
+              is nothing here to package — the bundle already exists and you
+              are reading it.
+            </div>
+          ) : (
+            <ShareRun
+              traceId={doc.id}
+              selected={sel}
+              ready={Boolean(sel?.adoptable)}
+            />
+          )}
 
           {sel && (
             <div className={`inspector ${sel.error ? "err" : ""}`}>
@@ -632,11 +914,18 @@ with trace("my-agent"):
                 <pre className="io">
                   <span className="io-l">IN</span>
                   {sel.input}
+                  {/* The cap is NOT named, because there are two of them and
+                      this cannot tell which one fired. The recorder cuts an
+                      auto-instrumented payload at 4,000 before the store ever
+                      sees it; the store cuts at 20,000. Naming 20,000 stated a
+                      bound that had not applied to the very payloads most
+                      likely to be cut. The COUNT is the honest part, and it is
+                      the part a reader acts on. */}
                   {(sel.truncated_in ?? 0) > 0 && (
                     <span className="clipped">
                       {"\n"}— {sel.truncated_in!.toLocaleString()} characters not
-                      stored (payloads are capped at 20,000 so one runaway tool
-                      output cannot fill your disk)
+                      stored. The payload was cut so one runaway tool output
+                      cannot fill your disk.
                     </span>
                   )}
                 </pre>
@@ -648,8 +937,8 @@ with trace("my-agent"):
                   {(sel.truncated_out ?? 0) > 0 && (
                     <span className="clipped">
                       {"\n"}— {sel.truncated_out!.toLocaleString()} characters
-                      not stored (payloads are capped at 20,000 so one runaway
-                      tool output cannot fill your disk)
+                      not stored. The payload was cut so one runaway tool output
+                      cannot fill your disk.
                     </span>
                   )}
                 </pre>
@@ -688,10 +977,29 @@ with trace("my-agent"):
                   )}
                 </div>
               ) : (
-                sel.kind === "llm_call" && (
-                  // A sentence, not a disabled button. A control that can only
-                  // ever refuse teaches the reader that the feature is broken
-                  // rather than that the weights are somewhere else.
+                sel.kind === "llm_call" &&
+                // A sentence, not a disabled button. A control that can only
+                // ever refuse teaches the reader that the feature is broken
+                // rather than that the weights are somewhere else.
+                //
+                // TWO different reasons, and saying the wrong one sends
+                // somebody to fix the wrong thing. A step from the store did
+                // not run here. A step from an opened `.mri` may well have run
+                // on the sender's machine with weights and all — the bundle
+                // simply does not carry token ids, by design, because they are
+                // the model's reading of somebody's private prompt.
+                // VIEWER counts as `fromSession`: everything it shows came
+                // out of the open file, so the reason a step cannot be
+                // adopted there is the file's shape and not where it ran.
+                (fromSession || VIEWER ? (
+                  <div className="hint">
+                    A session file carries this run's shape — its steps, timing
+                    and token counts — and not the token ids underneath them,
+                    so there is nothing here for the panels above to read. Open
+                    the run where it was recorded, or ask for a bundle exported
+                    from the step itself.
+                  </div>
+                ) : (
                   <div className="hint">
                     This call did not run on this machine, so there are no
                     weights here to look inside. Steps recorded through{" "}
@@ -699,7 +1007,7 @@ with trace("my-agent"):
                     that make the panels above work on them; a hosted API
                     returns text and nothing underneath it.
                   </div>
-                )
+                ))
               )}
               {adopted && (
                 <div className="hint ok">

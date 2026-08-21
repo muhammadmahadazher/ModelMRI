@@ -151,7 +151,8 @@ def test_prompt_time_is_kept_apart_from_the_decode_rate():
 def test_the_true_token_count_wins_over_the_stream_chunk_count():
     """Regression. A TextIteratorStreamer yields one chunk per token PLUS a
     final flush from TextStreamer.end(), so counting chunks is always one too
-    many. Measured on real gpt2: 8 new tokens reported as 9, and 40 as 41."""
+    many. Seen on real runs: every generation reported one token more than it
+    produced."""
     with telemetry.Run("cpu") as run:
         for _ in range(9):  # 8 tokens + the flush chunk
             run.token()

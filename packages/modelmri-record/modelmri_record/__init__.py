@@ -46,6 +46,37 @@ __version__ = "0.1.4"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
 
+# What the recorder keeps of a captured payload. NAMED rather than written
+# inline five times, because these are now REPORTED and a cap nobody can see is
+# a cap nobody can argue with.
+#
+# `_msgs_preview` and `_content_preview` cut the input and output of every
+# `instrument_anthropic()` call — the zero-config headline feature — and 4,000
+# is well under the store's own 20,000. So `traces._clip` never fired, no
+# marker was written, `truncated_in` read 0, and a 50,000-character prompt
+# reached the timeline looking whole. The only sentence a reader ever saw about
+# truncation named 20,000, a cap that had not applied to it.
+MAX_PREVIEW_CHARS = 4_000
+MAX_ERROR_CHARS = 2_000
+
+
+def _cut(text: str, limit: int) -> str:
+    """`text` at `limit`, MARKED.
+
+    The marker is byte-for-byte the one `traces._CLIPPED` parses, so the store
+    lifts the count back out into `truncated_in`/`truncated_out` and the panel
+    draws it — one shape for a cut payload wherever the cut happened, rather
+    than a second mechanism that drifts away from the first.
+
+    Still truncation BEFORE redaction: this runs at `step()` time and
+    `redact.py` runs at delivery, so its headless-PEM rule still covers a key
+    whose tail this removed.
+    """
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"… [+{len(text) - limit}]"
+
+
 _current: contextvars.ContextVar[_Trace | None] = contextvars.ContextVar(
     "modelmri_trace", default=None
 )
@@ -159,7 +190,7 @@ def trace(
                 # stamp `modelmri.duration.recorded`, so every exported error
                 # span asserted a duration nobody measured.
                 "duration_ms": None,
-                "output": str(err)[:2000],
+                "output": _cut(str(err), MAX_ERROR_CHARS),
                 "error": True,
             }
         )
@@ -230,7 +261,9 @@ class _StepCtx:
             self._record["duration_ms"] = self._trace.now_ms() - self._entered_ms
         if exc is not None:
             self._record["error"] = True
-            self._record["output"] = f"{type(exc).__name__}: {exc}"[:2000]
+            self._record["output"] = _cut(
+                f"{type(exc).__name__}: {exc}", MAX_ERROR_CHARS
+            )
 
 
 def step(
@@ -306,7 +339,7 @@ def _encode(value: object) -> str:
         return json.dumps(value, default=str)
     except Exception:
         try:
-            return repr(value)[:4000]
+            return _cut(repr(value), MAX_PREVIEW_CHARS)
         except Exception:
             return "<unserialisable>"
 
@@ -522,7 +555,9 @@ def _decode_span(tokenizer, meta: dict, start: int, end: int | None) -> str:
 
 def _msgs_preview(kwargs: dict) -> str:
     try:
-        return json.dumps(kwargs.get("messages", []), default=str)[:4000]
+        return _cut(
+            json.dumps(kwargs.get("messages", []), default=str), MAX_PREVIEW_CHARS
+        )
     except Exception:
         return ""
 
@@ -530,7 +565,7 @@ def _msgs_preview(kwargs: dict) -> str:
 def _content_preview(result: object) -> str:
     try:
         blocks = getattr(result, "content", [])
-        return " ".join(getattr(b, "text", "") for b in blocks)[:4000]
+        return _cut(" ".join(getattr(b, "text", "") for b in blocks), MAX_PREVIEW_CHARS)
     except Exception:
         return ""
 

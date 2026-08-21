@@ -70,7 +70,7 @@ def skip(section: str, why: str) -> None:
     server with no model — so /api/model/load is in EXPENSIVE and must not
     fire, and the head-ranking and .mri round-trip sections quietly do
     nothing. Measured: this file reports "18 passed, 0 failed" against a bare
-    server and "32 passed, 0 failed" once gpt2 is loaded and prompted, so 14
+    server and "32 passed, 0 failed" once a model is loaded and prompted, so 14
     checks — including all five over the head-ranking panel — never ran, and
     the exit code said nothing about it. Green now has to be read next to the
     skip list.
@@ -772,7 +772,7 @@ async def main() -> int:
     # Printed last, and named, so a green run cannot be read as "the
     # head-ranking panel was checked" when nothing on this server could have
     # checked it. Load a model and prompt once before running this if you want
-    # those sections: gpt2 takes about 11 seconds and lights up 14 more.
+    # those sections: loading a small model lights up 14 more.
     for s in SKIP:
         print(f"  NOT CHECKED: {s}")
     return 1 if FAIL else 0

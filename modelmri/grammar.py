@@ -11,11 +11,11 @@ and whether the token the model most wanted was forbidden. A step where the
 mask removed most of the distribution is where your structured output stopped
 being the model's answer and started being the schema's.
 
-MEASURED on gpt2 with a two-field object schema: 9 of 50,257 tokens are legal
-before anything is written (whitespace and the brace variants), 5 at the key
-position — 99.99% of the vocabulary masked — while inside a free string value
-50,169 are legal, or 0.18% masked. The contrast IS the finding, and neither
-number is visible from the completion alone.
+MEASURED with a two-field object schema: a single-figure number of tokens is
+legal before anything is written (whitespace and the brace variants), and
+about as few at the key position — over 99.9% of the vocabulary masked — while
+inside a free string value almost the whole vocabulary is legal. The contrast
+IS the finding, and neither number is visible from the completion alone.
 
 (An earlier draft of this docstring quoted 2 and 50,174. Those came from a run
 with a broken token list — see `tokenizer_data` — and are exactly the kind of
@@ -230,7 +230,7 @@ def tokenizer_data(tokenizer):
     # subtle in its effects but IS subtle to spot:
     #
     # A first version used `convert_ids_to_tokens`, which on a byte-level BPE
-    # vocabulary returns the ENCODED form — GPT-2 gives "ĠDoe" for " Doe",
+    # vocabulary returns the ENCODED form — " Doe" comes back as "ĠDoe",
     # where Ġ stands in for the space. The grammar then saw Ġ as a
     # literal character inside a JSON string, its parser dead-ended, and the
     # allowed set collapsed to {EOS} mid-value. Measured: `{"name":"John` had

@@ -42,6 +42,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import fmt
 from .errors import Refusal
 
 # What THIS side speaks. Declared here and again in
@@ -207,6 +208,23 @@ class PolicyStatus:
         )
 
 
+def _status_phrase(code: object) -> str:
+    """ " Not Found" for 404, or "" for a code the stdlib does not know.
+
+    Looked up from the integer rather than read off the response, so the words
+    in a refusal are always this machine's own. `otel.py` needed the identical
+    thing for the identical reason and has its own copy: these two modules
+    share no import today, and a `utils` created to hold six lines is a
+    dependency edge bought for nothing.
+    """
+    import http
+
+    try:
+        return f" {http.HTTPStatus(int(code)).phrase}"
+    except (ValueError, TypeError):
+        return ""
+
+
 def venv_dir() -> Path:
     """Where the policy's own environment lives.
 
@@ -284,12 +302,15 @@ def check_capacity(
     # that is already installed, over room needed to install it, is refusing a
     # thing that has already happened. The bytes are on the disk; that is what
     # "installed" means.
-    volume, free = capacity.free_space(venv_dir()) if check_disk else (None, 0)
-    if check_disk and free and VENV_DISK_BYTES > free:
+    volume, free = capacity.free_space(venv_dir()) if check_disk else (None, None)
+    # `is not None`, for the reason `capacity.free_space` now documents: 0 free
+    # bytes is a measurement and the most important one this check can get, and
+    # a falsy test read it as "could not measure" and skipped the refusal.
+    if check_disk and free is not None and VENV_DISK_BYTES > free:
         raise capacity.TooBig(
             f"the policy sidecar's environment needs about "
             f"{VENV_DISK_BYTES / 1e9:,.0f} GB for its own torch, and "
-            f"{volume.drive or volume} has {free / 1e9:,.1f} GB free.",
+            f"{volume.drive or volume} has {fmt.bytes_si(free)} free.",
             overridable=False,
         )
 
@@ -856,15 +877,27 @@ def _post(port: int, route: str, body: dict, *, timeout: float) -> tuple[dict, b
             header_contract = resp.headers.get("X-ModelMRI-Contract")
             kind = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", "replace")[:400]
+        # The CODE and the standard phrase for it, never the response BODY.
+        #
+        # The body is written by whatever is listening on that port. Usually
+        # that is our own sidecar and the sentence is authored — but the
+        # contract has not been checked at this point (a 4xx never reaches
+        # `check_contract`), so "usually ours" is the whole problem. CodeQL
+        # traced it: body -> SidecarError -> `status().reason` -> `means()` ->
+        # five route bodies -> a browser.
+        #
+        # Nothing actionable is lost. 409 and 500 send you to different
+        # places, and the contract-drift sentence — the one worth reading —
+        # comes from `check_contract`, which this module writes itself.
         raise SidecarError(
-            f"The policy sidecar refused {route} ({err.code}): {detail}"
+            f"The policy sidecar refused {route} with "
+            f"{err.code}{_status_phrase(err.code)}."
         ) from None
     except urllib.error.URLError as err:
         raise SidecarGone(
             f"The policy sidecar is not answering on port {port} "
-            f"({err.reason}). It may have exited; `modelmri policy start` "
-            f"brings it back."
+            f"({type(err.reason).__name__ if err.reason else type(err).__name__})."
+            f" It may have exited; `modelmri policy start` brings it back."
         ) from None
     except (TimeoutError, OSError) as err:
         # Present here for the same reason it is in `_get`: without it a bare
@@ -927,15 +960,36 @@ def _get(port: int, route: str, *, timeout: float) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", "replace")[:400]
+        # The CODE and the standard phrase for it, never the response BODY.
+        #
+        # The body is written by whatever is listening on that port. Usually
+        # that is our own sidecar and the sentence is authored — but the
+        # contract has not been checked at this point (a 4xx never reaches
+        # `check_contract`), so "usually ours" is the whole problem. CodeQL
+        # traced it: body -> SidecarError -> `status().reason` -> `means()` ->
+        # five route bodies -> a browser.
+        #
+        # Nothing actionable is lost. 409 and 500 send you to different
+        # places, and the contract-drift sentence — the one worth reading —
+        # comes from `check_contract`, which this module writes itself.
         raise SidecarError(
-            f"The policy sidecar refused {route} ({err.code}): {detail}"
+            f"The policy sidecar refused {route} with "
+            f"{err.code}{_status_phrase(err.code)}."
         ) from None
     except urllib.error.URLError as err:
         # `SidecarGone`, and only here. Nothing accepted the connection, which
         # is the one condition that actually means the process is not there.
+        # The TYPE of the reason, not its text. `URLError.reason` is the
+        # underlying OSError, whose message is whatever the operating system
+        # put in it -- and this sentence reaches a browser through
+        # `status().reason`, `means()` and the /api/policy body. CodeQL found
+        # that path (py/stack-trace-exposure) on five routes at once; the
+        # project's own leak test missed it because its regex looks for
+        # `{err}` and this was `{err.reason}`, which is the same leak wearing
+        # an attribute.
         raise SidecarGone(
-            f"The policy sidecar is not answering on port {port} ({err.reason})."
+            f"The policy sidecar is not answering on port {port} "
+            f"({type(err.reason).__name__ if err.reason else type(err).__name__})."
         ) from None
     except (TimeoutError, OSError) as err:
         # A timeout is NOT a death. Something accepted the connection and then
@@ -1318,6 +1372,36 @@ def stop(*, timeout: float = 15.0) -> bool:
 # ------------------------------------------------------------ asking it to act
 
 
+def _raw_base64(payload):
+    """A `data:` URL reduced to the base64 the sidecar's contract asks for.
+
+    `vla_data.encode_png` returns a DATA URL, and that is correct — the frame
+    server hands the same string to an `<img src>` and the browser needs the
+    prefix. The sidecar does not: its `decode_frame` calls
+    `base64.b64decode(payload, validate=True)`, which rejects
+    `data:image/png;base64,` as a non-base64 digit.
+
+    MEASURED: every call to /act carrying a frame from `reader.frame(...)`
+    failed on that, so `/api/vla/actions/{compare,swap,knockout}` could not
+    succeed on any dataset or any frame. The sidecar's refusal named the
+    camera and said the payload was not a base64 image, which was true and
+    unhelpful, because nothing upstream was listening.
+
+    Stripped HERE rather than at the four call sites, because this function is
+    the process boundary and a boundary is where a contract is owed. Anything
+    that is not a `data:` URL passes through untouched, so a caller already
+    sending raw base64 is unaffected.
+    """
+    if isinstance(payload, str) and payload.startswith("data:"):
+        head, _, body = payload.partition(",")
+        # Only for a base64 payload. A `data:` URL can also be percent-encoded
+        # text, and handing THAT to a base64 decoder would swap one wrong
+        # answer for another.
+        if "base64" in head:
+            return body
+    return payload
+
+
 def act(
     *,
     frames: dict,
@@ -1349,7 +1433,12 @@ def act(
             "robot would do — only where it looked. `modelmri policy start` "
             "brings one up."
         )
-    body: dict = {"frames": frames, "instruction": instruction}
+    # The sidecar wants raw base64; the browser wants a data URL. Both are
+    # served, and the conversion happens once, here.
+    body: dict = {
+        "frames": {cam: _raw_base64(v) for cam, v in (frames or {}).items()},
+        "instruction": instruction,
+    }
     if state is not None:
         body["state"] = list(state)
     # Present only when asked for, so the sidecar can tell "seed 0" from

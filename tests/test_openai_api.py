@@ -424,3 +424,95 @@ def test_asking_for_an_mri_with_no_store_says_so_rather_than_dropping_it():
     out = openai_api.internals(_Exporting(), {"mri": True})
     assert "mri" not in out
     assert "not holding" in out["not_measured"]["mri"]
+
+
+# --------------------------------------------------------------------------
+# The parameters the contract was skipping.
+#
+# `SUPPORTED` and `UNSUPPORTED` are documented as "the whole contract", and
+# `check_parameters` validates `top_logprobs` by name, type and range. Four
+# parameters were not checked at all, and this is the surface other people's
+# clients drive — so a wrong type or a wrong sign is ordinary rather than
+# exotic. Each case below was measured against a live model first.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
+def test_a_token_budget_of_zero_is_refused_not_replaced(field):
+    """MEASURED: `{"max_tokens": 0}` returned 200 after 18.2 s with
+    `usage.completion_tokens: 256`. `x or DEFAULT` cannot tell an explicit 0
+    from an absent field, so a caller who asked for none got the default and
+    nothing in the response said their request had been replaced."""
+    with pytest.raises(BadRequest) as err:
+        openai_api.check_parameters({field: 0})
+    assert field in str(err.value)
+
+
+@pytest.mark.parametrize("field", ["max_tokens", "max_completion_tokens"])
+def test_a_negative_token_budget_is_refused_immediately(field):
+    """MEASURED: `{"max_tokens": -5}` answered 500 after 180 SECONDS."""
+    with pytest.raises(BadRequest):
+        openai_api.check_parameters({field: -5})
+
+
+@pytest.mark.parametrize("value", ["many", [1], {"a": 1}, True])
+def test_a_token_budget_of_the_wrong_type_names_itself(value):
+    with pytest.raises(BadRequest):
+        openai_api.check_parameters({"max_tokens": value})
+
+
+def test_a_null_temperature_is_what_an_sdk_sends_and_is_not_an_error():
+    """This one is NOT a client mistake: `null` is what an SDK emits for an
+    optional field the caller left unset. Rejecting an SDK's normal output
+    would make this surface unusable from the clients it exists for."""
+    openai_api.check_parameters({"temperature": None})
+
+
+@pytest.mark.parametrize("value", [-1.0, -99.0, 2.5, 99.0])
+def test_a_temperature_outside_openais_range_is_refused(value):
+    """MEASURED: -1.0, -99.0 and 0.0 returned byte-identical completions,
+    because `generate_stream` branches on `if temperature > 0` and a negative
+    value quietly became greedy decoding."""
+    with pytest.raises(BadRequest) as err:
+        openai_api.check_parameters({"temperature": value})
+    assert "temperature" in str(err.value)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 0.7, 2.0])
+def test_a_temperature_inside_the_range_passes(value):
+    openai_api.check_parameters({"temperature": value})
+
+
+def test_top_p_is_part_of_the_contract_now():
+    """It was in NEITHER `SUPPORTED` nor `UNSUPPORTED`, which this module's
+    docstring says is impossible — so it was accepted and applied to nothing.
+    MEASURED: a completion with top_p 0.0 came back byte-identical to one
+    with no top_p at all."""
+    assert "top_p" in openai_api.UNSUPPORTED
+    with pytest.raises(BadRequest):
+        openai_api.check_parameters({"top_p": 0.9})
+
+    # 1.0 is OpenAI's default and disables nucleus sampling, so a client
+    # sending it asks for exactly what this does — the same allowance
+    # `n == 1` and `presence_penalty == 0` already get.
+    openai_api.check_parameters({"top_p": 1.0})
+    openai_api.check_parameters({"top_p": 1})
+
+
+def test_created_is_a_fact_about_the_model_not_about_the_request():
+    """MEASURED: 29 entries, every one stamped `int(time.time())`, so the
+    payload asserted all of them were created at the instant of the request —
+    and asserted something different six seconds later."""
+
+    class _R:
+        hf_id = None
+
+    first = openai_api.models_payload(_R())
+    second = openai_api.models_payload(_R())
+    a = {m["id"]: m["created"] for m in first["data"]}
+    b = {m["id"]: m["created"] for m in second["data"]}
+    assert a == b, "the same disk gave two different answers"
+
+    # And an unknown one is 1970 rather than "now": obviously not a real
+    # creation date, where `now` looks plausible and is wrong.
+    assert openai_api._first_seen("definitely/not-on-this-disk-xyz") == 0

@@ -112,8 +112,8 @@ def revision_of(hf_id: str | None) -> tuple[str | None, str]:
     """
     # A repo id is `owner/name` OR a bare canonical name. The first version of
     # this required the slash and so reported "not a Hub repository" for
-    # `gpt2` -- which is a Hub repo, is cached here as `models--gpt2`, and is
-    # the model this package's own docstrings use for every worked example. A
+    # `bert-base-uncased` -- which is a Hub repo and is cached here as
+    # `models--bert-base-uncased`. A
     # local directory or an Ollama tag is excluded by the characters it
     # contains, not by the absence of an owner.
     #
@@ -146,7 +146,10 @@ def revision_of(hf_id: str | None) -> tuple[str | None, str]:
         # reported rather than swallowed into a bare None, because "the cache
         # could not be read" and "this model has no commit" are different
         # facts and a reader acts differently on each.
-        return None, f"the local model cache could not be read ({err.strerror or err})"
+        return (
+            None,
+            f"the local model cache could not be read ({err.strerror or type(err).__name__})",
+        )
 
     if len(snaps) == 1:
         # Unambiguous even without a ref file: there is only one thing it
@@ -190,7 +193,7 @@ def tokenizer_fingerprint(tokenizer) -> tuple[str | None, str]:
             # fallback SAYS it is one, in `tokenizer_note`, so a reader is not
             # left comparing a vocabulary-only hash against a full one without
             # knowing. Logged at debug: it is expected on slow tokenizers and
-            # a warning would cry wolf on every gpt2-era model.
+            # a warning would cry wolf on every model that ships one.
             log.debug("tokenizer would not serialise: %s", err)
 
     try:

@@ -109,7 +109,6 @@ measurement supports.
 | Qwen2.5-0.5B-Instruct | 494M | 24 × 14 | 1.000 |
 | SmolLM2-360M-Instruct | 362M | 32 × 15 | 1.002 |
 | Gemma-3-270m-it | 268M | 18 × 4 | 1.000 |
-| GPT-2 | 124M | 12 × 12 | not separately recorded |
 
 Not in the table, deliberately: **Llama-3.2-1B-Instruct** and **OLMo-2-1B**.
 Both run in principle, neither has a recorded end-to-end result here — the

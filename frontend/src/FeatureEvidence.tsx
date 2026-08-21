@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { percent } from "./measured";
 import { errorText, FeatureEvidence, featureEvidence } from "./api";
 import ReceiptLine from "./ReceiptLine";
 
@@ -138,7 +139,7 @@ export default function FeatureEvidencePanel({
           <p className="meta fe-corpus">
             <b>{data.corpus.corpus_label}</b> · {data.corpus.n_tokens} tokens
             over {data.corpus.n_sequences} sequences ·{" "}
-            {(data.corpus.never_fired_share * 100).toFixed(1)}% of this SAE's{" "}
+            {percent(data.corpus.never_fired_share, 1)} of this SAE's{" "}
             {data.corpus.n_features.toLocaleString()} features never fired here
             — not seen in this corpus, not dead.
             {data.corpus.truncated && (
@@ -151,7 +152,7 @@ export default function FeatureEvidencePanel({
               <div className="fe-head">
                 <span className="mid">
                   fired on {ev.n_fired} of {ev.n_tokens} tokens (
-                  {(ev.firing_rate * 100).toFixed(1)}%) · peak{" "}
+                  {percent(ev.firing_rate, 1)}) · peak{" "}
                   {ev.max_activation.toFixed(2)}
                 </span>
                 {!ev.selective && (
@@ -193,10 +194,9 @@ export default function FeatureEvidencePanel({
               )}
 
               {/* A histogram of ONE firing is not a distribution, it is the
-                  span already printed above drawn as a rectangle. Measured on
-                  gpt2 layer 8: feature 5302 fired once in 98 tokens and the
-                  chart was 19 empty bins and a block. Saying so is shorter
-                  and truer than drawing it. */}
+                  span already printed above drawn as a rectangle: a row of
+                  empty bins and a single block. Saying so is shorter and
+                  truer than drawing it. */}
               {ev.n_fired > 1 ? (
                 <>
                   <div className="fe-hist" aria-label="activation distribution">

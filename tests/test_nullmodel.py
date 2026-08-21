@@ -127,9 +127,9 @@ def test_teardown_does_not_raise_without_cuda():
 
 def test_teardown_actually_releases_accelerator_memory():
     """`del twin` inside teardown unbinds only its own parameter — the caller's
-    variable is still a live reference, so gc collects nothing. Measured: a
-    gpt2 twin allocated 255.3 MB and 255.3 MB was still allocated after
-    teardown returned, while its docstring claimed the memory came back."""
+    variable is still a live reference, so gc collects nothing. Measured: every
+    byte a twin allocated was still allocated after teardown returned, while
+    its docstring claimed the memory came back."""
     if not torch.cuda.is_available():
         pytest.skip("needs an accelerator to observe the allocation")
     from transformers import GPT2Config

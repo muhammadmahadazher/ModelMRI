@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import fmt
 from . import session as session_mod
 from .errors import BadRequest
 from .verify import dequantise, max_abs_diff
@@ -298,6 +299,26 @@ def _diff_attention(a, b) -> Delta:
     )
 
 
+def _top_k_line(top: int, entered: list, left: list) -> str:
+    """Which heads entered and left the top K, as a sentence.
+
+    Extracted because two paths need it and a second copy of a sentence is a
+    second chance for the two to disagree: the missing-floor branch reports
+    exactly this finding, which does not depend on a floor at all.
+    """
+    return (
+        f"the top {top} changed: "
+        + ", ".join(f"L{h[0]}H{h[1]}" for h in entered)
+        + " entered"
+        + (
+            " and " + ", ".join(f"L{h[0]}H{h[1]}" for h in left) + " left"
+            if left
+            else ""
+        )
+        + "."
+    )
+
+
 def _diff_ranking(a, b) -> Delta:
     rows_a = (a.ranking or {}).get("ranked") or []
     rows_b = (b.ranking or {}).get("ranked") or []
@@ -318,8 +339,8 @@ def _diff_ranking(a, b) -> Delta:
             NOT_COMPARABLE,
             f"these rankings used different baselines ({base_a} against "
             f"{base_b}), and the baselines disagree with each other — "
-            f"`ablate.py` measures Spearman 0.34-0.47 between them on gpt2 "
-            f"layer 0. Comparing across them would measure the baseline.",
+            f"`ablate.py` measures only a weak rank correlation between them. "
+            f"Comparing across them would measure the baseline.",
         )
 
     scores_a = {(r["layer"], r["head"]): r["kl"] for r in rows_a}
@@ -335,10 +356,72 @@ def _diff_ranking(a, b) -> Delta:
     # The floor for a KL is whichever noise floor the files recorded, and the
     # LARGER of the two: a difference below the coarser measurement is not one
     # either file could distinguish from arithmetic.
-    floor = max(
-        float((a.ranking or {}).get("noise_floor_kl") or 0.0),
-        float((b.ranking or {}).get("noise_floor_kl") or 0.0),
-    )
+    #
+    # AN ABSENT FLOOR IS NOT A FLOOR OF ZERO. This read `... or 0.0` on both
+    # sides, which turned "this file never recorded what it could resolve"
+    # into "this file recorded that it could resolve everything" — and then
+    # labelled the invented number "the coarser of the two files' recorded
+    # noise floors". Because 0.0 is a legal recorded value, nothing downstream
+    # could tell the fabrication from a measurement.
+    #
+    # Measured on two files whose rankings carry rows and a baseline and no
+    # floor: `abs(gap) > 0.0` is true for any non-identical KL, so last-digit
+    # drift reported as "L0H0 moved 0.10000 → 0.10000. 1 of 2 heads moved past
+    # the 0.00e+00 noise floor", and `exit_code()` returned 1 — a CI failure
+    # attributed to a floor no file ever claimed.
+    #
+    # This module states the rule three times for other sections ("A missing
+    # section is not a zero") and broke it here.
+    floor_a = (a.ranking or {}).get("noise_floor_kl")
+    floor_b = (b.ranking or {}).get("noise_floor_kl")
+
+    # WHICH HEADS ARE IN THE TOP FIVE needs no floor. It is a comparison of
+    # two orderings, and it is the finding a reader acts on: "L5H3 entered and
+    # L0H0 left" says the answer moved to a different head. Computed BEFORE
+    # the floor is required, because the first version of this guard returned
+    # NOT_COMPARABLE for a missing floor and took that finding down with it —
+    # a real top-five change, reported as nothing, exit 0.
+    top = min(5, len(shared))
+    top_a = sorted(shared, key=lambda h: -scores_a[h])[:top]
+    top_b = sorted(shared, key=lambda h: -scores_b[h])[:top]
+    entered = [h for h in top_b if h not in top_a]
+    left = [h for h in top_a if h not in top_b]
+
+    if floor_a is None or floor_b is None:
+        which = "the first" if floor_a is None else "the second"
+        why = (
+            f"{which} file's ranking records no noise floor, so no per-head "
+            f"score difference can be judged against one. An absent floor is "
+            f"not a floor of zero — with one, every last-digit difference "
+            f"counts as a change. Re-run `modelmri ablate` on that side to "
+            f"record one, or diff two files that both carry it."
+        )
+        if entered:
+            # The ordering DID change, and that does not depend on a floor.
+            # Reported as a change, so the exit code is the one the reader
+            # expects, with the magnitude question named as unanswered.
+            return Delta(
+                "head ranking",
+                CHANGED,
+                f"{_top_k_line(top, entered, left)} {why}",
+                magnitude=None,
+                floor=None,
+                unit="nats",
+                measured={
+                    "heads_compared": len(shared),
+                    "top_k": top,
+                    "entered_top_k": [f"L{h[0]}H{h[1]}" for h in entered],
+                    "left_top_k": [f"L{h[0]}H{h[1]}" for h in left],
+                    "floor": None,
+                    "floor_from": "neither file recorded one",
+                },
+            )
+        return Delta(
+            "head ranking",
+            NOT_COMPARABLE,
+            f"the top {top} are the same heads in both files. Beyond that, {why}",
+        )
+    floor = max(float(floor_a), float(floor_b))
 
     moved = []
     for head in shared:
@@ -346,12 +429,6 @@ def _diff_ranking(a, b) -> Delta:
         if abs(gap) > floor:
             moved.append((abs(gap), head, scores_a[head], scores_b[head]))
     moved.sort(reverse=True)
-
-    top = min(5, len(shared))
-    top_a = sorted(shared, key=lambda h: -scores_a[h])[:top]
-    top_b = sorted(shared, key=lambda h: -scores_b[h])[:top]
-    entered = [h for h in top_b if h not in top_a]
-    left = [h for h in top_a if h not in top_b]
 
     measured = {
         "heads_compared": len(shared),
@@ -384,22 +461,24 @@ def _diff_ranking(a, b) -> Delta:
     # not. "Which head carries this answer" is what a reader acts on; a score
     # that drifted while the order held is a smaller claim and reads as one.
     if entered:
-        head_line = (
-            f"the top {top} changed: "
-            + ", ".join(f"L{h[0]}H{h[1]}" for h in entered)
-            + " entered"
-            + (
-                " and " + ", ".join(f"L{h[0]}H{h[1]}" for h in left) + " left"
-                if left
-                else ""
-            )
-            + "."
-        )
+        head_line = _top_k_line(top, entered, left)
     else:
         _, head, was, now = moved[0]
+        # THE MOVEMENT, not just the pair. `:.5f` on both sides printed a
+        # head that moved by 1e-06 as "moved 0.10000 → 0.10000" — the same
+        # number twice, in a sentence whose entire content is that it changed.
+        # `fmt.measured` does not fix that on its own: 0.100001 is not below
+        # five places' rounding floor, so it still renders "0.10000". Any
+        # fixed precision has a pair it cannot separate.
+        #
+        # The delta is the quantity this sentence is about and it is never
+        # ambiguous, so it is stated outright and the pair keeps its place as
+        # context.
+        step = now - was
         head_line = (
-            f"the top {top} are unchanged, but L{head[0]}H{head[1]} moved "
-            f"{was:.5f} → {now:.5f}."
+            f"the top {top} are unchanged, but L{head[0]}H{head[1]} moved by "
+            f"{'+' if step >= 0 else '−'}{fmt.measured(abs(step), 5)}, from "
+            f"{fmt.measured(was, 5)} to {fmt.measured(now, 5)}."
         )
     return Delta(
         "head ranking",
@@ -479,11 +558,22 @@ def _diff_ground(a, b) -> Delta:
 
     # The coarser of the two recorded floors, for the same reason the ranking
     # takes the larger one: a difference below the blunter measurement is not
-    # one either file could tell from arithmetic.
-    floor = max(
-        float((a.ground or {}).get("noise_floor") or 0.0),
-        float((b.ground or {}).get("noise_floor") or 0.0),
-    )
+    # one either file could tell from arithmetic. And the same guard, because
+    # this was the same substitution written twice — fixing one and leaving
+    # the other is how the ground path keeps fabricating.
+    g_floor_a = (a.ground or {}).get("noise_floor")
+    g_floor_b = (b.ground or {}).get("noise_floor")
+    if g_floor_a is None or g_floor_b is None:
+        which = "the first" if g_floor_a is None else "the second"
+        return Delta(
+            "grounding",
+            NOT_COMPARABLE,
+            f"{which} file's grounding records no noise floor, so there is "
+            f"nothing to judge a passage's movement against. An absent floor "
+            f"is not a floor of zero. Re-run the grounding on that side to "
+            f"record one, or diff two files that both carry it.",
+        )
+    floor = max(float(g_floor_a), float(g_floor_b))
 
     worst_index, worst_gap = shared[0], 0.0
     for i in shared:
@@ -545,8 +635,15 @@ def _diff_ground(a, b) -> Delta:
         return Delta(
             "grounding",
             CHANGED,
-            f"passage #{worst_index} moved by {worst_gap:.4f} nats against a "
-            f"floor of {floor:.6f}. #{top_a} still carries the answer, so the "
+            # TWO PRECISIONS ON ONE LINE, and the wrong way round. This
+            # branch is only entered when `worst_gap > floor`, and it printed
+            # the mover at four places and the floor it beat at six — so a
+            # passage moving 5e-06 against a floor of 3e-06 read "moved by
+            # 0.0000 nats against a floor of 0.000003", where the number that
+            # cleared the bar looks like zero and the bar looks larger than it.
+            f"passage #{worst_index} moved by {fmt.measured(worst_gap, 4)} nats "
+            f"against a floor of {fmt.measured(floor, 6)}. #{top_a} still "
+            f"carries the answer, so the "
             f"document is being read the same way and read to a different "
             f"degree.",
             magnitude=worst_gap,
@@ -726,7 +823,7 @@ def diff(path_a: str | Path, path_b: str | Path) -> DiffReport:
             data = target.read_bytes()
         except OSError as err:
             raise BadRequest(
-                f"{target.name} could not be read ({err.strerror or err})"
+                f"{target.name} could not be read ({err.strerror or type(err).__name__})"
             ) from None
         parsed.append(session_mod.parse(data))
     a, b = parsed

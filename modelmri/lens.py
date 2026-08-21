@@ -23,10 +23,11 @@ not a measurement of what layer N "believes".
 model's real next-token distribution to that layer's lens distribution, so a
 row is never a confident ranked list with nothing to say how much it can be
 trusted — which is the plain lens's documented silent failure and the reason
-tuned-lens exists. Measured on gpt2, bf16 on an RTX 4060, "The Eiffel Tower is
-located in the city of": layer 0 is 21.58 nats away and reads ' destro', the
-middle layers hold ' the' around 4-6, layer 9 turns to ' Rome', layer 10 to
-' London', and layer 11 reaches ' Paris' at 0.96 — the closest any layer gets.
+tuned-lens exists. Measured with "The Eiffel Tower is
+located in the city of", the first layer sat tens of nats away reading a token
+with nothing to do with the answer, the middle layers held a function word,
+the late layers turned to plausible but wrong cities, and only the last one
+reached the model's own answer — still short of agreeing with it.
 `reliability` reports that best figure and refuses to call the lens usable
 past a stated threshold.
 
@@ -109,7 +110,7 @@ def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
         # gamma/beta is not idempotent: it removes the very per-dimension
         # scaling the unembedding was trained to read.
         #
-        # That was not theoretical. On gpt2 completing "…located in the city
+        # That was not theoretical. Completing "…located in the city
         # of", the double-normed top row read ' the' while the model actually
         # said ' Paris' — a confident, plausible, wrong answer on the one row a
         # reader can check. And `final` is taken from that row, which anchors
@@ -121,7 +122,7 @@ def logit_lens(model, tokenizer, ids, top_k: int = 5) -> dict:
         # `allclose(..., atol=1e-3, rtol=1e-3)` and was wrong on every bf16
         # load, which is the default on most current GPUs.
         #
-        # Measured on gpt2, cuda, "The Eiffel Tower is located in the city of":
+        # Measured on cuda, "The Eiffel Tower is located in the city of":
         # in float32 the two logit vectors differ by at most 0.00007 and the
         # check passed; in bfloat16 they differ by 0.5 and it failed. 0.5 is
         # not disagreement — the logits are ~128 and bf16's precision there is

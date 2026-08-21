@@ -367,3 +367,77 @@ def test_the_entropy_reads_the_raw_grid_rather_than_the_display_heatmap():
     )
     assert '["values"]' in code
     assert '["heat"]' not in code
+
+
+# ------------------------------------------- the cap is not the measurement
+
+
+def test_the_number_of_failed_frames_is_not_the_length_of_the_listed_sample():
+    """`failed` is truncated to `MAX_FAILED_LISTED` and `means()` counted it.
+
+    MEASURED with PyAV absent over six episodes of a hundred frames: all 600
+    frames failed to decode and the report read "20 frame(s) could not be
+    measured". The true figure was not derivable from the payload at all —
+    there was no field carrying it.
+    """
+    swept = sw.Sweep(
+        metric="attention_entropy",
+        unit="nats",
+        dataset="someone/robot",
+        policy="someone/policy",
+        camera="observation.image",
+        episode_stride=1,
+        frame_stride=25,
+        rows=[],
+        n_frames=0,
+        n_episodes=6,
+        frames_total=600,
+        failed=[{"episode": 0, "timestep": i, "why": "no decoder"} for i in range(20)],
+        n_failed=600,
+    )
+
+    said = swept.means()
+
+    assert "600 frame(s) could not be measured" in said, said
+    assert "20 of them listed below" in said, "and say the list is a sample"
+
+
+def test_a_failure_list_that_was_not_truncated_says_nothing_about_listing():
+    """So the disclosure only appears when something was actually cut."""
+    swept = sw.Sweep(
+        metric="attention_entropy",
+        unit="nats",
+        dataset="d",
+        policy="p",
+        camera="c",
+        episode_stride=1,
+        frame_stride=1,
+        rows=[],
+        n_frames=0,
+        n_episodes=1,
+        frames_total=3,
+        failed=[{"episode": 0, "timestep": 0, "why": "no decoder"}],
+        n_failed=1,
+    )
+
+    said = swept.means()
+
+    assert "1 frame(s) could not be measured" in said
+    assert "listed below" not in said
+
+
+def test_the_true_count_travels_on_the_wire():
+    """`to_dict` is what the panel reads; a field only means() knows is lost."""
+    swept = sw.Sweep(
+        metric="m",
+        unit="u",
+        dataset="d",
+        policy="p",
+        camera="c",
+        episode_stride=1,
+        frame_stride=1,
+        failed=[{"episode": 0, "timestep": 0, "why": "x"}],
+        n_failed=97,
+    )
+
+    assert swept.to_dict()["n_failed"] == 97

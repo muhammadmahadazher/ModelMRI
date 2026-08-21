@@ -326,9 +326,8 @@ def test_nothing_comparable_is_not_a_failure(pair):
 
 
 def test_rankings_from_different_baselines_are_not_compared(pair):
-    """`ablate.py` measures the baselines agreeing only weakly (Spearman
-    0.34-0.47 on gpt2 layer 0), so a cross-baseline diff measures the
-    baseline."""
+    """`ablate.py` measures the baselines agreeing only weakly, so a
+    cross-baseline diff measures the baseline."""
     a, b = pair
     doc = _doc(b.read_bytes())
     doc["ranking"]["baseline"] = "resample"
@@ -483,3 +482,182 @@ def test_identical_files_still_report_a_real_floor():
     assert delta.status == mri_diff.SAME
     assert delta.measured["max_abs_diff"] == 0.0
     assert delta.measured["floor"] == pytest.approx(0.004)
+
+
+# ------------------------------------------- an absent floor is not a zero
+
+
+def _ranked(rows, floor):
+    """A `.mri` whose ranking may or may not record a noise floor."""
+    rank = {"baseline": "zero", "ranked": rows}
+    if floor is not None:
+        rank["noise_floor_kl"] = floor
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a", "b"],
+        prompt="p",
+        generation="g",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=2,
+        n_prompt=1,
+        ranking=rank,
+    )
+
+
+_STEADY = [{"layer": 0, "head": 0, "kl": 0.10}, {"layer": 0, "head": 1, "kl": 0.05}]
+_DRIFT = [{"layer": 0, "head": 0, "kl": 0.100001}, {"layer": 0, "head": 1, "kl": 0.05}]
+_MOVED = [{"layer": 0, "head": 0, "kl": 0.30}, {"layer": 0, "head": 1, "kl": 0.05}]
+
+
+def _ranking_delta(tmp_path, rows_a, floor_a, rows_b, floor_b):
+    a, b = tmp_path / "a.mri", tmp_path / "b.mri"
+    a.write_bytes(_ranked(rows_a, floor_a))
+    b.write_bytes(_ranked(rows_b, floor_b))
+    report = mri_diff.diff(str(a), str(b))
+    delta = next(d for d in report.deltas if d.name == "head ranking")
+    return delta, report.exit_code()
+
+
+def test_a_ranking_with_no_recorded_floor_is_not_a_floor_of_zero(tmp_path):
+    """`or 0.0` fabricated a CI failure against a floor no file claimed.
+
+    Measured before the fix, on two files whose rankings carry rows and a
+    baseline and no `noise_floor_kl`:
+
+        head ranking  changed
+        the top 2 are unchanged, but L0H0 moved 0.10000 -> 0.10000.
+        1 of 2 heads moved past the 0.00e+00 noise floor.
+        exit code: 1
+
+    A red build, over last-digit drift, against a number that was invented
+    here and then labelled "the coarser of the two files' recorded noise
+    floors". This module states the rule three times for other sections — "A
+    missing section is not a zero" — and broke it for the floor.
+    """
+    delta, code = _ranking_delta(tmp_path, _STEADY, None, _MOVED, 0.001)
+    assert delta.status == mri_diff.NOT_COMPARABLE
+    assert "the first file's ranking records no noise floor" in delta.detail
+    assert "not a floor of zero" in delta.detail
+    # And it names the next step rather than stopping at the refusal.
+    assert "modelmri ablate" in delta.detail
+    assert code == 0, "a comparison that could not be made is not a failure"
+
+    # The other side, so neither is special-cased.
+    delta, _ = _ranking_delta(tmp_path, _STEADY, 0.001, _MOVED, None)
+    assert "the second file's ranking records no noise floor" in delta.detail
+
+
+def test_a_floor_recorded_as_zero_is_still_a_measurement(tmp_path):
+    """THE DISTINCTION THE FIX EXISTS FOR.
+
+    0.0 is a legal recorded value — `ground.py` documents it as the measured
+    CPU/float32 case — and a file that genuinely measured it must still get
+    its comparison. A guard that swallowed this too would be quieter and just
+    as wrong in the other direction.
+    """
+    delta, code = _ranking_delta(tmp_path, _STEADY, 0.0, _DRIFT, 0.0)
+    assert delta.status == mri_diff.CHANGED
+    assert delta.floor == 0.0
+    assert code == 1
+
+
+def test_the_ordinary_comparison_is_untouched(tmp_path):
+    """The guard must not fire when both files carry a floor."""
+    moved, code = _ranking_delta(tmp_path, _STEADY, 0.001, _MOVED, 0.001)
+    assert moved.status == mri_diff.CHANGED and code == 1
+
+    quiet, code = _ranking_delta(tmp_path, _STEADY, 0.001, _DRIFT, 0.001)
+    assert quiet.status == mri_diff.SAME and code == 0
+
+
+def test_a_head_that_moved_is_not_printed_as_two_identical_numbers(tmp_path):
+    """`:.5f` printed a 1e-06 move as "moved 0.10000 -> 0.10000" — the same
+    number twice, in a sentence whose whole content is that it changed."""
+    delta, _ = _ranking_delta(tmp_path, _STEADY, 0.0, _DRIFT, 0.0)
+    assert "0.10000 → 0.10000" not in delta.detail, delta.detail
+
+
+def _eight(kls, floor):
+    """A ranking over eight heads, so the top FIVE can gain and lose members."""
+    rank = {
+        "baseline": "zero",
+        "ranked": [{"layer": 0, "head": i, "kl": v} for i, v in enumerate(kls)],
+    }
+    if floor is not None:
+        rank["noise_floor_kl"] = floor
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a", "b"],
+        prompt="p",
+        generation="g",
+        attention={(0, 0): [[1.0, 0.0], [0.5, 0.5]]},
+        n_layers=1,
+        n_heads=8,
+        n_prompt=1,
+        ranking=rank,
+    )
+
+
+_BEFORE = [0.90, 0.80, 0.70, 0.60, 0.50, 0.10, 0.05, 0.01]
+#: H7 rockets into the top five and H4 drops out of it.
+_AFTER = [0.90, 0.80, 0.70, 0.60, 0.02, 0.10, 0.05, 0.95]
+
+
+def _ranking_of(tmp_path, kls_a, floor_a, kls_b, floor_b):
+    a, b = tmp_path / "a.mri", tmp_path / "b.mri"
+    a.write_bytes(_eight(kls_a, floor_a))
+    b.write_bytes(_eight(kls_b, floor_b))
+    report = mri_diff.diff(str(a), str(b))
+    return next(
+        d for d in report.deltas if d.name == "head ranking"
+    ), report.exit_code()
+
+
+def test_a_missing_floor_does_not_hide_a_top_five_change(tmp_path):
+    """WHICH HEADS ARE IN THE TOP FIVE needs no noise floor.
+
+    It is a comparison of two orderings — "L0H7 entered and L0H4 left" says the
+    answer moved to a different head — and it is the finding a reader acts on.
+
+    The first version of the missing-floor guard returned NOT_COMPARABLE for
+    the whole section and took that finding down with it: a real top-five
+    change, reported as nothing, exit 0. Refusing to invent a floor is right;
+    refusing to report what does not need one is a different mistake in the
+    same place.
+    """
+    delta, code = _ranking_of(tmp_path, _BEFORE, None, _AFTER, 0.001)
+    assert delta.status == mri_diff.CHANGED
+    assert "L0H7 entered" in delta.detail and "L0H4 left" in delta.detail
+    assert code == 1, "a changed ranking must still fail the build"
+    # And the magnitude question is named as unanswered rather than guessed.
+    assert "records no noise floor" in delta.detail
+    assert delta.floor is None
+    assert delta.magnitude is None
+
+
+def test_a_missing_floor_still_refuses_the_magnitude_question(tmp_path):
+    """With the ordering unchanged there is nothing floor-independent left to
+    report, so the section is genuinely not comparable — and says which half it
+    could answer."""
+    delta, code = _ranking_of(tmp_path, _BEFORE, None, _BEFORE, 0.001)
+    assert delta.status == mri_diff.NOT_COMPARABLE
+    assert "the top 5 are the same heads in both files" in delta.detail
+    assert code == 0
+
+
+def test_the_ordinary_path_reports_both(tmp_path):
+    """With floors on both sides the ordering and the magnitudes travel
+    together, and the guard must not have changed that."""
+    delta, code = _ranking_of(tmp_path, _BEFORE, 0.001, _AFTER, 0.001)
+    assert delta.status == mri_diff.CHANGED
+    assert "L0H7 entered" in delta.detail
+    assert "noise floor" in delta.detail
+    assert delta.floor == 0.001
+    assert code == 1

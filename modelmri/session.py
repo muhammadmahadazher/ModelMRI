@@ -68,9 +68,34 @@ def _inflate(data: bytes) -> bytes:
     engine = zlib.decompressobj(31)  # 31 = gzip wrapper
     raw = engine.decompress(data, MAX_INFLATED)
     if not engine.eof:
+        # TWO REASONS `eof` IS FALSE, and they are opposite facts about the
+        # file. The old message assumed the first and named it for both.
+        #
+        #   * the stream is still going and we stopped listening -> too big,
+        #     and `unconsumed_tail` holds what we refused to read
+        #   * the input ran out mid-stream -> TRUNCATED, and there is no tail
+        #     because there was nothing left to consume
+        #
+        # MEASURED: the first half of a genuine `.mri`, and a two-byte body,
+        # both answered "this file expands to more than 512 MB" — the wrong
+        # cause, given for the likeliest real failure of this route. Somebody
+        # whose download was interrupted was told their file was too big and
+        # sent to shrink something that is already incomplete.
+        if engine.unconsumed_tail:
+            raise SessionError(
+                f"this file expands to more than "
+                f"{MAX_INFLATED // 1024 // 1024} MB. A session holds an "
+                f"observation, not a model — that is not one."
+            )
+        # The INPUT length, not the output length. A half-stream of
+        # compressible data often yields 0 bytes before it runs out, and
+        # "ends after 0 bytes" reads like a second bug rather than a
+        # description of the file the reader is holding.
         raise SessionError(
-            f"this file expands to more than {MAX_INFLATED // 1024 // 1024} MB. "
-            f"A session holds an observation, not a model — that is not one."
+            f"this file is incomplete: its {len(data):,} bytes end part-way "
+            f"through the gzip stream. That is an interrupted download or a "
+            f"partial copy rather than a file this cannot read — fetch it "
+            f"again."
         )
     return raw
 
@@ -97,7 +122,7 @@ class SessionError(BadRequest):
 
 MAX_PATCH_CELLS = 2_000_000
 
-# One row per head. A whole-model sweep is n_layers x n_heads: 144 on gpt2,
+# One row per head. A whole-model sweep is n_layers x n_heads:
 # 448 on Qwen3-1.7B, ~1,800 on a 70B. The bound is far above any real model
 # and far below what would make a browser lay out a table for a minute.
 MAX_RANKING_ROWS = 20_000
@@ -572,9 +597,8 @@ def _ranking(doc: dict) -> dict:
     # duplicating the tuple here would make a file written by a newer version
     # with a fourth baseline unreadable by this one. Requiring that the
     # ranking SAYS which baseline it used is the part that matters: `ablate.py`
-    # measures the three agreeing only weakly (Spearman 0.34-0.47 on gpt2
-    # layer 0), so a ranking that does not name its baseline cannot be
-    # compared against one that does.
+    # measures the three agreeing only weakly, so a ranking that does not name
+    # its baseline cannot be compared against one that does.
     if not (isinstance(baseline, str) and baseline.strip()):
         raise SessionError(
             "this session's ranking does not say which baseline produced it, "
@@ -1773,7 +1797,7 @@ class Session:
 
     # -------------------------------------------------- the runtime's shape
     def attention_meta(self) -> dict:
-        return {
+        out = {
             "available": bool(self.attention),
             "n_prompt": self.n_prompt,
             "n_layers": self.n_layers,
@@ -1781,6 +1805,18 @@ class Session:
             "n_tokens": len(self.tokens),
             "replay": True,
         }
+        if not self.attention:
+            # Every branch of `runtime.attention_meta` carries a `reason` and
+            # this one did not, so a bundle exported around an agent step —
+            # which carries the run and no attention slices — reached the panel
+            # as a bare "unavailable". The panel now prints the reason, and an
+            # empty sentence is a blank box.
+            out["reason"] = (
+                "this session carries no attention maps. A `.mri` stores the "
+                "slices that were captured, and this one was exported for what "
+                "it does carry rather than for a layer and head."
+            )
+        return out
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))

@@ -38,6 +38,8 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Bounded for the reason `crossplatform` gives: the full suite plus lint, format and the generated-docs check.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,6 +81,20 @@ jobs:
   crossplatform:
     name: tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    # A HANG SHOULD FAIL, NOT WAIT.
+    #
+    # With no `timeout-minutes` a job inherits GitHub's own ceiling of six
+    # hours. Measured on this branch: two macOS jobs sat at 150 and 360
+    # minutes against a 5-8 minute baseline, produced no log — an in-progress
+    # job's log is not retrievable — and were cancelled having proved nothing.
+    # The PR meanwhile read UNSTABLE rather than failed, so the wait looked
+    # like slowness instead of a defect.
+    #
+    # 30 is roughly four times the slowest healthy run on the slowest runner,
+    # so it fires on a hang and not on a bad day. `faulthandler_timeout` in
+    # pyproject.toml dumps thread stacks at 300s, so the log now carries WHERE
+    # it stopped before this kills it.
+    timeout-minutes: 30
     strategy:
       # One platform failing should not cancel the others: which OSes broke is
       # the entire output of this job.
@@ -114,6 +130,8 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    # Bounded for the reason `crossplatform` gives: install, typecheck and two bundles.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -146,6 +164,8 @@ jobs:
   # dataset and decoded video before anyone clicked anything.
   ui:
     runs-on: ubuntu-latest
+    # Bounded for the reason `crossplatform` gives: a real browser, so slower than the others and still bounded.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:

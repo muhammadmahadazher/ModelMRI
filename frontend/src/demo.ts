@@ -17,14 +17,22 @@ export const DEMO = import.meta.env.VITE_DEMO === "1";
 
 const cache = new Map<string, unknown>();
 
+/** Path segments that sit where a trace id sits and are not one.
+ *
+ *  `/api/traces/search` and `/api/traces/{id}` are the same shape, so a route
+ *  table that matches on shape alone reads "search" as the id of a trace and
+ *  serves a recording under it. Named here rather than ordered around,
+ *  because ordering is a rule nobody can see. */
+const TRACE_COLLECTIONS = new Set(["search", "import", "dataset", "adopt"]);
+
 /** Which recorded model is on screen.
  *
  *  The picker offers every model it discovers, so with one recording you
- *  could select Qwen3-0.6B and the demo would keep replaying gpt2 underneath
- *  — the page attributing one model's sentence to another, which is how a
- *  visitor concludes Qwen3 thinks the Eiffel Tower is the tallest building in
- *  the world. Either a scenario exists for what you picked, or the load is
- *  refused by name.
+ *  could select any model in that list and the demo would keep replaying
+ *  Qwen/Qwen3-1.7B underneath — the page attributing one model's sentence to
+ *  another, which is how a visitor comes away believing the model they picked
+ *  wrote a sentence it never saw. Either a scenario exists for what you
+ *  picked, or the load is refused by name.
  */
 let active: string | null = null;
 
@@ -93,8 +101,9 @@ export async function demoSessionFile(): Promise<Blob | null> {
  *  Returns `{status, payload}`, mirroring `viewerFetch` — the two shims are
  *  built on the same trick and are meant to stay comparable. The status
  *  matters: a miss has to be able to say 422 *and why*, because the version
- *  that quietly served layer 0 for every unbaked layer is how 141 of 144
- *  head selections drew the wrong arcs under a dial that said otherwise.
+ *  that quietly served layer 0 for every unbaked layer drew one head's arcs
+ *  under a dial naming another, for nearly every selection the controls
+ *  offered.
  *
  *  `undefined` still means "this demo has no answer", and main.tsx turns that
  *  into a 409 — but nothing reachable should return it, and
@@ -127,7 +136,35 @@ export async function demoFetch(
     });
   }
   if (p === "/api/session/state") return ok((await bundle<any>("env")).session_state ?? {});
-  if (p === "/api/models/local") return ok([{ id: "gpt2", size_gb: 1.1 }]);
+  if (p === "/api/session/trace") {
+    // The run carried INSIDE an opened `.mri`. This page is a recording of a
+    // live session rather than a bundle somebody opened in it, so there is no
+    // carried run — which is the ordinary answer for most sessions, not a
+    // limitation of this page. The agent runs this demo does have are in the
+    // trace store and reachable from `/api/traces`, where the panel lists
+    // them. Saying `available: false` here and letting those show is the
+    // truthful split; claiming a carried run would put the demo's own traces
+    // under a label saying they arrived in a file.
+    return ok({ available: false });
+  }
+  // Reading the HuggingFace cache means reading a disk, which this page does
+  // not have. This used to answer with a model list written into this file --
+  // an inventory of a machine nobody here can see, at a size nothing
+  // measured. The "On this machine" tab below answers from `discovered.json`
+  // because that payload was RECORDED and is labelled as the demo's own
+  // recordings; serving it here instead would relabel recordings as cache
+  // entries and claim they are sitting on the reader's disk.
+  if (p === "/api/models/local") {
+    return refuse(
+      501,
+      `Listing the models already in your HuggingFace cache reads your disk, ` +
+        `and this page is a static recording served from the web with no ` +
+        `access to one. Nothing here will name a model instead — a list ` +
+        `written into the page would be an inventory of somebody else's ` +
+        `machine. Installed, this reads your own cache and reports what each ` +
+        `model actually occupies on disk.`,
+    );
+  }
   // Real discovery output from a real machine, with the paths generalised —
   // without this the demo's "On this machine" tab said "Nothing found …set
   // MODELMRI_MODELS_DIR", which is a confusing first impression of a feature
@@ -184,6 +221,23 @@ export async function demoFetch(
     });
   }
   if (p === "/api/accelerator") return ok((await bundle<any>("env")).accelerator ?? {});
+  // An EMPTY list, and that is the true answer rather than an evasion. This
+  // route reports the accelerators a machine has for a model to be placed on,
+  // and a static recording has no machine and places no model. `DevicePicker`
+  // renders nothing below two options — one device is not a choice — so the
+  // control correctly disappears instead of offering hardware nobody has.
+  //
+  // Deliberately NOT the bundled accelerator: that field describes the card
+  // the recording was MADE on, and offering it here as somewhere to send a
+  // load would be this page claiming somebody else's GPU as the visitor's.
+  if (p === "/api/devices") {
+    return ok({
+      devices: [],
+      reason:
+        "This page is a static recording with no machine behind it, so there " +
+        "is no device to place a model on.",
+    });
+  }
   if (p === "/api/model/progress") return ok((await bundle<any>("env")).progress ?? {});
   // A pull has its own progress slot, separate from a model load. Nothing can
   // be downloading on a static page, so the honest answer is the idle
@@ -227,8 +281,6 @@ export async function demoFetch(
   }
   if (p === "/api/paths") return ok((await bundle<any>("env")).paths ?? {});
   if (p === "/api/hub/auth") return ok((await bundle<any>("env")).hub_auth ?? { signed_in: false });
-  if (p === "/api/sae/available") return ok((await bundle<any>("env")).sae_available ?? []);
-  if (p === "/api/lens") return ok((await bundle<any>("env")).lens ?? {});
   if (p === "/api/vla/datasets") return ok((await bundle<any>("env")).vla_datasets ?? []);
   // Sizes are real registry facts; `fits` is not, because a static page has
   // no idea what GPU is reading it. Null means unknown, which is a different
@@ -240,7 +292,7 @@ export async function demoFetch(
 
   // Switch scenarios if one was recorded for this model, and refuse by name
   // if not. Answering "loaded" for a model the demo cannot replay is what put
-  // Qwen3-0.6B in the picker above gpt2's output.
+  // Qwen3-0.6B in the picker above Qwen/Qwen3-1.7B's output.
   if (p === "/api/model/load") {
     const idx = await index();
     const want = (body as any)?.hf_id;
@@ -287,7 +339,8 @@ export async function demoFetch(
           `the real tool.`,
       );
     }
-    // Steering was only ever recorded against gpt2's SAE, so it is the only
+    // Steering was only ever recorded against one scenario's SAE -- the one
+    // `saeScenario()` below reads out of the index -- so it is the only
     // scenario whose A/B has a steered side to show.
     if (steerActive) {
       const f = await bundle<any>("features");
@@ -366,20 +419,57 @@ export async function demoFetch(
 
   // Features, SAE and steering belong to ONE scenario.
   //
-  // features.json is gpt2's: a 768-dim GPT-2 SAE, gpt2's 23-token sentence,
-  // and a steered completion of it. Served unconditionally, selecting
-  // Qwen3-0.6B left the page reporting a GPT-2 SAE loaded against a 1024-dim
-  // model, a feature strip showing gpt2's words under Qwen3's output, and an
-  // A/B pairing Qwen3's baseline against gpt2's steered text. That is the
-  // failure this module's own docstring says was eliminated — one model's
-  // sentence attributed to another.
+  // features.json carries ONE scenario's SAE, that model's recorded sentence
+  // and a steered completion of it. Served unconditionally, selecting any
+  // other model left the page reporting an SAE loaded against a model of a
+  // different width, a feature strip showing one model's words under
+  // another's output, and an A/B pairing one model's baseline against
+  // another's steered text. That is the failure this module's own docstring
+  // says was eliminated — one model's sentence attributed to another.
   //
   // The real server cannot do this: `load()` clears `sae`, `_feats` and
   // `_steer` on every model change, so the panel falls to "no SAE exists for
   // this model". These branches now behave the same way.
-  const saeScenario = async () => (await index()).default;
+  // THE MODEL THE FEATURES WERE BAKED ON, read from the bundle that holds
+  // them — not the scenario index's default, which is a Qwen while every
+  // number in `features.json` came from google/gemma-2-2b. Keyed on the
+  // index, this gate was true for exactly the wrong model: the panel reported
+  // `gemma-scope-2b-pt-res`, `d_in 2304` and Gemma's token strip under a Qwen
+  // session, and the steering A/B paired Qwen's baseline against Gemma's
+  // steered sentence as though one caused the other.
+  //
+  // A bundle baked before this field existed returns undefined, so `hasSAE`
+  // is false for every scenario and the panel shows its honest "no SAE exists
+  // for this model" state. That is the correct answer for both Qwens.
+  const saeScenario = async () => (await bundle<any>("features")).model;
   const hasSAE = async () => (await current()).id === (await saeScenario());
 
+  // The third door to the same recording. `env.json`'s `sae_available` names
+  // google/gemma-2-2b too, so serving it ungated advertised a Gemma SAE as
+  // available while a Qwen was selected.
+  if (p === "/api/sae/available") {
+    // The EMPTY SHAPE, not an empty array. This route answers an object —
+    // `{model, matching, usable, catalogue}` — and `FeaturesPanel` reads
+    // `opts.usable.length` off it. Returning `[]` when the gate is closed
+    // crashed the panel on `undefined.length`, which is a worse failure than
+    // the one being fixed: trading another model's data for a blank page.
+    //
+    // `matching: []` is also the truthful answer. No SAE is registered for
+    // either Qwen scenario, which is exactly what the panel's "no sparse
+    // autoencoder exists for this model" state is for.
+    if (!(await hasSAE())) {
+      const s = await current();
+      return ok({ model: s.id, matching: [], usable: [], catalogue: [] });
+    }
+    return ok(
+      (await bundle<any>("env")).sae_available ?? {
+        model: null,
+        matching: [],
+        usable: [],
+        catalogue: [],
+      },
+    );
+  }
   if (p === "/api/sae") {
     if (!(await hasSAE())) {
       return ok({ loaded: false, repo: null, hook: null, layer: null, d_in: null });
@@ -507,10 +597,87 @@ export async function demoFetch(
   if (p === "/api/attention/direct") return recorded("direct");
   if (p === "/api/attention/ablate/estimate") return recorded("ablate_estimate");
   if (p === "/api/telemetry") return recorded("telemetry");
+  // PER SCENARIO, like the tuned lens beside it. This was served from
+  // `env.json` with no gate at all, and `env.json` is baked once while
+  // SAE_MODEL — google/gemma-2-2b — is resident. So selecting a Qwen and
+  // pressing the lens read returned Gemma's 27 layers of Gemma vocabulary,
+  // under a ReceiptLine printing `google/gemma-2-2b@c5ebcd40` beside a status
+  // pill naming Qwen. A logit lens is per model in the most literal way: its
+  // rows are that model's layers.
+  //
+  // `recorded` refuses BY NAME for a bundle baked before this moved, which is
+  // the honest answer until they are re-baked — an empty panel reads as a
+  // measurement that found nothing, and the old behaviour read as a
+  // measurement of the wrong model.
+  if (p === "/api/lens") return recorded("lens");
   if (p === "/api/lens/tuned") return recorded("lens_tuned");
 
+  // `/api/traces/…` is EIGHT routes on the real server, not one, and this
+  // used to answer the whole prefix with the recorded trace document. So the
+  // bundle preview, the pattern finder, the dataset builder, search, import
+  // and adopt were each handed a document of the WRONG SHAPE and a 200 to go
+  // with it. The preview then read `n_steps` off a trace, got `undefined`,
+  // and `.toLocaleString()` blanked the entire page a few seconds after load.
+  //
+  // The crash was the honest outcome; the quiet ones were worse. A panel
+  // handed the wrong document mostly does not crash — it renders whatever it
+  // can find and shows the reader numbers that belong to something else.
+  //
+  // The recording carries exactly two of these. The rest refuse BY NAME.
   if (p === "/api/traces") return ok((await bundle<any>("traces")).list);
-  if (p.startsWith("/api/traces/")) return ok((await bundle<any>("traces")).trace);
+
+  // A single segment that is not one of the sibling collection routes is a
+  // trace id. `search`, `import`, `dataset` and `adopt` sit at the same depth
+  // as an id and are not one.
+  const traceId = /^\/api\/traces\/([^/]+)$/.exec(p)?.[1];
+  if (traceId && !TRACE_COLLECTIONS.has(traceId)) {
+    return ok((await bundle<any>("traces")).trace);
+  }
+
+  if (p.endsWith("/bundle/preview")) {
+    return refuse(
+      409,
+      "The preview counts the steps and the redactions in a file this page " +
+        "would write from a live runtime's own state, and there is no such " +
+        "runtime behind a recording. Numbers invented for it would describe " +
+        "a file nobody is going to get.",
+    );
+  }
+  if (p.endsWith("/patterns")) {
+    return refuse(
+      409,
+      "Finding patterns means querying every run recorded on a machine. This " +
+        "page carries one recording, so any answer would be a pattern of one.",
+    );
+  }
+  if (p === "/api/traces/search") {
+    return refuse(
+      409,
+      "Search runs against the full-text index of every step recorded on your " +
+        "machine. This page has a single recording and no index behind it.",
+    );
+  }
+  if (p === "/api/traces/dataset") {
+    return refuse(
+      409,
+      "Building an evaluation set draws cases from the runs recorded on your " +
+        "machine. One recording is not a set.",
+    );
+  }
+  if (p.startsWith("/api/traces/import")) {
+    return refuse(
+      409,
+      "Importing reads a file from your disk into a local database. This page " +
+        "has neither. `pip install modelmri` to bring your own traces in.",
+    );
+  }
+  if (p.startsWith("/api/traces/")) {
+    return refuse(
+      409,
+      "This acts on the trace database a local install keeps. The recording " +
+        "on this page is read-only and has nothing behind it to change.",
+    );
+  }
 
   // Custom models. The demo can't read your filesystem, so it serves the
   // adapter template's real inspection and keeps the panel's own flow —
@@ -657,6 +824,479 @@ export async function demoFetch(
       );
     }
     return ok(block);
+  }
+
+  // ---------------------------------------------------------- image models
+  //
+  // NOT-LOADED, not refused. `/api/image` describes what this process is
+  // holding, and a static page holds no pipeline — which is precisely what
+  // "nothing is loaded" means, so the honest answer is the real resting
+  // status with the reason filled in. A 501 here would paint an error over a
+  // panel that is working correctly, which is the mistake `/api/pull/progress`
+  // above already records.
+  //
+  // `capabilities: []` matters more than it looks. It is the list every
+  // control on that panel is gated on, so an empty one is what keeps a demo
+  // with no pipeline behind it from offering a capture button.
+  const noPipeline = (reason: string) => ({
+    loaded: false,
+    repo: "",
+    family: "",
+    architecture: "",
+    device: "",
+    dtype: "",
+    capabilities: [],
+    // `null` is "nothing here knows", which is a different claim from 0 —
+    // 0 would say this page is holding an unconditional model.
+    cross_attention_dim: null,
+    image_size: null,
+    components: {},
+    bytes_resident: 0,
+    load_seconds: null,
+    // The bound the live route enforces. Stated even with nothing loaded,
+    // because it is a property of the tool rather than of a pipeline — and
+    // the picker reads it to know when to stop accepting words.
+    max_knockout_words: 24,
+    // The same two bounds the live `image_input` enforces, for the same
+    // reason: a visitor picking a photo should learn the limit before paying
+    // the read and the base64 encode rather than after.
+    max_image_bytes: 32 * 1024 * 1024,
+    max_image_pixels: 64_000_000,
+    reason,
+    means:
+      `No image model is held in this process, so nothing here can say what ` +
+      `one attends to or when it commits. ${reason}`,
+  });
+  if (p === "/api/image") {
+    return ok(
+      noPipeline(
+        "This page is a static recording with no process behind it, so there " +
+          "is nothing here that could hold a diffusion pipeline.",
+      ),
+    );
+  }
+  if (p === "/api/image/unload") {
+    return ok(noPipeline("There was nothing to unload — this page holds no pipeline."));
+  }
+  if (p === "/api/image/available") {
+    // An empty list with the reason attached, rather than somebody else's
+    // cache. `/api/models/discovered` shipped one person's 17 repositories to
+    // every visitor once; the rule that came out of it is that this page may
+    // only offer what it can actually replay, and it can replay no pipeline.
+    return ok({
+      models: [],
+      known: 0,
+      // The walk that did not happen did not stop early either. Both fields
+      // are on the live shape and were absent here, which is how a demo
+      // drifts from the tool it stands in for.
+      truncated: false,
+      scan_limit: 0,
+      means:
+        "This page is a static recording and cannot read a disk, so it lists " +
+        "no image models — not because none are cached, but because there is " +
+        "no machine here to ask. Installed, this names every diffusion " +
+        "pipeline already on your disk and downloads nothing to do it.",
+    });
+  }
+  // ---- finding one, which needs a disk and a network this page has neither of
+  //
+  // Split deliberately three ways rather than answered with one refusal. The
+  // "on this machine" tab fails for a different reason from the "find one"
+  // tab, and a visitor who cannot tell them apart learns that model discovery
+  // is broken rather than that a static page has nothing to discover with.
+  if (p === "/api/image/local") {
+    // The same rule `/api/image/available` above is written for, and the same
+    // scar behind it: `/api/models/discovered` once shipped one person's 17
+    // repositories to every visitor. This page may offer only what it can
+    // replay, and it can replay no pipeline.
+    return ok({
+      models: [],
+      bytes_on_disk: 0,
+      unsized: 0,
+      // No walk ran, so it did not stop early either. Zero rather than the
+      // server's 200: copying that constant here would be a second home for
+      // a number that lives in `imaging.SCAN_CACHE_LIMIT`.
+      truncated: false,
+      scan_limit: 0,
+      means:
+        "This page is a static recording and cannot read a disk, so it lists " +
+        "no image models and no bytes — not because none are here, but " +
+        "because there is no machine here to ask. Installed, this names " +
+        "every diffusion pipeline on your disk with what each one weighs, " +
+        "and marks the ones holding configs and no weights as the " +
+        "interrupted downloads they are rather than as models ready to load.",
+    });
+  }
+  if (p === "/api/image/discovered") {
+    // The folder walk, answered the same way the cache read above is: an empty
+    // list with the reason attached. A recording has no working directory to
+    // walk, and `roots: []` is the truthful answer to "where did you look" —
+    // nowhere. Naming a plausible directory would be this page inventing a
+    // path on a machine it cannot see.
+    return ok({
+      models: [],
+      roots: [],
+      truncated: false,
+      // Zero because no walk ran, not because the limit is zero. Copying the
+      // server's 120 here would be a second home for a number that lives in
+      // `imaging.SCAN_DIRS_LIMIT`, and it would drift the day that changes.
+      // Never rendered either way: the sentence carrying it is behind
+      // `truncated`.
+      scan_limit: 0,
+      means:
+        "This page is a static recording and has no working directory to " +
+        "walk, so it lists no folders and no models found in them. " +
+        "Installed, this searches the directory ModelMRI was started from " +
+        "(plus anything in MODELMRI_MODELS_DIR) and names every image model " +
+        "sitting there outside the Hub cache — and it reports which " +
+        "directories it walked, so an empty answer says where it looked.",
+    });
+  }
+  if (p === "/api/image/tasks") {
+    // Empty rather than a copy. The table lives in `image_catalog.TASKS`, and
+    // re-typing it here would be a second source of truth for what this tool
+    // can open — one that drifts the day a tag is added on the server and
+    // offers a visitor a task no checkpoint here could ever load.
+    return ok({
+      tasks: [],
+      default: "",
+      means:
+        "Choosing what to search for is the first half of a Hub call this " +
+        "page cannot make, so no tasks are offered here rather than a copy " +
+        "of the list that would drift from the one the tool actually reads. " +
+        "Installed, this names every kind of image model ModelMRI can open — " +
+        "and what each one offers is settled by the checkpoint's own config " +
+        "when it loads, never by the task it was listed under.",
+    });
+  }
+  if (p === "/api/image/search") {
+    // An empty list with the reason attached, not a red error: the tab is
+    // working correctly and has nothing to show, which is the distinction
+    // `/api/image` above is written for.
+    return ok({
+      models: [],
+      task: q.get("task") ?? "",
+      means:
+        "Searching for a model to download is a live call to the " +
+        "HuggingFace Hub, and this page is a static recording with nothing " +
+        "behind it to make one — so no results are listed. A baked list " +
+        "would be a snapshot of a download count that has moved since, " +
+        "offered under a Load button with no process to load into. " +
+        "Installed, this searches the Hub by task, says what each result " +
+        "weighs before you click, and marks the ones already on your disk.",
+    });
+  }
+  // ---- what this page is doing, and how to make it stop -------------------
+  //
+  // Nothing, and nothing. Both are honest answers rather than refusals, for
+  // the reason `/api/pull/progress` above already records: the panel polls
+  // progress the moment a load starts, and a 501 would draw an error across a
+  // panel that is behaving correctly.
+  if (p === "/api/image/progress") {
+    return ok({
+      active: false,
+      hf_id: null,
+      stage: "",
+      detail: "",
+      bytes_done: 0,
+      bytes_total: 0,
+      elapsed_s: 0,
+      eta_s: null,
+      error: null,
+    });
+  }
+  if (p === "/api/image/cancel") {
+    return ok({
+      stopping: false,
+      means:
+        "There is no load in flight to stop — this page is a static " +
+        "recording and holds no pipeline.",
+    });
+  }
+  // ---- the computer-vision asks -------------------------------------------
+  //
+  // All four need the classifier itself. `capabilities: []` on the resting
+  // status already gates every control that would call them, so these are
+  // belt and braces — but an endpoint whose only protection is a UI gate is
+  // one refactor away from being reachable, and `/api/features/ablate` above
+  // is the note about what a prefix handler answering the wrong shape costs.
+  if (
+    p === "/api/image/cv/predict" ||
+    p === "/api/image/cv/readout" ||
+    p === "/api/image/cv/attribute"
+  ) {
+    return refuse(
+      409,
+      "Each of these runs the classifier on YOUR picture: the prediction is " +
+        "one forward pass, the readout reads the patch grid out of that same " +
+        "pass, and the occlusion sweep re-runs it once per window. There is " +
+        "no model behind this page to run, and a baked answer would be a " +
+        "claim about somebody else's photograph.",
+    );
+  }
+  if (p === "/api/image/cv/cost") {
+    return refuse(
+      409,
+      "This prices the sweep from the loaded checkpoint's OWN input geometry " +
+        "— the size its processor resizes your picture to, not the size of " +
+        "the file you picked — and there is no checkpoint here to ask.",
+    );
+  }
+  // ---- the step trace and the filmstrip ------------------------------------
+  if (p === "/api/image/steps" || p === "/api/image/filmstrip") {
+    return refuse(
+      409,
+      "Both watch a real denoising run: the trace records what the model " +
+        "committed to at each step, and the filmstrip decodes the latent " +
+        "between them. There is no pipeline behind this page to step, and a " +
+        "baked strip would be frames from a run nobody made.",
+    );
+  }
+  if (p === "/api/image/filmstrip/cost") {
+    return refuse(
+      409,
+      "The decode cost is read off the loaded pipeline's own latent shape " +
+        "and its VAE, which there is none of here — so the number would " +
+        "describe a wait nobody on this page is going to have.",
+    );
+  }
+  // ---- the adapter reader --------------------------------------------------
+  if (p === "/api/image/adapter") {
+    return refuse(
+      501,
+      "Reading a LoRA means opening a file on your disk and measuring what " +
+        "it moves, and a page served from the web cannot see a filesystem. " +
+        "Installed, this takes any adapter you have and says which modules " +
+        "it touches and by how much — no base model needed.",
+    );
+  }
+  if (p === "/api/image/size") {
+    return refuse(
+      501,
+      `Pricing a download means asking the Hub what \`${
+        q.get("repo") || "that model"
+      }\` publishes, which is a live call this static page has no process to ` +
+        `make. Nothing here will guess a size instead: a number invented for ` +
+        `a picker is the one thing a size column exists to prevent.`,
+    );
+  }
+  if (p === "/api/image/load") {
+    return refuse(
+      501,
+      `Loading a diffusion pipeline reads several gigabytes of weights into a ` +
+        `process, and this page is a static recording with no process to read ` +
+        `them into. Installed, ModelMRI identifies the checkpoint from JSON, ` +
+        `scans it for anything that executes on load, and prices it against ` +
+        `your card — three refusals that cost nothing — before a byte moves.`,
+    );
+  }
+  if (p === "/api/image/attention" || p === "/api/image/knockout") {
+    return refuse(
+      409,
+      "Both of these run the real pipeline: the map captures cross-attention " +
+        "where it is computed during a live denoising run, and the knockout " +
+        "regenerates the image once per word at the same seed. There is no " +
+        "pipeline behind this page, and a baked cross-attention map would be " +
+        "a picture of a run nobody made. `pip install modelmri` to point it " +
+        "at a pipeline of your own.",
+    );
+  }
+  if (p === "/api/image/attention/cost" || p === "/api/image/steps/cost") {
+    return refuse(
+      409,
+      "This prices a run this page cannot make, so the number would describe " +
+        "a wait nobody here is going to have — and the memory half of it is " +
+        "read off the loaded pipeline's own latent shape, which there is none " +
+        "of here.",
+    );
+  }
+  // ---- the occlusion preflight, answered FOR REAL --------------------------
+  //
+  // The one image route this page can answer honestly, and the reason is that
+  // it needs nothing: `vision_attr.estimate` is arithmetic over a geometry,
+  // not a measurement of a model. Refusing it would have been the easy answer
+  // and the wrong one — the whole argument of that route is that the number
+  // arrives BEFORE anything is spent, and a visitor who only ever sees it
+  // refused never learns that a stride of 1 is a different afternoon from a
+  // stride of 16.
+  //
+  // Duplicated arithmetic is a real cost and it is taken deliberately here.
+  // `modelmri/vision_attr.py` is the source of truth; this mirrors `_axis`,
+  // `_count_windows`, `_clamp_batch` and `estimate` exactly, ceiling
+  // included, so the sentence a visitor reads is the sentence the tool
+  // writes. Anything that drifts there has to be brought across.
+  if (p === "/api/image/attribution/cost") {
+    const num = (name: string, fallback: number) => {
+      const raw = q.get(name);
+      if (raw === null || raw.trim() === "") return fallback;
+      return Number(raw);
+    };
+    const height = num("height", 224);
+    const width = num("width", 224);
+    const patch = num("patch", 16);
+    // 0 is the query-string way of saying "not stated", and the module then
+    // uses the patch size — non-overlapping windows.
+    const asked = num("stride", 0);
+    const stride = asked || patch;
+    const batchAsked = num("batch", 32);
+
+    const whole = (v: number, name: string) =>
+      Number.isInteger(v) ? "" : `${name} must be a whole number of pixels, not ${v}.`;
+    // Python's format rounds a half to EVEN and `toFixed` rounds it away from
+    // zero, so `{12.5:.0f}` is "12" here and "13" there. The geometry that
+    // lands exactly on a half is a patch of 14 at stride 16 — the ViT-large
+    // patch size against the ordinary one — which is far too ordinary to let
+    // the two sentences differ by a digit.
+    const asPython = (v: number) => {
+      const floor = Math.floor(v);
+      const rest = v - floor;
+      if (rest > 0.5) return floor + 1;
+      if (rest < 0.5) return floor;
+      return floor % 2 === 0 ? floor : floor + 1;
+    };
+    // The same refusals, in the same order, with the same sentences. A
+    // geometry the tool would reject must be rejected here too, or the demo
+    // teaches a schedule that cannot run.
+    const bad =
+      whole(height, "height") ||
+      whole(width, "width") ||
+      whole(patch, "patch") ||
+      whole(stride, "stride") ||
+      (patch < 1 ? "patch must be at least 1 pixel." : "") ||
+      (stride < 1
+        ? "stride must be at least 1 pixel. A stride of 0 would place every " +
+          "window at the same place forever."
+        : "") ||
+      (height < 1 || width < 1
+        ? `an image of ${height}x${width} pixels has nothing to occlude.`
+        : "") ||
+      (patch > Math.min(height, width)
+        ? `a patch of ${patch} does not fit inside a ${height}x${width} ` +
+          `image. The occluder has to be smaller than what it is occluding.`
+        : "") ||
+      (stride > patch
+        ? `a stride of ${stride} with a patch of ${patch} leaves ` +
+          `${asPython((1 - patch / stride) * 100)}% of the pixels under no ` +
+          `window at all, so the map would have holes in it and still look ` +
+          `like a map of the whole image. Set the stride to ${patch} or less.`
+        : "") ||
+      (batchAsked < 1 ? "batch must be at least 1 occluded copy per call." : "");
+    if (bad) return refuse(422, bad);
+
+    // `_axis`: starts every `stride` pixels, plus a final one pulled back to
+    // the edge when the last window would leave a strip uncovered. Without
+    // that clamp the map is silent about part of the image while still being
+    // presented as a map OF the image.
+    const axis = (length: number) => {
+      const starts: number[] = [];
+      for (let s = 0; s + patch <= length; s += stride) starts.push(s);
+      if (starts.length === 0) starts.push(0);
+      if (starts[starts.length - 1] + patch < length) starts.push(length - patch);
+      return starts.length;
+    };
+    const count = (h: number, w: number, st: number) => {
+      const one = (length: number) => {
+        const starts: number[] = [];
+        for (let s = 0; s + patch <= length; s += st) starts.push(s);
+        if (starts.length === 0) starts.push(0);
+        if (starts[starts.length - 1] + patch < length) starts.push(length - patch);
+        return starts.length;
+      };
+      return [one(h), one(w)] as const;
+    };
+
+    const rows = axis(height);
+    const cols = axis(width);
+    const nWindows = rows * cols;
+    const passes = nWindows + 1;
+    // MAX_BATCH, and both numbers travel because a silent cap is a defect.
+    const batch = Math.min(batchAsked, 64);
+    const calls = 1 + Math.ceil(nWindows / batch);
+    const inputBytes = batch * 3 * height * width * 4;
+    // MAX_PASSES. `estimate` NEVER refuses on this — a caller about to be
+    // refused needs the number that got them refused.
+    const ceiling = 4096;
+    const within = passes <= ceiling;
+
+    let fits = "";
+    if (!within) {
+      for (let s = 1; s <= patch; s++) {
+        const [r, c] = count(height, width, s);
+        if (r * c + 1 <= ceiling) {
+          fits = `A stride of ${s} would be ${r * c} windows (${r}x${c}) and fits.`;
+          break;
+        }
+      }
+      if (!fits) {
+        const [r, c] = count(height, width, patch);
+        fits =
+          `Even a plain tiling at stride ${patch} is ${r * c} windows, so ` +
+          `this image needs a larger patch or a raised ceiling — and a ` +
+          `larger patch means a coarser map, which is the trade being made.`;
+      }
+    }
+
+    return ok({
+      map_rows: rows,
+      map_cols: cols,
+      n_windows: nWindows,
+      passes,
+      forward_calls: calls,
+      batch,
+      // BOTH numbers, because a silent cap is a defect — this file's own
+      // header rule, and the clamp on the line above was being applied
+      // without it. `vision_attr.estimate` has always returned this.
+      batch_requested: batchAsked,
+      patch,
+      stride,
+      input_bytes_per_call: inputBytes,
+      // `null` is "nobody measured", not "instant". Nothing here has timed a
+      // forward pass, and a forecast off a typed constant would be invented.
+      seconds: null,
+      within_ceiling: within,
+      ceiling,
+      means:
+        `A ${patch}x${patch} occluder at stride ${stride} over a ` +
+        `${height}x${width} image is ${nWindows} windows — a ${rows}x${cols} ` +
+        `map — and ${passes} forward passes, sent ${batch} at a time in ` +
+        `${calls} calls.` +
+        // The clause Python emits in the same position, which this omitted —
+        // so a visitor who asked for a batch of 200 read a sentence priced at
+        // 64 that never mentioned the reduction. The rule this file states
+        // for itself is that the sentence a visitor reads is the sentence the
+        // tool writes.
+        (batchAsked !== batch
+          ? ` A batch of ${batchAsked} was asked for and ${batch} is this ` +
+            `module's bound on how many full-size copies of the image it will ` +
+            `hold at once, so the figures here are for ${batch}.`
+          : "") +
+        ` The occluded copies alone are ` +
+        `${(inputBytes / 1e6).toLocaleString(undefined, {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 1,
+        })} MB per call; the activations behind them are a multiple of that ` +
+        `which nothing here can know without running the model.` +
+        ` No per-pass time was measured, so there is no forecast here — an ` +
+        `invented one would be a number this tool made up.` +
+        (within
+          ? ""
+          : ` THIS IS PAST THE CEILING OF ${ceiling} PASSES and \`sweep\` ` +
+            `will refuse it. ${fits}`),
+    });
+  }
+  if (p === "/api/image/attribution") {
+    return refuse(
+      409,
+      "The preflight above is real arithmetic and answers here; this is the " +
+        "sweep itself, and it is the half that needs a model. Every window " +
+        "of your picture is covered up and the checkpoint re-run — 197 " +
+        "forward passes for a 224x224 image at a 16-pixel patch — and the " +
+        "score is the signed movement in the class logit that results. " +
+        "There is no model behind this page to move, and a baked map would " +
+        "be somebody else's photograph attributed to a run you did not " +
+        "make. `pip install modelmri` and point it at a ViT, a detector or " +
+        "a segmentation head of your own.",
+    );
   }
   return undefined;
 }

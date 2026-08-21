@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { invalidateSession } from "./RunsOn";
 import { useScanOnData } from "./useScanOnData";
 import RestingSketch from "./RestingSketch";
 import {
@@ -41,6 +42,8 @@ function vec(xs: number[]): string {
 }
 
 import VLACausal from "./VLACausal";
+import VLAAudit from "./VLAAudit";
+import VLAActions from "./VLAActions";
 
 export default function VLAPanel() {
   const [vla, setVla] = useState<VLAStatus | null>(null);
@@ -143,6 +146,9 @@ export default function VLAPanel() {
     setErr("");
     try {
       setVla(await loadVLA(policy));
+      // The top bar reports the robot policy too, and had the same silence as
+      // the image panel: a resident policy under "no model loaded".
+      invalidateSession();
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -233,12 +239,25 @@ export default function VLAPanel() {
             Blank uses <code>{DEFAULT_POLICY}</code>.
           </span>
         </div>
+        {/* THE EXTRA ONLY FOR THE ERROR THE EXTRA FIXES. This appended
+            `pip install modelmri[vla-lite]` to every failure, so a policy that
+            is not installed, a file that will not parse and a permission
+            error were all answered with "install the dataset readers" — advice
+            that cannot help, and in the policy case advice the server
+            explicitly warns against: its own hint says to run `modelmri policy
+            install` BECAUSE installing lerobot beside ModelMRI breaks both.
+            Every other refusal here already ends with its own next step, which
+            is why there is nothing to add to it. */}
         {err && (
           <div className="hint">
-            {/robot dataset|not cached|No such|FileNotFound/i.test(err)
-              ? "no robot dataset cached · install the extra and pull one: "
-              : `${err} · `}
-            <b>pip install modelmri[vla-lite]</b>
+            {/robot dataset|not cached|No such|FileNotFound/i.test(err) ? (
+              <>
+                no robot dataset cached · install the readers and pull one:{" "}
+                <b>pip install modelmri[vla-lite]</b>
+              </>
+            ) : (
+              err
+            )}
           </div>
         )}
       </div>
@@ -372,6 +391,18 @@ export default function VLAPanel() {
         layer={layer}
         ready={Boolean(vla?.loaded)}
       />
+
+      {/* What the policy would DO, which needs the other half of a VLA — the
+          action expert, in its own process. Sited under the causal map because
+          it is the same question one step further out: the map says what the
+          representation depended on, these say what came out of it. */}
+      <VLAActions episode={episode} timestep={t} />
+
+      {/* Last, and it needs neither half. It reads the files on disk and
+          proves — or disproves — that the episodes above are what they claim
+          to be. Nothing is downloaded and no GPU is touched, which is why it
+          is the one control here that costs nothing to press. */}
+      <VLAAudit />
 
       {err && <div className="hint">{err}</div>}
       <div className="hint">

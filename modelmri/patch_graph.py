@@ -43,11 +43,11 @@ hide them.
 Controlling every drawn edge also decouples the picture's SIZE from the
 arithmetic. Pruning on recovery alone leaves the edge count set by whatever the
 resolution happens to be on this pair, and that number is not a constant of the
-dtype: MEASURED in bfloat16 on both, Qwen3-1.7B reads 0.006231 on the Eiffel /
-Colosseum pair and gpt2 reads 0.25 on the same one -- two orders of magnitude
-apart in the same number format, because the resolution is one representable
-step of the GAP between the two runs' answers, and the gap differs per model
-and per pair. Bounding the graph by what was controlled instead makes its size
+dtype: MEASURED in bfloat16, Qwen3-1.7B reads 0.006231 on the Eiffel /
+Colosseum pair, and the same figure on another model can sit orders of
+magnitude away in the same number format -- because the resolution is one
+representable step of the GAP between the two runs' answers, and the gap
+differs per model and per pair. Bounding the graph by what was controlled instead makes its size
 a function of `max_controlled`, which is a number this module chose and
 reports. The resolution still cuts below it, because a recovery the arithmetic
 cannot separate from zero is not a measurement -- it is just no longer what
@@ -435,9 +435,9 @@ def build(
                 # edge without them has a score and no verdict -- there would
                 # be nothing behind it to click. Keeping those would also hand
                 # the graph's SIZE to the resolution, which is not a constant:
-                # MEASURED in bfloat16 on both, Qwen3-1.7B reads 0.006231 on
-                # the reference pair and gpt2 reads 0.25 on the same one. See
-                # the module docstring.
+                # MEASURED in bfloat16, Qwen3-1.7B reads 0.006231 on
+                # the reference pair, and the same figure on another model can
+                # sit orders of magnitude away. See the module docstring.
                 if row.get("clears_control") is None:
                     graph.n_pruned += 1
                     continue

@@ -60,7 +60,7 @@ Any causal language model `transformers` can load with eager attention, found
 in the HuggingFace cache you already have, a folder on disk, or searched for
 and downloaded in the app.
 
-The models with a **recorded end-to-end result** are Qwen3-1.7B, GPT-2, Qwen3-0.6B,
+The models with a **recorded end-to-end result** are Qwen3-1.7B, Qwen3-0.6B,
 Qwen2.5-0.5B-Instruct, SmolLM2-360M-Instruct and Gemma-3-270m-it; the
 [verified table](index.md#verified-not-asserted) lists what each measured.
 Others should work. They are not listed as supported, because a model nobody
@@ -88,8 +88,8 @@ measures the KL divergence between the new output distribution and the
 original. A larger number means removing that head moved the answer further.
 
 A ranking costs `n_heads + 2` forward passes for one layer, or
-`n_layers × n_heads + 2` for a whole model — 146 passes for GPT-2, 450 for
-Qwen3-0.6B and Qwen3-1.7B alike. That cost is a property of the algorithm and is portable. The
+`n_layers × n_heads + 2` for a whole model — 450 passes for Qwen3-0.6B and
+Qwen3-1.7B alike. That cost is a property of the algorithm and is portable. The
 wall-clock time is not, which is why ModelMRI measures one layer on your
 machine and extrapolates instead of printing a figure from someone else's.
 
@@ -97,12 +97,11 @@ machine and extrapolates instead of printing a figure from someone else's.
 
 No, and treating them that way is the most likely way to misread this panel.
 They are not additive, and they are not consistently wrong in one direction.
-On GPT-2 layer 0 the twelve per-head scores sum to **1.995** while ablating the
-entire layer gives **0.208** — the parts "sum" to roughly ten times the whole,
-because heads are redundant: remove one and others compensate, remove all
-twelve and nothing does.
+Heads are redundant: remove one and others compensate, remove the whole layer
+and nothing does — so on some layers the per-head scores "sum" to many times
+what ablating the layer costs.
 
-On Qwen3-1.7B layer 0 the same measurement inverts. Sixteen per-head scores sum
+On Qwen3-1.7B layer 0 it runs the other way. Sixteen per-head scores sum
 to **2.325** against **14.394** for the whole layer — six times too little.
 Every head looks minor on its own while the layer is load-bearing together. So
 there is no factor you can divide by; the relationship between the parts and

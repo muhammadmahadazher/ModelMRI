@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { fmtKL, measured } from "./measured";
 import {
   compareQuantisation,
   GgufPlan,
@@ -305,6 +306,20 @@ export default function GgufReader({
             .slice(0, 6)
             .map((o) => `${o.name} (${o.type}, ${o.bpw})`)
             .join(", ")}
+          {/* TWO CUTS, neither of them visible. The server keeps the twelve
+              highest and this keeps six of those, so a file with forty
+              tensors above its headline listed six under a sentence reading
+              as though they were the set. The server's total is the only
+              number that can say so — the panel cannot see past what it was
+              sent. */}
+          {s.n_higher_precision_tensors > Math.min(6, s.higher_precision_tensors.length) && (
+            <>
+              {" "}
+              … and {s.n_higher_precision_tensors -
+                Math.min(6, s.higher_precision_tensors.length)}{" "}
+              more, {s.n_higher_precision_tensors} in total
+            </>
+          )}
           . These sit above <code>{s.dominant_type}</code> and are excluded from
           it — which is why a file labelled for its dominant type can read much
           higher overall.
@@ -465,11 +480,11 @@ function Damage({ d }: { d: QuantBehaviour }) {
     <div className="gguf-damage">
       <div className="gguf-head">
         <span className="gguf-stat">
-          <b>{s.median_kl.toFixed(4)}</b>
+          <b>{measured(s.median_kl, 4)}</b>
           <span className="meta">median KL (nats)</span>
         </span>
         <span className="gguf-stat">
-          <b>{s.max_kl.toFixed(4)}</b>
+          <b>{measured(s.max_kl, 4)}</b>
           <span className="meta">worst, at {s.max_kl_at.token.trim() || "▁"}</span>
         </span>
         <span className="gguf-stat gguf-bpw">
@@ -509,18 +524,23 @@ function Damage({ d }: { d: QuantBehaviour }) {
                   <code>{p.token}</code>
                 </td>
                 <td>
-                  <code>{p.top_b}</code> {p.p_b.toFixed(3)}
+                  <code>{p.top_b}</code> {measured(p.p_b, 3)}
                 </td>
                 <td>
-                  <code>{p.top_a}</code> {p.p_a.toFixed(3)}
+                  <code>{p.top_a}</code> {measured(p.p_a, 3)}
                 </td>
                 <td>
-                  {p.margin_b.toFixed(4)}
+                  {measured(p.margin_b, 4)}
                   <span className="meta">
                     {p.contested ? " · a tie" : " · decisive"}
                   </span>
                 </td>
-                <td>{p.kl.toFixed(5)}</td>
+                {/* Through the shared KL rule, not raw `toFixed(5)`.
+                    This is the per-position damage a quantisation did, and
+                    the small ones are the interesting ones — every KL under
+                    1e-5 printed as `0.00000`, in the table whose entire
+                    subject is how much the quantised model moved. */}
+                <td>{fmtKL(p.kl)}</td>
               </tr>
             ))}
           </tbody>
@@ -540,6 +560,20 @@ function Damage({ d }: { d: QuantBehaviour }) {
             />
           ))}
         </div>
+      )}
+      {/* The bars had no caption. `attention_means` is the server's own
+          sentence saying what they are — a REDUCED statistic, because the two
+          full attention grids are never both resident — and it arrived on
+          every response with attention and was rendered nowhere. Without it a
+          row of bars is just a shape. The scale note is ours: heights are
+          relative to the tallest layer IN THIS RUN, so they rank layers and
+          cannot be compared against another pair's bars. */}
+      {d.attention_means && d.attention && (
+        <p className="meta gguf-note">
+          {d.attention_means} Bars are scaled to the largest of these{" "}
+          {d.attention.length} layers ({measured(peak)}), so they rank depth
+          within this pair and not across runs.
+        </p>
       )}
 
       {d.notes.map((n) => (

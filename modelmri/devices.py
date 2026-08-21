@@ -16,6 +16,7 @@ here imports anything heavier than torch.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import asdict, dataclass
 
 
@@ -130,11 +131,90 @@ def _xpu() -> Device | None:
         return None
 
 
+def _ram_posix() -> int | None:
+    """Linux and most BSDs, through sysconf."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return None
+    return pages * page_size if pages > 0 and page_size > 0 else None
+
+
+def _ram_windows() -> int | None:
+    """GlobalMemoryStatusEx, through ctypes. No third-party dependency."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemStatus()
+        status.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return int(status.ullTotalPhys)
+    except Exception:
+        return None
+    return None
+
+
+def _ram_macos() -> int | None:
+    """hw.memsize, through sysctl."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    return (
+        int(out.stdout.strip())
+        if out.returncode == 0 and out.stdout.strip().isdigit()
+        else None
+    )
+
+
+def _ram_bytes() -> int | None:
+    """Physical RAM, or None. Three platforms, no third-party dependency.
+
+    Returning None is a real answer here. A machine whose RAM cannot be read is
+    not a machine with 8 GB, and every sentence downstream is written to cope
+    with not knowing.
+
+    Split into three probes rather than one function with fall-through
+    `except: pass` arms: the fall-through WAS the handling, but a reader — and
+    a static analyser — cannot tell that from a swallowed error, and it read as
+    three empty excepts in a row.
+    """
+    for probe in (_ram_posix, _ram_windows, _ram_macos):
+        got = probe()
+        if got:
+            return got
+    return None
+
+
 def _system_ram_gb() -> float | None:
     """System RAM in GB, or None. Shared with the capability report rather
     than reimplemented: one reader, three platforms, no extra dependency."""
-    from .doctor import _ram_bytes
-
     b = _ram_bytes()
     return round(b / 1e9, 1) if b else None
 
@@ -296,3 +376,143 @@ def torch_dtype(device: Device):
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
     }[device.dtype]
+
+
+def _free_total(device: Device) -> tuple[int | None, int | None]:
+    """Bytes free and total on `device`, right now, or `(None, None)`.
+
+    Separate from `Device` on purpose. Everything on that dataclass is a
+    PROPERTY of the hardware — its name, its total memory, whether it does
+    bf16 — and stays true for as long as the machine is on. Free memory is a
+    MEASUREMENT, true at the instant it was read and false as soon as another
+    process allocates. Storing it on `Device` would let a cached instance
+    carry a number that was right an hour ago and is quoted as if it were now.
+
+    `None` is UNKNOWN and never 0. Apple's unified memory and Intel's XPU have
+    no equivalent of `mem_get_info`, and reporting 0 free on a Mac would say
+    the machine is out of memory when nobody asked it.
+    """
+    try:
+        import torch
+    except Exception:
+        return None, None
+
+    if device.kind in ("cuda", "rocm"):
+        try:
+            index = int(device.torch_device.partition(":")[2] or 0)
+            free, total = torch.cuda.mem_get_info(index)
+            return int(free), int(total)
+        except Exception:
+            # A driver that answers `get_device_properties` and refuses
+            # `mem_get_info` is a real configuration, not an impossible one.
+            # Total is still known from the properties read; free is not.
+            total = int(device.vram_gb * 1e9) if device.vram_gb else None
+            return None, total
+
+    if device.kind == "cpu":
+        total = _ram_bytes() or None
+        # Free system RAM needs a dependency this project does not take, and
+        # "available" on an OS with a page cache is a judgement rather than a
+        # reading. Total is honest; free stays unknown.
+        return None, total
+
+    total = int(device.vram_gb * 1e9) if device.vram_gb else None
+    return None, total
+
+
+@dataclass
+class DeviceOption:
+    """One device the user could send a model to, and what it costs.
+
+    `is_default` marks what `detect("auto")` would pick if nobody chose — so a
+    picker can show the current behaviour as the default rather than
+    re-deriving the preference order and getting a different answer.
+    """
+
+    device: Device
+    free_bytes: int | None
+    total_bytes: int | None
+    is_default: bool
+
+    def to_dict(self) -> dict:
+        d = self.device.to_dict()
+        d["id"] = self.device.torch_device
+        d["free_bytes"] = self.free_bytes
+        d["total_bytes"] = self.total_bytes
+        d["is_default"] = self.is_default
+        return d
+
+
+def available() -> list[dict]:
+    """EVERY device on this machine, not just the one that would be chosen.
+
+    `detect()` answers "where should this go", which is the right question
+    right up until somebody wants to answer it themselves — a second GPU they
+    keep free for something else, a card another process is already filling,
+    or a deliberate run on CPU to compare against. None of those are reachable
+    when the only thing the tool will say is which device it picked.
+
+    Every CUDA index is probed individually rather than reporting "cuda" once.
+    A machine with two cards has two different names, two different VRAM
+    figures and two different amounts free, and collapsing them into one row
+    hides the entire reason somebody opened this list.
+
+    Default behaviour is unchanged: the row `detect("auto")` would have picked
+    is flagged `is_default`, and choosing nothing still goes there.
+    """
+    found: list[Device] = []
+
+    try:
+        import torch
+
+        count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        # No torch, or a torch that cannot answer. CPU is still a real answer
+        # and the list must never come back empty — an empty picker reads as
+        # "this machine has no devices", which is never true.
+        count = 0
+
+    for index in range(count):
+        card = _cuda_like(index)
+        if card is not None:
+            found.append(card)
+
+    for probe in (_xpu, _mps):
+        try:
+            other = probe()
+        except Exception:
+            other = None
+        if other is not None:
+            found.append(other)
+
+    found.append(_cpu("always available"))
+
+    try:
+        default = detect("auto").torch_device
+    except Exception:
+        default = "cpu"
+
+    rows: list[dict] = []
+    for device in found:
+        free, total = _free_total(device)
+        rows.append(
+            DeviceOption(
+                device=device,
+                free_bytes=free,
+                total_bytes=total,
+                is_default=device.torch_device == default,
+            ).to_dict()
+        )
+
+    # If nothing matched the default — a card that vanished between the two
+    # probes, or a `MODELMRI_DEVICE` naming something absent — say so by
+    # marking CPU rather than leaving every row unflagged. A list where
+    # nothing is the default is a list that cannot explain what happens when
+    # you choose nothing.
+    if not any(r["is_default"] for r in rows):
+        for row in rows:
+            if row["kind"] == "cpu":
+                row["is_default"] = True
+                break
+
+    return rows

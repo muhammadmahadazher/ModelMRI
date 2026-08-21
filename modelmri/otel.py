@@ -114,8 +114,15 @@ FIELDS: tuple[Field, ...] = (
     # vocabulary nobody agreed to.
     Field("kind", "modelmri.step.kind", "str"),
     Field("seq", "modelmri.step.seq", "int"),
-    Field("truncated_in", "modelmri.truncated.input", "bool"),
-    Field("truncated_out", "modelmri.truncated.output", "bool"),
+    # A COUNT, not a flag. `traces.py` fills these from `_unclip`, which
+    # returns how many characters were not stored -- 18,412, not True --
+    # and every consumer reads the number: the agents panel prints it
+    # with `toLocaleString()`, the judge panel picks "was" or "were"
+    # from it. Declared "bool", `_value` collapsed 18,412 to `true` and
+    # `_read` handed back `True`, so an export said a payload had been
+    # cut while destroying by how much.
+    Field("truncated_in", "modelmri.truncated.input", "int"),
+    Field("truncated_out", "modelmri.truncated.output", "int"),
     # Whether a duration was recorded at all. See `_span_times`.
     Field("_duration_recorded", "modelmri.duration.recorded", "bool"),
     # The step's real id. The OTLP span id is DERIVED (see `_span_id`), so
@@ -141,6 +148,21 @@ FIELDS: tuple[Field, ...] = (
 # look each attribute up. A step->field index was written here for symmetry
 # and never read, which CodeQL correctly called dead.
 _BY_KEY = {f.key: f for f in FIELDS}
+
+
+def _status_phrase(code: object) -> str:
+    """ " Not Found" for 404, or "" for a code the stdlib does not know.
+
+    Looked up from the integer rather than read off the response, so the text
+    in a refusal is always this machine's own. Empty for an unknown code —
+    a made-up phrase would be worse than none.
+    """
+    import http
+
+    try:
+        return f" {http.HTTPStatus(int(code)).phrase}"
+    except (ValueError, TypeError):
+        return ""
 
 
 # ------------------------------------------------------------------- ids
@@ -365,6 +387,16 @@ def _epoch_ns(started_at: Any) -> int:
 # ---------------------------------------------------------------- ingest
 
 
+def _as_list(value) -> list:
+    """A list, or empty for anything that is not one.
+
+    OTLP bodies are written by other people's exporters, so a field holding
+    the wrong type is ordinary rather than hostile. `value or []` only covers
+    a missing key.
+    """
+    return value if isinstance(value, list) else []
+
+
 def from_otlp(body: dict) -> list[dict]:
     """OTLP spans back into recorded steps, over the same `FIELDS`.
 
@@ -375,11 +407,22 @@ def from_otlp(body: dict) -> list[dict]:
     two directions drifting apart as the table changes.
     """
     steps: list[dict] = []
-    for resource in body.get("resourceSpans") or []:
-        for scope in resource.get("scopeSpans") or []:
-            for span in scope.get("spans") or []:
+    # Same guard as the ingest path, and it belongs here too: this is a
+    # public function, and `or []` covers a MISSING key rather than a present
+    # one holding the wrong type. Fixing the route and leaving this is how the
+    # class survives — a caller reaching `from_otlp` directly got the same
+    # `TypeError: 'int' object is not iterable`.
+    for resource in _as_list(body.get("resourceSpans")):
+        if not isinstance(resource, dict):
+            continue
+        for scope in _as_list(resource.get("scopeSpans")):
+            if not isinstance(scope, dict):
+                continue
+            for span in _as_list(scope.get("spans")):
+                if not isinstance(span, dict):
+                    continue
                 step: dict = {}
-                for attr in span.get("attributes") or []:
+                for attr in _as_list(span.get("attributes")):
                     field = _BY_KEY.get(attr.get("key", ""))
                     if field is None:
                         continue
@@ -535,9 +578,20 @@ def send(
                 "`otlp/http` is enabled; the OpenTelemetry Collector does by "
                 "default."
             ) from err
+        # The status phrase derived LOCALLY from the code, not echoed from the
+        # response. `HTTPError.reason` is whatever the remote server chose to
+        # put there — an endpoint the user named, but still a third party
+        # writing text into a sentence this project publishes. The URLError
+        # branch immediately below already made this call with
+        # `type(err).__name__`; this one had been left behind, and a widened
+        # leak check found it after CodeQL found its sibling in `policy.py`.
+        #
+        # `err.code` is an int and keeps everything diagnostic about the
+        # message: 404 and 401 send you to different places, and the standard
+        # phrase for each is a lookup rather than a quotation.
+        phrase = _status_phrase(err.code)
         raise Refusal(
-            f"{url} answered {err.code} {err.reason}. Nothing was recorded as "
-            "delivered."
+            f"{url} answered {err.code}{phrase}. Nothing was recorded as delivered."
         ) from err
     except urllib.error.URLError as err:
         raise Refusal(
@@ -703,10 +757,21 @@ def ingest(payload: dict) -> dict:
             continue
         res_attrs = _flat((resource.get("resource") or {}).get("attributes"))
         service = service or str(res_attrs.get("service.name") or "")
-        for scope in resource.get("scopeSpans") or []:
+        # `or []` catches a MISSING key, not a present one holding the wrong
+        # type: `5 or []` is 5, and iterating an int is a TypeError. Each
+        # ELEMENT was already guarded with `isinstance(...): continue`; the
+        # containers around them were not, so an exporter that sent
+        # `"scopeSpans": 5` got a 500 from a route whose whole job is to
+        # accept a body written by somebody else's software.
+        #
+        # Skipped rather than refused on the spot, to match how a non-dict
+        # element is already treated — and a body with nothing usable left in
+        # it then lands on the authored "carries no spans" refusal below,
+        # which is the sentence this route's docstring promises.
+        for scope in _as_list(resource.get("scopeSpans")):
             if not isinstance(scope, dict):
                 continue
-            for span in scope.get("spans") or []:
+            for span in _as_list(scope.get("spans")):
                 if isinstance(span, dict):
                     spans.append(span)
 
@@ -727,8 +792,21 @@ def ingest(payload: dict) -> dict:
     generations: set[str] = set()
     unmapped: set[str] = set()
     steps: list[dict] = []
+    # Spans with no usable start. Counted rather than filed at offset 0 — see
+    # the guard below.
+    undated = 0
 
-    ordered = sorted(spans, key=lambda s: str(s.get("startTimeUnixNano") or "0"))
+    # ORDERED NUMERICALLY. `str(...)` sorts by text, so "9..." sorts after
+    # "10...": a nanosecond stamp with fewer digits than its neighbour lands
+    # out of order, and `seq` — derived from this loop — then contradicts the
+    # timestamps it was supposed to summarise.
+    def _start_of(span: dict) -> int:
+        try:
+            return int(span.get("startTimeUnixNano") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    ordered = sorted(spans, key=_start_of)
     for seq, span in enumerate(ordered):
         attrs = _flat(span.get("attributes"))
         generations.add(str(attrs.get("modelmri.semconv.generation") or "unstated"))
@@ -745,6 +823,23 @@ def ingest(payload: dict) -> dict:
             end_ns = int(span.get("endTimeUnixNano") or 0)
         except (TypeError, ValueError):
             start_ns = end_ns = 0
+
+        # A SPAN WITH NO START IS NOT A SPAN AT THE START. `base_ns` above
+        # already excludes these from the baseline — `if s > 0` — because a
+        # zero stamp is not a time. Filing them anyway put every one of them
+        # at offset 0, reading as the first thing that happened in the run.
+        #
+        # `traces._ms` refuses a step with no `started_ms` in those words:
+        # "filing it at 0 would put it at the start of the run". This
+        # manufactured exactly what that guard exists to reject, one module
+        # over, and the store then accepted it because the field was present.
+        #
+        # Dropped and COUNTED, and the count reaches the reader below. The
+        # alternative — omitting `started_ms` — makes `import_trace` refuse
+        # the whole document, losing every span that did have a time.
+        if start_ns <= 0:
+            undated += 1
+            continue
 
         # An end equal to the start is how OTLP is forced to express "unknown",
         # so it reads back as unknown rather than as a measured zero -- unless
@@ -808,6 +903,13 @@ def ingest(payload: dict) -> dict:
             }
         )
 
+    if undated:
+        notes.append(
+            f"{undated} span(s) carried no usable startTimeUnixNano and are "
+            f"NOT in this trace. A span with no start is not a span at the "
+            f"start: filing them at offset 0 would put them before everything "
+            f"that was timed."
+        )
     if unmapped:
         notes.append(
             "these operations have no ModelMRI step kind and were filed as "

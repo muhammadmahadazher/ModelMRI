@@ -34,18 +34,18 @@ def _row(index: int, scores: dict, *, refused: str = "") -> sweep.Row:
 
 def test_a_sweep_with_no_prompts_is_refused():
     with pytest.raises(BadRequest, match="no prompts"):
-        sweep.Job(model="gpt2", prompts=[]).validated()
+        sweep.Job(model="Qwen/Qwen3-1.7B", prompts=[]).validated()
     with pytest.raises(BadRequest, match="no prompts"):
-        sweep.Job(model="gpt2", prompts=["", "   "]).validated()
+        sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["", "   "]).validated()
 
 
 def test_an_unknown_metric_names_the_ones_that_exist():
     with pytest.raises(BadRequest, match="heads"):
-        sweep.Job(model="gpt2", prompts=["a"], metric="vibes").validated()
+        sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["a"], metric="vibes").validated()
 
 
 def test_blank_lines_are_dropped_but_real_prompts_are_not():
-    job = sweep.Job(model="gpt2", prompts=["a", "", "  ", "b"]).validated()
+    job = sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["a", "", "  ", "b"]).validated()
     assert job.prompts == ["a", "b"]
 
 
@@ -189,7 +189,7 @@ def test_a_refusal_is_written_as_a_row_with_its_sentence(tmp_path):
 def test_the_rendered_table_distinguishes_refused_from_unaggregatable(tmp_path):
     """A tokens sweep whose prompts all succeeded said "every prompt was
     refused" — two different facts reported as one."""
-    job = sweep.Job(model="gpt2", prompts=["a"] * 5, metric="tokens")
+    job = sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["a"] * 5, metric="tokens")
     rows = [_row(i, {"P3'x'": 1.0}) for i in range(5)]
     text = sweep.render(job, rows, [])
     assert "5 measured · 0 could not be measured" in text
@@ -198,7 +198,7 @@ def test_the_rendered_table_distinguishes_refused_from_unaggregatable(tmp_path):
 
 
 def test_the_table_says_a_median_is_not_a_mean(tmp_path):
-    job = sweep.Job(model="gpt2", prompts=["a", "b"])
+    job = sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["a", "b"])
     rows = [_row(0, {"L0H1": 1.0}), _row(1, {"L0H1": 0.5})]
     text = sweep.render(job, rows, sweep.aggregate(rows, metric="heads"))
     assert "never a mean" in text
@@ -210,7 +210,7 @@ def test_the_table_says_a_median_is_not_a_mean(tmp_path):
 
 def test_a_sweep_is_findable_after_the_shell_closes(tmp_path, monkeypatch):
     monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
-    job = sweep.Job(model="gpt2", prompts=["a", "b"])
+    job = sweep.Job(model="Qwen/Qwen3-1.7B", prompts=["a", "b"])
     rows = [_row(0, {"L0H1": 1.0}), _row(1, {}, refused="nope")]
     sweep.save(job, rows, started_at="2026-08-13T00:00:00+00:00", sweep_id="abc123")
 
@@ -227,7 +227,7 @@ def test_a_sweep_is_findable_after_the_shell_closes(tmp_path, monkeypatch):
         ).fetchone()
     finally:
         db.close()
-    assert row == ("gpt2", "heads", 2, 1, 1)
+    assert row == ("Qwen/Qwen3-1.7B", "heads", 2, 1, 1)
 
 
 # ------------------------------------------------- against a real model
@@ -429,3 +429,33 @@ def test_a_token_sweep_needs_no_head_counts():
     job = sweep.Job(model="m", prompts=["a", "b"], metric="tokens")
     out = sweep.plan(job, Runtime())
     assert out["passes_total"] > 0
+
+
+def test_a_file_that_is_not_utf8_is_refused_rather_than_500ing(tmp_path):
+    """`except OSError` does not catch `UnicodeDecodeError` — it is a
+    `ValueError`.
+
+    So pointing `file` at a `.safetensors` answered 500 on `/api/diff/models`,
+    `/api/ground`, `/api/lens/tune` and `/api/features/evidence`, and printed a
+    raw traceback in the terminal, while a malformed `.jsonl` line one branch
+    down correctly answered 422. One wrong file type, two entirely different
+    answers, depending on which byte offended.
+
+    `datasets.py` already handles this with a test pinning it; `load_prompts`
+    was missed by that pass.
+    """
+    binary = tmp_path / "model.safetensors"
+    binary.write_bytes(b"\x00\x01\x02\xff\xfe" * 64)
+
+    with pytest.raises(BadRequest) as caught:
+        sweep.load_prompts(binary)
+
+    said = caught.value.sentence
+    assert "not UTF-8" in said
+    assert ".txt" in said and ".jsonl" in said, "name what it does read"
+
+
+def test_a_missing_file_still_says_it_is_missing(tmp_path):
+    """The arm that already worked, so the new one cannot swallow it."""
+    with pytest.raises(BadRequest, match="could not be read"):
+        sweep.load_prompts(tmp_path / "nope.txt")

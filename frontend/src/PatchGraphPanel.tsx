@@ -1,4 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import RunsOn from "./RunsOn";
 import {
   errorText,
   patchGraph,
@@ -304,6 +305,7 @@ export default function PatchGraphPanel({
         <h2 className="h-patch">PATCHING GRAPH — WHAT WROTE THE THING THAT WROTE IT</h2>
         <span className="rule" />
       </div>
+      <RunsOn epoch={epoch} />
       <p className="meta">
         The grid above says where the answer is carried; clicking one cell says
         what wrote into that site. This asks that second question again of the
@@ -362,9 +364,9 @@ export default function PatchGraphPanel({
             level for `depth` levels — because a panel that quotes a different
             number from the projection is a third answer to one question.
             NO DURATION: this said "a minute or so on a laptop", which was a
-            constant nobody measured, printed as guidance. It is 12s on gpt2
-            and 119s on Qwen3-1.7B for the same dials, and `estimate` refuses
-            to quote seconds for exactly that reason. */}
+            constant nobody measured, printed as guidance. The same dials take
+            119s on Qwen3-1.7B and a different time on every other model, and
+            `estimate` refuses to quote seconds for exactly that reason. */}
         <span className="meta">
           each level is one path trace per receiver — at most{" "}
           {depth * maxReceivers} traces, several hundred forward passes each
@@ -391,6 +393,35 @@ export default function PatchGraphPanel({
             <span>
               <b>{(num(g.n_scored) ?? 0).toLocaleString()}</b> senders scored
             </span>
+            {/* WHAT THE WALK LEFT OUT, beside what it did. The graph prunes
+                and stops at a frontier, and the strip said only how many were
+                SCORED — so a graph that pruned three quarters of the network
+                and stopped two hops early looked like the whole circuit. The
+                server has published every one of these all along. */}
+            {(num(g.n_pruned) ?? 0) > 0 && (
+              <span>
+                <b>{(num(g.n_pruned) ?? 0).toLocaleString()}</b> pruned
+              </span>
+            )}
+            {(num(g.n_weak) ?? 0) > 0 && (
+              <span>
+                <b>{(num(g.n_weak) ?? 0).toLocaleString()}</b> too weak
+              </span>
+            )}
+            {(num(g.n_untested) ?? 0) > 0 && (
+              <span title="Reached, and never measured — the walk stopped here.">
+                <b>{(num(g.n_untested) ?? 0).toLocaleString()}</b> untested
+              </span>
+            )}
+            {Array.isArray(g.frontier) && g.frontier.length > 0 && (
+              <span
+                title={`The walk stopped at these: ${g.frontier.slice(0, 24).join(", ")}${
+                  g.frontier.length > 24 ? ` … and ${g.frontier.length - 24} more` : ""
+                }`}
+              >
+                <b>{g.frontier.length}</b> at the frontier
+              </span>
+            )}
             <span className="spacer" />
             <span>
               {num(g.passes) ?? 0} passes · {num(g.seconds) ?? 0}s

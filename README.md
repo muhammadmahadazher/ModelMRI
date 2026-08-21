@@ -1,6 +1,7 @@
 <h1 align="center">ModelMRI</h1>
 
-<p align="center"><strong>Chrome DevTools for AI models and agents.</strong></p>
+<p align="center"><strong>Chrome DevTools for AI models and agents.</strong><br>
+See inside any local LLM, VLM or robot policy while it runs.</p>
 
 <p align="center">
   <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/v/modelmri?color=2563eb&label=pypi" alt="PyPI version"></a>
@@ -17,35 +18,69 @@
   <a href="https://modelmri.substack.com"><b>Build log</b></a>
 </p>
 
-Load any local model — LLM, VLM, or robot policy — and see inside it while it runs: what it attended to, which concepts fired, what happens when you turn one off, and exactly where your agent went wrong.
+```bash
+pip install modelmri && modelmri serve      # → http://localhost:5900
+```
 
-**ModelMRI is an open-source, local-first interpretability and debugging tool
-for transformer language models, vision-language models, robot policies and
-LLM agents.** It visualizes per-layer, per-head attention weights from a live
-forward pass, ranks attention heads by causal ablation scored with KL
-divergence, decomposes the residual stream with sparse autoencoders, steers
-generation along a feature direction, maps activations in any custom
-`nn.Module`, and records agent runs as an inspectable timeline. It runs on
-your own machine — no cloud, no account, no telemetry — and writes findings
-to a `.mri` file a colleague can open in a browser with nothing installed.
+<!-- Both themes. The GIFs used to be dark-only, which sold half the product
+     to anybody who works in light mode. GitHub swaps these on the reader's
+     own theme via the #gh-dark-mode-only / #gh-light-mode-only anchors. -->
+<p align="center">
+  <img src="docs/media/attention.gif#gh-dark-mode-only" alt="Hovering a token; attention arcs follow the cursor across the strip" width="820">
+  <img src="docs/media/light/attention.gif#gh-light-mode-only" alt="Hovering a token; attention arcs follow the cursor across the strip" width="820">
+</p>
+<p align="center"><em>Hover any token — arcs show what it attended to. Every layer, every head. Light and dark.</em></p>
 
-Python 3.10+, Windows / macOS / Linux, MIT licensed.
+---
+
+## Why
+
+|  | |
+|:--:|---|
+| 🔍 | **You cannot debug what you cannot see.** Your model gave a wrong answer. The logs show the prompt and the output, and nothing in between. |
+| 🖥️ | **It runs on your machine.** No cloud, no account, no telemetry, no API key. An 8 GB laptop GPU is the target, not a footnote. |
+| 🧾 | **Every number carries a receipt.** What was measured, on which model revision, with how many forward passes, and what it does *not* prove. |
+| 🚫 | **It refuses rather than guesses.** When a measurement would be misleading, you get a sentence explaining why — not a plausible number. |
+
+---
+
+## What it does
+
+| | | |
+|:--:|---|---|
+| 👁️ | **Attention** | Every layer, every head, from a live forward pass — with a causal ranking of which heads actually mattered, scored in KL nats. |
+| 🎯 | **Activation patching** | Where in the model the answer is decided, on a (layer × position) grid — each site checked against eight same-norm random draws. |
+| 🧠 | **Concepts** | SAE features, or contrastive steering vectors when no SAE exists. Find one, turn it off, watch the output change. |
+| 🔭 | **Lenses** | Logit lens and a tuned lens trained on *your* text, scored on held-out KL and shown side by side. |
+| 🤖 | **Robot policies** | What a VLA looked at, and — through a sidecar with its own environment — what it would *do*. |
+| 🕵️ | **Agent traces** | The step where your agent died, as a timeline you can click into the model's internals from. |
+| 🧩 | **Your own models** | Any `nn.Module`, TorchScript, or GGUF. Nothing hardcoded to one architecture. |
+| 🔒 | **Weight scanning** | Looks inside a checkpoint for anything that executes on load, *before* loading it. |
 
 <p align="center">
-  <img src="docs/media/attention.gif" alt="Hovering tokens; attention arcs follow the cursor across the strip" width="800">
+  <img src="docs/media/patching.gif#gh-dark-mode-only" alt="An activation patching grid filling in, site by site" width="820">
+  <img src="docs/media/light/patching.gif#gh-light-mode-only" alt="An activation patching grid filling in, site by site" width="820">
 </p>
+<p align="center"><em>Activation patching: which (layer, position) actually decides the answer.</em></p>
 
-<p align="center"><em>Hover any token — arcs show what it attended to. Every layer, every head.</em></p>
+---
+
+## 60 seconds
 
 ```bash
 pip install modelmri
-modelmri serve          # open http://localhost:5900
+modelmri serve                      # the UI, on localhost only
+modelmri models                     # what is already on this disk
+modelmri scan ./my_model            # is anything in there executable?
+modelmri open finding.mri           # someone sent you a result
 ```
 
-<p align="center">
-  <img src="docs/media/picker.gif" alt="The model picker listing models already on disk" width="800">
-</p>
+Python 3.10+ · Windows, macOS, Linux · MIT.
 
+<p align="center">
+  <img src="docs/media/picker.gif#gh-dark-mode-only" alt="The model picker listing models already on disk" width="820">
+  <img src="docs/media/light/hero.png#gh-light-mode-only" alt="ModelMRI in light mode, with an accelerator and model loaded" width="820">
+</p>
 <p align="center"><em>It finds the models you already have — HF cache, plain folders, GGUF — before asking you to type anything.</em></p>
 
 ---
@@ -56,7 +91,7 @@ modelmri serve          # open http://localhost:5900
 
 Type a prompt, watch it stream, then hover any token — arcs show which earlier tokens it looked at, scaled by attention weight, for any layer and head.
 
-> On GPT-2, the generated token `" Paris"` attends back to `" capital"` and `" France"`. The information was always there. Nobody was looking.
+> The generated token `" Paris"` attends back to `" capital"` and `" France"`. The information was always there. Nobody was looking.
 
 ### 2. Ask which heads actually mattered
 
@@ -77,35 +112,32 @@ One head in the first layer carries most of it: removing L0 H3 alone takes
 `" Paris"` from 0.539 to 0.029 and the model answers something else. The next
 head down moves it by a twentieth as much.
 
-The setup line is not decoration. Measured on gpt2, its own top three heads
-score 0.784 / 0.543 / 0.415 in fp32 and 0.825 / 0.559 / 0.469 over a 261-token
-generation — the same heads, the same model, three different sets of numbers. A
-KL depends on the model, the prompt, the dtype and the sequence, so a figure
-quoted without them cannot be checked by anyone.
+The setup line is not decoration. A KL depends on the model, the prompt, the
+dtype and the sequence — the same heads on one model give different numbers in
+fp32 and over a long generation — so a figure quoted without them cannot be
+checked by anyone.
 
 **Three baselines, and how much they disagree is itself a property of the
 model.** Zeroing a head is one choice; replacing it with its own mean is
 another; replacing it with what it really computes on a different sentence
 (`resample`, eight draws) is the only one that keeps the model on its own
 distribution. On `Qwen3-1.7B` layer 0 they broadly agree — Spearman 0.81 to
-0.91, and the top five differ by at most one head. On `gpt2` layer 0 they do
-not: Spearman 0.34 to 0.47, and the top five disagree on two or three. The
-panel reports that number so the choice of baseline is visible rather than
+0.91, and the top five differ by at most one head. On other architectures they
+disagree far more. The panel reports that number so the choice of baseline is visible rather than
 silently deciding the ranking.
 
 Resampling also shows its own spread, because one donor is a coin flip. Head 3
 on `Qwen3-1.7B` scored between **3.016 and 5.904** across the eight draws
-around a median of 4.540, and head 10 on `gpt2` ranged 0.027 to 0.335 — a
-twelvefold spread. A single draw could have reported any number in those
-ranges as the head's importance.
+around a median of 4.540 — a spread wide enough that a single draw could
+have reported almost any number in it as the head's importance.
 
-A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — gpt2 is 146 passes, Qwen3-1.7B is 450 (28 layers x 16 heads). What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
+A ranking costs `n_heads + 2` forward passes; the whole model costs `n_layers × n_heads + 2`. That is the part that is portable — Qwen3-1.7B is 450 (28 layers x 16 heads). What a pass costs on *your* machine is not: measured on one RTX 4060 across sessions it moved between 12 and 71 ms for the same model, so the panel measures a layer on your machine and extrapolates from that rather than quoting a number from mine. One layer by default; the whole model only when told, with the estimate shown first.
 
 Then ask **what changes?** on any ranked head and the panel subtracts the two runs — arcs in one colour where the model attends *more* without that head, another where it attends *less*. It opens at layer L+1, because removing a head cannot change its own layer's attention (that layer's input is unchanged), and a zero result says so rather than showing you an empty canvas.
 
 Both sides are forward passes over the **same token sequence**, never two generations — sampling diverges, and chat templates insert 0, 8 or 29 leading tokens depending on the model, so subtracting two generations would align token 5 of one against token 5 of a different sentence.
 
-It reports what it measured and nothing more. These are **not** each head's share of the prediction — on gpt2 layer 0 the twelve per-head scores sum to 1.995 while ablating the whole layer gives 0.208 — and the ranking depends on what a removed head is replaced with, so the baseline is named on screen and both are offered. `head_dim` is read from the model rather than computed as `hidden_size // n_heads`, which is wrong by 2× on Qwen3 and would rank half-heads confidently.
+It reports what it measured and nothing more. These are **not** each head's share of the prediction — the per-head scores do not sum to the whole layer's ablation, in either direction — and the ranking depends on what a removed head is replaced with, so the baseline is named on screen and both are offered. `head_dim` is read from the model rather than computed as `hidden_size // n_heads`, which is wrong by 2× on Qwen3 and would rank half-heads confidently.
 
 ### 3. Ask where in the model the answer is decided
 
@@ -126,7 +158,6 @@ Three grids, because *where* and *through what* are different questions — and 
 
 | model | residual | attention | MLP |
 |---|---|---|---|
-| `gpt2` | +0.844 · L11 · `of` | +0.232 · L9 · `of` | **+0.365 · L0 · `um`** |
 | `Qwen2.5-0.5B-Instruct` | +0.999 · L23 · `of` | +0.478 · L21 · `of` | **+0.721 · L0 · `os`** |
 | `gemma-3-270m-it` | +1.010 · L17 · `of` | +0.736 · L12 · `of` | **+0.483 · L3 · `osseum`** |
 | `Qwen3-1.7B` | +0.967 · L3 · `el` | +0.651 · L20 · `of` | **+0.444 · L22 · `of`** |
@@ -249,26 +280,26 @@ That writes **one 54 KB file** holding the tokens, the attention, the generation
 Locally it's the same page, served from the package by the standard library:
 
 ```bash
-modelmri open gpt2.mri     # ~0.3s — no torch, no model, no GPU
+modelmri open 0000.mri     # ~0.3s — no torch, no model, no GPU
 ```
 
 If you were sent several and want to know which is which, `inspect` prints one without opening anything:
 
 ```bash
-modelmri inspect gpt2.mri
+modelmri inspect 0000.mri
 ```
 
 ```
-gpt2.mri — 41.8 KB
-  model         gpt2
-  size          124M parameters
-  ran on        cuda · float32
-  recorded      2026-08-11T17:55:27+00:00 by ModelMRI 0.9.0
-  note          the head that carries the city
+0000.mri — 83.8 KB
+  model         Qwen/Qwen3-1.7B
+  size          1,721M parameters
+  ran on        cuda:0 · bfloat16
+  recorded      2026-08-18T08:38:51+00:00 by ModelMRI 0.11.0
+  note          sweep row 0: The capital of France is
 
-  tokens        11 (10 prompt)
-  shape         12 layers x 12 heads
-  attention     144 maps
+  tokens        21 (13 prompt)
+  shape         28 layers x 16 heads
+  attention     448 maps
                 every layer and head
   patching      attn, mlp, resid
     clean       The Eiffel Tower is located in the city of
@@ -319,19 +350,19 @@ modelmri serve         # look inside one of them
 **Sending someone a finding**
 
 ```bash
-modelmri inspect gpt2.mri     # what is in this file?
-modelmri open gpt2.mri        # show me
-modelmri verify gpt2.mri      # do these numbers come back on my machine?
+modelmri inspect 0000.mri     # what is in this file?
+modelmri open 0000.mri        # show me
+modelmri verify 0000.mri      # do these numbers come back on my machine?
 ```
 
 **Checking a finding instead of trusting it**
 
 ```bash
-modelmri verify gpt2.mri
+modelmri verify 0000.mri
 ```
 
 ```
-gpt2.mri — measured on gpt2
+0000.mri — measured on Qwen/Qwen3-1.7B
   file: bfloat16 on cuda:0    here: bfloat16 on cuda:0
   commit: 607a30d783df  (same weights)
 
@@ -365,18 +396,19 @@ never hand you the re-run.
 **One prompt is an anecdote**
 
 ```bash
-modelmri sweep prompts.txt --model gpt2 --layer 0
+modelmri sweep prompts.txt --model Qwen/Qwen3-1.7B --layer 0
 ```
 
 ```
-heads over 5 prompts on gpt2 · baseline zero
+heads over 5 prompts on Qwen/Qwen3-1.7B · baseline zero
   5 measured · 0 could not be measured
 
   head          median       IQR               range    n  top5
-  L0H7         1.06260   0.20091  0.38243–2.03443      5  5/5 (100%)
-  L0H10        0.55359   0.15838  0.53501–0.76216      5  5/5 (100%)
-  L0H9         0.30114   0.07043  0.17363–0.41155      5  5/5 (100%)
-  L0H2         0.17921   0.09322  0.03475–0.37399      5  3/5 (60%)
+  L0H3         0.00492   0.00578  0.00198–0.01077      5  5/5 (100%)
+  L0H12        0.00006   0.00004  0.00005–0.00013      5  5/5 (100%)
+  L0H7         0.00004   0.00001  0.00004–0.00006      5  5/5 (100%)
+  L0H2         0.00001   0.00000  0.00001–0.00002      5  5/5 (100%)
+  L0H1         0.00001   0.00000  0.00001–0.00002      5  4/5 (80%)
   L0H0         0.05418   0.04382  0.03673–1.71640      5  3/5 (60%)
 ```
 
@@ -541,6 +573,13 @@ with no notebook in between.
 | [Neuronpedia](https://www.neuronpedia.org/) | hosted browser for SAE features | Neuronpedia has far richer feature data for the models it covers; ModelMRI runs an SAE against *your* prompt, locally, and steers with it |
 | [SAELens](https://github.com/jbloomAus/SAELens) | training and analysing sparse autoencoders | ModelMRI consumes SAEs, it does not train them |
 | [Langfuse](https://langfuse.com/) · [Phoenix](https://github.com/Arize-ai/phoenix) · [LangSmith](https://www.langsmith.com/) | LLM application observability — traces, prompts, cost | These are production observability platforms and much stronger at it. ModelMRI records a run so you can open it next to the model's internals |
+| [promptfoo ModelAudit](https://www.promptfoo.dev/) | scans model files for malicious payloads | promptfoo scans a file you point it at; `modelmri scan` runs on the load path and **refuses** to load one |
+| [Rerun](https://rerun.io/) · [Foxglove](https://foxglove.dev/) | robotics data viewers | Far better timelines and 3-D. Neither can tell you what the policy *attended to*, or what it would do on a frame you choose |
+
+**The one thing nothing else does:** hold the recorder and the weights in one
+process. Every observability platform stops at the API boundary; every
+interpretability library has no agent traces. Joining a failing agent step to
+the heads that moved the token needs both in memory at once.
 
 Use TransformerLens if you are doing research and want precision. Use Langfuse
 or Phoenix if you are running an agent in production and need dashboards,
@@ -622,6 +661,51 @@ No, and the package says so — it is classified alpha. It is a debugging and
 research tool, not infrastructure. The measurements it reports are tested, but
 the API surface still moves between minor versions; see the
 [changelog](CHANGELOG.md).
+
+### Can it check a downloaded model for malicious code?
+
+Yes. `modelmri scan <path>` reads the pickle opcode stream **without
+unpickling it** and reports anything that executes on load — `os.system`,
+`eval`, decode-then-execute chains, embedded executables, zip bombs. It exits
+non-zero on a finding, so it works as a CI gate.
+
+It runs automatically on the load path, so a dangerous file is refused rather
+than reported after the fact. Three verdicts: `safe`, `dangerous`, and
+`unscanned` — a format it could not read is never called clean.
+
+A `.bin`, `.pt`, `.pth` or `.ckpt` is a pickle, and unpickling is not parsing:
+the payload runs before a single tensor is read. `safetensors` has no
+mechanism to execute anything, and ModelMRI tells you when a repository
+publishes one.
+
+### Can it tell me what a robot policy would *do*, not just what it looked at?
+
+Yes, through a sidecar that holds the action expert in its own process and
+virtual environment — because lerobot pins torch and numpy hard enough that
+installing it beside ModelMRI breaks ModelMRI.
+
+`modelmri policy install` builds it; `modelmri policy start` runs it. Then you
+get predicted-versus-recorded actions across an episode, an instruction-swap
+test measured against the policy's own sampling variance, and input-stream
+knockout.
+
+It refuses to overlay a policy's actions on a dataset's recorded ones when the
+two are in different units — which is the common case, and the plausible-wrong
+chart everything else draws.
+
+### Why does it refuse to show me things?
+
+Because a measurement that would be misleading is worse than no measurement.
+Some real examples it will refuse:
+
+- an SAE whose activation convention does not reconstruct your model
+- a patching pair whose two prompts predict the same token, making the
+  denominator zero
+- an instruction-swap test on a deterministic policy, where the reference
+  spread is exactly zero
+- two action curves whose units were never published
+
+Every refusal is a sentence naming what to change.
 
 ### How do I cite it?
 

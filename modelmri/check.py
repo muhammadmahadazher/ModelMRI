@@ -30,6 +30,7 @@ structurally identical, and this file cannot tell them apart either.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -207,8 +208,20 @@ def run(
                         "no name failed twice in a row inside "
                         f"{found.retry_window_ms} ms"
                         if not storms
+                        # NAMED THREE, FOUND N. `no-errors` thirty lines
+                        # above lists five and appends " …" when there are
+                        # more; these two listed three and said nothing, so a
+                        # build with thirty retry storms reported three and
+                        # read as though that was all of them. The count is
+                        # what a reader acts on — three storms is a flaky
+                        # dependency, thirty is a broken loop.
                         else "; ".join(
                             f"{s.label} failed {s.count}x in a row" for s in storms[:3]
+                        )
+                        + (
+                            f" … and {len(storms) - 3} more, {len(storms)} in total"
+                            if len(storms) > 3
+                            else ""
                         )
                     ),
                     step_ids=[sid for s in storms for sid in s.step_ids],
@@ -243,10 +256,17 @@ def run(
                         detail=(
                             "no sequence repeated back to back"
                             if not cycles
+                            # Same cut, same silence, same fix as the
+                            # retry storms above.
                             else "; ".join(
                                 f"{c.cycle_length} steps repeated {c.count}x "
                                 f"({c.label})"
                                 for c in cycles[:3]
+                            )
+                            + (
+                                f" … and {len(cycles) - 3} more, {len(cycles)} in total"
+                                if len(cycles) > 3
+                                else ""
                             )
                         ),
                         step_ids=[sid for c in cycles for sid in c.step_ids],
@@ -276,20 +296,88 @@ def run(
         # OPT-IN and flaky by nature; the detail says so on every run, not
         # only in --help, because the person reading a red CI log is not the
         # person who added the flag.
-        timed = [
-            s.get("duration_ms")
-            for s in steps
-            if isinstance(s, dict) and isinstance(s.get("duration_ms"), int)
-        ]
+        # A MERGE GATE THAT COULD NOT GO RED. This kept only `isinstance(_,
+        # int)`, so a step recorded as `1500.0` — which is what `(t1 - t0) *
+        # 1000` produces in any recorder that does not round, and what
+        # `modelmri-record` stores when the caller passes `duration_ms`
+        # directly — was silently discarded. Seven such steps totalling 10,500
+        # ms summed to 0, `0 <= 5000` passed, and the log read "0 ms across 0
+        # timed step(s)" about a run that should have failed the build.
+        #
+        # The same document imported into the store is coerced by
+        # `traces._ms` and exported by `otel._span_times` as 1500 ms, so three
+        # readers agreed and the gate disagreed with all of them.
+        #
+        # `no-loops` forty lines above already states the policy for this
+        # situation — "a green check from a scan that did not run is worse
+        # than a red one" — and this did the reverse.
+        timed: list[int] = []
+        unreadable = 0
+        missing = 0
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            value = step.get("duration_ms")
+            if value is None:
+                missing += 1
+                continue
+            # `isinstance(True, int)` is True, so the bool guard comes first —
+            # otherwise `"duration_ms": true` is admitted as a 1 ms step.
+            # `session.py` already writes this guard for the same field.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                unreadable += 1
+                continue
+            # `math.isfinite`, which is false for NaN and for both
+            # infinities — one call for what this actually means. It was
+            # `value != value or value in (inf, -inf)`: the first half is the
+            # classic NaN idiom, correct and obscure enough that CodeQL reads
+            # it as a comparison of identical values, and the second half was a
+            # second check for what the first was already reaching toward.
+            # `fmt.measured` was written the same way and corrected the same
+            # way; this reintroduced it three weeks later, which is the
+            # argument for the rule living in one place rather than in the
+            # habits of whoever is typing.
+            if not math.isfinite(value):
+                unreadable += 1
+                continue
+            # AS A FLOAT. `int(value)` truncated toward zero, which is
+            # fine for 1500.0 and ruinous in aggregate: 5000 steps of 0.9 ms
+            # each is 4.5 seconds of real work, and every one of them became
+            # 0, so the total was 0 and the gate passed a 100 ms limit. A
+            # sub-millisecond step is a real step — an in-process tool call
+            # routinely is — and this assertion exists to catch the run that
+            # is slower than it should be.
+            timed.append(float(value))
+        # Summed at full precision and rounded ONCE, for display. The
+        # comparison below uses the true total.
         total = sum(timed)
-        untimed = len(steps) - len(timed)
+        untimed = missing
         out.assertions.append(
             Assertion(
                 name="max-ms",
-                ok=total <= max_ms,
+                # A duration that is PRESENT and unreadable fails the gate. It
+                # is not the same as a step that recorded none: something wrote
+                # a number-shaped field this cannot read, and passing a build
+                # on the strength of measurements that were thrown away is the
+                # failure this whole assertion exists to prevent.
+                ok=total <= max_ms and unreadable == 0,
                 detail=(
-                    f"{total} ms across {len(timed)} timed step(s), limit "
-                    f"{max_ms}"
+                    # A decimal place under ten milliseconds. Rounding to a
+                    # whole number rendered 0.6 and 1.2 identically as "1 ms"
+                    # against a limit of 1 — one passing, one failing, the
+                    # same words for both. Above ten the fraction is noise and
+                    # the thousands separator is what a reader needs.
+                    f"{total:,.1f} ms" if total < 10 else f"{round(total):,} ms"
+                )
+                + (
+                    f" across {len(timed)} timed step(s), limit {max_ms:,}"
+                    + (
+                        f". {unreadable} step(s) carry a duration this cannot "
+                        f"read and are NOT in that total, so the total is a "
+                        f"floor and this assertion fails on that alone"
+                        if unreadable
+                        else ""
+                    )
                     + (
                         f" ({untimed} step(s) recorded no duration and are not "
                         f"in this total)"

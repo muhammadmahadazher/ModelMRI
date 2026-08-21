@@ -9,8 +9,8 @@ is representing — and steering lets you change it and watch the output move.
 
 ## Sparse autoencoders, briefly
 
-A model's residual stream is dense: 768 numbers per token in GPT-2, each of
-which participates in many unrelated things at once. That superposition is why
+A model's residual stream is dense: hundreds to thousands of numbers per token,
+each of which participates in many unrelated things at once. That superposition is why
 you can't read a neuron and learn anything.
 
 A sparse autoencoder is trained to re-express that stream in a much wider basis
@@ -18,14 +18,24 @@ A sparse autoencoder is trained to re-express that stream in a much wider basis
 any given token. Those features are far more likely to correspond to something
 you can name.
 
-ModelMRI loads SAELens-format SAEs. The default is
-`jbloom/GPT2-Small-SAEs-Reformatted` at `blocks.8.hook_resid_pre`.
+ModelMRI reads two SAE layouts: SAELens (`cfg.json` beside
+`sae_weights.safetensors`) and Gemma Scope (one `params.npz` per layer,
+dictionary width and average L0).
 
-!!! warning "GPT-2 only, for now"
-    The SAE must match the model it was trained on. Loading one against a
-    different model is refused with an explicit error rather than producing
-    numbers that look fine and mean nothing — the `d_in` has to equal the
-    model's `hidden_size`, and the layer has to exist.
+There is no default repo. Loading with none named asks
+`modelmri/sae_registry.py` which release belongs to the model you have
+resident — `google/gemma-2-2b` resolves to `google/gemma-scope-2b-pt-res`,
+verified end to end on this project's own hardware. Gemma Scope publishes many
+releases per layer, so a width and sparsity you did not name are CHOSEN by
+rule and the answer says which rule, in `release.chosen_by`.
+
+!!! warning "Most models have no SAE at all"
+    They are trained per model, and public ones exist for a handful. A model
+    with no registered release is refused BY NAME rather than being handed
+    somebody else's SAE — the `d_in` has to equal the model's `hidden_size`
+    and the layer has to exist, so a mismatched one produces numbers that look
+    fine and mean nothing. The logit lens works on every model and needs
+    nothing extra.
 
 ## Reading features
 

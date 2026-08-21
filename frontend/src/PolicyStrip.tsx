@@ -110,6 +110,20 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
                   state {policy.state_width}
                 </>
               )}
+              {/* THE ACTION WIDTH, beside the state width it was already
+                  showing. It is the number a comparison against a dataset
+                  refuses on — "the policy emits 6 action dimensions and this
+                  dataset recorded 2" — so a reader who can see it before
+                  clicking knows the pairing will not work, and one who cannot
+                  finds out after the run is refused. The server has published
+                  it all along. */}
+              {policy.action_width !== null && policy.action_width !== undefined && (
+                <>
+                  <span className="policy-sep">·</span>
+                  {policy.action_width} action dim
+                  {policy.action_width === 1 ? "" : "s"}
+                </>
+              )}
               {policy.chunk_size !== null && (
                 <>
                   <span className="policy-sep">·</span>
@@ -128,7 +142,13 @@ export default function PolicyStrip({ vla }: { vla: VLAStatus | null }) {
             <>
               a second process with its own environment — about {gb.toFixed(0)} GB,
               because lerobot pins torch hard enough that installing it beside
-              ModelMRI breaks ModelMRI. <code>modelmri policy install</code>
+              ModelMRI breaks ModelMRI.{" "}
+              {/* The SERVER's sentence, which it has been sending as
+                  `install_hint` and nobody read. The command was re-typed here
+                  instead, so renaming it would have left this cell confidently
+                  prescribing a command that no longer exists — and the copy on
+                  screen would still have looked right. */}
+              {policy.install_hint ?? <code>modelmri policy install</code>}
             </>
           ) : policy.reachable ? (
             // Up, with no policy in it. Telling somebody to START a sidecar

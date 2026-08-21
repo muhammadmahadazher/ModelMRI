@@ -49,6 +49,13 @@ UNCHECKED = "unchecked"
 # audit reads, and a capped scan is a SAMPLE -- which the output says.
 MAX_CONTRADICTION_FRAMES = 2_000
 
+# How many contradictory pairs the search will find before it stops. The scan
+# is quadratic in the frame count above — 2,000 frames is two million pairs —
+# so it stops once it has enough to show rather than pricing every audit at
+# that. REPORTED as `pairs_complete`, because the stopping point is not the
+# number of pairs that exist and was being published as though it were.
+MAX_PAIRS_KEPT = 40
+
 # How close two states have to be to count as "the same situation", and how
 # far apart their actions have to be to count as disagreeing. Both are
 # fractions of the data's own spread rather than absolute numbers: a state
@@ -735,6 +742,11 @@ def check_contradictions(
     near = epsilon * s_scale
     far = delta * a_scale
     pairs = []
+    # Whether the search STOPPED rather than finished. The pair scan is
+    # quadratic in `max_frames` (2,000 frames is two million pairs), so it
+    # stops once it has enough to show — and that stopping point was being
+    # published as the count of what exists.
+    stopped_early = False
     for a_i in range(len(idx)):
         for b_i in range(a_i + 1, len(idx)):
             i, j = idx[a_i], idx[b_i]
@@ -751,9 +763,10 @@ def check_contradictions(
                         "action_distance": round(da, 6),
                     }
                 )
-                if len(pairs) >= 40:
+                if len(pairs) >= MAX_PAIRS_KEPT:
+                    stopped_early = True
                     break
-        if len(pairs) >= 40:
+        if stopped_early:
             break
 
     measured = {
@@ -766,7 +779,18 @@ def check_contradictions(
         "epsilon_fraction": epsilon,
         "delta_fraction": delta,
         "pairs": pairs[:12],
+        # `n_pairs` is what was FOUND, and `pairs_complete` says whether that
+        # is all there is. The search stops at `MAX_PAIRS_KEPT` because it is
+        # quadratic, and this published the stopping point as the total:
+        # measured against this repo's own fixture, a set with 400 qualifying
+        # pairs reported `n_pairs: 40, truncated: False, "Scanned all 80
+        # frames"` — a tenfold under-report presented as a complete count,
+        # with the one field that could have contradicted it saying the scan
+        # was complete. It was: the FRAME scan finished, the PAIR search did
+        # not, and those are two different truncations that needed two fields.
         "n_pairs": len(pairs),
+        "pairs_complete": not stopped_early,
+        "pairs_cap": MAX_PAIRS_KEPT,
     }
     tail = (
         f" Scanned {len(idx)} of {n} frames at stride {step}, so this is a "
@@ -782,10 +806,15 @@ def check_contradictions(
             f"than {far:.4g} apart in action." + tail,
             measured,
         )
+    how_many = (
+        f"{len(pairs)} pair(s)"
+        if not stopped_early
+        else f"at least {len(pairs)} pair(s) — the search stopped there"
+    )
     return Check(
         "contradictory demonstrations",
         OK,
-        f"{len(pairs)} pair(s) of frames are within {near:.4g} in state and "
+        f"{how_many} of frames are within {near:.4g} in state and "
         f"more than {far:.4g} apart in action. THESE ARE PAIRS TO INSPECT, "
         f"NOT DEFECTS: two similar states with different actions is usually "
         f"legitimate multimodality, and a different epsilon gives a different "

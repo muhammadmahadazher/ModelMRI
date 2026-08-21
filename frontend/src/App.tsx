@@ -5,27 +5,39 @@ import {
   errorText,
   getAccelerator,
   getSession,
+  HeldModel,
   getSessionState,
   ModelStatus,
   SessionState,
   unloadModel,
 } from "./api";
 import AgentsPanel from "./AgentsPanel";
+import { invalidateSession, useSessionVersion } from "./RunsOn";
+import CategoryBar from "./CategoryBar";
 import AsciiField from "./AsciiField";
 import CustomPanel from "./CustomPanel";
 import { DEMO } from "./demo";
 import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
+import ImagePanel from "./ImagePanel";
 import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
 import StoragePanel from "./StoragePanel";
+import SweepsPanel from "./SweepsPanel";
+import PalettePicker from "./PalettePicker";
 import ThemeToggle from "./ThemeToggle";
 import { VIEWER } from "./viewer";
 import VLAPanel from "./VLAPanel";
 
 export default function App() {
   const [model, setModel] = useState<ModelStatus | null>(null);
+  // The OTHER two things this process can be holding. Same request as
+  // `model`, so the header cannot show a state no single answer produced.
+  const [held_, setHeld] = useState<{
+    image?: HeldModel;
+    vla?: HeldModel;
+  }>({});
   const [version, setVersion] = useState<string | null>(null);
   const [accel, setAccel] = useState<Accelerator | null>(null);
   // Sessions live on the server, so a reload must find one that is still open
@@ -65,9 +77,11 @@ export default function App() {
     try {
       const s = await getSession();
       setModel(s.model);
+      setHeld({ image: s.image, vla: s.vla });
       setVersion(s.version);
     } catch {
       setModel(null);
+      setHeld({});
     }
     // The server can close a shared session on its own — loading a model or
     // committing a generation both do — so re-read it rather than trusting
@@ -79,9 +93,13 @@ export default function App() {
     }
   }, []);
 
+  // `heldVersion` as well as `refresh`. The image and robot panels load
+  // their own resources, and until they announced it the top bar kept
+  // whatever it last fetched — "no model loaded" over a resident pipeline.
+  const heldVersion = useSessionVersion();
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, heldVersion]);
 
   async function onUnload() {
     setBusyTop("unload");
@@ -89,6 +107,10 @@ export default function App() {
     try {
       const out = await unloadModel();
       await refresh();
+      // The remount below lands on epoch 0, and the session cache is
+      // module-level so it survives one. Without this the panels advertise
+      // "measures <model>" with live buttons over memory that was just freed.
+      invalidateSession();
       setResetKey((k) => k + 1);
       // Report what came back, not what should have. An allocator that keeps
       // its arena is a real outcome and rounding it away would be a small lie
@@ -122,10 +144,24 @@ export default function App() {
     }
   }
 
+  // EVERYTHING THE PROCESS IS HOLDING, not just the text model. A 3.3 GB
+  // diffusion pipeline could be resident with every control in its panel live
+  // while this said "no model loaded" — the header and the panel answering
+  // one question two ways.
+  //
+  // Listed rather than picked between: the server will hold a text model and
+  // a pipeline together when asked twice, and naming only one of them would
+  // be the same omission in a smaller place.
+  const held = [
+    model?.loaded ? `${model.hf_id} · ${model.device}` : "",
+    held_.image?.loaded ? `${held_.image.repo} · ${held_.image.device}` : "",
+    held_.vla?.loaded ? `${held_.vla.repo} · ${held_.vla.device}` : "",
+  ].filter(Boolean);
+
   const pill = session.open
     ? `replay · ${session.meta?.model ?? "shared session"}`
-    : model?.loaded
-      ? `${model.hf_id} · ${model.device}`
+    : held.length
+      ? held.join("  +  ")
       : "no model loaded";
 
   // A model built from a GGUF is the QUANTISED weights, dequantised — so every
@@ -150,6 +186,12 @@ export default function App() {
         </span>
         <span className="spacer" />
         <ThemeToggle />
+        {/* Beside the mode toggle, not inside it, and now two controls rather
+            than one: hues, light/dark and contrast level are three orthogonal
+            axes. See PalettePicker for why folding them into one list made
+            "Amber" quietly mean "Amber, dark, standard" — and made high
+            contrast something you could only have INSTEAD of a palette. */}
+        <PalettePicker />
         {accel && (
           <span
             className={`pill accel ${accel.kind !== "cpu" && accel.kind !== "recorded" ? "gpu" : ""}`}
@@ -267,6 +309,11 @@ export default function App() {
         </div>
       </div>
 
+      {/* Under the .mri bar, above everything it filters. It reads the page
+          rather than carrying a list, so it is correct by construction — see
+          the file for why that matters more here than it looks. */}
+      <CategoryBar />
+
       <SessionBar session={session} onChange={setSession} />
 
       {/* Renders only when the open session carries one, which is why it sits
@@ -302,6 +349,32 @@ export default function App() {
               its own two models and its own prompts, so it sits beside the
               custom-model panel rather than inside the playground. */}
           <ModelDiffPanel epoch={resetKey} />
+          {/* Every sweep saved on this machine. Sited beside the model-diff
+              panel because it needs nothing loaded and is about runs rather
+              than about the resident model: `modelmri sweep` runs headless in
+              a terminal and saves whatever it got, and this is the only way to
+              see that a run exists at all.
+
+              `!DEMO` at the mount rather than inside the component, so rollup
+              folds the constant and drops the whole subtree from the published
+              bundle. The hosted demo is a static recording with no database
+              behind it — a panel whose every answer would be "there are no
+              sweeps here" teaches a visitor that the feature is broken. */}
+          {!DEMO && <SweepsPanel />}
+          {/* Text → Image. Its own handle, its own lifecycle, and nothing
+              above it loaded: a diffusion pipeline is several models and the
+              server refuses to hold one beside a resident text model without
+              being asked twice, so this panel is inert until you name a
+              checkpoint. Sited beside the robot panel because both are a
+              second modality rather than another view of the language model.
+              Inside `!VIEWER` for the same reason VLAPanel is — a shared
+              `.mri` has no machine to run a pipeline on. */}
+          {/* Two sections, one implementation. A classifier is not a
+              text-to-image model, and the category bar was offering
+              "Text → Image" for a segmentation checkpoint. Each renders its
+              controls only when the resident model is one of its families. */}
+          <ImagePanel kind="diffusion" />
+          <ImagePanel kind="vision" />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to
@@ -317,6 +390,21 @@ export default function App() {
           />
         </>
       )}
+
+      {/* AND IN THE VIEWER, which is the whole reason a `.mri` carries a run.
+          `ShareRun` promises the recipient "sees the failing tool call, clicks
+          it, and lands in the attention view of the generation that produced
+          the bad argument, on a machine with no GPU" — and until this the
+          viewer mounted no agents panel at all, so a bundle built around a
+          failing step opened with the run invisible.
+
+          The panel is the same component. What it cannot do here it does not
+          offer: the store searches, the imports, the rubric, the judge and the
+          two clear buttons all need a store, a disk or weights, and are gated
+          out rather than mounted and refusing. `runs` is 0 because there is no
+          playground here to record one, and adopting is impossible for a
+          reason the step inspector states. */}
+      {VIEWER && <AgentsPanel runs={0} />}
       <footer>
         {/* Read from /api/session. It was the literal "MRI-0.3" and had been
             wrong since 0.4.0 — a version string nobody remembers to bump is a

@@ -35,7 +35,7 @@ import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 
-from . import paths
+from . import fmt, paths
 from .errors import BadRequest
 
 # Cap on frames per sweep. Every frame is at least one tower pass and the
@@ -43,6 +43,12 @@ from .errors import BadRequest
 # coffee break or an afternoon. REFUSED past it with the number, never
 # truncated: a ranking silently missing its tail looks exactly like a ranking.
 MAX_FRAMES = 5_000
+
+# How many undecodable frames are LISTED. The full count travels beside them as
+# `Sweep.n_failed` — the list is a sample to look at, not the measurement, and
+# reporting its length as the measurement is how a 600-frame failure was
+# published as twenty.
+MAX_FAILED_LISTED = 20
 
 # Default steps. Episodes and frames stride independently: you usually want
 # every episode and a few frames of each, not the reverse.
@@ -95,7 +101,14 @@ class Sweep:
     n_episodes: int = 0
     frames_total: int = 0
     seconds: float = 0.0
+    #: A SAMPLE of what could not be measured, capped at `MAX_FAILED_LISTED`.
     failed: list[dict] = field(default_factory=list)
+    #: How many failed in total. Separate from `len(failed)` because the list
+    #: is truncated and the sentence below was counting the truncated list:
+    #: measured with PyAV absent over six episodes of a hundred frames, every
+    #: one of the 600 failed and the report said "20 frame(s) could not be
+    #: measured". The true figure was not derivable from the payload at all.
+    n_failed: int = 0
 
     def to_dict(self) -> dict:
         out = asdict(self)
@@ -125,16 +138,22 @@ class Sweep:
             top = self.rows[0]
             parts.append(
                 f"The highest is episode {top.episode} at timestep "
-                f"{top.timestep} ({top.value:.4f}). That is a ranking by "
+                f"{top.timestep} ({fmt.measured(top.value, 4)}). That is a ranking by "
                 f"{self.metric}, not a diagnosis: nothing here has verified "
                 f"what happens in that frame, and no failure mode has been "
                 f"named for it."
             )
-        if self.failed:
+        if self.n_failed:
+            listed = (
+                ""
+                if self.n_failed <= len(self.failed)
+                else f" ({len(self.failed)} of them listed below)"
+            )
             parts.append(
-                f"{len(self.failed)} frame(s) could not be measured and are "
+                f"{self.n_failed} frame(s) could not be measured and are "
                 f"ABSENT from the ranking rather than scored zero — a frame "
-                f"that failed to decode is not a frame with a low score."
+                f"that failed to decode is not a frame with a low score"
+                f"{listed}."
             )
         return " ".join(parts)
 
@@ -404,7 +423,8 @@ def run(
         n_episodes=len(seen_episodes),
         frames_total=total,
         seconds=round(time.perf_counter() - started, 2),
-        failed=failed[:20],
+        failed=failed[:MAX_FAILED_LISTED],
+        n_failed=len(failed),
     )
 
 
@@ -508,8 +528,14 @@ def heat_strip(sweep: Sweep) -> dict:
         "metric": sweep.metric,
         "unit": sweep.unit,
         "frame_stride": sweep.frame_stride,
-        "low": min(values) if values else 0.0,
-        "high": max(values) if values else 0.0,
+        # `None`, not 0.0. These are the measured RANGE of the metric, and
+        # with no rows nothing measured anything — "0.0 to 0.0" reads as a
+        # flat result in nats over the patch grid, which is a finding, when
+        # the truth is that every sampled frame failed to decode. MEASURED
+        # with `av` absent: rows [], n_frames 0, six entries in `failed`, and
+        # a strip claiming a range.
+        "low": min(values) if values else None,
+        "high": max(values) if values else None,
         # Named so the panel cannot pad. See the docstring.
         "ragged": len({len(r["values"]) for r in strip}) > 1,
     }

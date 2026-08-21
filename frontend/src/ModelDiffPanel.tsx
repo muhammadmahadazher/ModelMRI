@@ -1,4 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
+import { measured, percent, signed } from "./measured";
 import { diffModels, errorText, ModelDiffReport } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -211,8 +212,8 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
           {data.kl && (
             <div className={`mdiff-verdict ${stable ? "ok" : "wide"}`}>
               The answers differ by a median{" "}
-              <b>{data.kl.median.toFixed(4)}</b> nats per position, middle half{" "}
-              {data.kl.low.toFixed(4)} to {data.kl.high.toFixed(4)}.{" "}
+              <b>{measured(data.kl.median, 4)}</b> nats per position, middle half{" "}
+              {measured(data.kl.low, 4)} to {measured(data.kl.high, 4)}.{" "}
               {stable ? (
                 <>The prompts agree with each other about how much moved.</>
               ) : (
@@ -303,7 +304,7 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
             ) : (
               <>
                 The cosine falls furthest at <b>layer {data.consensus_layer}</b>{" "}
-                on {(data.consensus_share * 100).toFixed(0)}% of prompts.{" "}
+                on {percent(data.consensus_share, 0)} of prompts.{" "}
                 {majority ? (
                   <>That is a majority, so it is where this finetune starts to differ on this set.</>
                 ) : (
@@ -326,19 +327,28 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
                 finding
               </p>
               <ol className="mdiff-heads stagger">
+                {/* Capped at ten, and the count follows below — a list that
+                    stops without saying so reads as the whole finding. */}
                 {data.heads.slice(0, 10).map((h, i) => (
                   <li key={`${h.layer}-${h.head}`} style={{ "--i": i } as CSSProperties}>
                     <span className="mid">
                       L{h.layer}H{h.head}
                     </span>
-                    <span className="mid">{h.median_a.toFixed(4)}</span>
+                    {/* Through `measured`, like the KL sentence at the top
+                        of this panel. `toFixed(4)` floored any ablation score
+                        under 5e-5 to "0.0000", which annihilates exactly the
+                        both-sides comparison the caption argues for: a head
+                        that went 2e-5 to 6e-5 read "0.0000 → 0.0001". */}
+                    <span className="mid">{measured(h.median_a, 4)}</span>
                     <span className="meta">→</span>
-                    <span className="mid">{h.median_b.toFixed(4)}</span>
+                    <span className="mid">{measured(h.median_b, 4)}</span>
                     <span
                       className={`mid mdiff-shift ${h.shift > 0 ? "up" : "down"}`}
                     >
-                      {h.shift > 0 ? "+" : ""}
-                      {h.shift.toFixed(4)}
+                      {/* `signed` is this expression exactly, and it keeps
+                          the sign on a value small enough to escape to an
+                          exponent — where `"+" + "0.0000"` read as "+0". */}
+                      {signed(h.shift, 4)}
                     </span>
                     <span className="meta">
                       {h.top_a === h.top_b
@@ -348,6 +358,12 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
                   </li>
                 ))}
               </ol>
+              {data.heads.length > 10 && (
+                <p className="meta">
+                  {data.heads.length - 10} more head(s) were compared and moved
+                  less. Every one was measured; this is the top ten.
+                </p>
+              )}
             </>
           )}
 
@@ -373,8 +389,15 @@ export default function ModelDiffPanel({ epoch }: { epoch: number }) {
                       <span className="meta">
                         prompt {t.prompt_index + 1}, position {t.index}
                       </span>
+                      {/* This list is filtered to tokens where one side
+                          crossed its own noise floor and the other did not,
+                          so by construction one of the two KLs sits just
+                          below a floor — and `model_diff` rounds these to six
+                          places, so every nonzero value under 5e-5 printed
+                          "0.0000 → 0.0000" on the row claiming the token is
+                          newly depended on. */}
                       <span className="mid">
-                        {t.kl_a.toFixed(4)} → {t.kl_b.toFixed(4)}
+                        {measured(t.kl_a, 4)} → {measured(t.kl_b, 4)}
                       </span>
                       <span className="meta mdiff-cross">
                         {t.newly_used ? "newly depended on" : "no longer used"}

@@ -13,16 +13,15 @@ norm with a learned scale is not idempotent — it strips the per-dimension
 scaling the unembedding was trained to read. Measured, prompt "The Eiffel Tower
 is located in the city of", float32:
 
-    gpt2                  head(h) ' Paris'   head(norm(h)) ' the'
     google/gemma-3-270m-it head(h) ' Paris'   head(norm(h)) ' pale'
     Qwen3-0.6B            head(h) ' Paris'   head(norm(h)) ' Paris'
     Qwen2.5-0.5B-Instruct head(h) ' Paris'   head(norm(h)) ' Paris'
     SmolLM2-360M-Instruct head(h) ' Paris'   head(norm(h)) ' Paris'
 
-Two of five families give a confident, plausible, wrong token if the detection
+One of four families gives a confident, plausible, wrong token if the detection
 is dropped, and three do not — so a change that removed it would pass a spot
-check on Qwen and ship a broken lens for GPT-2 and Gemma. Hence a test rather
-than a comment.
+check on Qwen and ship a broken lens for Gemma. Hence a test rather than a
+comment.
 
 Synthetic models throughout, matching test_ablate.py: no weights are
 downloaded, and both branches of the detection are exercised on purpose.

@@ -121,9 +121,14 @@ class CustomStatus:
     source: str | None = None  # adapter | torchscript
     name: str | None = None
     device: str = "cpu"
-    n_params: int = 0
-    n_trainable: int = 0
-    n_modules: int = 0
+    # `None`, not 0, and this object already got that right for `path`,
+    # `source`, `name`, `input_shape` and `labels`. With `loaded: false`
+    # nothing has been measured, so "this model has 0 parameters" is a
+    # measurement nobody took — reported beside five fields correctly saying
+    # they do not know.
+    n_params: int | None = None
+    n_trainable: int | None = None
+    n_modules: int | None = None
     input_shape: list[int] | None = None
     input_origin: str = ""  # adapter | inferred | user
     input_reason: str = ""
@@ -452,8 +457,19 @@ def nearby_model_classes(weights: Path) -> list[tuple[str, str]]:
 
 
 def load_torchscript(path: Path):
-    """Load a TorchScript archive, or explain why a plain checkpoint can't be."""
+    """Load a TorchScript archive, or explain why a plain checkpoint can't be.
+
+    Scanned BEFORE `torch.jit.load` touches it. A TorchScript archive is a zip
+    that can carry pickles, and `jit.load` unpickles them — so the window
+    between "the user chose this file" and "arbitrary code has run" is this
+    call. The scan closes it, and a dangerous file is a refusal with the
+    finding named rather than a warning printed after the fact.
+    """
     import torch
+
+    from . import weights_scan
+
+    weights_scan.guard(path)
 
     try:
         return torch.jit.load(str(path), map_location="cpu")
@@ -1045,7 +1061,50 @@ _MODULE_LEVEL_LOAD = re.compile(r"^def\s+load\s*\(\s*(?!self\b)", re.MULTILINE)
 _MODULE_LEVEL_EXAMPLE = re.compile(r"^def\s+example_input\s*\(", re.MULTILINE)
 
 
-def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]:
+class Candidates(list):
+    """Rows found, plus how many there were.
+
+    A `list` subclass so the CLI and the route keep indexing and iterating it
+    unchanged, while a caller that wants to be honest about the walk has
+    `n_total` to read. `len(self)` is what was returned; `n_total` is what was
+    there.
+    """
+
+    def __init__(self, rows=(), *, n_total: int = 0):
+        super().__init__(rows)
+        self.n_total = n_total
+
+    @property
+    def truncated(self) -> bool:
+        return self.n_total > len(self)
+
+    def __eq__(self, other: object) -> bool:
+        """Rows AND `n_total`, against another Candidates.
+
+        Inheriting `list.__eq__` made two of these compare equal while
+        disagreeing about `n_total` — which is the entire reason this
+        class exists rather than a plain list. CodeQL flags the shape;
+        the bug it describes is real here.
+
+        Against anything that is NOT one of these, the rows decide. A
+        plain list carries no claim about the walk, so there is nothing
+        for it to disagree with, and `scan_dir(absent) == []` stays
+        true — as it should.
+        """
+        if isinstance(other, Candidates):
+            return list(self) == list(other) and self.n_total == other.n_total
+        return list(self) == other
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    #: Unhashable, like the `list` it extends. Spelled out because
+    #: defining `__eq__` sets this to None anyway and a reader should
+    #: not have to remember that rule.
+    __hash__ = None  # type: ignore[assignment]
+
+
+def find_adapters(root: str | Path | None = None, limit: int = 40) -> Candidates:
     """Python files under the allowed roots that look like adapters.
 
     Cheap and text-only: reads at most 4 KB per candidate looking for a load()
@@ -1078,13 +1137,12 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
         ".pytest_cache",
     }
     found: list[dict] = []
+    n_total = 0
     seen: set[Path] = set()
     for base in roots:
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.py")):
-            if len(found) >= limit:
-                return found
             # Relative to the scan root, not the absolute path. `path.parts`
             # includes every ancestor above the root, so a repo that happens to
             # live under a directory named `build`, `dist`, `node_modules` or
@@ -1123,6 +1181,22 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
             # ModelMRI's own saes.py and vla.py as models you had trained.
             if not _MODULE_LEVEL_LOAD.search(head):
                 continue
+            # COUNTED HERE, where a row is confirmed — after the skip
+            # directories, after the template and `test_` exclusions, after
+            # the `seen` dedupe that exists because the allowed roots overlap
+            # by design, and after the module-level `def load` test that
+            # decides whether a `.py` is a candidate at all.
+            #
+            # Counting at the top of the loop instead reported "40 of 90" for
+            # forty-five files: the same file through two roots, plus every
+            # `.py` that was never a candidate. A specific wrong total is
+            # worse than the plain "40" it replaced, because a reader goes
+            # looking for the fifty models it implies.
+            n_total += 1
+            if len(found) >= limit:
+                # Past the limit the row is not built, but it HAS been
+                # counted, which is the whole point of walking on.
+                continue
             score = sum(h in path.name.lower() for h in _ADAPTER_HINTS)
             found.append(
                 {
@@ -1134,7 +1208,9 @@ def find_adapters(root: str | Path | None = None, limit: int = 40) -> list[dict]
                 }
             )
     found.sort(key=lambda f: (not f["hint"], not f["has_example"], f["name"]))
-    return found
+    # `n_total` is every row this walk would have listed; `len(found)` is how
+    # many it did.
+    return Candidates(found, n_total=n_total)
 
 
 def checkpoint_kind(path: Path) -> str:
@@ -1191,7 +1267,7 @@ def checkpoint_kind(path: Path) -> str:
     return "unreadable"
 
 
-def find_torchscript(limit: int = 40) -> list[dict]:
+def find_torchscript(limit: int = 40) -> Candidates:
     """Loadable-looking checkpoints under the allowed roots.
 
     Named for history: it used to list only TorchScript. It lists every
@@ -1199,6 +1275,7 @@ def find_torchscript(limit: int = 40) -> list[dict]:
     the file is READ (its zip index) but never executed.
     """
     out: list[dict] = []
+    n_total = 0
     # ONE ROW PER FILE. The allowed roots overlap by design -- the working
     # directory, MODELMRI_MODELS_DIR and any folder added this session -- so
     # a checkpoint sitting under two of them was listed twice, with identical
@@ -1224,8 +1301,6 @@ def find_torchscript(limit: int = 40) -> list[dict]:
         # `checkpoint_kind` labels it so, but it can now be READ.
         for pattern in ("*.pt", "*.pth", "*.torchscript", "*.gguf"):
             for path in sorted(base.rglob(pattern)):
-                if len(out) >= limit:
-                    return out
                 # Relative to the scan root, not the absolute path -- the
                 # same fix `find_adapters` above already carries, in its own
                 # words: "`path.parts` includes every ancestor above the root,
@@ -1255,6 +1330,13 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                     # rather than listing it with a made-up size, because the
                     # size is the only thing this row adds over the filename.
                     continue
+                # COUNTED HERE, past the skip directories and past the `seen`
+                # dedupe — the allowed roots overlap by design, so counting at
+                # the top of the loop reported one file twice. See
+                # `find_adapters` for the measurement that showed it.
+                n_total += 1
+                if len(out) >= limit:
+                    continue
                 out.append(
                     {
                         "path": str(path),
@@ -1267,4 +1349,4 @@ def find_torchscript(limit: int = 40) -> list[dict]:
                         "kind": checkpoint_kind(path),
                     }
                 )
-    return out
+    return Candidates(out, n_total=n_total)

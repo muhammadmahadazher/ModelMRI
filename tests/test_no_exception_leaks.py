@@ -88,7 +88,7 @@ def test_a_failed_load_does_not_publish_the_exception(client, monkeypatch):
     monkeypatch.setattr(
         transformers.AutoModelForCausalLM, "from_pretrained", staticmethod(explode)
     )
-    client.post("/api/model/load", json={"id": "gpt2", "source": "hf"})
+    client.post("/api/model/load", json={"hf_id": "Qwen/Qwen3-1.7B", "source": "hf"})
 
     body = client.get("/api/model/progress").text
     assert not leaked(body), f"the progress snapshot leaked {leaked(body)}"
@@ -108,7 +108,9 @@ def test_the_load_route_itself_stays_generic(client, monkeypatch):
     monkeypatch.setattr(
         transformers.AutoModelForCausalLM, "from_pretrained", staticmethod(explode)
     )
-    resp = client.post("/api/model/load", json={"id": "gpt2", "source": "hf"})
+    resp = client.post(
+        "/api/model/load", json={"hf_id": "Qwen/Qwen3-1.7B", "source": "hf"}
+    )
     assert resp.status_code == 500
     assert not leaked(resp.text)
 
@@ -273,7 +275,50 @@ def test_no_sink_interpolates_a_caught_exceptions_text():
 
     root = Path(__file__).resolve().parents[1] / "modelmri"
     # `{err}` / `{exc}` / `{e}` inside an f-string, but not `{type(err)...}`.
-    suspect = re.compile(r"\{(?:err|exc|error|cpu_err)\}")
+    #
+    # And the ATTRIBUTE forms, which this missed for a year. `{err.reason}` on
+    # a `URLError` is the underlying OSError, whose text is whatever the
+    # operating system wrote — the same leak as `{err}`, wearing an attribute
+    # and sailing straight past a pattern that only looked for the bare name.
+    #
+    # CodeQL found it first (py/stack-trace-exposure, five routes at once,
+    # tracing `URLError.reason` through `policy.status().reason` into the
+    # `/api/policy` body). A check that a scanner has to catch for you is a
+    # check that was not doing its job, so the pattern grew rather than the
+    # finding being dismissed as a duplicate.
+    #
+    # `.args`, `.strerror`, `.filename` and `.reason` are the four that carry
+    # host text; `type(err).__name__` and `err.name` stay allowed, the latter
+    # being a module name and bounded.
+    # And the FALLBACK form, which this missed until an audit went looking.
+    #
+    # Six sites wrote `{err.strerror or err}`. The bare `err` after the `or`
+    # publishes `str(err)` — the exact thing this test exists to forbid — and
+    # the old pattern did not match, because ` or err` sits inside the braces
+    # and the regex only allowed an optional attribute there.
+    #
+    # It was not theoretical. A single-argument `OSError` has `strerror =
+    # None`, so the fallback is what runs, and pyarrow raises exactly that:
+    #
+    #   pq.read_table("/definitely/not/here.parquet")
+    #   -> FileNotFoundError, strerror None,
+    #      fallback publishes "/definitely/not/here.parquet"
+    #
+    # `datasets.py` reads parquet, so two of the six were one bad path away
+    # from putting an absolute path in a 422. The fix is
+    # `err.strerror or type(err).__name__`, and the pattern now covers the
+    # shape so the next one fails here instead of shipping.
+    #
+    # `{name}`, `{p.name}` and `{type(err).__name__}` still do not match: the
+    # alternation is anchored to the exception NAMES, and `err.name` on an
+    # ImportError is a module name and bounded.
+    suspect = re.compile(
+        r"\{(?:err|exc|error|cpu_err)"
+        r"(?:\.(?:reason|args|strerror|filename))?"
+        # an `or` fallback to the raw exception, with or without an attribute
+        r"(?:\s+or\s+(?:err|exc|error|cpu_err)\b(?!\.))?"
+        r"\}"
+    )
     offenders = []
     for path in sorted(root.rglob("*.py")):
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
@@ -292,3 +337,132 @@ def test_no_sink_interpolates_a_caught_exceptions_text():
         "these interpolate a caught exception's own text, which reaches the "
         "browser wherever the value is published:\n  " + "\n  ".join(offenders)
     )
+
+
+# ------------------------------------------------------------------- image
+
+
+def test_the_image_load_route_names_the_class_only(client, monkeypatch, tmp_path):
+    """This file had ZERO image-route coverage while `image_runtime.py` grew
+    from 587 to 732 lines in one sitting.
+
+    The static grep below catches `{err}` on a line. It cannot catch a leak
+    laundered through a LOCAL VARIABLE — `why = str(err)` on one line and
+    `f"...{why}"` on the next — which is the exact shape the refusals in
+    `_load_processor` and `_load_transformers` are built in. So this asserts
+    at the SINK, on the bytes that come back.
+    """
+    checkpoint = tmp_path / "vit"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        '{"model_type": "vit", "architectures": ["ViTForImageClassification"]}',
+        encoding="utf-8",
+    )
+    (checkpoint / "model.safetensors").write_bytes(
+        b"\x08\x00\x00\x00\x00\x00\x00\x00{}"
+    )
+
+    def explode(*_a, **_k):
+        raise RuntimeError(f"boom {WEIGHTS} {CERT}")
+
+    for name in ("AutoModelForImageClassification", "AutoModel"):
+        # Dotted string, NOT `setattr(transformers, name, ...)`. transformers
+        # is a lazy module: until an attribute is first read it lives behind
+        # `__getattr__` rather than in `__dict__`, so setting it on the module
+        # object works only when some earlier import happened to materialise
+        # it. That makes the patch depend on test ORDER, which is how this
+        # very test first passed for the wrong reason.
+        monkeypatch.setattr(
+            f"transformers.{name}.from_pretrained", staticmethod(explode)
+        )
+
+    # A local path, so the machine guard fires first and correctly. Patched
+    # out to reach the layer beneath it — that refusal has its own tests.
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    resp = client.post("/api/image/load", json={"repo": str(checkpoint)})
+    assert not leaked(resp.text), f"the image load route leaked {leaked(resp.text)}"
+    # And it still says which KIND of failure, which is the actionable half.
+    assert "RuntimeError" in resp.text
+
+
+def test_a_preprocessor_that_will_not_import_names_the_package_not_the_message(
+    tmp_path, monkeypatch
+):
+    """`_load_processor` scans an ImportError's prose for a known package name
+    rather than relaying it. transformers writes "requires the Torchvision
+    library but it was not found in your environment" — quoting that verbatim
+    is how library text reaches a browser, and the package name alone is the
+    whole actionable part."""
+    from modelmri import image_runtime as ir
+
+    class _Boom:
+        @staticmethod
+        def from_pretrained(*_a, **_k):
+            raise ImportError(
+                f"FastImageProcessor requires the Torchvision library but it "
+                f"was not found. Looked in {CERT} and {WEIGHTS}"
+            )
+
+    for name in ir._PROCESSOR_CLASSES:
+        monkeypatch.setattr(f"transformers.{name}", _Boom)
+
+    _, why = ir._load_processor(tmp_path)
+    assert not leaked(why), f"the preprocessor reason leaked {leaked(why)}"
+    assert "torchvision" in why
+
+
+def test_a_hub_failure_names_the_class_and_not_the_url(tmp_path, monkeypatch):
+    """`snapshot_download` puts the full URL, the cache directory and an
+    authentication paragraph into its message, and the cache directory is a
+    path on this machine."""
+    import huggingface_hub
+
+    from modelmri import image_runtime as ir
+
+    def explode(*_a, **_k):
+        raise OSError(
+            f"Repository Not Found for url https://huggingface.co/api/models/x. "
+            f"Cache at {WEIGHTS}, certs at {CERT}"
+        )
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", explode)
+    with pytest.raises(Exception) as caught:
+        ir._snapshot("owner/name", ["*.json"], local_ok=False)
+    said = str(caught.value)
+    assert not leaked(said), f"the hub refusal leaked {leaked(said)}"
+    assert "owner/name" in said
+
+
+def test_a_falsy_strerror_falls_back_to_the_class_and_not_the_path(monkeypatch):
+    """The leak the static check could not see, measured rather than argued.
+
+    Six sites wrote `{err.strerror or err}`. A single-argument `OSError` has
+    `strerror = None`, so the fallback is what actually runs — and pyarrow
+    raises exactly that shape:
+
+        pq.read_table("/definitely/not/here.parquet")
+        -> FileNotFoundError, strerror None, str(err) == the path
+
+    `datasets.py` reads parquet, so two of the six were one bad path away from
+    putting an absolute path into a 422. The regex above missed all six
+    because ` or err` sits inside the braces.
+    """
+    from modelmri import datasets
+    from modelmri.errors import BadRequest
+
+    # Fails the way pyarrow's reader does: a SINGLE-ARGUMENT OSError, so
+    # `strerror` is None and the `or` fallback is what actually runs. The
+    # three-argument form stdlib `open` raises has a real `strerror` and
+    # never reached the fallback, which is why this went unnoticed.
+    def _single_arg(*_a, **_k):
+        raise FileNotFoundError(f"Failed to open local file: {WEIGHTS}")
+
+    monkeypatch.setattr(Path, "open", _single_arg)
+
+    with pytest.raises(BadRequest) as caught:
+        datasets.read_dataset(Path("cases.jsonl"))
+    said = str(caught.value)
+    assert not leaked(said), f"a dataset read leaked {leaked(said)}"
+    # The class survives, because which KIND of failure it was is the
+    # actionable half and a class name cannot carry a path.
+    assert "FileNotFoundError" in said

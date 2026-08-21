@@ -1,10 +1,10 @@
 """The third baseline, and the number that says the baseline is deciding.
 
 `ablate.py` has documented since it was written that zero and mean disagree —
-on gpt2 layer 0, zero ranks heads 7/10/9 and mean ranks 3/1/10, so head 7 goes
-from first to sixth. It documented it and did nothing, which means every
-ranking the tool has ever shown was one of several answers with no indication
-that the others existed.
+the same layer's top head under one baseline can fall several places under the
+other. It documented it and did nothing, which means every ranking the tool has
+ever shown was one of several answers with no indication that the others
+existed.
 
 Resampling adds the on-distribution baseline: replace a head with what it
 really does compute on some other sentence. Its failure modes are different

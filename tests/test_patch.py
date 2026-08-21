@@ -223,3 +223,33 @@ def test_every_component_is_named_once():
     drop one from every response."""
     assert patch.COMPONENTS == ("resid", "attn", "mlp")
     assert len(set(patch.COMPONENTS)) == len(patch.COMPONENTS)
+
+
+def test_the_tie_threshold_survives_the_wire_in_float32():
+    """`round(resolution, 6)` threw away the number it was publishing.
+
+    `recovery_resolution` is one step of the model's number format on the
+    recovery scale. In bfloat16 that is around 1e-2 and rounding to six places
+    is harmless; in float32 — which is the CPU default, so every patch trace
+    run without a GPU — it lives at 1e-6 and below.
+
+    Measured at |logit|max 22 over a gap of 4: the resolution is 6.557e-07,
+    `round(_, 6)` returns 1e-06, and most of the figure is gone. Widen the gap
+    and it returns exactly 0.0 — a tie threshold of zero, which asserts that
+    nothing is tied, the opposite of what the number is for. Nothing
+    downstream can recover it, which is why this is fixed at the source rather
+    than in a formatter.
+    """
+    assert round(6.557e-07, 6) == 1e-06
+    assert round(1.6e-08, 6) == 0.0
+
+    # And the sentence that publishes it no longer floors it either. `.3f` on
+    # a float32 resolution printed "0.000" in the line that says two senders
+    # closer than THAT are tied.
+    from modelmri import fmt
+
+    assert format(6.557e-07, ".3f") == "0.000"
+    assert fmt.measured(6.557e-07, 3) == "6.6e-07"
+    # An exact zero still prints as zero: a deterministic model whose logits
+    # do not move IS at resolution zero, and that one is the measurement.
+    assert fmt.measured(0.0, 3) == "0.000"

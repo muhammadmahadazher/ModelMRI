@@ -387,3 +387,48 @@ def test_the_exported_document_is_the_redacted_one():
     src = inspect.getsource(rec._deliver)
     # The redaction happens before either delivery, and both are passed `doc`.
     assert src.index("redact_document") < src.index("_deliver_otlp(t, doc)")
+
+
+def test_an_auto_instrumented_payload_says_how_much_was_cut():
+    """The recorder's own cap is REPORTED, in the marker `traces._unclip` parses.
+
+    Cut silently at 4,000 — well under the store's 20,000, so `_clip` never
+    fired — a 50,000-character prompt reached the timeline looking whole,
+    `truncated_in` read 0, and the only sentence the panel could draw named
+    20,000: a cap that had not applied to that payload.
+    """
+    messages = [{"role": "user", "content": "x" * 50_000}]
+    whole = json.dumps(messages, default=str)
+    cut = len(whole) - rec.MAX_PREVIEW_CHARS
+
+    preview = rec._msgs_preview({"messages": messages})
+
+    assert preview == whole[: rec.MAX_PREVIEW_CHARS] + f"\u2026 [+{cut}]"
+    assert preview.endswith(f"[+{cut}]")
+
+
+def test_a_payload_under_the_cap_is_left_exactly_alone():
+    """So the marker cannot become something every payload carries."""
+    messages = [{"role": "user", "content": "hello"}]
+    whole = json.dumps(messages, default=str)
+
+    assert rec._msgs_preview({"messages": messages}) == whole
+    assert "\u2026 [+" not in rec._msgs_preview({"messages": messages})
+
+
+def test_the_recorders_marker_is_the_one_the_store_parses():
+    """One shape for a cut payload, wherever the cut happened.
+
+    `traces._CLIPPED` is what turns the marker back into `truncated_in` /
+    `truncated_out`. A recorder that marked its cuts in its own dialect would
+    leave the count at 0 and the panel silent — which is the bug this fixes,
+    not a second version of it.
+    """
+    import re
+
+    clipped = re.compile(r"\u2026 \[\+(\d+)\]$")
+    marked = rec._cut("y" * 5_000, rec.MAX_PREVIEW_CHARS)
+
+    found = clipped.search(marked)
+    assert found is not None, "the store's regex has to match this"
+    assert int(found.group(1)) == 5_000 - rec.MAX_PREVIEW_CHARS

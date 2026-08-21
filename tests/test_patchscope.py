@@ -114,9 +114,9 @@ def test_the_random_control_has_the_same_norm_as_the_patched_state(gpt2):
 
 
 def test_a_decode_matching_a_control_is_not_informative(gpt2):
-    """The whole point. On gpt2 a layer-2 state decoded IDENTICALLY to the
-    same-norm random vector — an early state carries nothing this target
-    prompt can read, and the tool says so instead of interpreting it."""
+    """The whole point. An early state can decode IDENTICALLY to the same-norm
+    random vector — it carries nothing this target prompt can read, and the
+    tool says so instead of interpreting it."""
     scoped = gpt2.patchscope(SOURCE, source_layer=2, max_new_tokens=10)
     if scoped["same_as_random"] or scoped["overlap_random"] >= 1.0:
         assert not scoped["informative"]
@@ -126,8 +126,8 @@ def test_a_decode_matching_a_control_is_not_informative(gpt2):
 
 
 def test_containment_alone_makes_a_decode_uninformative(gpt2):
-    """Measured on gpt2: a layer-8 decode differed from the untouched target
-    as a STRING while using 100% of its vocabulary. A string test alone
+    """A decode can differ from the untouched target as a STRING while using
+    nothing but the vocabulary that control already used. A string test alone
     called that informative."""
     scoped = gpt2.patchscope(SOURCE, source_layer=8, max_new_tokens=10)
     if scoped["overlap_identity"] >= 1.0:

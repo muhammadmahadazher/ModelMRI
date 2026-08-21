@@ -21,16 +21,13 @@ same pairs with the positive/negative labels randomly reassigned, K times, and
 measure the same effect. A real direction beats its shuffles; a direction that
 does not is reported as *not measured* — not as a small discovery.
 
-Measured on gpt2, bf16 on an RTX 4060, twelve sentiment pairs ("I loved it" /
-"I hated it" and similar), fitting on six and scoring on six:
+Measured with bf16 on an RTX 4060, twelve sentiment pairs ("I loved it" /
+"I hated it" and similar), fitting on six and scoring on six: under both `caa`
+and `repe`, all but one layer beat their own null, and the one that did not is
+layer 0.
 
-    caa    11 of 12 layers beat their null, best at layer 9
-           L0 +1.246 against a null max of 1.246 (does not survive)
-           L10 +3.326 against 2.185
-    repe   11 of 12, best at layer 10
-
-and then the control that matters — the same 24 sentences split at random
-instead of by sentiment: **0 of 12 layers beat their null**, under the
+And then the control that matters — the same 24 sentences split at random
+instead of by sentiment: **not one layer beat its null**, under the
 identical estimator. Signal passes, noise does not, and layer 0 failing is
 right: that is the embedding, before anything has been computed.
 
