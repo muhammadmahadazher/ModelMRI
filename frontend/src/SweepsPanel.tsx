@@ -6,6 +6,7 @@ import {
   SweepList,
   errorText,
   savedSweeps,
+  sweepResume,
   sweepResumePlan,
 } from "./api";
 
@@ -70,8 +71,33 @@ function when(iso: string): string {
   });
 }
 
-function ResumeBlock({ plan }: { plan: ResumePlan }) {
+function ResumeBlock({
+  plan,
+  onDone,
+}: {
+  plan: ResumePlan;
+  /** Re-read the list, so a finished sweep stops being listed as unfinished. */
+  onDone: () => void;
+}) {
   const extra = Math.max(0, plan.remaining_indices.length - INDICES_SHOWN);
+  const [running, setRunning] = useState(false);
+  const [failed, setFailed] = useState("");
+  const [done, setDone] = useState("");
+
+  async function finish() {
+    setRunning(true);
+    setFailed("");
+    try {
+      const out = await sweepResume(plan.sweep_id);
+      setDone(out.means);
+      onDone();
+    } catch (e) {
+      setFailed(errorText(e));
+    } finally {
+      setRunning(false);
+    }
+  }
+
   return (
     <div className="sw-plan">
       {/* Verbatim. It already states what is measured, what is left, and — when
@@ -102,6 +128,28 @@ function ResumeBlock({ plan }: { plan: ResumePlan }) {
           disagrees with the <code>{plan.model || "unnamed model"}</code> this
           sweep ran on. Finishing it costs only the {plan.n_remaining} prompt(s)
           below.
+          {/* THE CONTROL THIS SENTENCE PROMISES. `sweep.resume` was written,
+              tested and priced, and had no way to run — so this block said
+              "finishing it costs only the N below" beside nothing to press.
+              The reachable case is refusals rather than crashes: `remaining()`
+              counts every unmeasured row as still-to-run, so a sweep holding
+              one prompt the model refused was listed as unfinished forever. */}
+          <div className="row sw-resume">
+            <button
+              className="green"
+              onClick={() => void finish()}
+              disabled={running || plan.n_remaining === 0}
+            >
+              {running
+                ? `Measuring ${plan.n_remaining} prompt(s)…`
+                : `Finish this sweep`}
+            </button>
+            {plan.n_remaining === 0 && (
+              <span className="meta">nothing left to measure</span>
+            )}
+          </div>
+          {done && <div className="hint">{done}</div>}
+          {failed && <div className="hint err">{failed}</div>}
         </div>
       ) : (
         // A sentence, not a warning. There is deliberately no button beside
@@ -136,12 +184,16 @@ function SweepRow({
   planErr,
   planning,
   onPlan,
+  onResumed,
 }: {
   s: SavedSweep;
   plan: ResumePlan | null;
   planErr: string;
   planning: boolean;
   onPlan: () => void;
+  /** Re-read the list after a resume finishes, so a sweep that is now
+   *  complete stops being listed as unfinished. */
+  onResumed: () => void;
 }) {
   const at = when(s.started_at);
   // Guarded rather than computed blind: a sweep row with no prompts would
@@ -205,7 +257,7 @@ function SweepRow({
         </div>
       )}
       {planErr && <div className="hint err">{planErr}</div>}
-      {plan && <ResumeBlock plan={plan} />}
+      {plan && <ResumeBlock plan={plan} onDone={onResumed} />}
     </li>
   );
 }
@@ -355,6 +407,10 @@ export default function SweepsPanel() {
                   planErr={planErrs[s.sweep_id] ?? ""}
                   planning={planning === s.sweep_id}
                   onPlan={() => void price(s.sweep_id)}
+                  // A finished sweep must stop being listed as unfinished.
+                  // `resume` persists under the same id, so re-reading the
+                  // list is the whole update.
+                  onResumed={() => void load(limit)}
                 />
               ))}
             </ul>

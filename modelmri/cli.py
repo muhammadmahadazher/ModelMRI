@@ -98,6 +98,83 @@ def diff_sessions(
     return report.exit_code(fail_over)
 
 
+def resume_sweep(sweep_id: str, *, as_json: bool = False) -> int:
+    """Finish a saved sweep, keeping every prompt already measured.
+
+    `sweep.resume` was written, tested and PRICED — `resume_plan` answers what
+    finishing would cost — and had no way to run from anywhere: no route, no
+    flag, no button. A sweep that stopped could be listed as unfinished, priced
+    cleanly, and never finished.
+
+    The reachable case is not a crash, which leaves nothing saved because
+    `save()` runs after `run()` returns. It is REFUSALS: `remaining()` counts
+    every unmeasured row as still-to-run, so one prompt the model refused
+    leaves a sweep permanently unfinished.
+
+    Priced and checked before it runs, like everything else here — and it is
+    `sweep.resume` that re-checks, so the price and the run cannot disagree.
+    """
+    from . import sweep as sweep_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    try:
+        plan = sweep_mod.resume_plan(sweep_id)
+    except (BadRequest, Refusal) as err:
+        print(err.sentence, file=sys.stderr)
+        return 2
+
+    if plan["blocked"] is not None:
+        # A sentence, never a warning to override. The three things it checks
+        # make a resume WRONG rather than expensive.
+        print(f"this sweep must not be resumed: {plan['blocked']}", file=sys.stderr)
+        return 2
+    if not plan["n_remaining"]:
+        print(plan["means"])
+        return 0
+
+    print(plan["means"])
+    print(f"  loading {plan['model']} to measure {plan['n_remaining']} prompt(s)…")
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load(plan["model"])
+        job, rows = sweep_mod.resume(sweep_id, runtime)
+    except (BadRequest, Refusal) as err:
+        print(err.sentence, file=sys.stderr)
+        return 2
+
+    stats = sweep_mod.aggregate(rows, metric=job.metric)
+    measured = sum(1 for r in rows if r.measured)
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "sweep_id": sweep_id,
+                    "model": job.model,
+                    "metric": job.metric,
+                    "n_prompts": len(rows),
+                    "n_measured": measured,
+                    "n_unmeasured": len(rows) - measured,
+                    "stats": [st.to_dict() for st in stats],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(sweep_mod.render(job, rows, stats))
+        if measured < len(rows):
+            # A refusal stays a refusal, and it is why this sweep could sit
+            # unfinished forever. Said rather than left to be inferred from a
+            # count that did not reach the total.
+            print(
+                f"\n  {len(rows) - measured} prompt(s) still could not be "
+                f"measured and are absent from the ranking rather than scored "
+                f"zero. Resuming again will retry them."
+            )
+    return 0
+
+
 def run_sweep(
     prompts_path,
     *,
@@ -1467,8 +1544,20 @@ def main() -> None:
         help="Run one measurement over many prompts and report the "
         "distribution, not one number",
     )
-    sweeper.add_argument("prompts", help="a .jsonl (objects with `prompt`) or .txt")
-    sweeper.add_argument("--model", required=True, help="which model to load")
+    sweeper.add_argument(
+        "prompts",
+        nargs="?",
+        default=None,
+        help="a .jsonl (objects with `prompt`) or .txt. Omitted with --resume.",
+    )
+    sweeper.add_argument(
+        "--resume",
+        default=None,
+        metavar="SWEEP_ID",
+        help="finish a saved sweep, keeping every prompt already measured. "
+        "`modelmri sweeps` lists the ids.",
+    )
+    sweeper.add_argument("--model", help="which model to load")
     sweeper.add_argument(
         "--metric",
         default="heads",
@@ -1779,7 +1868,19 @@ def main() -> None:
                 as_json=args.json,
             )
         )
+    elif args.command == "sweep" and args.resume:
+        raise SystemExit(resume_sweep(args.resume, as_json=args.json))
     elif args.command == "sweep":
+        if not args.prompts:
+            print(
+                "sweep needs a prompt file, or --resume with a saved sweep id "
+                "(`modelmri sweeps` lists them).",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if not args.model:
+            print("sweep needs --model.", file=sys.stderr)
+            raise SystemExit(2)
         raise SystemExit(
             run_sweep(
                 args.prompts,

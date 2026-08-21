@@ -5134,6 +5134,67 @@ def create_app(
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)
 
+    @app.post("/api/sweeps/{sweep_id}/resume")
+    async def sweeps_resume(sweep_id: str):
+        """Finish a stopped sweep, keeping every prompt already measured.
+
+        `sweep.resume` was written, tested and PRICED — `GET` on this same path
+        answers what finishing would cost — and then had no way to run: no
+        route, no CLI flag, no button. The panel rendered "Nothing blocks this
+        resume… Finishing it costs only the N prompt(s) below" beside no
+        control at all.
+
+        The reachable case is not a crash, which leaves nothing saved because
+        `save()` runs after `run()` returns. It is REFUSALS: `remaining()`
+        counts every unmeasured row as still-to-run, so any sweep containing a
+        prompt the model refused is listed as unfinished forever, prices
+        cleanly, and could never be finished by any surface.
+
+        `resume` re-checks `_resumable` itself, so the price and the run cannot
+        disagree about whether it may proceed — this route does not re-derive
+        that judgement.
+        """
+        from . import sweep as sweep_mod
+
+        def finish():
+            job, rows = sweep_mod.resume(sweep_id, app.state.runtime)
+            stats = sweep_mod.aggregate(rows, metric=job.metric)
+            measured = sum(1 for r in rows if r.measured)
+            return {
+                "sweep_id": sweep_id,
+                "model": job.model,
+                "metric": job.metric,
+                "rows": [r.to_dict() for r in rows],
+                "stats": [st.to_dict() for st in stats],
+                "n_prompts": len(rows),
+                "n_measured": measured,
+                # REPORTED rather than implied by a shorter list. A prompt the
+                # model refused stays unmeasured after a resume, which is the
+                # whole reason a sweep can be listed as unfinished forever.
+                "n_unmeasured": len(rows) - measured,
+                "means": (
+                    f"{measured} of {len(rows)} prompt(s) measured for "
+                    f"{job.model}."
+                    + (
+                        ""
+                        if measured == len(rows)
+                        else (
+                            f" {len(rows) - measured} could not be measured and "
+                            f"are absent from the ranking rather than scored "
+                            f"zero — resuming again will retry them."
+                        )
+                    )
+                ),
+            }
+
+        try:
+            return await asyncio.to_thread(finish)
+        except (Refusal, BadRequest) as err:
+            code = 422 if isinstance(err, BadRequest) else 409
+            return JSONResponse({"error": err.sentence}, status_code=code)
+        except Exception as err:
+            return _internal(err, "/api/sweeps/{sweep_id}/resume")
+
     @app.get("/api/scorers")
     def scorers_catalogue() -> dict:
         """Every scorer, WITH the way each one lies.

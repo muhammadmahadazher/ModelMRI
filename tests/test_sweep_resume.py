@@ -301,3 +301,48 @@ def test_a_block_the_reader_caused_names_the_action_that_clears_it(stopped):
     blocked = sweep.resume_plan("s1", _Other())["blocked"]
     # The model it wants back, named — not merely the one in the way.
     assert "Load `m/x`" in blocked
+
+
+# ------------------------------------- the surfaces that can actually run it
+
+
+def test_the_cli_exposes_resume():
+    """`sweep.resume` was written, tested and PRICED, and had no way to run
+    from anywhere: no route, no flag, no button. `cli.py` contained the string
+    "resume" zero times."""
+    from modelmri import cli
+
+    assert hasattr(cli, "resume_sweep"), "the CLI has no way to finish a sweep"
+
+
+def test_the_sweep_subcommand_takes_a_resume_id():
+    import sys
+
+    from modelmri import cli
+
+    argv = sys.argv
+    try:
+        sys.argv = ["modelmri", "sweep", "--help"]
+        try:
+            cli.main()
+        except SystemExit:
+            pass
+    finally:
+        sys.argv = argv
+
+
+def test_the_server_exposes_a_way_to_run_it_not_only_to_price_it():
+    """`GET /api/sweeps/{id}/resume` answered what finishing would cost and
+    there was no POST to do it — so the panel rendered "Finishing it costs only
+    the N prompt(s) below" beside no control at all."""
+    from modelmri.server import create_app
+
+    paths = {
+        (r.path, method)
+        for r in create_app().routes
+        if hasattr(r, "path") and hasattr(r, "methods")
+        for method in r.methods
+    }
+
+    assert ("/api/sweeps/{sweep_id}/resume", "GET") in paths, "the price"
+    assert ("/api/sweeps/{sweep_id}/resume", "POST") in paths, "and the run"

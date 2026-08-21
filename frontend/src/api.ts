@@ -4825,6 +4825,42 @@ export const sweepResumePlan = (sweepId: string) =>
         json<ResumePlan>(r),
       );
 
+/** What a finished sweep looks like when a resume completes it. */
+export interface ResumedSweep {
+  sweep_id: string;
+  model: string;
+  metric: string;
+  rows: unknown[];
+  stats: unknown[];
+  n_prompts: number;
+  n_measured: number;
+  /** Prompts still unmeasured AFTER the resume — a refusal stays a refusal.
+   *  This is why a sweep containing one could be listed as unfinished
+   *  forever: `remaining()` counts every unmeasured row as still-to-run. */
+  n_unmeasured: number;
+  means: string;
+}
+
+/** Finish a stopped sweep, keeping every prompt already measured.
+ *
+ *  `sweep.resume` was written, tested and PRICED — `sweepResumePlan` above
+ *  answers what finishing would cost — and had no way to run: no route, no
+ *  CLI flag, no button. The panel rendered "Nothing blocks this resume…
+ *  Finishing it costs only the N prompt(s) below" beside no control at all.
+ *
+ *  The server re-checks `_resumable` itself, so the price and the run cannot
+ *  disagree about whether it may proceed.
+ */
+export const sweepResume = (sweepId: string) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Finishing a sweep runs the model on the prompts it has not measured " +
+          "yet, which needs one loaded on your own machine.",
+      )
+    : fetch(`/api/sweeps/${encodeURIComponent(sweepId)}/resume`, {
+        method: "POST",
+      }).then((r) => json<ResumedSweep>(r));
+
 /** One structural finding, and how many of the recorded runs contain it. */
 export interface RecurringFinding {
   kind: string;

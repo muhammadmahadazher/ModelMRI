@@ -213,6 +213,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/rubric` | Rubric Save |
 | `POST` | `/api/rubric/score` | Rubric Score |
 | `POST` | `/api/scorers/run` | Scorers Run |
+| `POST` | `/api/sweeps/{sweep_id}/resume` | Sweeps Resume |
 | `POST` | `/api/trajectory/compare` | Trajectory Compare |
 | `POST` | `/api/weights/scan` | Weights Scan Path |
 | `POST` | `/v1/chat/completions` | V1 Chat |
