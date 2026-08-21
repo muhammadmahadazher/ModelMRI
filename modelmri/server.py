@@ -5989,8 +5989,11 @@ def create_app(
                         ),
                     }
                 )
-            except Exception:
-                # The socket is already gone. Nothing left to tell.
-                pass
+            except Exception as gone:
+                # The socket is already closed — the reader left while the
+                # error frame was being written. The failure that mattered is
+                # logged above; this one is logged at debug so the swallow is
+                # visible without adding noise to an ordinary disconnect.
+                log.debug("could not deliver the error frame: %s", type(gone).__name__)
 
     return app
