@@ -302,8 +302,11 @@ def check_capacity(
     # that is already installed, over room needed to install it, is refusing a
     # thing that has already happened. The bytes are on the disk; that is what
     # "installed" means.
-    volume, free = capacity.free_space(venv_dir()) if check_disk else (None, 0)
-    if check_disk and free and VENV_DISK_BYTES > free:
+    volume, free = capacity.free_space(venv_dir()) if check_disk else (None, None)
+    # `is not None`, for the reason `capacity.free_space` now documents: 0 free
+    # bytes is a measurement and the most important one this check can get, and
+    # a falsy test read it as "could not measure" and skipped the refusal.
+    if check_disk and free is not None and VENV_DISK_BYTES > free:
         raise capacity.TooBig(
             f"the policy sidecar's environment needs about "
             f"{VENV_DISK_BYTES / 1e9:,.0f} GB for its own torch, and "

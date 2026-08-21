@@ -34,6 +34,10 @@ from . import fmt
 # costs a few minutes. The accelerator rule only starts mattering above it.
 MIN_INTERESTING_GB = 20.0
 
+#: "the caller did not state a disk figure", which is NOT "the caller said it
+#: could not be measured". See `guard`.
+_UNSET = object()
+
 # How much bigger than VRAM a download may be before we ask. Four is roughly
 # the point past which no amount of offloading rescues the load.
 VRAM_MULTIPLE = 4.0
@@ -112,8 +116,20 @@ def _rebuild_too_big(message: str, overridable: bool) -> TooBig:
     return TooBig(message, overridable=overridable)
 
 
-def free_space(target: Path) -> tuple[Path, int]:
-    """(the volume we would write into, its free bytes). 0 when unknowable.
+def free_space(target: Path) -> tuple[Path, int | None]:
+    """(the volume we would write into, its free bytes). `None` when unknowable.
+
+    `None`, NOT 0. This used 0 as the "could not measure" sentinel, and a full
+    volume produces exactly that — `f_bavail * f_frsize` is 0 for a non-root
+    process on a full ext4, and `disk_usage().free` reports it faithfully. So
+    the one disk this module most needs to refuse for was indistinguishable
+    from a disk it could not read: `guard` wrote a log line saying the check
+    had not happened and SKIPPED the one rule the module header calls
+    non-overridable.
+
+    Downstream it was worse. `/api/ollama/size` and `/resolve` convert with
+    `free = measured or None` and answered `{"free_bytes": null, "ok": true}` —
+    a green "it fits" on a disk with zero bytes free.
 
     Walks up to the nearest directory that exists — on a fresh machine the
     cache has not been created yet, and `disk_usage` on a missing path raises
@@ -125,7 +141,7 @@ def free_space(target: Path) -> tuple[Path, int]:
     try:
         return probe, shutil.disk_usage(probe).free
     except OSError:
-        return probe, 0
+        return probe, None
 
 
 def ollama_models_dir() -> Path:
@@ -176,7 +192,7 @@ def guard(
     vram_gb: float | None,
     accel_name: str = "",
     confirm: bool = False,
-    free_override: int | None = None,
+    free_override: int | None = _UNSET,  # type: ignore[assignment]
 ) -> None:
     """Raise TooBig unless this download can fit and could plausibly load.
 
@@ -193,16 +209,27 @@ def guard(
     volume, measured = free_space(target)
     # `free_override` lets a caller state the disk situation — used by tests,
     # so a verdict does not depend on how full the developer's drive is.
-    free = measured if free_override is None else free_override
+    #
+    # `_UNSET` rather than `None` for "not stated", because `None` is now a
+    # real answer here: it is what `free_space` returns for a volume it could
+    # not read, and a caller has to be able to say that. Defaulting to `None`
+    # made "the caller said unmeasurable" indistinguishable from "the caller
+    # said nothing", so a test asking for the unmeasurable branch silently got
+    # the developer's own disk instead.
+    free = measured if free_override is _UNSET else free_override
 
-    if not free:
-        # `free_space` returns 0 for a volume it could not measure, and the
-        # refusal below is correctly SKIPPED — refusing on no evidence would
-        # ban a legitimate download, the same argument `need_bytes <= 0` makes
-        # above. What was missing is that nobody was told the check did not
-        # happen, so a download proceeded looking exactly like one that had
+    if free is None:
+        # `free_space` returns `None` for a volume it could not measure, and
+        # the refusal below is correctly SKIPPED — refusing on no evidence
+        # would ban a legitimate download, the same argument `need_bytes <= 0`
+        # makes above. What was missing is that nobody was told the check did
+        # not happen, so a download proceeded looking exactly like one that had
         # been cleared. The terminal is where this project already puts what a
         # reader needs and a response should not carry.
+        #
+        # `is None` rather than falsy: a disk with exactly 0 bytes free is a
+        # MEASUREMENT, and the most important one this branch could receive.
+        # Reading it as "unmeasurable" skipped the refusal it exists for.
         # Every interpolated value goes through `_one_line` first: a repo id
         # and a path both arrive from a request, and a newline in either
         # forges a log entry. `%r` was the first attempt and it is a real
@@ -217,7 +244,9 @@ def guard(
             _one_line(label),
         )
 
-    if free and need_bytes > free:
+    # `is not None`, so a disk with exactly 0 bytes free reaches the refusal
+    # instead of falling past it as "unknown".
+    if free is not None and need_bytes > free:
         where = volume.drive or volume
         raise TooBig(
             f"{label} needs {_human(need_gb)} and {where} has "

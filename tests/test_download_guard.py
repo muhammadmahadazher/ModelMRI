@@ -534,9 +534,16 @@ def test_a_refusal_survives_being_copied_and_pickled():
 
 
 def test_a_disk_that_could_not_be_measured_is_said_out_loud(caplog):
-    """`free_space` returns 0 for a volume it could not read, and the disk
+    """`free_space` returns `None` for a volume it could not read, and the disk
     refusal is correctly SKIPPED — refusing on no evidence would ban a
     legitimate download.
+
+    THE SENTINEL CHANGED, AND THE ARGUMENT DID NOT. This passed 0 for
+    "unmeasurable", which is also what a genuinely full volume reports —
+    `f_bavail * f_frsize` is exactly 0 for a non-root process on a full ext4.
+    So the one disk the guard most needed to refuse for was indistinguishable
+    from a disk it could not read, and the non-overridable rule was skipped
+    for it. `None` is unmeasurable now; 0 is full.
 
     What was missing is that nobody was told the check did not happen, so a
     download proceeded looking exactly like one that had been cleared.
@@ -552,7 +559,7 @@ def test_a_disk_that_could_not_be_measured_is_said_out_loud(caplog):
             Path("."),
             label="some/model",
             vram_gb=8.0,
-            free_override=0,
+            free_override=None,
             confirm=True,
         )
     said = caplog.text
@@ -584,7 +591,7 @@ def test_a_crafted_model_name_cannot_forge_a_log_line(caplog):
             Path("."),
             label=forged,
             vram_gb=8.0,
-            free_override=0,
+            free_override=None,
             confirm=True,
         )
 
@@ -594,3 +601,44 @@ def test_a_crafted_model_name_cannot_forge_a_log_line(caplog):
     # The name is still readable, escaped — dropping it would lose the one
     # thing that says WHICH download was not checked.
     assert "innocent/model" in written
+
+
+def test_a_disk_with_exactly_no_room_is_refused_rather_than_called_unknown():
+    """0 free bytes is a MEASUREMENT, and the most important one this guard can
+    receive.
+
+    `free_space` used 0 as its "could not measure" sentinel, and a genuinely
+    full volume reports exactly that — `f_bavail * f_frsize` is 0 for a
+    non-root process on a full ext4. So the one disk the guard most needed to
+    refuse for was indistinguishable from a disk it could not read, and
+    `guard` wrote a log line saying the check had not happened and skipped the
+    one rule this module's header calls non-overridable.
+    """
+    from pathlib import Path
+
+    with pytest.raises(capacity.TooBig) as caught:
+        capacity.guard(
+            50_000_000_000,
+            Path("."),
+            label="acme/big",
+            vram_gb=8.0,
+            free_override=0,
+        )
+
+    assert caught.value.overridable is False, "the disk rule has no override"
+    assert "free" in str(caught.value)
+
+
+def test_the_wire_reports_a_full_disk_as_full_rather_than_as_unknown():
+    """`free = measured or None` at the route boundary turned a real 0 into
+    `{"free_bytes": null, "ok": true}` — a green "it fits" on a disk with zero
+    bytes free. The two states are distinguished at the source now, so the
+    boundary no longer converts."""
+    from pathlib import Path
+
+    volume, free = capacity.free_space(Path("."))
+
+    assert volume is not None
+    assert free is None or isinstance(free, int)
+    if free is not None:
+        assert free >= 0, "a measurement, and 0 is one of them"
