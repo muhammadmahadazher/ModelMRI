@@ -1987,3 +1987,37 @@ def test_an_unknown_layout_reports_none_rather_than_guessing():
         pass
 
     assert decoder_blocks(Exotic()) is None
+
+
+def test_ws_answers_a_frame_that_is_not_json_rather_than_dropping_the_socket():
+    """`/ws/generate` had no arm for a malformed frame.
+
+    Measured against this file: `hello` raised JSONDecodeError, `[1,2]` raised
+    AttributeError on `.get`, and each escaped to uvicorn, which closes 1011
+    with no `error` and no `done`. Starlette routes the app-level `Exception`
+    handler exclusively through `ServerErrorMiddleware`, which returns early
+    for non-http scopes, so a websocket gets no backstop from it — and
+    `docs/reference/api.md` documents this endpoint as public API that answers
+    with an error frame. The shipped playground registers no `onclose`, so its
+    Generate button would stay disabled forever.
+    """
+    with client().websocket_connect("/ws/generate") as ws:
+        ws.send_text("hello")
+        answer = ws.receive_json()
+        assert answer["type"] == "error"
+        assert "not JSON" in answer["message"]
+
+        # AND THE SOCKET SURVIVES. One client's bad frame is not a reason to
+        # drop a connection the panel is still using.
+        ws.send_text(json.dumps({"prompt": "hi"}))
+        assert ws.receive_json()["type"] in ("error", "token", "done")
+
+
+def test_ws_answers_a_json_frame_that_is_not_an_object():
+    """`[1, 2]` parses fine and then raises AttributeError on `.get`."""
+    with client().websocket_connect("/ws/generate") as ws:
+        ws.send_text(json.dumps([1, 2]))
+        answer = ws.receive_json()
+        assert answer["type"] == "error"
+        assert "list" in answer["message"]
+        assert "`prompt`" in answer["message"]

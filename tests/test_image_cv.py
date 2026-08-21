@@ -1099,3 +1099,24 @@ def test_an_unrecognised_failure_hedges_rather_than_asserting():
 
     assert "MAY be" in said
     assert "modelmri serve" in said, "and point at where the real cause is"
+
+
+def test_a_query_past_the_end_of_the_head_is_refused_by_name(corners):
+    """`CVAttributeRequest` validates `ge=0` and `_as_int` is a type check, so
+    `query=999` reached `logits[:, 999, :]` and raised IndexError on the very
+    first, unoccluded pass — neither Refusal nor BadRequest, so a 500. Passing
+    `query=` also skips `predict()`, so nothing upstream had looked at the
+    shape."""
+    with pytest.raises(BadRequest) as caught:
+        cv.attribute(_eval(TinyDetector()), corners, query=999, patch=8, stride=8)
+
+    said = caught.value.sentence
+    assert "999" in said
+    assert "numbered 0 to" in said, "name the range that does exist"
+
+
+def test_a_query_inside_the_head_still_runs(corners):
+    """So the bound cannot become "refuse every named query"."""
+    got = cv.attribute(_eval(TinyDetector()), corners, query=1, patch=8, stride=8)
+
+    assert got.to_dict()["region_chosen_by"] == "caller"

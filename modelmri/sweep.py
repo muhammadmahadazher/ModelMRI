@@ -711,6 +711,24 @@ def load_prompts(path: str | Path) -> list[str]:
     target = Path(path)
     try:
         text = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # NOT an OSError, so the arm below never caught it. `UnicodeDecodeError`
+        # is a `ValueError`, and `cli.py` catches only `(BadRequest, Refusal)`
+        # — so pointing `file` at a `.safetensors` answered 500 on
+        # `/api/diff/models`, `/api/ground`, `/api/lens/tune` and
+        # `/api/features/evidence`, and printed a raw traceback in the
+        # terminal, while a malformed `.jsonl` line one branch down correctly
+        # answered 422. One wrong file type, two entirely different answers,
+        # depending on which byte offended.
+        #
+        # `datasets.py` already does exactly this, with a test pinning it;
+        # `sweep.load_prompts` was missed by that pass.
+        raise BadRequest(
+            f"{target.name} is not UTF-8 text. This reads a `.txt` (one prompt "
+            f"a line) or a `.jsonl` (one object a line with a `prompt` key). "
+            f"If it is a checkpoint or an archive, it belongs to a different "
+            f"reader."
+        ) from None
     except OSError as err:
         raise BadRequest(
             f"{target.name} could not be read ({err.strerror or type(err).__name__})"

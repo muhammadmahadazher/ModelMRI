@@ -3632,14 +3632,23 @@ def create_app(
         """
         from . import vla_actions
 
+        # `episodes()` INSIDE the try, not just `_reader()`. `discover()` reads
+        # `meta/info.json` and nothing else, so a LeRobot v2.x cache or an
+        # interrupted download passes it and refuses here instead — by name,
+        # with the directory it looked in. That Refusal escaped as a 500
+        # saying "Something inside ModelMRI failed rather than refusing",
+        # while the 409 carrying the real sentence sat one frame down. This is
+        # a preflight the panel calls on mount, so the panel went red pointing
+        # at the terminal.
         try:
             reader = _reader()
+            episodes = reader.episodes()
         except ImportError as err:
             return _missing_reader_dep(err)
         except Refusal as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
 
-        match = next((e for e in reader.episodes() if e.index == episode), None)
+        match = next((e for e in episodes if e.index == episode), None)
         if match is None:
             return JSONResponse(
                 {"error": f"episode {episode} is not in this dataset"},
@@ -3971,6 +3980,10 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=409)
 
         status = app.state.vla.status()
+        # `estimate` reaches `reader.episodes()`, which refuses by name on a
+        # cache `discover()` accepted — see /api/vla/actions/cost. Without a
+        # Refusal arm here that became a 500 on a route the panel calls on
+        # mount.
         try:
             return vla_sweep.estimate(
                 reader,
@@ -3980,6 +3993,8 @@ def create_app(
                 grid=status.grid or None,
                 occlusion_stride=occlusion_stride,
             )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
         except BadRequest as err:
             return JSONResponse({"error": err.sentence}, status_code=422)
 
@@ -4296,9 +4311,32 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/dataset")
+
+        # INSIDE the try, and the state assigned only after it succeeds.
+        #
+        # `discover()` reads `meta/info.json` and nothing else, so a LeRobot
+        # v2.x cache or an interrupted download passes it and fails one frame
+        # later in `summary()` -> `episodes()`, which refuses by name. That
+        # Refusal was raised outside every arm above: the route answered 500
+        # "Something inside ModelMRI failed rather than refusing", while the
+        # 409 with the real sentence sat unreachable. Reproduced.
+        #
+        # Worse, the two assignments happened BEFORE the failing call, so a
+        # reader that cannot answer was installed process-wide and `_reader()`
+        # would not re-discover it.
+        try:
+            summary = await asyncio.to_thread(reader.summary)
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/dataset")
         app.state.vla_reader = reader
         app.state.vla_dataset = req.repo_id
-        return await asyncio.to_thread(reader.summary)
+        return summary
 
     @app.get("/api/vla/episodes")
     async def vla_episodes(camera: str | None = None):
@@ -5814,7 +5852,46 @@ def create_app(
         await ws.accept()
         try:
             while True:
-                msg = json.loads(await ws.receive_text())
+                # PER MESSAGE, because a malformed frame is one client's
+                # mistake and not a reason to drop the socket. Measured
+                # against this file: `hello` raised JSONDecodeError, `[1,2]`
+                # raised AttributeError on `.get`, and a binary frame raised
+                # KeyError('text') — each of them escaping to uvicorn, which
+                # closes 1011 with no `error` and no `done` frame.
+                #
+                # Starlette routes the app-level `Exception` handler
+                # exclusively through `ServerErrorMiddleware`, which returns
+                # early for non-http scopes, so a websocket gets no backstop
+                # from it. And `docs/reference/api.md` documents this endpoint
+                # as public API that answers with an error frame; the shipped
+                # playground registers no `onclose`, so its Generate button
+                # would stay disabled forever.
+                try:
+                    raw = await ws.receive_text()
+                    msg = json.loads(raw)
+                except (json.JSONDecodeError, UnicodeDecodeError, KeyError):
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "message": (
+                                "that frame is not JSON. This socket takes one "
+                                "object a frame: "
+                                '{"prompt": "...", "max_new_tokens": 256}.'
+                            ),
+                        }
+                    )
+                    continue
+                if not isinstance(msg, dict):
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "message": (
+                                f"that frame is a {type(msg).__name__}, and this "
+                                f"socket takes a JSON object with a `prompt` key."
+                            ),
+                        }
+                    )
+                    continue
                 if not runtime.loaded:
                     await ws.send_json({"type": "error", "message": "no model loaded"})
                     continue
@@ -5896,5 +5973,24 @@ def create_app(
             # seventeen swallowed exceptions that came out of this file's
             # neighbours.
             pass
+        except Exception as err:
+            # The backstop the app-level handler cannot provide for a
+            # websocket. One error frame, then close — rather than uvicorn
+            # closing 1011 on a client that is waiting for `done`.
+            log.exception("/ws/generate failed", exc_info=err)
+            try:
+                await ws.send_json(
+                    {
+                        "type": "error",
+                        "message": (
+                            "Something inside ModelMRI failed rather than "
+                            "refusing. The full error is in the terminal "
+                            "running `modelmri serve`."
+                        ),
+                    }
+                )
+            except Exception:
+                # The socket is already gone. Nothing left to tell.
+                pass
 
     return app

@@ -2091,6 +2091,27 @@ def attribute(
             label, called_by_model = rows[0].label, True
         else:
             query = vision_attr._as_int(query, "query")
+            # BOUNDED against this head's own slot count. `_as_int` is a type
+            # check and `CVAttributeRequest` validates only `ge=0`, so a query
+            # past the end reached `logits[:, 999, :]` and raised `IndexError`
+            # on the very first, unoccluded pass — neither a Refusal nor a
+            # BadRequest, so a 500. And passing `query=` skips `predict()`
+            # entirely, so nothing upstream had looked at the shape.
+            #
+            # Read from the PROBE — `prediction` is None on this branch,
+            # which is the whole reason nothing had looked at the shape. A
+            # detector's slots are `logits.shape[1]`; a mask head's are
+            # `class_queries_logits.shape[1]`.
+            head = _tensor_of(
+                probe, "logits" if task == DETECT else "class_queries_logits"
+            )
+            slots = int(head.shape[1]) if head is not None and head.ndim >= 2 else 0
+            if slots and not 0 <= query < slots:
+                raise BadRequest(
+                    f"query {query} is not a slot on this head — it has "
+                    f"{slots}, numbered 0 to {slots - 1}. The prediction's own "
+                    f"list names the ones that scored anything."
+                )
             chosen = "caller"
             label, called_by_model = "", False
         if target is not None:

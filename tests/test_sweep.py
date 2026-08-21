@@ -429,3 +429,33 @@ def test_a_token_sweep_needs_no_head_counts():
     job = sweep.Job(model="m", prompts=["a", "b"], metric="tokens")
     out = sweep.plan(job, Runtime())
     assert out["passes_total"] > 0
+
+
+def test_a_file_that_is_not_utf8_is_refused_rather_than_500ing(tmp_path):
+    """`except OSError` does not catch `UnicodeDecodeError` — it is a
+    `ValueError`.
+
+    So pointing `file` at a `.safetensors` answered 500 on `/api/diff/models`,
+    `/api/ground`, `/api/lens/tune` and `/api/features/evidence`, and printed a
+    raw traceback in the terminal, while a malformed `.jsonl` line one branch
+    down correctly answered 422. One wrong file type, two entirely different
+    answers, depending on which byte offended.
+
+    `datasets.py` already handles this with a test pinning it; `load_prompts`
+    was missed by that pass.
+    """
+    binary = tmp_path / "model.safetensors"
+    binary.write_bytes(b"\x00\x01\x02\xff\xfe" * 64)
+
+    with pytest.raises(BadRequest) as caught:
+        sweep.load_prompts(binary)
+
+    said = caught.value.sentence
+    assert "not UTF-8" in said
+    assert ".txt" in said and ".jsonl" in said, "name what it does read"
+
+
+def test_a_missing_file_still_says_it_is_missing(tmp_path):
+    """The arm that already worked, so the new one cannot swallow it."""
+    with pytest.raises(BadRequest, match="could not be read"):
+        sweep.load_prompts(tmp_path / "nope.txt")
