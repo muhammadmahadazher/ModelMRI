@@ -10,6 +10,7 @@ import {
   ImageCvCost,
   ImageCvPrediction,
   ImageCvReadout,
+  ImageCvSegment,
 } from "./api";
 
 /**
@@ -70,7 +71,15 @@ export default function ImageCV({
    *  `region_chosen_by` to "model" or "caller". Passing the index the reader
    *  clicked is what makes it the second kind.
    */
-  async function run(what: "predict" | "readout" | "attribute", target?: number) {
+  async function run(
+    what: "predict" | "readout" | "attribute",
+    target?: number,
+    // A segment carries the handles the route takes for a mask: `region` for a
+    // per-pixel head, `query` for a mask-query one. Passed whole rather than
+    // unpacked here, so this component is not the thing deciding which head
+    // gets which — the segment says.
+    seg?: ImageCvSegment,
+  ) {
     if (!picture) return;
     setBusy(what);
     setErr("");
@@ -90,6 +99,11 @@ export default function ImageCV({
             // `undefined` means "the model's own top answer" and the response
             // says so. Not defaulted to 0 here: index 0 is a real class.
             target: target ?? null,
+            // Only one of these is ever set. A mask-query head is attributed
+            // through its slot and a per-pixel head through a region of the
+            // map, and `image_cv.attribute` refuses the wrong one by name.
+            query: seg?.query ?? null,
+            region: seg && seg.query === null ? seg.bbox : null,
           }),
         );
       }
@@ -220,6 +234,64 @@ export default function ImageCV({
                 above the score threshold.
               </p>
             )}
+            {/* WHAT A SEGMENTER SAYS. `classes_top` is only ever filled by the
+                classification path, so a per-pixel or mask-query head left it
+                empty and this panel rendered a header, an empty list and
+                "Click a class to see what supports it" with nothing to click —
+                no error, no refusal, an honest-looking answer of nothing.
+
+                Each row is a button for the same reason the class rows are:
+                `bbox` is the handle `/api/image/cv/attribute` takes as
+                `region`, so "what supports this region?" is reachable rather
+                than only the model's own largest one. */}
+            {pred.segments && pred.segments.length > 0 && (
+              <ol className="icv-classes">
+                {pred.segments.map((seg) => (
+                  <li key={`${seg.index}-${seg.query ?? "px"}`}>
+                    {/* A NEGATIVE index is the cells no query claimed — a real
+                        part of a mask head's output and not a class. There is
+                        no slot to hold fixed across a sweep for it, so it is
+                        named and not offered as a button: `image_cv.attribute`
+                        would refuse it, and a control that can only fail
+                        teaches a reader the tool is broken. */}
+                    {seg.index < 0 ? (
+                      <span className="mid icv-label">
+                        claimed by nothing
+                      </span>
+                    ) : (
+                      <button
+                        className="mid icv-label icv-pick"
+                        onClick={() => void run("attribute", undefined, seg)}
+                        disabled={busy !== ""}
+                        title={`Cover the picture and measure what supports "${seg.label || `class ${seg.index}`}"`}
+                      >
+                        {seg.label || `class ${seg.index}`}
+                      </button>
+                    )}
+                    <span className="icv-track">
+                      <span
+                        className="icv-bar"
+                        style={{ width: `${Math.max(seg.fraction * 100, 0.6)}%` }}
+                      />
+                    </span>
+                    <span className="mid icv-p">{percent(seg.fraction, 1)}</span>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {/* The cap, said rather than left to be inferred from a list that
+                stops. */}
+            {pred.segments_total > pred.segments.length && (
+              <p className="meta">
+                {pred.segments_total} labels are present in this mask; the{" "}
+                {pred.segments.length} largest are listed.
+              </p>
+            )}
+            {/* The server's own sentence about the whole prediction — every
+                sibling block renders its `means` and this one dropped it, so
+                the map-subsample disclosure and the segmentation summary went
+                nowhere. */}
+            <p className="meta icv-note">{pred.means}</p>
           </div>
         )}
 

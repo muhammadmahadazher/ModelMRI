@@ -1925,8 +1925,20 @@ export const imageCvCost = (
 export const imageCvAttribute = (body: {
   image: string;
   target?: number | null;
+  /** A detector's box slot, from `ImageCvBox.query`. */
   query?: number | null;
+  /** A per-pixel segmenter's region of the map, from `ImageCvSegment.bbox` —
+   *  (top, left, height, width) in map cells. `CVAttributeRequest` has always
+   *  taken it and this signature omitted it, so the segmenter half of the
+   *  route was unreachable from the typed client.
+   *
+   *  Only one of `query` and `region` is ever set: the two heads are
+   *  attributed through different reductions and the route refuses the wrong
+   *  one by name. */
+  region?: number[] | null;
   patch?: number;
+  stride?: number | null;
+  fill?: string;
   batch?: number;
 }) =>
   fetch("/api/image/cv/attribute", {
@@ -1947,10 +1959,40 @@ export interface ImageCvClass {
 }
 
 export interface ImageCvBox {
+  /** The head's query slot — the ONLY handle `/api/image/cv/attribute` takes
+   *  for a detector box. */
+  query: number;
   index: number;
   label: string;
   score: number;
-  box: number[];
+  /** `null` when the scoring convention could not be established. NOT a score
+   *  of zero — see `ImageCvPrediction.scoring_reason`. */
+  logit: number | null;
+  /** `box: number[]` used to be declared here and is in no response this
+   *  server can produce: `Box.to_dict` emits these two. Harmless only because
+   *  nothing read it — a trap for the next writer rather than a live bug. */
+  box_xyxy: number[];
+  box_cxcywh: number[];
+}
+
+/** One label present in a mask, and how much of the picture it claims. */
+export interface ImageCvSegment {
+  index: number;
+  label: string;
+  cells: number;
+  /** Of the MAP's cells, not the image's pixels — the map is coarser. */
+  fraction: number;
+  /** How decisively this label won its cells. The QUANTITY differs by head, so
+   *  never read it without `ImageCvPrediction.margin_kind`: a per-pixel head's
+   *  margin is the gap to the runner-up class, a mask head's is how far past
+   *  the threshold its mask sat. `null` when it could not be computed. */
+  mean_margin: number | null;
+  /** (top, left, height, width) in map cells — the handle `attribute` takes
+   *  as `region`. */
+  bbox: number[];
+  /** The query slot for a mask-query head, `null` for a per-pixel one. The two
+   *  are attributed through different reductions. */
+  query: number | null;
 }
 
 export interface ImageCvPrediction {
@@ -1968,6 +2010,38 @@ export interface ImageCvPrediction {
   labels_note: string;
   classes_top: ImageCvClass[];
   boxes?: ImageCvBox[];
+  /** What a SEGMENTER says. `classes_top` is only ever filled by the
+   *  classification path, so a segmenter left it empty — and this interface
+   *  declared 12 of the 25 keys `Prediction.to_dict` sends, omitting every
+   *  segmentation field. The panel rendered a header, an empty list, and
+   *  "Click a class to see what supports it" with nothing clickable: no
+   *  error, no refusal, an honest-looking answer of nothing.
+   *
+   *  `tsc --noEmit` cannot catch that — an interface narrower than the JSON is
+   *  legal TypeScript. */
+  segments: ImageCvSegment[];
+  /** How many segments the model produced, before `MAX_SEGMENTS` truncated
+   *  the list above. The cap disclosure. */
+  segments_total: number;
+  /** The per-cell winning label, as a grid. */
+  label_map: number[][];
+  map_height: number;
+  map_width: number;
+  /** How many image pixels one map cell covers. */
+  map_stride: number;
+  /** `null` for a head with no threshold. */
+  mask_threshold: number | null;
+  /** How the scores above were arrived at, and why — read from the checkpoint
+   *  where it says, derived where it does not. */
+  scoring: string;
+  scoring_reason: string;
+  /** Which quantity `mean_margin` is. Never read a margin without it. */
+  margin_kind: string;
+  queries_total: number;
+  top_k_requested: number;
+  forward_passes: number;
+  seconds: number;
+  means: string;
 }
 
 export interface ImageCvLayer {
