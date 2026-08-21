@@ -262,6 +262,23 @@ addopts = [
   "--dist", "loadfile",
 ]
 
+# A HANG HAS TO SAY WHERE IT HUNG.
+#
+# Under xdist a stuck worker produces nothing at all: it stops, the controller
+# waits, and the job sits until the runner's own ceiling kills it. Measured on
+# this branch's CI — two macOS jobs ran 150 and 360 minutes against a 5-8
+# minute baseline, and both were cancelled with zero output. Six hours of
+# runner time bought no information about which test stopped.
+#
+# `faulthandler_timeout` makes the interpreter dump every thread's stack after
+# this many seconds with no test completing, then carry on. So a deadlock
+# prints the two frames holding the locks, in the log, on the machine where it
+# actually reproduced — which is the only place some of these appear.
+#
+# 300s is comfortably above the slowest single test here (the image-model
+# fixtures build real pipelines) and far below any sane job ceiling.
+faulthandler_timeout = 300
+
 # Pass `-n 0` to turn all of that off, which is what you want when a test is
 # actually failing: serial output stays in order, `-x` stops where you expect,
 # and `--pdb` gets a terminal.

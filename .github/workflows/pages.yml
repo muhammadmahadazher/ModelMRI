@@ -36,6 +36,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: a docs build.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -100,6 +103,9 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: an upload.
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write

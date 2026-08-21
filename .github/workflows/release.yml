@@ -13,6 +13,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: builds and publishes the distributions.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:

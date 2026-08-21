@@ -22,6 +22,9 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: two languages, and CodeQL builds a database.
+    timeout-minutes: 25
     permissions:
       security-events: write
       packages: read

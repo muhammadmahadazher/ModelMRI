@@ -29,6 +29,9 @@ jobs:
   dependencies:
     name: Known vulnerabilities in what we depend on
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: resolves the tree and audits it — and this is the job that hung on a PyPI fetch.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -90,6 +93,9 @@ jobs:
   workflows:
     name: The workflows themselves
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: lints the workflow files.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -105,6 +111,9 @@ jobs:
   secrets:
     name: Nothing that should never have been committed
     runs-on: ubuntu-latest
+    # Bounded so a hang or a slow network fails fast rather than
+    # sitting until GitHub's six-hour ceiling: scans history for anything committed.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
