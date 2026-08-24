@@ -4240,6 +4240,92 @@ export interface HeadTypes {
 export const getHeadTypes = () =>
   fetch("/api/attention/types").then((r) => json<HeadTypes>(r));
 
+/** Where one head's columns sit in every projection it touches.
+ *
+ *  `n_kv_heads` is DERIVED from `v_proj`'s own width, never read from a config
+ *  field — several architectures do not set it, and on the ones that do it
+ *  would have to agree with this division anyway. Measured on Qwen3-1.7B:
+ *  16 query heads over 8 value heads, `head_dim` 128. */
+export interface HeadGeometry {
+  n_heads: number;
+  n_kv_heads: number;
+  head_dim: number;
+  d_model: number;
+  /** How many query heads share one key/value head. 1 is ordinary
+   *  multi-head attention, not a special case. */
+  group_size: number;
+}
+
+export interface OvToken {
+  token: string;
+  /** Relative to the vocabulary mean and at UNIT SCALE. These rank tokens;
+   *  they do not predict logit amounts, because the final norm's real scale
+   *  depends on a stream that does not exist here. */
+  score: number;
+}
+
+/** What a head writes into the stream when it attends to one token.
+ *
+ *  The only attention readout here that needs no prompt: it is a product of
+ *  weights, so it is about the HEAD rather than about the current run, and it
+ *  is the same every time. */
+export interface HeadOv {
+  layer: number;
+  head: number;
+  kv_head: number;
+  source_token_id: number;
+  source_token: string;
+  /** How many tokens the text you sent encodes to. Above 1, the readout is of
+   *  the FIRST of them — a head reads one token at a time. */
+  source_token_count: number;
+  geometry: HeadGeometry;
+  promotes: OvToken[];
+  suppresses: OvToken[];
+  exact: boolean;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+/** The eigenvalue readout of a head's OV circuit, over a NAMED sample.
+ *
+ *  The full circuit is vocabulary-by-vocabulary — 92 TB on Qwen3-1.7B — so
+ *  this is measured over a sample and carries its size, its seed, and how
+ *  much of the spectrum sits off the real line. There is deliberately no
+ *  label: a fraction near chance is not a copying head, and a fraction that
+ *  is not near chance is still a claim about the tokens nobody drew. */
+export interface HeadOvSpectrum {
+  layer: number;
+  head: number;
+  kv_head: number;
+  geometry: HeadGeometry;
+  n_sampled: number;
+  n_vocab: number;
+  seed: number;
+  /** True when the vocabulary is smaller than the sample asked for. The cap
+   *  is REPORTED, not silently applied. */
+  sample_capped: boolean;
+  positive_fraction: number;
+  positive: number;
+  trace: number;
+  /** Share of the spectrum's mass off the real line. A real non-symmetric
+   *  matrix has complex eigenvalues, so a high value means
+   *  `positive_fraction` describes rotation as much as sign. */
+  imaginary_mass: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const getHeadOv = (layer: number, head: number, token: string, topK = 10) =>
+  fetch(
+    `/api/attention/ov?layer=${layer}&head=${head}` +
+      `&token=${encodeURIComponent(token)}&top_k=${topK}`,
+  ).then((r) => json<HeadOv>(r));
+
+export const getHeadOvSpectrum = (layer: number, head: number, seed = 0) =>
+  fetch(`/api/attention/ov/spectrum?layer=${layer}&head=${head}&seed=${seed}`).then(
+    (r) => json<HeadOvSpectrum>(r),
+  );
+
 /** One component's direct push on the predicted token, in logits. */
 export interface DirectContribution {
   name: string;

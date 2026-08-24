@@ -601,6 +601,24 @@ export async function demoFetch(
     );
   }
   if (p === "/api/attention/types") return recorded("types");
+  // WEIGHTS, not activations, and that is exactly what a `.mri` does not
+  // carry. Every other panel in this demo replays a recording of what the
+  // model DID; these two read what the model IS, and a recording of one
+  // cannot be turned into the other by any amount of baking. Refused by name
+  // rather than answered from a fixture: numbers invented here would be the
+  // one place on this page where "read off the weights" was not true, and
+  // the sentence would still say it was.
+  if (p === "/api/attention/ov" || p === "/api/attention/ov/spectrum") {
+    return refuse(
+      501,
+      `This reads the head's own weight matrices, and a .mri carries ` +
+        `activations — what the model did — rather than the weights that did ` +
+        `it. There is nothing here to read and nothing honest to put in its ` +
+        `place. Installed, this answers for any head of any model you have, ` +
+        `without a prompt and without a forward pass, because it is ` +
+        `arithmetic on the checkpoint.`,
+    );
+  }
   if (p === "/api/attention/direct") return recorded("direct");
   if (p === "/api/attention/ablate/estimate") return recorded("ablate_estimate");
   if (p === "/api/telemetry") return recorded("telemetry");

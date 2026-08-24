@@ -210,8 +210,12 @@ def geometry(block, *, n_heads: int, d_model: int) -> HeadGeometry:
         head_dim = ablate.head_geometry(block, n_heads)
     except ablate.AblationError as err:
         # The sentence is already authored and already right — only its type is
-        # wrong for a route boundary.
-        raise Refusal(str(err)) from None
+        # wrong for a route boundary. `AblationError` is this project's own,
+        # raised nowhere with anything but a written sentence, which is why
+        # the seven sites in `runtime.py` relay it exactly this way and carry
+        # the same mark. `test_no_machine_leaks` caught this one unmarked,
+        # which is the guard doing its job on the person who was enforcing it.
+        raise Refusal(str(err)) from err  # leak-ok: authored, see test_no_machine_leaks
 
     v_proj = _named(attn, _V_NAMES)
     if v_proj is None:

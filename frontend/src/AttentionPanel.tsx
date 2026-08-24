@@ -23,6 +23,7 @@ import {
 import ArcCanvas from "./ArcCanvas";
 import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
+import HeadWiring from "./HeadWiring";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
@@ -820,6 +821,16 @@ export default function AttentionPanel({
               feeding a later head. In its own panel either number would read
               as the whole story. */}
           {!replay && <DirectPanel epoch={epoch} />}
+          {/* Inside this block too, and after the causal ranking rather than
+              before it, because the order is the argument. The ranking says
+              what this head DID on this generation; this says what it is
+              WIRED to do, on any generation. A reader who meets the second
+              first will read the first as confirming it, and they are not the
+              same kind of claim — a head can be wired to copy and be
+              irrelevant here, or carry the answer with no clean story in its
+              weights at all. A recording carries activations rather than
+              weights, so it has nothing to read. */}
+          {!replay && <HeadWiring layer={layer} head={head} disabled={ranking} />}
         </div>
       )}
       {/* The server's own sentence, unwrapped. Several of the things this

@@ -7774,3 +7774,80 @@ button:disabled,
 @media (prefers-reduced-motion: no-preference) {
   .image-fit .fit-dot { transition: background var(--dur-2, 160ms) var(--ease, ease); }
 }
+
+/* ------------------------------------------------- what a head is wired to do
+
+   A SUB-SECTION, and the visual weight is the argument. The ranking above it
+   is a causal measurement on this generation; this is weight arithmetic about
+   the head itself. They are not the same kind of claim, so they must not read
+   as one continuous list — but this is also not a second panel, because in its
+   own panel either number would read as the whole story. Hence a heading one
+   step quieter than `.sect h2`, and a rule that is a hairline rather than the
+   measurement grid: the same family, deliberately subordinate. */
+.sect.sub { margin-top: 18px; margin-bottom: 8px; }
+.sect.sub h3 {
+  font-family: var(--font-sans);
+  font-size: var(--t-2xs, var(--t-xs));
+  margin: 0;
+  letter-spacing: 0.14em;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-mute);
+}
+.sect.sub .rule {
+  flex: 1;
+  height: 1px;
+  align-self: center;
+  background: var(--line);
+  background-image: none;
+}
+
+.head-wiring { margin-top: 4px; }
+.head-wiring .share-note { min-width: 14ch; max-width: 22ch; }
+
+.ov-readout {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+
+/* Two columns where there is room and one where there is not. Promoted and
+   suppressed are a PAIR — a token pushed toward means little without what is
+   pushed away — so they are never separated onto different scroll positions
+   on a wide screen, and stack in reading order on a narrow one. */
+.ov-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: 8px 20px;
+  margin-top: 8px;
+}
+
+.ov-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-variant-numeric: tabular-nums;
+}
+.ov-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--line) 45%, transparent);
+}
+.ov-list li:last-child { border-bottom: 0; }
+/* A token can be whitespace, a CJK fragment or a byte-fallback glyph, and all
+   three are real answers. The border makes an empty-looking cell legible as a
+   token rather than as a rendering failure. */
+.ov-list code {
+  border: 1px solid color-mix(in oklab, var(--line) 60%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
+  min-width: 1.5ch;
+  white-space: pre;
+}
+
+.meta.warn { color: var(--color-pop); }
