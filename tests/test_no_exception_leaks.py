@@ -510,9 +510,9 @@ def test_no_cancel_or_price_sink_publishes_str_of_the_exception():
     """
     import re
 
-    source = (
-        Path(__file__).resolve().parents[1] / "modelmri" / "server.py"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "modelmri" / "server.py").read_text(
+        encoding="utf-8"
+    )
     for slot in (
         r'"cancelled": True, "message": ([^}]+)',
         r'doc\["cost"\] = \{"error": ([^,]+),',
