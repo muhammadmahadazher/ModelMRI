@@ -1501,7 +1501,16 @@ def create_app(
     @app.post("/api/model/prompt")
     async def prompt(req: PromptRequest):
         if not runtime.loaded:
-            return JSONResponse({"error": "no model loaded"}, status_code=409)
+            # The sentence ten other sites already use, not the lowercase
+            # fragment this had. "no model loaded" is the MACHINE-READABLE
+            # status reason — deliberately lowercase, pinned by a test — and
+            # putting it in a human-facing refusal slot published a field name
+            # as advice. It is also the route the OTHER refusals point at
+            # ("Generate something first"), so a reader following one landed
+            # on a second refusal that told them nothing and offered no step.
+            return JSONResponse(
+                {"error": "No model loaded — pick one first."}, status_code=409
+            )
 
         # A generation you asked for in this app is a run, and the agents
         # panel is where runs go. See `_Recording` for why `commit` gates it.
@@ -6056,7 +6065,16 @@ def create_app(
                     )
                     continue
                 if not runtime.loaded:
-                    await ws.send_json({"type": "error", "message": "no model loaded"})
+                    # Same sentence as the POST route above and the ten
+                    # `Refusal` sites, for the same reason: this socket is how
+                    # the Playground generates, so it is the one an ordinary
+                    # click reaches.
+                    await ws.send_json(
+                        {
+                            "type": "error",
+                            "message": "No model loaded — pick one first.",
+                        }
+                    )
                     continue
 
                 queue: asyncio.Queue[str | None] = asyncio.Queue()

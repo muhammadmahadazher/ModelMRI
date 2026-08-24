@@ -93,3 +93,44 @@ def test_a_single_file_that_is_not_a_gguf_is_not_a_huggingface_model():
     (plain / "config.json").write_text("{}", encoding="utf-8")
     assert behavdiff.side(str(plain)).kind == "hf"
     assert behavdiff.side(str(d)).kind == "gguf"
+
+
+def test_the_two_generate_paths_refuse_in_words_rather_than_a_field_name():
+    """MEASURED: `POST /api/model/prompt` and `/ws/generate` with nothing
+    loaded both answered the bare fragment "no model loaded".
+
+    That string is the MACHINE-READABLE status reason — deliberately
+    lowercase, pinned by a test on `/api/attention/meta` — and putting it in a
+    human-facing refusal slot publishes a field name as advice. It is also the
+    route the other refusals point AT: ten sites say "Generate something
+    first", and a reader who did exactly that landed here and got a fragment
+    with no next step in it.
+
+    Both paths now carry the sentence the ten `Refusal` sites already use. The
+    `/v1` surface keeps its own ("POST /api/model/load first") on purpose —
+    an OpenAI-compatible client has no picker to be sent to.
+    """
+    pytest.importorskip("fastapi")
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    said = "No model loaded — pick one first."
+    client = TestClient(create_app())
+
+    r = client.post("/api/model/prompt", json={"prompt": "hi"})
+    assert r.status_code == 409
+    assert r.json()["error"] == said
+
+    with client.websocket_connect("/ws/generate") as ws:
+        ws.send_text(_json.dumps({"prompt": "hi"}))
+        frame = ws.receive_json()
+    assert frame["type"] == "error"
+    assert frame["message"] == said
+
+    # And the machine-readable reason is still lowercase where it belongs, so
+    # this did not simply move the collision.
+    meta = client.get("/api/attention/meta").json()
+    assert meta["reason"] != said
