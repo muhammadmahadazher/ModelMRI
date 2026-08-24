@@ -39,6 +39,22 @@ half the heads. The geometry is read off the projections' own widths — never
 `n_kv_heads` is derived from `v_proj`'s width and the measured `head_dim`
 rather than trusted from a config field that several architectures do not set.
 
+MEASURED on the real checkpoint, through `/api/attention/ov` on a loaded
+Qwen3-1.7B: geometry `{n_heads: 16, n_kv_heads: 8, head_dim: 128,
+d_model: 2048, group_size: 2}`, read entirely off the projections, with no
+config field consulted. Heads 0 and 1 both map to value head 0 and head 2 to
+value head 1 — `h // 2`, as grouped-query attention requires — while heads 0
+and 1 still promote different tokens, because they share `W_V` and not `W_O`.
+That difference is the evidence the slice is right: a version that indexed
+`W_V` by the query head would give head 1 head 1's values, which do not exist,
+and a version that ignored grouping entirely would make the two identical.
+
+The spectrum on that same model and head reports 243 of 512 sampled
+eigenvalues positive (47.5%) with `imaginary_mass` 0.5627 — over half the
+spectrum's mass off the real line. That is what an ordinary head looks like,
+and it is why there is no label: 47.5% is indistinguishable from chance, and
+a "copying score" attached to it would be a verdict about nothing.
+
 ## What this refuses to say
 
 **No "copying score" verdict, and no induction label.** The spectrum readout
