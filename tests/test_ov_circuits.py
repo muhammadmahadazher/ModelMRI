@@ -26,6 +26,8 @@ against but the code itself.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -147,9 +149,9 @@ def test_the_ov_factors_are_this_head_and_its_own_value_head():
         assert torch.allclose(
             w_o, w_o_all[:, head * HEAD_DIM : (head + 1) * HEAD_DIM]
         ), head
-        assert torch.allclose(
-            w_v, w_v_all[kv * HEAD_DIM : (kv + 1) * HEAD_DIM, :]
-        ), head
+        assert torch.allclose(w_v, w_v_all[kv * HEAD_DIM : (kv + 1) * HEAD_DIM, :]), (
+            head
+        )
 
     # And the heads in one group really do share a value factor — which is the
     # fact that makes the wrong slice invisible on the first group and wrong on
@@ -246,7 +248,9 @@ def test_the_vocabulary_readout_is_the_product_it_claims_to_be(monkeypatch):
         best = torch.topk(expect, 3)
 
     assert said["promotes"][0]["token"] == f"<{int(best.indices[0])}>"
-    assert said["promotes"][0]["score"] == pytest.approx(float(best.values[0]), abs=1e-4)
+    assert said["promotes"][0]["score"] == pytest.approx(
+        float(best.values[0]), abs=1e-4
+    )
     assert said["exact"] is True
     assert said["kv_head"] == 1
     # The caveat is not optional chrome: at unit scale these RANK tokens, and a
@@ -332,3 +336,54 @@ def test_a_model_with_no_embedding_table_says_what_still_works():
 
     with pytest.raises(Refusal, match="ablate the head and measure"):
         ov_circuits.ov_spectrum(NoEmbed(), block(n_heads=4, n_kv_heads=4), 0, n_heads=4)
+
+
+# ------------------------------------------------------ over the wire
+
+
+def _client():
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    return TestClient(create_app())
+
+
+def test_the_routes_refuse_without_a_model_rather_than_500():
+    """Both are weight-space readouts, so "nothing loaded" is the ordinary
+    resting state of the panel they sit in — and a 500 there would say the tool
+    is broken when the honest answer is that there are no weights to read."""
+    c = _client()
+    for url in (
+        "/api/attention/ov?layer=0&head=0&token=Paris",
+        "/api/attention/ov/spectrum?layer=0&head=0",
+    ):
+        r = c.get(url)
+        assert r.status_code == 409, (url, r.status_code)
+        assert r.json()["error"] == "No model loaded — pick one first.", url
+
+
+def test_a_missing_source_token_is_the_callers_mistake_not_the_models():
+    """422, not 409, and BEFORE the model check: asking what a head writes
+    when it attends to nothing has no answer whether or not weights are
+    resident, and answering "no model loaded" would send the reader to load
+    one and get the same emptiness back."""
+    c = _client()
+    for query in ("", "token=", "token=%20%20"):
+        r = c.get(f"/api/attention/ov?layer=0&head=0&{query}")
+        assert r.status_code == 422, query
+        assert "Name a token" in r.json()["error"], query
+
+
+def test_the_spectrum_default_comes_from_the_module_not_the_route():
+    """`n_samples=0` means "whatever the module uses", so the route cannot
+    grow a second default that drifts from it. Checked at the module rather
+    than over the wire, because the wire needs weights."""
+    assert ov_circuits.SPECTRUM_SAMPLE >= 2
+    source = (
+        Path(__file__).resolve().parents[1] / "modelmri" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "n_samples or ov_circuits.SPECTRUM_SAMPLE" in source, (
+        "the runtime stopped deferring to the module's own default"
+    )

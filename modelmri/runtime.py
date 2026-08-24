@@ -3115,6 +3115,125 @@ class ModelRuntime:
             self._last_types = {**out, "epoch": self.epoch}
             return out
 
+    def _weights_only(self, what: str):
+        """The three states in which a weight-space readout has no weights.
+
+        Shared by the OV readouts below, because they are the only measurements
+        here that need a MODEL and nothing else — no generation, no prompt, not
+        even a forward pass. A recording carries activations rather than
+        weights and Ollama never hands the weights out at all, so both are
+        refused for a reason a reader can act on rather than for the generic
+        "generate something first" that fits every other panel.
+        """
+        if self.replay is not None:
+            raise Refusal(
+                f"This is a recording, and {what} is read off the model's "
+                f"WEIGHTS. A `.mri` carries activations — what the model did — "
+                f"rather than the weights that did it. Load the model itself "
+                f"and this answers without a prompt."
+            )
+        if self.backend == "ollama":
+            raise Refusal(
+                f"Ollama serves text and never hands out the weights, so "
+                f"{what} cannot be read from a model it is holding. The same "
+                f"checkpoint pulled from the Hub answers this."
+            )
+        if self.model is None:
+            raise Refusal("No model loaded — pick one first.")
+
+        cfg = text_config(self.model.config)
+        n_heads = getattr(cfg, "num_attention_heads", None)
+        if n_heads is None:
+            raise Refusal(
+                f"this architecture publishes no attention heads, so there is "
+                f"no {what} to read — state-space and RNN models reach here."
+            )
+        return int(n_heads)
+
+    def head_ov_vocabulary(
+        self, layer: int, head: int, token: str | int, top_k: int = 10
+    ) -> dict:
+        """What one head writes into the stream when it attends to one token.
+
+        Exact, and needs no prompt: it is `W_U @ W_O[h] @ W_V[kv(h)] @ e`, a
+        product of weights. That is what makes it worth having beside
+        `ablate_heads`, which answers the same question about THIS generation
+        and gives a different answer for the next one.
+        """
+        from . import ov_circuits
+
+        with self._lock:
+            n_heads = self._weights_only("what a head writes")
+            block = self._block(layer)
+            ids = (
+                [int(token)]
+                if isinstance(token, int) and not isinstance(token, bool)
+                else self.tokenizer.encode(str(token), add_special_tokens=False)
+            )
+            if not ids:
+                raise BadRequest(
+                    f"{token!r} encodes to no tokens at all, so there is no "
+                    f"embedding to push through the head. Try a word rather "
+                    f"than whitespace, or send a token id."
+                )
+            # The FIRST token of a multi-token word, said out loud below rather
+            # than silently. A head reads one token at a time, so "what does it
+            # do with `unbelievable`" has no single answer when the tokenizer
+            # splits it into three.
+            out = ov_circuits.ov_vocabulary(
+                self.model,
+                self.tokenizer,
+                block,
+                head,
+                n_heads=n_heads,
+                source_token_id=ids[0],
+                top_k=top_k,
+            )
+            out["layer"] = layer
+            out["source_token_count"] = len(ids)
+            if len(ids) > 1:
+                out["means"] += (
+                    f" The text you sent is {len(ids)} tokens and this is the "
+                    f"first of them — a head reads one token at a time, so "
+                    f"there is no single answer for the whole word."
+                )
+            out["receipt"] = self.receipt(
+                "head_ov", layer=layer, head=head, token=str(token), top_k=top_k
+            )
+            return out
+
+    def head_ov_spectrum(
+        self, layer: int, head: int, n_samples: int = 0, seed: int = 0
+    ) -> dict:
+        """The eigenvalue readout of one head's OV circuit, over a named sample.
+
+        `n_samples=0` means "the module's own default", which it reports —
+        rather than this route inventing a second default that could drift
+        from it.
+        """
+        from . import ov_circuits
+
+        with self._lock:
+            n_heads = self._weights_only("a head's OV circuit")
+            block = self._block(layer)
+            out = ov_circuits.ov_spectrum(
+                self.model,
+                block,
+                head,
+                n_heads=n_heads,
+                n_samples=n_samples or ov_circuits.SPECTRUM_SAMPLE,
+                seed=seed,
+            )
+            out["layer"] = layer
+            out["receipt"] = self.receipt(
+                "head_ov_spectrum",
+                layer=layer,
+                head=head,
+                n_samples=out["n_sampled"],
+                seed=seed,
+            )
+            return out
+
     def direct_attribution(self, position: int | None = None, top_k: int = 40) -> dict:
         """How many logits each head and MLP put behind the predicted token.
 

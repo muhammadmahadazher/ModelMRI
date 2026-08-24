@@ -2220,6 +2220,66 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/attention/types")
 
+    @app.get("/api/attention/ov")
+    async def head_ov(layer: int = 0, head: int = 0, token: str = "", top_k: int = 10):
+        """What one head writes into the stream when it attends to one token.
+
+        THE ONLY MEASUREMENT HERE THAT NEEDS NO PROMPT. Every other attention
+        route answers a question about the current generation and gives a
+        different answer for the next one; this is a product of weights, so it
+        is the same every time and it is about the head rather than about the
+        run. That is the whole reason it sits beside the ranking instead of
+        inside it.
+        """
+        if not token.strip():
+            return JSONResponse(
+                {
+                    "error": (
+                        "Name a token for the head to read. This answers what "
+                        "head H writes when it attends to a particular token, "
+                        "so there is no answer without one — try a word the "
+                        "prompt you are looking at contains."
+                    )
+                },
+                status_code=422,
+            )
+        try:
+            return await asyncio.to_thread(
+                runtime.head_ov_vocabulary, layer, head, token, top_k
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/ov")
+
+    @app.get("/api/attention/ov/spectrum")
+    async def head_ov_spectrum(
+        layer: int = 0, head: int = 0, n_samples: int = 0, seed: int = 0
+    ):
+        """The eigenvalue readout of one head's OV circuit, over a named sample.
+
+        `n_samples=0` asks for the module's own default rather than a second
+        one written here that could drift from it; whatever is used comes back
+        in `n_sampled`.
+
+        Read the sentence, not the fraction: the full circuit is
+        vocabulary-by-vocabulary and cannot be formed, so this is measured over
+        a SAMPLE and carries its size, its seed and how much of the spectrum
+        sits off the real line.
+        """
+        try:
+            return await asyncio.to_thread(
+                runtime.head_ov_spectrum, layer, head, n_samples, seed
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/ov/spectrum")
+
     @app.get("/api/attention/direct")
     async def direct_attribution(position: int | None = None, top_k: int = 40):
         """Direct logit attribution, beside the ablation ranking.

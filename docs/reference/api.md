@@ -73,6 +73,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/attention/diff` | Attention Diff |
 | `GET` | `/api/attention/direct` | Direct Attribution |
 | `GET` | `/api/attention/meta` | Attention Meta |
+| `GET` | `/api/attention/ov` | Head Ov |
+| `GET` | `/api/attention/ov/spectrum` | Head Ov Spectrum |
 | `GET` | `/api/attention/types` | Head Types |
 | `GET` | `/api/vla/attention` | Vla Attention |
 | `GET` | `/api/vla/attention/meta` | Vla Attention Meta |
