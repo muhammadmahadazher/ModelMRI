@@ -303,6 +303,37 @@ def test_an_empty_episode_refuses():
         va.plan_frames(0)
 
 
+def test_a_negative_stride_is_refused_rather_than_quietly_made_a_one():
+    """MEASURED on a 161-frame episode: `stride=0` priced 54 forward passes
+    and `stride=-1` ran 161 — 2.98x the cost the preflight exists to quote —
+    while the response reported `stride: 1`, a number nobody had asked for.
+
+    `-1` is truthy, so it took the "the caller set one" branch, and
+    `max(1, -1)` made it a 1 without saying so. The sibling POST route bounds
+    the same field at `ge=0`; this is the GET query param catching up.
+    """
+    with pytest.raises(BadRequest, match="step backwards"):
+        va.plan_frames(161, stride=-1)
+
+
+def test_a_bool_is_not_a_stride():
+    """`isinstance(True, int)` is True, so `stride=True` came out of the same
+    branch as a deliberate 1 and measured all 161 frames of the episode
+    above."""
+    for value in (True, False, 2.5, "3"):
+        with pytest.raises(BadRequest, match="not a number of frames"):
+            va.plan_frames(161, stride=value)
+
+
+def test_the_planner_still_reports_the_stride_it_actually_used():
+    """The half that must not move: a positive stride is honoured exactly, and
+    0 still means "choose one that fits the budget"."""
+    frames, stride = va.plan_frames(161, stride=3)
+    assert stride == 3 and len(frames) == 54
+    frames, stride = va.plan_frames(161, stride=0)
+    assert stride == 3 and len(frames) == 54
+
+
 # ------------------------------------------------------------------- spread
 
 

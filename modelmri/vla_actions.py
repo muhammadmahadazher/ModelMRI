@@ -580,9 +580,26 @@ def plan_frames(length: int, *, stride: int = 0) -> tuple[list[int], int]:
     """
     if length <= 0:
         raise BadRequest("this episode has no frames.")
-    chosen = (
-        max(1, int(stride))
-        if stride
-        else max(1, math.ceil(length / MAX_FRAMES_PER_RUN))
-    )
+    # A NEGATIVE stride is refused rather than clamped, and the reason is what
+    # the caller does with the answer. MEASURED on a 161-frame episode:
+    # `stride=0` priced 54 forward passes; `stride=-1` ran 161 and reported
+    # `stride: 1` — 2.98x the cost this route exists to quote, with the
+    # response naming a stride nobody asked for. `-1` is truthy, so it took
+    # the "the caller set one" branch and `max(1, -1)` quietly made it a 1.
+    #
+    # Bool first, because `isinstance(True, int)` is True and `stride=True`
+    # came out of the same branch as a deliberate 1.
+    if isinstance(stride, bool) or not isinstance(stride, int):
+        raise BadRequest(
+            f"a stride of {stride!r} is not a number of frames. Send 0 to let "
+            f"this choose one that fits the work budget, or a whole number of "
+            f"frames to set it yourself."
+        )
+    if stride < 0:
+        raise BadRequest(
+            f"a stride of {stride} would step backwards through the episode. "
+            f"Send 0 to let this choose one that fits the work budget, or a "
+            f"positive number of frames to set it yourself."
+        )
+    chosen = stride if stride else max(1, math.ceil(length / MAX_FRAMES_PER_RUN))
     return list(range(0, length, chosen)), chosen
