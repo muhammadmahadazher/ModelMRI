@@ -382,6 +382,42 @@ class LeRobotV3Reader:
             return []
         return [str(n) for n in names]
 
+    def frames_readable(self) -> tuple[bool, str]:
+        """Whether a picture can be produced at all, and why not when it cannot.
+
+        Answered WITHOUT decoding anything, because it has to be answerable
+        before the panel draws. Two things stop a frame from arriving and
+        neither is visible from the episode table: `av` is imported the first
+        time a frame is decoded, and the videos may simply not be in the
+        snapshot.
+
+        MEASURED on a machine with pyarrow and no av: `GET /api/vla/episodes`
+        answered 200 with 206 episodes and nothing to say the pictures were
+        unreachable, so the frontend swapped in the full panel — an episode
+        picker, a frame scrubber, a "load vision tower" button — none of which
+        can ever produce an image, while every actual frame request answered
+        409 naming the missing package. The refusal WAS shown, at the bottom,
+        under four sub-panels that should never have rendered.
+
+        `""` for the reason when readable, so the caller has one field to
+        test rather than two that can disagree.
+        """
+        try:
+            import av  # noqa: F401
+        except ImportError as err:
+            return False, (
+                f"Decoding this dataset's video needs `av`, which is not "
+                f"installed on this machine ({err.name or 'av'} is missing). "
+                f"Install it with `pip install modelmri[vla]`. The episode "
+                f"table below was read from the parquet metadata and is real; "
+                f"no picture from it can be shown until then."
+            )
+        try:
+            self._video_file()
+        except Refusal as err:
+            return False, err.sentence
+        return True, ""
+
     def summary(self) -> dict:
         eps = self.episodes()
         shape = (
@@ -389,6 +425,7 @@ class LeRobotV3Reader:
             .get(self._video_key, {})
             .get("shape", [96, 96, 3])
         )
+        readable, why = self.frames_readable()
         return {
             "repo_id": self.repo_id,
             "fps": self.fps,
@@ -397,6 +434,12 @@ class LeRobotV3Reader:
             "image_shape": list(shape),
             "n_episodes": len(eps),
             "episodes": [e.__dict__ for e in eps],
+            # Whether anything in this table can be SEEN. The episode list is
+            # read from parquet and arrives fine on a machine that cannot
+            # decode a single frame, so a caller that gates on the list alone
+            # draws a picture panel that can only ever refuse.
+            "frames_readable": readable,
+            "frames_reason": why,
         }
 
     # ---------- frames ----------

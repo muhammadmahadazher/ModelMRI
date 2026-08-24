@@ -184,6 +184,44 @@ def test_a_frame_that_will_not_decode_is_absent_not_scored_zero():
     assert "ABSENT from the ranking rather than scored zero" in out.means()
 
 
+def test_a_machine_with_no_video_decoder_is_refused_not_measured():
+    """A missing decoder is not a property of one frame. `av` is imported the
+    first time a frame is actually decoded, so a machine without it fails
+    EVERY frame identically — and the per-frame handler turned that into a
+    completed run.
+
+    MEASURED on a machine with pyarrow and no av: `POST /api/vla/sweep
+    {"frame_stride": 1e12}` came back 200 with `rows: []`, a `failed` table of
+    `why: "ModuleNotFoundError"`, and the summary "0 of 25650 frames (0.0%)
+    across 0 episodes, measured by ATTENTION_ENTROPY" — a measurement of
+    nothing, reported as a measurement. The route has carried the 409 naming
+    the missing package all along; it was unreachable from inside the loop.
+    """
+
+    class NoDecoder(FakeReader):
+        def raw_frame(self, episode, t):
+            raise ModuleNotFoundError("No module named 'av'", name="av")
+
+    with pytest.raises(ImportError) as caught:
+        sw.run(FakeHandle(), NoDecoder(), "attention_entropy", frame_stride=25)
+    assert caught.value.name == "av"
+
+
+def test_one_broken_frame_still_does_not_take_down_the_sweep():
+    """The half that must not move with it: a decode failure on SOME frames is
+    still per-frame, and an ImportError raised by the METRIC rather than the
+    decoder must not be mistaken for a missing decoder either — so this checks
+    the ordinary failure path still ranks what it could read."""
+    out = sw.run(
+        FakeHandle(),
+        FakeReader(broken=[(2, 0)]),
+        "attention_entropy",
+        frame_stride=25,
+    )
+    assert out.n_frames == 23
+    assert out.n_failed == 1
+
+
 def test_a_sweep_can_be_cancelled_and_still_reports_what_it_covered():
     """A partial sweep is still a ranking over what it covered, and it says
     how much that was."""

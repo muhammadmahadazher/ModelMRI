@@ -172,7 +172,16 @@ export default function VLAPanel() {
     }
   }
 
-  if (!ds) {
+  // `frames_readable`, not just `ds`. The episode table is read from the
+  // parquet metadata and arrives perfectly well on a machine that cannot
+  // decode a single frame, so gating on `ds` alone swapped in the whole panel
+  // — a 200-entry episode picker, a frame scrubber, a "load vision tower"
+  // button — none of which can ever produce a picture, while every actual
+  // frame request answered 409. The refusal WAS shown, at the bottom, under
+  // four sub-panels that should never have rendered at all.
+  const noPictures = ds !== null && !ds.frames_readable;
+
+  if (!ds || noPictures) {
     return (
       <div className="panel">
         <div className="sect">
@@ -184,8 +193,21 @@ export default function VLAPanel() {
             <RestingSketch kind="vla" />
           <p>
             Watch what a real robot policy looks at, frame by frame, on recorded
-            episodes. Nothing is loaded yet.
+            episodes.{" "}
+            {noPictures
+              ? "This dataset opened; its video cannot be decoded here."
+              : "Nothing is loaded yet."}
           </p>
+          {/* The reason FIRST, not under four panels that cannot work. It
+              names the missing package and the command that installs it,
+              because a reader who is told only that pictures are unavailable
+              has nowhere to go. */}
+          {noPictures && (
+            <div className="hint">
+              <b>{ds.repo_id}</b> · {ds.n_episodes} episodes read from the
+              metadata. {ds.frames_reason}
+            </div>
+          )}
           <div className="row">
             {datasets.length > 1 ? (
               <select

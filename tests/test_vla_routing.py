@@ -140,6 +140,67 @@ def test_a_dataset_without_routing_is_refused_not_defaulted(tmp_path):
     assert "from_timestamp" in str(err.value)
 
 
+# ------------------------------------------------- can a picture be shown at all
+
+
+def test_the_episode_table_says_whether_a_frame_can_be_decoded(tmp_path, monkeypatch):
+    """The episode table comes out of parquet and arrives perfectly well on a
+    machine that cannot decode a single frame, because `av` is imported the
+    first time a frame is actually DECODED.
+
+    MEASURED on a machine with pyarrow and no av: `GET /api/vla/episodes`
+    answered 200 with 206 episodes and nothing to say the pictures were
+    unreachable, so the frontend swapped in the whole panel — episode picker,
+    frame scrubber, "load vision tower" button — none of which can ever
+    produce an image, while every frame request answered 409 naming the
+    missing package. The refusal WAS shown, at the bottom, under four
+    sub-panels that should never have rendered.
+
+    `sys.modules["av"] = None` rather than uninstalling anything: it makes
+    `import av` raise for this test whether or not the runner has it, so this
+    asserts the same thing on a CI box with the extras installed.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "av", None)
+    said = reader(tmp_path).summary()
+    assert said["frames_readable"] is False
+    assert "av" in said["frames_reason"]
+    assert "pip install modelmri[vla]" in said["frames_reason"]
+    # And it does not disown the half that IS real.
+    assert said["n_episodes"] == len(LENGTHS)
+    assert "metadata" in said["frames_reason"]
+
+
+def test_a_machine_that_can_decode_says_so_with_no_caveat(tmp_path, monkeypatch):
+    """`""` for the reason when readable, so a caller has one field to test
+    rather than two that can disagree."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "av", types.ModuleType("av"))
+    said = reader(tmp_path).summary()
+    assert said["frames_readable"] is True
+    assert said["frames_reason"] == ""
+
+
+def test_a_snapshot_with_no_video_is_not_called_readable(tmp_path, monkeypatch):
+    """The other way a frame never arrives, and it is not the decoder's fault:
+    the videos are simply not in the snapshot. Both answers land in the same
+    field, because the panel's question is "can I show a picture", not "which
+    of two things is missing"."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "av", types.ModuleType("av"))
+    root = build(tmp_path / "snap")
+    for mp4 in (root / "videos").rglob("*.mp4"):
+        mp4.unlink()
+    said = LeRobotV3Reader(root, "test/two-cams").summary()
+    assert said["frames_readable"] is False
+    assert "No videos under" in said["frames_reason"]
+
+
 # ------------------------------------------------------------------ cameras
 
 

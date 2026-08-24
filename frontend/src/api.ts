@@ -1017,6 +1017,14 @@ export interface VLADataset {
   episodes: VLAEpisode[];
   cameras?: string[];
   video_key?: string;
+  /** Whether a picture can actually be produced from this dataset on this
+   *  machine. The episode table comes out of parquet and arrives fine
+   *  without a video decoder, so a panel that gates on the table alone draws
+   *  a frame scrubber that can only ever refuse. */
+  frames_readable: boolean;
+  /** Why not, when `frames_readable` is false. `""` when it is true, so
+   *  there is one field to test rather than two that can disagree. */
+  frames_reason: string;
 }
 
 export interface VLAFrame {

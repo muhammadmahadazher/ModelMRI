@@ -389,6 +389,22 @@ def run(
                 scale_frames=scale_frames,
                 stride=occlusion_stride,
             )
+        except ImportError:
+            # NOT a per-frame failure, so it does not get the per-frame
+            # handling below. `av` is imported the first time a frame is
+            # actually decoded, so a machine without it fails EVERY frame for
+            # the same reason — and this handler turned that into `rows: []`
+            # with 200 OK and a `failed` table of `why: ModuleNotFoundError`.
+            # MEASURED on this machine (pyarrow present, av absent):
+            # `POST /api/vla/sweep {"frame_stride": 1e12}` came back 200 with
+            # 0 rows and a summary sentence reading "0 of 25650 frames (0.0%)
+            # across 0 episodes, measured by ATTENTION_ENTROPY" — a completed
+            # measurement of nothing.
+            #
+            # The route above has carried the sentence naming the missing
+            # package all along (`_missing_reader_dep`, 409); it was simply
+            # unreachable from inside this loop.
+            raise
         except Exception as err:
             # ABSENT from the ranking, not scored zero. A frame that failed to
             # decode is not a frame with a low score, and a zero would sit at

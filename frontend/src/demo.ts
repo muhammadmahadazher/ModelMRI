@@ -762,6 +762,12 @@ export async function demoFetch(
     return ok({
       ...v.dataset,
       n_episodes: 1,
+      // Stated here rather than inherited from the baked bundle, which
+      // predates these fields. The demo serves real decoded frames out of
+      // that bundle, so the pictures ARE readable — and a bundle that simply
+      // omitted the field would leave it `undefined`, which is not `true`.
+      frames_readable: true,
+      frames_reason: "",
       episodes: [
         {
           index: v.episode,
