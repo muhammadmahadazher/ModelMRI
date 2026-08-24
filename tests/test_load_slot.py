@@ -27,12 +27,16 @@ from modelmri.runtime import ModelRuntime
 
 
 @pytest.fixture
-def held(monkeypatch):
-    """A runtime whose load slot is already taken."""
+def held():
+    """A runtime whose load slot is already taken.
+
+    `_in_flight` used to be stubbed here. It is not any more: both halves of
+    the refusal are now built from the snapshot `_snap` installs, so stubbing
+    one of them would hide the half these tests exist to pin.
+    """
     rt = ModelRuntime.__new__(ModelRuntime)
     rt._lock = threading.Lock()
     rt._lock.acquire()
-    monkeypatch.setattr(rt, "_in_flight", lambda: "'google/gemma-2-2b' is loading")
     return rt
 
 
@@ -43,8 +47,15 @@ def _refuse(rt, action: str) -> str:
     return caught.value.sentence
 
 
-def _snap(monkeypatch, **fields):
-    snap = progress.Snapshot(active=True, hf_id="google/gemma-2-2b", **fields)
+def _snap(monkeypatch, *, active: bool = True, **fields):
+    """The tracker's answer for one test.
+
+    `active` IS A PARAMETER. It was hardcoded True, so every snapshot these
+    tests built described a live load and the `active is False` branch had
+    zero coverage — which is the branch that was wrong, and the one a second
+    click actually lands in.
+    """
+    snap = progress.Snapshot(active=active, hf_id="google/gemma-2-2b", **fields)
     monkeypatch.setattr(progress.TRACKER, "snapshot", lambda: snap)
 
 
@@ -106,6 +117,71 @@ def test_an_unknown_size_does_not_promise_stop_either(held, monkeypatch):
     is worse than telling them it might not help."""
     _snap(monkeypatch, stage="weights", bytes_done=0, bytes_total=0)
     assert "Press Stop" not in _refuse(held, "unload")
+
+
+def test_a_held_slot_with_no_live_load_invents_no_diagnosis(held, monkeypatch):
+    """`active is False` — the window a second click most often lands in.
+
+    `unload()` takes this slot at the top of its body and never starts the
+    tracker, so `active` stays False for the whole teardown: epoch bump,
+    dereference, `gc.collect()`, cache clear. That scales with the model being
+    freed, which is exactly when somebody clicks again.
+
+    The snapshot is then all defaults, and every branch below `active` reads
+    those defaults as evidence: `stage` is "" and `bytes_total` is 0, which
+    progress.py documents as "unknown", not "the download finished". So the
+    terminal branch fired and said, over plain alternating load/unload HTTP
+    with nothing ever loaded and no Hub request ever made:
+
+        Cannot load 'Qwen/Qwen3-1.7B' yet: another load is already running.
+        The weights have finished arriving and this load is now inside
+        transformers ... restarting the server is the way out.
+
+    Every clause of that was false. Measured at 10 of 38 rounds over 90s.
+    """
+    _snap(monkeypatch, active=False)
+    said = _refuse(held, "load 'Qwen/Qwen3-1.7B'")
+
+    assert "weights have finished arriving" not in said
+    assert "restarting the server" not in said
+    assert "larger than this machine can hold" not in said
+    # And it does not claim a running load either, which is the other half of
+    # the same invention: the tracker had nothing to name.
+    assert "another load is already running" not in said
+
+    # What is left is what was actually known, plus a step that fits whichever
+    # way it resolves.
+    assert "the load slot is already held" in said
+    assert "nothing to Stop" in said
+    assert "try again" in said
+
+
+def test_both_halves_of_the_refusal_describe_one_instant(held, monkeypatch):
+    """One snapshot, read once, passed to both halves.
+
+    `_in_flight` and `_way_out` each took their own. A load that ended between
+    the two calls put a live sentence and a dead one in the same refusal — a
+    model named as "still loading" followed by advice computed from an empty
+    tracker. The counter here fails on any second read.
+    """
+    taken = []
+
+    def _snapshot():
+        # Deliberately a DIFFERENT answer the second time, so a second read
+        # cannot pass unnoticed.
+        snap = progress.Snapshot(
+            active=not taken, hf_id="google/gemma-2-2b", stage="resolving"
+        )
+        taken.append(snap)
+        return snap
+
+    monkeypatch.setattr(progress.TRACKER, "snapshot", _snapshot)
+    said = _refuse(held, "unload")
+
+    assert len(taken) == 1
+    # Both halves from the live snapshot, not one of each.
+    assert "has been loading" in said
+    assert "Press Stop" in said
 
 
 def test_the_slot_is_released_so_the_next_caller_gets_it():

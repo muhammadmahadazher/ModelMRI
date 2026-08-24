@@ -50,9 +50,29 @@ def test_attention_without_model_is_409():
 
 
 def test_attribute_without_a_generation_is_409():
-    r = client().get("/api/attention/attribute")
-    assert r.status_code == 409
-    assert "Generate something first" in r.json()["error"]
+    """A model IS loaded here, and nothing has been generated yet.
+
+    This used a bare `client()` with nothing loaded, so it asserted "Generate
+    something first" green for the state that wanted the opposite sentence —
+    baking in the collapsed `not self.loaded or self.last_ids is None` guard
+    that `_require_live_generation` used to carry. Following that instruction
+    with nothing loaded gave a second refusal: POST /api/model/prompt -> 409
+    "no model loaded". A next step the reader could not take.
+
+    Both arms, so neither can drift back into the other.
+    """
+    app = create_app()
+    # `loaded` is derived from `model`, not settable — see
+    # test_attention_meta_says_which_kind_of_nothing.
+    app.state.runtime.model = object()
+    ungenerated = TestClient(app).get("/api/attention/attribute")
+    assert ungenerated.status_code == 409
+    assert "Generate something first" in ungenerated.json()["error"]
+
+    empty = client().get("/api/attention/attribute")
+    assert empty.status_code == 409
+    assert "No model loaded" in empty.json()["error"]
+    assert "Generate something first" not in empty.json()["error"]
 
 
 def test_attribute_on_a_recording_is_409():

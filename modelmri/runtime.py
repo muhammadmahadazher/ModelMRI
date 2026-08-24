@@ -735,14 +735,19 @@ class ModelRuntime:
             # is a question somebody will ask, and the answer is in here.
             log.info("could not empty the %s cache: %s", self.accel.kind, err)
 
-    def _in_flight(self) -> str:
+    def _in_flight(self, snap: progress.Snapshot) -> str:
         """A sentence describing the load already running, or "" if none is.
 
         Reads the progress tracker rather than the lock, because the lock can
         only answer "held" and the useful answer is *what* is holding it and
         for how long.
+
+        TAKES the snapshot rather than reading one. Both halves of a refusal
+        are built from it, and taking one each let the two halves describe two
+        different instants — a load could finish between them, so the sentence
+        named a model that was no longer loading and then advised about a phase
+        it was no longer in.
         """
-        snap = progress.TRACKER.snapshot()
         if not snap.active:
             return ""
         return (
@@ -750,7 +755,7 @@ class ModelRuntime:
             f"({snap.stage}: {snap.detail})"
         )
 
-    def _way_out(self) -> str:
+    def _way_out(self, snap: progress.Snapshot) -> str:
         """What the reader can actually DO about the load in the way.
 
         STAGE-DEPENDENT, because Stop is not always an escape and saying it is
@@ -767,8 +772,36 @@ class ModelRuntime:
         control that works while a load is running", which is true for half of
         a load's life and false for the half somebody is most likely to be
         staring at.
+
+        `snap` is the caller's, shared with `_in_flight` — see there.
         """
-        snap = progress.TRACKER.snapshot()
+        if not snap.active:
+            # `active` FIRST, before any field is read as evidence. Every
+            # branch below infers a phase from `stage` and the byte counts,
+            # and on an inactive tracker those are the dataclass defaults:
+            # "" and 0. `bytes_total == 0` is documented as "unknown" in
+            # progress.py, so a blank snapshot fell straight through to the
+            # terminal branch and told the reader the weights had finished
+            # arriving, the load was inside transformers, and restarting the
+            # server was the way out — when nothing had ever loaded and no
+            # Hub request had been made.
+            #
+            # Not a narrow race. `unload()` takes this slot and never starts
+            # the tracker, so `active` is False for its whole body — epoch
+            # bump, teardown, `gc.collect()`, cache clear — which scales with
+            # the model being freed, i.e. exactly when a second click lands.
+            # Measured over 90s of alternating load/unload requests: 38
+            # rounds, 10 of them given this false diagnosis.
+            #
+            # So: say what is actually known (the slot is held, nothing is
+            # reporting) and give the one step that fits either way.
+            return (
+                "Nothing is reporting progress, though, so there is no live "
+                "load behind it — usually the tail of an unload, which keeps "
+                "the slot while it frees the memory and never publishes to "
+                "the meter. There is nothing to Stop; try again in a few "
+                "seconds."
+            )
         if snap.stage == "resolving":
             return (
                 "Press Stop on the progress bar to end it — nothing has "
@@ -823,8 +856,17 @@ class ModelRuntime:
             # cannot simply skip the lock: freeing the model a load is halfway
             # through writing is worse than waiting. So the refusal names the
             # button that DOES work.
-            busy = self._in_flight() or "another load is already running"
-            raise Refusal(f"Cannot {what} yet: {busy}. {self._way_out()}")
+            #
+            # ONE snapshot for both halves, so the sentence describes one
+            # instant. The fallback says only what the lock proved — that the
+            # slot is held. It used to say "another load is already running",
+            # which is a claim about the tracker, and the tracker is precisely
+            # what has nothing to report on this branch: `_in_flight` returns
+            # "" only when `active` is False, so that fallback asserted a
+            # running load exactly when there was none to name.
+            snap = progress.TRACKER.snapshot()
+            busy = self._in_flight(snap) or "the load slot is already held"
+            raise Refusal(f"Cannot {what} yet: {busy}. {self._way_out(snap)}")
         try:
             yield
         finally:
@@ -1669,7 +1711,24 @@ class ModelRuntime:
         return captured
 
     def _ready_for_attention(self) -> None:
-        if not self.loaded or self.last_ids is None:
+        # Two states, not one — the same split `attention_meta` makes, for the
+        # reason written out above it: they want opposite things from the
+        # reader. One is "pick a model", the other is "press the button you
+        # are already looking at".
+        #
+        # Collapsed into `not self.loaded or self.last_ids is None`, a reader
+        # with nothing loaded was told to generate something — and following
+        # that instruction gave a second refusal, POST /api/model/prompt ->
+        # 409 "no model loaded". A next step the reader could not take.
+        # Measured on /api/attention, /api/attention/baselines and
+        # /api/session/export, which all reach this.
+        #
+        # `self.loaded`, not `self.model is None`: an Ollama model IS loaded
+        # and has no `self.model`, and telling that reader to pick a model
+        # would be the same mistake pointed the other way.
+        if not self.loaded:
+            raise Refusal("No model loaded — pick one first.")
+        if self.last_ids is None:
             raise Refusal("Generate something first, then inspect attention.")
         if self.last_ids_epoch != self.epoch:
             raise Refusal(
@@ -1815,8 +1874,22 @@ class ModelRuntime:
         later. Nothing downstream can notice that: the ids are the right
         length, the KLs are finite, and the layer and head numbers exist in
         both models.
+
+        `nothing_yet` is the no-generation sentence ONLY. "No model loaded"
+        gets its own, for the reason `attention_meta` sets out: the two states
+        want opposite things from the reader — "pick a model" against "press
+        the button you are already looking at". While they shared one
+        sentence, /api/attention/ablate, /api/attention/attribute and
+        /api/features/ablate answered an empty runtime with "Generate
+        something first", and POST /api/model/prompt answered that with 409
+        "no model loaded" — a next step the reader could not take.
         """
-        if not self.loaded or self.last_ids is None:
+        if not self.loaded:
+            # `self.loaded`, not `self.model is None`: an Ollama model is
+            # loaded and has no `self.model`. Every caller here refuses Ollama
+            # before reaching this, but the check should be right on its own.
+            raise Refusal("No model loaded — pick one first.")
+        if self.last_ids is None:
             raise Refusal(nothing_yet)
         if self.last_ids_epoch != self.epoch:
             raise Refusal(
