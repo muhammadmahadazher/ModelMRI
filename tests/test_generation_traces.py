@@ -299,7 +299,10 @@ def test_recording_adds_no_network_path(tmp_path):
     SQLite file the panel already reads, on this machine, and nowhere else."""
     from pathlib import Path
 
-    import modelmri.traces as traces_mod
+    # `from ... import`, matching the `TraceStore` import below. Two forms
+    # of one module in one file is what CodeQL's py/import-and-import-from
+    # names, and the module object is reachable either way.
+    from modelmri import traces as traces_mod
 
     source = Path(traces_mod.__file__).read_text(encoding="utf-8")
     for outbound in ("urllib", "requests", "httpx", "socket"):

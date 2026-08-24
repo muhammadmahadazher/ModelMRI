@@ -113,7 +113,11 @@ def test_the_venv_figure_comes_from_the_same_walk_as_the_data_directory(
     """
     from modelmri import policy
 
-    _root, _hub = home
+    # `home` is wanted for its SIDE EFFECT — a throwaway MODELMRI_HOME and
+    # HuggingFace cache, already created by the fixture — so neither half
+    # of what it returns is read here. Unpacking them into names nothing
+    # uses is what py/unused-local-variable names, and the underscore
+    # prefix does not answer it.
     venv = policy.venv_dir()
     (venv / "lib").mkdir(parents=True, exist_ok=True)
     (venv / "lib" / "torch.so").write_bytes(b"z" * 7000)
