@@ -6,6 +6,75 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Four of the roadmap's remaining feature gaps, after checking which were
+  actually gaps.** A six-agent audit re-verified all thirteen unbuilt Theme B
+  items against the repo rather than against the roadmap's own memory of
+  itself; the four below were built, and the evidence for the other nine is
+  recorded rather than assumed.
+
+  **What a head is wired to do, read off its weights** (`ov_circuits.py`).
+  Every other attention readout here answers a question about the current
+  generation. This answers what the head IS: `W_U @ W_O[h] @ W_V[kv(h)] @ e`
+  says which tokens it promotes when it attends to a given one, and it is the
+  same every time because it is arithmetic. Nothing vocabulary-by-vocabulary
+  is ever formed — that is 92 TB on Qwen3-1.7B — so both readouts are
+  factored down to `[N, head_dim]` products. Grouped-query attention is the
+  reason this is not four lines: `n_kv_heads` is derived from `v_proj`'s own
+  width, because slicing values by the query index reads a neighbouring head's
+  for every head past the first group, with the right shapes and plausible
+  numbers. No copying score and no induction label: the spectrum reports the
+  fraction of eigenvalues with a positive real part over a NAMED sample, with
+  the sample size, the seed, and how much of the spectrum sits off the real
+  line.
+
+  **How much of the model's loss survives its SAE** (`saes.ce_recovered`). L0
+  was already measured here; the output-space half was not. The floor is named
+  in the payload because it decides the answer — the same three losses give
+  0.6996 against mean-ablation and 0.4777 against zero — and all three travel
+  so the other normalisation can be recomputed. Never clamped: a garbage SAE
+  measures −169.96, and that is the real answer. Two self-checks — the same
+  pass run twice, and the captured stream written back unchanged — give the
+  resolution of every difference, and a write-back that does not land is
+  refused before any ratio is computed.
+
+  **ACT policies, and what a ResNet does not have** (`vla.py`). ACT is the most
+  common architecture in this category and the perception half could not open
+  one. It can now — and it reports `n_layers: null, n_heads: null`, because a
+  convolutional stack does not have zero attention heads, it has no such thing
+  as an attention head. `grid` and `patch_size` stay real and are MEASURED by
+  running a frame through the stack rather than computed from the image size.
+  `analyse()` refuses instead of reshaping activations into a square that would
+  be read as attention, and names the occlusion sweep, which genuinely works on
+  a pooled embedding.
+
+  **A whole dataset's recorded actions** (`vla_data.dataset_action_stats`).
+  Per dimension: count, range, mean, std, seven percentiles and a histogram,
+  over every shard. Streamed in batches — measured at 3.2 MB peak for 20,000
+  rows and 3.2 MB for 80,000, against 9.1 MB and 27.6 MB for the frame table
+  over the same data. The dataset's own published statistics travel beside the
+  measured ones with the gap named, because a publisher's normalisation
+  constants disagreeing with the actions actually recorded is a real finding
+  and this is the only place that could surface it.
+
+### Fixed
+
+- **`POST /api/vla/load` answered HTTP 500 for an ACT checkpoint.** A
+  draccus-style lerobot config names its policy in `type` and has no
+  `model_type`, so `AutoConfig.from_pretrained` raised a bare `ValueError` that
+  became "Something inside ModelMRI failed rather than refusing" — carrying a
+  path off the machine, about a checkpoint that is fine. A good 409 sat one
+  frame away, unreachable because the config lookup ran first.
+
+- **A crashed test worker stalled CI for seventeen minutes instead of failing
+  it.** `tests (windows-latest, py3.13)` was cancelled at the 30-minute ceiling
+  on two runs while every other matrix entry passed. A torch kernel hit
+  `STATUS_ILLEGAL_INSTRUCTION` on that runner, xdist's default restarted the
+  dead worker and waited, and the job read as slow rather than broken — so the
+  summary naming the crashing test never printed. It now ends the session on
+  the first dead worker, with the summary.
+
 ### Fixed
 
 - **A runtime audit, and the 44 defects it found.** Seven agents ran the
