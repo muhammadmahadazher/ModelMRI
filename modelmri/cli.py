@@ -363,6 +363,34 @@ def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     return 1 if report.broken else 0
 
 
+def _port(raw: str) -> int:
+    """A TCP port, refused at PARSE time rather than at bind time.
+
+    `type=int` accepted anything an int can hold, so `--port -1` got all the
+    way to the socket: `doctor.check()` 5.1s, `import modelmri.server` 15.3s,
+    `create_app()` 0.4s — and only then `OverflowError: bind(): port must be
+    0-65535`, as a traceback with a chained CancelledError and no clean
+    shutdown. Seventeen seconds to reject a number argparse rejects in a
+    millisecond.
+
+    An `ArgumentTypeError` puts it on the same footing as `--port abc`, which
+    already refused cleanly in 0.44s. The two answers were seventeen seconds
+    and two exit codes apart for the same kind of mistake.
+    """
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            f"{raw!r} is not a port number — a whole number from 0 to 65535."
+        ) from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"{port} is not a usable port. TCP ports run 0 to 65535, and "
+            f"ModelMRI's default is 5900."
+        )
+    return port
+
+
 def _wrap(text: str, width: int) -> list[str]:
     import textwrap
 
@@ -1447,7 +1475,7 @@ def main() -> None:
 
     serve = sub.add_parser("serve", help="Start the ModelMRI server")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=5900)
+    serve.add_argument("--port", type=_port, default=5900)
 
     opener = sub.add_parser(
         "open",
@@ -1456,7 +1484,7 @@ def main() -> None:
     )
     opener.add_argument("file", help="the .mri or circuit-tracer .pt someone sent you")
     opener.add_argument("--host", default="127.0.0.1")
-    opener.add_argument("--port", type=int, default=5900)
+    opener.add_argument("--port", type=_port, default=5900)
     opener.add_argument(
         "--no-browser", action="store_true", help="just serve it, don't open a tab"
     )
@@ -1798,7 +1826,12 @@ def main() -> None:
         from . import doctor as _doctor
 
         report = _doctor.check()
-        print(f"ModelMRI {__version__} serving on http://{args.host}:{args.port}")
+        # INTENT, not fact. This said "serving on http://…" before anything
+        # had bound, so a port that could never work printed a success line
+        # and then a traceback — and an occupied port did the same. uvicorn
+        # prints its own "Uvicorn running on …" once the socket is actually
+        # listening, and that is the line that is true.
+        print(f"ModelMRI {__version__} starting on http://{args.host}:{args.port}")
         print(f"  {_doctor.one_line(report)}")
         for blocker in report.blockers:
             print(f"  PROBLEM  {blocker}", file=sys.stderr)
@@ -1812,6 +1845,19 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nstopped.")
             return
+        except OSError as err:
+            # The answer `open` already gives for the same failure, suggestion
+            # included. `serve` let this escape as a traceback, so the two
+            # commands answered one situation two different ways.
+            print(
+                f"modelmri: cannot listen on {args.host}:{args.port} — {err}",
+                file=sys.stderr,
+            )
+            print(
+                "  another ModelMRI may be running; try --port 5901",
+                file=sys.stderr,
+            )
+            raise SystemExit(3) from None
     elif args.command == "open":
         from pathlib import Path
 
