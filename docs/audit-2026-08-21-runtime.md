@@ -17,7 +17,7 @@ TCL = TestClient(create_app(), client=("127.0.0.1", 5000))   # loopback-guarded 
 
 ## Status
 
-**1.1 is FIXED** — committed as `627857f`. Everything else below is unfixed; this section is updated as items land.
+**All seven "fix now" items are done**, plus four from Next — 1.1 `627857f`, 1.3 `3493d88`, 1.4 `7e04e00`, 2.2 `36ad22b`, 1.2 `0f93582`, 2.1 `d6b7dcf`. 3.1 `1be2b5c`. From Next: 2.3 `9e08788`, 3.3+3.4 `8143c98`, 3.6 `d7eadaf`. Remaining unfixed: 2.4, 3.2, 3.5, 1.7a, 4.1, 2.5, and all of Can-wait.
 
 Ranked: crashes/hangs/data-loss → wrong numbers in front of a user → silent failures → messages and types only.
 
@@ -384,15 +384,15 @@ Also found in passing: `VLAStatus.dataset` is declared and typed but **never ass
 
 ## Fix now (7) — real user impact, cheap or already scoped
 - ~~**1.1** traces import — data loss.~~ **DONE** (`627857f`)
-- **1.2** image lock — unbounded block on the exact button reached for when something's stuck, plus can starve the whole executor
-- **1.3** repo-id validation — 500s and a CLI traceback on the likeliest typos
-- **2.1** MCP argument handling — silently wrong measurement results returned to an agent with `isError:false`
-- **3.1** raw-dict routes — a one-character typo turns "64 errors" into "no run matched any rule"; fix the test too or it recurs
-- **2.2** DirectPanel — arithmetically impossible number on the **public demo**
-- **1.4** `serve --port` — cheapest fix in the list, first command a new user is likely to typo
+- ~~**1.2** image lock~~ **DONE** (`0f93582`) — 409 in 2.03s where it returned nothing
+- ~~**1.3** repo-id validation~~ **DONE** (`3493d88`) — one shared `paths.validate_repo_id`
+- ~~**2.1** MCP argument handling~~ **DONE** (`d6b7dcf`) — and the blind test now parses the query
+- ~~**3.1** raw-dict routes~~ **DONE** (`1be2b5c`) — and the blind test now sees them
+- ~~**2.2** DirectPanel~~ **DONE** (`36ad22b`) — reads "391 of 477", verified in the live DOM
+- ~~**1.4** `serve --port`~~ **DONE** (`7e04e00`) — 17.4s+traceback -> 0.08s+sentence
 
 ## Next (9) — real, reproducible, narrower blast radius
-2.3 progress gen guard · 2.4 scan summary · 3.2 missing-`av` readiness · 3.3 CustomStatus stamping · 3.4 `sys.path` race · 3.5 empty path → cwd · 1.7a image_fit shape loop · 4.1 `_way_out` · 2.5 hub-offline zeros
+~~2.3 progress gen guard~~ **DONE** (`9e08788`) · 2.4 scan summary · 3.2 missing-`av` readiness · ~~3.3 CustomStatus stamping~~ + ~~3.4 `sys.path` race~~ **DONE** (`8143c98`) · 3.5 empty path → cwd · 1.7a image_fit shape loop · 4.1 `_way_out` · 2.5 hub-offline zeros
 
 ## Can wait
 1.5 uninstall timing (correct, just slow) · 1.6 MriStore (very low rate) · 1.7b/c/d (library-only until routed — but fix *before* routing, not after) · 2.6, 2.7 (single-parameter honesty, one line each) · 3.6, 3.7, 3.8, 3.9 · 4.2, 4.3, 4.4
