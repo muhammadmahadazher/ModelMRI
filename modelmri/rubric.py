@@ -240,7 +240,25 @@ def parse(raw) -> list:
         except ValueError as err:
             raise RubricError("that rubric is not readable JSON.") from err
     if isinstance(raw, dict):
-        raw = raw.get("rules", [])
+        # A DICT WITHOUT `rules` IS A MISTAKE, not an empty rubric. This read
+        # `raw.get("rules", [])`, so any object lacking the key became `[]` —
+        # which is a legal rubric that matches nothing and reports 200.
+        #
+        # Paired with the route's old `parse(body.get("rules", body))`, one
+        # transposed letter did the whole thing silently: `{"rulez": [...]}`
+        # answered "0 rule(s) against 111 recorded run(s). No run matched any
+        # rule." while the correct spelling found 66 matching runs.
+        #
+        # An empty rubric is still expressible, and still answered rather than
+        # refused — as `[]`, or as `{"rules": []}`. What is refused is a
+        # document that never mentioned rules at all.
+        if "rules" not in raw:
+            raise RubricError(
+                "a rubric is a list of rules, or an object with a `rules` "
+                "key — this object has neither, so there is nothing to score "
+                'against. An empty rubric is `{"rules": []}`.'
+            )
+        raw = raw["rules"]
     if not isinstance(raw, list):
         raise RubricError("a rubric is a list of rules.")
     if len(raw) > MAX_RULES:

@@ -151,3 +151,111 @@ def test_omitting_the_model_id_still_takes_the_default(client, monkeypatch):
     )
     r = client.post("/api/model/load", json={"source": "hf"})
     assert r.status_code != 422, r.text
+
+
+# The routes that take a raw body, and the reason each one is allowed to.
+#
+# `_request_models` above walks the route table and collects pydantic models.
+# A route annotated `body: dict` or `request: Request` resolves to NOTHING, so
+# it was not merely unchecked — it was INVISIBLE. The suite reported 33 clean
+# models while thirteen routes had no key discipline at all, and the guard that
+# was supposed to notice could not see them.
+#
+# Measured on one of them: `POST /api/rubric/score {"rulez": [...]}` — one
+# transposed letter — answered 200 with "0 rule(s) against 111 recorded run(s).
+# No run matched any rule.", where the correct spelling found 66 runs matching.
+#
+# Anything on this list is a deliberate exception with a stated reason. A NEW
+# raw-bodied route fails the test below until it is either given a model or
+# argued onto this list.
+RAW_BODY_ALLOWED = {
+    # OpenAI compatibility: clients send fields we do not model, and refusing
+    # an unknown key here would break the thing the endpoint exists to be.
+    "/v1/chat/completions": "OpenAI-compatible; unknown keys are expected",
+    "/v1/completions": "OpenAI-compatible; unknown keys are expected",
+    # These read the raw Request for something other than the body — the
+    # loopback check on a `file` field, or a streamed upload — so a model
+    # cannot replace the parameter. They validate their own fields explicitly.
+    "/api/custom/ablate": "reads the raw Request; validates its own fields",
+    "/api/custom/scan": "reads the raw Request; validates its own fields",
+    "/api/diff/models": "loopback check on `file` needs the Request",
+    "/api/experiments/compare": "reads the raw Request",
+    "/api/features/evidence": "loopback check on `file` needs the Request",
+    "/api/ground": "loopback check on `file` needs the Request",
+    "/api/image/adapter": "reads the raw Request",
+    "/api/image/load": "reads the raw Request",
+    "/api/lens/tune": "loopback check on `file` needs the Request",
+    "/api/otel/v1/traces": "OTLP wire format, not ours to constrain",
+    "/api/patch/path": "reads the raw Request",
+    "/api/patchscope": "reads the raw Request",
+    "/api/probe": "reads the raw Request",
+    "/api/session/open": "reads the raw Request",
+    "/api/traces/import": "a whole trace document, shaped by the recorder",
+    "/api/traces/import/inspect": "a file upload",
+    "/api/vla/occlude": "reads the raw Request",
+    "/api/vla/share": "reads the raw Request",
+    "/api/vla/sweep": "reads the raw Request",
+    "/api/weights/scan": "reads the raw Request",
+}
+
+
+def test_no_new_route_takes_a_raw_body_without_saying_why():
+    """The blind spot itself, made visible.
+
+    A route annotated `dict` or `Request` cannot be reached by
+    `_request_models`, so every check in this file silently skipped it. This
+    one walks the same table and fails on any raw-bodied POST route that is not
+    on the list above with a reason beside it.
+
+    It does not claim the listed routes are safe — several validate their own
+    fields by hand and one or two should still grow a model. It claims that
+    adding a new one is a decision somebody made on purpose.
+    """
+    app = create_app()
+    raw = []
+    for route in app.routes:
+        if "POST" not in (getattr(route, "methods", None) or set()):
+            continue
+        for _param, ann in getattr(
+            getattr(route, "endpoint", None), "__annotations__", {}
+        ).items():
+            # `return` is in `__annotations__` too, and five routes declare
+            # `-> dict` while taking no body whatsoever. Reading it as a raw
+            # body flagged `/api/model/cancel` and four siblings that have
+            # nothing to validate — the first version of this test did exactly
+            # that, and the audit that prompted it counted them as defects.
+            if _param == "return":
+                continue
+            name = ann if isinstance(ann, str) else getattr(ann, "__name__", "")
+            if name in ("dict", "Request") and route.path not in RAW_BODY_ALLOWED:
+                raw.append(f"{route.path} ({_param}: {name})")
+
+    assert not raw, (
+        "these POST routes take a raw body, so no unknown-key check applies to "
+        "them and every test in this file skips them:\n  "
+        + "\n  ".join(sorted(raw))
+        + "\n\nGive each a Body-derived request model, or add it to "
+        "RAW_BODY_ALLOWED with the reason it needs the raw Request."
+    )
+
+
+def test_the_allowlist_has_no_stale_entries():
+    """An entry for a route that no longer takes a raw body is a licence
+    nobody is using, and the next raw-bodied route at that path inherits it
+    without anyone deciding."""
+    app = create_app()
+    raw_paths = set()
+    for route in app.routes:
+        if "POST" not in (getattr(route, "methods", None) or set()):
+            continue
+        for _param, ann in getattr(
+            getattr(route, "endpoint", None), "__annotations__", {}
+        ).items():
+            if _param == "return":
+                continue
+            name = ann if isinstance(ann, str) else getattr(ann, "__name__", "")
+            if name in ("dict", "Request"):
+                raw_paths.add(route.path)
+
+    stale = sorted(set(RAW_BODY_ALLOWED) - raw_paths)
+    assert not stale, f"these no longer take a raw body: {stale}"

@@ -703,6 +703,52 @@ class PromptRequest(Body):
     commit: bool = True
 
 
+class RubricScoreRequest(Body):
+    """A rubric to score every recorded run against.
+
+    `rules` is REQUIRED and named. It used to arrive as a bare `dict`, and
+    the route then called `parse(body.get("rules", body))` — so a body without
+    a `rules` key was handed to the parser whole, and `rubric.parse` turned any
+    dict lacking that key into `[]`, which is a legal empty rubric.
+
+    Measured: `{"rulez": [...]}` — one transposed letter — answered 200 with
+    `counts: {}` and "0 rule(s) against 111 recorded run(s). No run matched any
+    rule.", where the correct spelling reported 66 of them matching. A
+    confident all-clear, produced by a typo, on a route whose whole job is
+    telling you which runs went wrong. `{"Rules": ...}` and `{}` did the same.
+
+    This is verbatim the failure `Body`'s own docstring says the class exists
+    to prevent; the route simply was not using it.
+    """
+
+    rules: list | dict
+
+
+class RubricSaveRequest(Body):
+    """The same rubric, under a name, kept on this machine."""
+
+    name: str = Field(min_length=1)
+    rules: list | dict
+
+
+class JudgeRequest(Body):
+    """A rubric put to the loaded model, and the text to put it about.
+
+    Shared with `/api/judge/plan`, which prices this exact request — two
+    models would let the priced call and the run drift apart on the very
+    parameter the price is a function of.
+
+    Both routes read these with `.get` off a bare dict before, so a misspelled
+    key reached a default silently: `{"n_paraphrase": 5}` answered 200 with the
+    default four-prompt plan, where the correct spelling answered 422 naming
+    the cap.
+    """
+
+    text: str = ""
+    rubric: str = ""
+    n_paraphrases: int = Field(default=0, ge=0)
+
+
 class _Recording:
     """One generation, timed as the app performs it, filed as a trace after.
 
@@ -1875,6 +1921,27 @@ def create_app(
                 status_code=422,
             )
 
+        # NAMED BEFORE THEY ARE COMPARED. Both sides went through
+        # `str(body.get("a") or "")`, so an absent side became `""` and
+        # `model_diff` then found `"" == ""` and refused with "both sides are
+        # the same model, so every difference would be zero by construction" —
+        # for a request that named no model at all. Measured: a perfectly good
+        # six-prompt body with no `a` and no `b` got that sentence, and naming
+        # only ONE side reached `transformers` and came back a 500.
+        sides = {name: str(body.get(name) or "").strip() for name in ("a", "b")}
+        if missing := [name for name, value in sides.items() if not value]:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"this compares two models and "
+                        f"{' and '.join(f'`{m}`' for m in missing)} "
+                        f"{'was' if len(missing) == 1 else 'were'} not given. "
+                        f"Pass both as HuggingFace ids or local paths."
+                    )
+                },
+                status_code=422,
+            )
+
         try:
             # Through the runtime rather than calling `model_diff.compare`
             # directly: that is what keeps the result available to
@@ -1882,8 +1949,8 @@ def create_app(
             # the receipt already live.
             return await asyncio.to_thread(
                 runtime.diff_models,
-                str(body.get("a") or ""),
-                str(body.get("b") or ""),
+                sides["a"],
+                sides["b"],
                 [str(p) for p in prompts],
                 # OFF by default. The head half costs n_layers x n_heads
                 # forward passes per prompt PER SIDE -- 5,412 on a 1.7B with
@@ -1919,7 +1986,18 @@ def create_app(
         try:
             body = await request.json()
         except Exception:
-            body = {}
+            # A 422 NAMING THE BODY, the way eight other routes in this file
+            # already answer the same bytes. `body = {}` swallowed it, so the
+            # request continued on defaults and the reader got whatever
+            # sentence the NEXT check produced: `POST /api/custom/ablate` with
+            # non-JSON answered "no custom model is loaded" — true, and about
+            # something else entirely — and `POST /api/vla/sweep` answered 200
+            # after running a full default sweep off a body nobody had read.
+            #
+            # The worse-formed body already got the better answer: `[1,2,3]`
+            # parses, so it reached `_body_object` below and was refused
+            # properly. Only bytes that are not JSON at all were let through.
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
         if (not_an_object := _body_object(body)) is not None:
             return not_an_object
         try:
@@ -4024,7 +4102,18 @@ def create_app(
         try:
             body = await request.json()
         except Exception:
-            body = {}
+            # A 422 NAMING THE BODY, the way eight other routes in this file
+            # already answer the same bytes. `body = {}` swallowed it, so the
+            # request continued on defaults and the reader got whatever
+            # sentence the NEXT check produced: `POST /api/custom/ablate` with
+            # non-JSON answered "no custom model is loaded" — true, and about
+            # something else entirely — and `POST /api/vla/sweep` answered 200
+            # after running a full default sweep off a body nobody had read.
+            #
+            # The worse-formed body already got the better answer: `[1,2,3]`
+            # parses, so it reached `_body_object` below and was refused
+            # properly. Only bytes that are not JSON at all were let through.
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
         if (not_an_object := _body_object(body)) is not None:
             return not_an_object
 
@@ -4087,7 +4176,18 @@ def create_app(
         try:
             body = await request.json()
         except Exception:
-            body = {}
+            # A 422 NAMING THE BODY, the way eight other routes in this file
+            # already answer the same bytes. `body = {}` swallowed it, so the
+            # request continued on defaults and the reader got whatever
+            # sentence the NEXT check produced: `POST /api/custom/ablate` with
+            # non-JSON answered "no custom model is loaded" — true, and about
+            # something else entirely — and `POST /api/vla/sweep` answered 200
+            # after running a full default sweep off a body nobody had read.
+            #
+            # The worse-formed body already got the better answer: `[1,2,3]`
+            # parses, so it reached `_body_object` below and was refused
+            # properly. Only bytes that are not JSON at all were let through.
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
         if (not_an_object := _body_object(body)) is not None:
             return not_an_object
 
@@ -4172,7 +4272,18 @@ def create_app(
         try:
             body = await request.json()
         except Exception:
-            body = {}
+            # A 422 NAMING THE BODY, the way eight other routes in this file
+            # already answer the same bytes. `body = {}` swallowed it, so the
+            # request continued on defaults and the reader got whatever
+            # sentence the NEXT check produced: `POST /api/custom/ablate` with
+            # non-JSON answered "no custom model is loaded" — true, and about
+            # something else entirely — and `POST /api/vla/sweep` answered 200
+            # after running a full default sweep off a body nobody had read.
+            #
+            # The worse-formed body already got the better answer: `[1,2,3]`
+            # parses, so it reached `_body_object` below and was refused
+            # properly. Only bytes that are not JSON at all were let through.
+            return JSONResponse({"error": "this request body is not JSON"}, 422)
         if (not_an_object := _body_object(body)) is not None:
             return not_an_object
 
@@ -5016,7 +5127,7 @@ def create_app(
         )
 
     @app.post("/api/judge")
-    async def judge_score(body: dict):
+    async def judge_score(body: JudgeRequest):
         """Score a rubric by reading the loaded model's probability mass.
 
         One forward pass per paraphrase, no generation. Refuses when the model
@@ -5037,9 +5148,9 @@ def create_app(
             out = judge_mod.score(
                 model,
                 tokenizer,
-                str(body.get("text") or ""),
-                str(body.get("rubric") or ""),
-                n_paraphrases=_whole(body, "n_paraphrases", 0),
+                body.text,
+                body.rubric,
+                n_paraphrases=body.n_paraphrases,
                 device=str(getattr(runtime, "device", "cpu")),
             )
             return out.to_dict()
@@ -5054,27 +5165,27 @@ def create_app(
             return _internal(err, "/api/judge")
 
     @app.post("/api/judge/plan")
-    def judge_plan(body: dict):
+    def judge_plan(body: JudgeRequest):
         """The prompts that would be run, before any of them is."""
         from . import judge as judge_mod
 
         try:
-            prompts = judge_mod.plan(
-                str(body.get("text") or ""),
-                str(body.get("rubric") or ""),
-                _whole(body, "n_paraphrases", 0),
-            )
+            prompts = judge_mod.plan(body.text, body.rubric, body.n_paraphrases)
         except BadRequest as err:
             return JSONResponse({"error": err.sentence}, status_code=422)
         return {"prompts": prompts, "n_passes": len(prompts)}
 
     @app.post("/api/rubric/score")
-    async def rubric_score(body: dict, limit: int = 500):
+    async def rubric_score(body: RubricScoreRequest, limit: int = 500):
         """Score every recorded run against exact predicates. No model."""
         from . import rubric as rubric_mod
 
         def run() -> dict:
-            rules = rubric_mod.parse(body.get("rules", body))
+            # `body.rules`, not `body.get("rules", body)`. That fallback handed
+            # the WHOLE request to the parser when the key was missing, and
+            # `rubric.parse` reads `.get("rules", [])` off a dict — so any body
+            # without the key became an empty rubric and scored nothing, at 200.
+            rules = rubric_mod.parse(body.rules)
             available = len(traces.list_traces())
             report = rubric_mod.score(traces.all_traces_with_steps(limit), rules)
             out = report.to_dict()
@@ -5397,16 +5508,16 @@ def create_app(
         return traces.rubrics()
 
     @app.post("/api/rubric")
-    def rubric_save(body: dict):
+    def rubric_save(body: RubricSaveRequest):
         from . import rubric as rubric_mod
 
-        name = str(body.get("name") or "").strip()
+        name = body.name.strip()
         if not name:
             return JSONResponse(
                 {"error": "a saved rubric needs a name."}, status_code=422
             )
         try:
-            rules = rubric_mod.parse(body.get("rules", []))
+            rules = rubric_mod.parse(body.rules)
         except BadRequest as err:
             return JSONResponse({"error": err.sentence}, status_code=422)
         traces.save_rubric(name, rules)
