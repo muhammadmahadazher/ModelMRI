@@ -588,16 +588,30 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
           </>
         ) : (
           <div className="model-list">
-            {!ollama?.up && (
-              <div className="meta pad">
-                Ollama is not running. Install it from{" "}
-                <a href="https://ollama.com" target="_blank" rel="noreferrer">
-                  ollama.com
-                </a>
-                , start it, then reopen this panel. Ollama runs any open model as
-                text — attention and features need a HuggingFace model.
-              </div>
-            )}
+            {/* The route's OWN reason when it sent one, and the ordinary
+                install advice when it did not. The static demo sends "no
+                daemon behind this page — it is a static recording", and this
+                branch used to overwrite it with "install it from ollama.com,
+                start it, then reopen this panel" — two next steps that cannot
+                change anything on a recording. A refusal naming a cause that
+                is not the cause is worse than a generic one, because the
+                reader believes it. */}
+            {!ollama?.up &&
+              (ollama?.reason ? (
+                <div className="meta pad">
+                  {ollama.reason} Ollama runs any open model as text —
+                  attention and features need a HuggingFace model.
+                </div>
+              ) : (
+                <div className="meta pad">
+                  Ollama is not running. Install it from{" "}
+                  <a href="https://ollama.com" target="_blank" rel="noreferrer">
+                    ollama.com
+                  </a>
+                  , start it, then reopen this panel. Ollama runs any open model
+                  as text — attention and features need a HuggingFace model.
+                </div>
+              ))}
             {ollama?.installed?.map((m) => (
               <button
                 key={m.name}

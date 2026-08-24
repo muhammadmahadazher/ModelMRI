@@ -417,6 +417,99 @@ def feature_ranking_is_not_offered() -> None:
     )
 
 
+def _ts_interface(name: str) -> tuple[set[str], set[str]]:
+    """The field names an `api.ts` interface declares, split required/optional.
+
+    A regex rather than a TypeScript parse, and the shapes it reads are flat
+    records of `name: type;` — anything nested would need a real parser and
+    would also be a shape this check has no business asserting about.
+    """
+    text = (SRC / "api.ts").read_text("utf-8")
+    match = re.search(
+        r"export interface " + re.escape(name) + r"\s*\{(.*?)\n\}", text, re.S
+    )
+    if match is None:
+        return set(), set()
+    body = re.sub(r"/\*.*?\*/", "", match.group(1), flags=re.S)
+    body = re.sub(r"//[^\n]*", "", body)
+    required: set[str] = set()
+    optional: set[str] = set()
+    for field, mark in re.findall(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)(\??):", body, re.M):
+        (optional if mark else required).add(field)
+    return required, optional
+
+
+def payload_shapes() -> None:
+    """Does what the demo SENDS match what the client declares it receives?
+
+    The gap this closes: `static_coverage` asks whether a path is answered and
+    never looks inside the answer, and `json<T>(r)` in `api.ts` is a bare type
+    cast — nothing checks a key at runtime either. So two routes drifted in
+    silence.
+
+    MEASURED before this check existed:
+
+      /api/paths   the baker synthesised 8 of the live route's 15 keys, and
+                   the 7 it dropped — models_home, inherited_caches,
+                   models_dirs, cwd, legacy, undelivered_traces, platform —
+                   are the ones a reader opens the storage panel FOR. On top
+                   of that, `demo_note`, the sentence explaining that every
+                   remaining row is a placeholder, was baked from the start
+                   and typed nowhere, so seven unexplained placeholders
+                   rendered with nothing to say why.
+      /api/ollama  the shim answered `{up, models, reason}` against a live
+                   `{host, installed, models, suggested, up}`. `reason` was
+                   declared and read nowhere, so the handler's own sentence
+                   never rendered and the picker fell back to "Ollama is not
+                   running, install it from ollama.com, start it, then reopen
+                   this panel" — two next steps that cannot change anything on
+                   a static recording.
+    """
+    print("\nshapes — does the demo send the keys the client declares?")
+
+    env = json.loads((BUNDLE / "env.json").read_text("utf-8"))
+    for bundled, interface in (("paths", "PathInfo"), ("hub_auth", "HubAuth")):
+        required, optional = _ts_interface(interface)
+        if not required and not optional:
+            check(f"{interface} is declared in api.ts", False, "no such interface")
+            continue
+        sent = set(env.get(bundled) or {})
+        check(
+            f"env.{bundled} sends every key {interface} requires",
+            required <= sent,
+            f"missing {sorted(required - sent)}",
+            note=f"{len(sent)} keys",
+        )
+        check(
+            f"env.{bundled} sends nothing {interface} does not declare",
+            sent <= (required | optional),
+            f"undeclared {sorted(sent - required - optional)}",
+        )
+
+    # The Ollama answer is written inline in `demo.ts` rather than baked, so
+    # this reads the literal. Keys only — the values are the point of the
+    # handler and not this check's business.
+    text = (SRC / "demo.ts").read_text("utf-8")
+    block = re.search(r'p === "/api/ollama"\)\s*\{(.*?)\n  \}', text, re.S)
+    required, optional = _ts_interface("OllamaState")
+    sent = (
+        set(re.findall(r"^\s{6}([a-zA-Z_][a-zA-Z0-9_]*):", block.group(1), re.M))
+        if block
+        else set()
+    )
+    check(
+        "the /api/ollama shim sends every key OllamaState requires",
+        bool(block) and required <= sent,
+        f"missing {sorted(required - sent)}" if block else "handler not found",
+        note=f"{len(sent)} keys",
+    )
+    check(
+        "the /api/ollama shim sends nothing OllamaState does not declare",
+        bool(block) and sent <= (required | optional),
+        f"undeclared {sorted(sent - required - optional)}" if block else "",
+    )
+
+
 def bundle_integrity() -> None:
     print("\nbundle — is the baked data what those handlers will look up?")
     index = json.loads((BUNDLE / "scenarios.json").read_text("utf-8"))
@@ -778,6 +871,7 @@ def main() -> int:
     token_ranking_is_not_offered()
     feature_ranking_is_not_offered()
     no_machine_leaks()
+    payload_shapes()
     bundle_integrity()
     print()
     if FAILURES:

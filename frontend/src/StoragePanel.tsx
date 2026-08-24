@@ -112,6 +112,11 @@ export default function StoragePanel() {
                   );
                 })}
               </dl>
+              {/* The static demo bakes placeholders for every row above and
+                  has always sent this sentence explaining that. It was typed
+                  nowhere and rendered nowhere, so a visitor saw seven rows of
+                  `<your data dir>` with nothing to say why. */}
+              {info.demo_note && <div className="hint">{info.demo_note}</div>}
               <div className="hint">
                 change any of it with <code>MODELMRI_HOME</code>,{" "}
                 <code>MODELMRI_MODELS_DIR</code>, <code>MODELMRI_TRACE_DIR</code>, or

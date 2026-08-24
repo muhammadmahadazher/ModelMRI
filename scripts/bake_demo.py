@@ -29,6 +29,46 @@ PROMPT = "The Eiffel Tower is located in the city of"
 VLA_EPISODE, VLA_FRAME = 3, 60
 VLA_LAYERS = [0, 3, 6, 9, 11]
 
+# EVERY key `/api/paths` sends, synthesised. Never the baker's own values —
+# that route once shipped real directories to the public site, and the scrub
+# that was supposed to catch it replaced only the home directory, so a model
+# cache on another volume went out verbatim. See the block in `bake_env`.
+#
+# Module level so a one-off repair of an already-baked bundle reads the same
+# dict the next bake writes, instead of a second copy that can disagree.
+#
+# The first version had eight of these fifteen, and the seven it dropped —
+# `models_home`, `inherited_caches`, `models_dirs`, `cwd`, `legacy`,
+# `undelivered_traces`, `platform` — are the ones somebody opens the storage
+# panel FOR. `PathInfo` declares them all as required and `json<T>` is a bare
+# cast, so nothing complained; `tests/demo_check.py::payload_shapes` does now.
+SYNTHETIC_PATHS = {
+    "override": None,
+    "data": "<your data dir>",
+    "config": "<your config dir>",
+    "cache": "<your cache dir>",
+    "hf_home": "<your HuggingFace home>",
+    "hf_hub_cache": "<your HuggingFace hub cache>",
+    "trace_db": "<your data dir>/traces.sqlite",
+    "hub_token": "<your config dir>/hub.json",
+    "undelivered_traces": "<your data dir>/undelivered",
+    # Lists and nullables at their real EMPTY shape rather than a placeholder
+    # string: the panel skips a row whose value is empty, and "<your models
+    # dir>" against a setting nobody has set would invent a configuration for
+    # the reader.
+    "models_dirs": [],
+    "models_home": None,
+    "inherited_caches": [],
+    "cwd": "<wherever you started it>",
+    "legacy": None,
+    "platform": "<your platform>",
+    "demo_note": (
+        "These are placeholders. Run `modelmri where` and the panel shows "
+        "the real locations for your OS and account — they are resolved "
+        "per-platform, never hardcoded."
+    ),
+}
+
 # Two recorded models, because one answers "does this work" and two answer
 # "does this work at more than one size". Both are current instruct models
 # that think out loud, and both are 28 x 16 — the shape where the whole-model
@@ -447,21 +487,7 @@ def main() -> int:
     # tests/demo_check.py scans the whole bundle for machine identifiers so a
     # future endpoint cannot reintroduce this quietly.
     env["hub_auth"] = {"signed_in": False, "user": None, "source": None}
-    env["paths"] = {
-        "override": None,
-        "data": "<your data dir>",
-        "config": "<your config dir>",
-        "cache": "<your cache dir>",
-        "hf_home": "<your HuggingFace home>",
-        "hf_hub_cache": "<your HuggingFace hub cache>",
-        "trace_db": "<your data dir>/traces.sqlite",
-        "hub_token": "<your config dir>/hub.json",
-        "demo_note": (
-            "These are placeholders. Run `modelmri where` and the panel shows "
-            "the real locations for your OS and account — they are resolved "
-            "per-platform, never hardcoded."
-        ),
-    }
+    env["paths"] = dict(SYNTHETIC_PATHS)
     # The accelerator is the same class of leak and was missed the first time,
     # because it carries no username and no path — so the machine-identifier
     # scan walked straight past "NVIDIA GeForce RTX 4060 Laptop GPU". A visitor

@@ -212,9 +212,16 @@ export async function demoFetch(
   // Ollama is genuinely not running behind a static page. Say which, rather
   // than showing an "off" pill with no explanation.
   if (p === "/api/ollama") {
+    // The WHOLE shape the live route sends. This used to answer three of its
+    // five keys, and `OllamaState` declares `installed`, `suggested` and
+    // `host` as required — `json<T>` is a bare cast, so nothing complained
+    // and the picker read `undefined` where it expected a list.
     return ok({
       up: false,
       models: [],
+      installed: [],
+      suggested: [],
+      host: "",
       reason:
         "No Ollama daemon behind this page — it is a static recording. " +
         "Installed, this tab lists the models you have pulled.",

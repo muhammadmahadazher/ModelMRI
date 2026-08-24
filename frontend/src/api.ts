@@ -2428,6 +2428,14 @@ export interface OllamaState {
   installed: OllamaModel[];
   suggested: { name: string; size: string; note: string }[];
   host: string;
+  /** Why the daemon is unreachable, when the answer is not "start it".
+   *
+   *  Optional because the live route never sends one — a machine with no
+   *  Ollama running has the ordinary next step, which the picker already
+   *  states. The static demo DOES send one, and it went undeclared and
+   *  unrendered: a visitor was told to install Ollama and reopen the panel,
+   *  on a page where neither step can change anything. */
+  reason?: string;
 }
 
 /** A curated Ollama model, sized live and marked against this GPU. */
@@ -4251,6 +4259,10 @@ export const clearTraces = (keepDemo = true) =>
 
 export interface PathInfo {
   override: string | null;
+  /** Present only on the static demo, where every path above is a
+   *  placeholder. It was baked from the start and typed nowhere, so seven
+   *  unexplained placeholder rows rendered with nothing to say why. */
+  demo_note?: string;
   data: string;
   config: string;
   cache: string;
