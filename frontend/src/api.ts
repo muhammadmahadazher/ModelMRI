@@ -4124,6 +4124,15 @@ export interface DirectAttribution {
   residual_share: number;
   norm_kind: string;
   components: DirectContribution[];
+  /** Every component in the decomposition, counted by the server BEFORE its
+   *  `top_k` cut. This — not `components.length` — is the denominator for
+   *  `n_unreadable`, which is counted over the same whole. `components` is
+   *  only the post-cut slice: the demo carries 40 rows out of 477 components,
+   *  so dividing by it printed the impossible "434 of 40". Anything phrased
+   *  as a fraction of the decomposition divides by this. */
+  n_components: number;
+  /** Components whose direct effect is under the reconstruction residual,
+   *  counted over the whole decomposition — read against `n_components`. */
   n_unreadable: number;
   means: string;
   receipt?: Receipt | null;

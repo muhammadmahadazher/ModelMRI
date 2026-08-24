@@ -124,6 +124,16 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
             </button>
           )}
 
+          {/* The server's own sentence, verbatim, the way the sibling panels
+              render theirs. It is the only place the ROW CAP is stated: the
+              request asks for the strongest 60 and the demo recording carries
+              40, out of 477 components decomposed — the other 437 were
+              measured and are not in the list above. Nothing else on this
+              panel said so, so a reader took the bars for the whole
+              decomposition. Summarising it here would be the place that
+              caveat got dropped again. */}
+          <div className="hint">{data.means}</div>
+
           {/* MANDATORY, not an option. Without it the chart claims a
               decomposition it does not have. */}
           <div className="hint residual">
@@ -135,9 +145,17 @@ export default function DirectPanel({ epoch }: { epoch: number }) {
             the {data.norm_kind} scale cost on this run. The model was not
             modified to make this exact.
           </div>
+          {/* The denominator is `n_components` — the size of the WHOLE
+              decomposition. The server counts both this and `n_unreadable`
+              before its `top_k` cut, deliberately, so the numerator was never
+              a count over `components`, the post-cut slice. Dividing by that
+              slice printed "434 of 40 components" on the public demo, where
+              434 unreadable components were counted over 477 and only 40 rows
+              were listed. Numerator and denominator are now both counts over
+              the same population, whatever `top_k` the request asked for. */}
           <div className="hint">
             <b>Direct path only.</b> {data.n_unreadable} of{" "}
-            {data.components.length} components fall below that residual: their
+            {data.n_components} components fall below that residual: their
             direct effect cannot be told from the approximation's own error,
             which is <em>not</em> the same as their being unimportant. A head
             that feeds a later head shows near zero here and can still decide
