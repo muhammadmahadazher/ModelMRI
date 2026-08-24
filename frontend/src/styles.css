@@ -7851,3 +7851,47 @@ button:disabled,
 }
 
 .meta.warn { color: var(--color-pop); }
+
+/* --------------------------------------------- where a head acts in your text
+
+   A corpus box, not a prompt box, and it has to look like one: the prompt above
+   is one sequence and this is many, so a single-line input would invite exactly
+   the wrong thing to be pasted in. */
+.head-evidence { margin-top: 4px; }
+.corpus-box {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  padding: 8px 10px;
+  margin: 6px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  resize: vertical;
+}
+
+.span-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.span-list li {
+  padding: 6px 8px;
+  border-left: 2px solid color-mix(in oklab, var(--sem-attn, var(--line)) 60%, transparent);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+/* The window scrolls rather than wrapping. A span is a slice of real text and
+   its shape carries information — where the line breaks were, whether it is
+   code — which reflowing destroys. */
+.span-line {
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  padding-bottom: 2px;
+}
+.span-list .meta { display: block; margin-top: 3px; }

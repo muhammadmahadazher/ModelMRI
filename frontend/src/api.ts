@@ -4321,6 +4321,98 @@ export const getHeadOv = (layer: number, head: number, token: string, topK = 10)
       `&token=${encodeURIComponent(token)}&top_k=${topK}`,
   ).then((r) => json<HeadOv>(r));
 
+/** One place a head wrote hard, and what it was reading when it did.
+ *
+ *  A PAIR, unlike an SAE feature's span. A feature fires at one position and
+ *  one offset locates it; a head writes at one position while attending to
+ *  another, and reporting only the first is half a sentence. */
+export interface HeadSpan {
+  position: number;
+  token: string;
+  /** Character offset of `token` inside `text`. Not derivable by searching:
+   *  a window can contain the same token twice and only one of them wrote. */
+  offset: number;
+  /** `null` when attention was not read on this sweep — never 0, which would
+   *  say the head looked at position zero. */
+  source_position: number | null;
+  source_token: string | null;
+  source_share: number | null;
+  write_norm: number;
+  sequence: number;
+  text: string;
+}
+
+export interface HeadCorpus {
+  layer: number;
+  head: number;
+  kv_head: number;
+  corpus_label: string;
+  corpus_sha256: string;
+  n_sequences: number;
+  n_tokens: number;
+  truncated: boolean;
+  /** False means every `source_*` on every span is null, and the sentence
+   *  says so rather than leaving a column of nulls to read as "looked
+   *  nowhere". */
+  attention_read: boolean;
+  spans: HeadSpan[];
+  write_norm_mean: number;
+  write_norm_median: number;
+  write_norm_max: number;
+  /** Positions READ. `spans.length` is how many were kept, and a zero write
+   *  is never kept. */
+  n_positions: number;
+  /** Positions that carried a non-zero write. The gap between this and
+   *  `n_positions` is what makes a head SPARSE rather than absent — two
+   *  states that had one sentence between them until a head writing once in
+   *  ten positions printed "not seen in this corpus". */
+  n_wrote: number;
+  passes: number;
+  device: string;
+  means: string;
+}
+
+export interface HeadEvidence {
+  corpus: HeadCorpus;
+  /** What it pushes the vocabulary toward for the token it most often read.
+   *  `null` when attention was not read, so there is no such token. */
+  pushes_at: HeadOv | null;
+  /** NOT run — hundreds of forward passes against the two this took — and
+   *  named rather than omitted, because a two-legged answer presented as the
+   *  whole thing is what the SAE version argues against. */
+  causal: { available: boolean; how: string; why: string };
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const headEvidence = (body: {
+  texts?: string[];
+  file?: string;
+  label?: string;
+  layer?: number;
+  head?: number;
+  read_attention?: boolean;
+  top_k?: number;
+}) =>
+  fetch("/api/attention/head/evidence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => json<HeadEvidence>(r));
+
+export const headEvidenceCost = (nSequences: number, readAttention: boolean) =>
+  fetch(
+    `/api/attention/head/evidence/cost?n_sequences=${nSequences}` +
+      `&read_attention=${readAttention}`,
+  ).then((r) =>
+    json<{
+      n_sequences: number;
+      passes: number;
+      reads_attention: boolean;
+      means: string;
+    }>(r),
+  );
+
 export const getHeadOvSpectrum = (layer: number, head: number, seed = 0) =>
   fetch(`/api/attention/ov/spectrum?layer=${layer}&head=${head}&seed=${seed}`).then(
     (r) => json<HeadOvSpectrum>(r),

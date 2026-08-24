@@ -24,6 +24,7 @@ import ArcCanvas from "./ArcCanvas";
 import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
 import HeadWiring from "./HeadWiring";
+import HeadEvidencePanel from "./HeadEvidence";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
@@ -831,6 +832,14 @@ export default function AttentionPanel({
               weights at all. A recording carries activations rather than
               weights, so it has nothing to read. */}
           {!replay && <HeadWiring layer={layer} head={head} disabled={ranking} />}
+          {/* Third and last, and the order is still the argument. The ranking
+              says what this head did on THIS prompt; `HeadWiring` says what it
+              is wired to do on any; this says where it acts in a body of text
+              the reader chose. Three questions one dial cannot separate, so
+              the panel separates them. */}
+          {!replay && (
+            <HeadEvidencePanel layer={layer} head={head} disabled={ranking} />
+          )}
         </div>
       )}
       {/* The server's own sentence, unwrapped. Several of the things this
