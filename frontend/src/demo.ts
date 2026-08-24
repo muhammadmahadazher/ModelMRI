@@ -608,6 +608,36 @@ export async function demoFetch(
   // rather than answered from a fixture: numbers invented here would be the
   // one place on this page where "read off the weights" was not true, and
   // the sentence would still say it was.
+  if (p === "/api/attention/head/evidence/cost") {
+    // Arithmetic, not a recording — the price of a sweep is two passes per
+    // sequence whether or not anything can run here, and a visitor deciding
+    // whether the feature is worth installing for deserves the real number.
+    const n = Number(q.get("n_sequences") ?? 0);
+    const withAttention = q.get("read_attention") !== "false";
+    return ok({
+      n_sequences: n,
+      passes: n * (withAttention ? 2 : 1),
+      reads_attention: withAttention,
+      means:
+        `${n * (withAttention ? 2 : 1)} forward pass(es): ${n} sequence(s) x ` +
+        `${withAttention ? 2 : 1}.`,
+    });
+  }
+  if (p === "/api/attention/head/evidence") {
+    // Refused by name. This reads YOUR corpus through a resident model, and
+    // this page has neither — baking a recording of somebody else's text under
+    // a control that says "your text" would be the one place here where the
+    // corpus provenance every payload carries was a lie.
+    return refuse(
+      501,
+      `This measures where a head writes across a corpus YOU point it at, ` +
+        `which needs your text and a resident model. This page has a ` +
+        `recording of one run, not a model — and serving somebody else's ` +
+        `corpus under a control that says "your text" would be the only ` +
+        `dishonest number on the page. Installed, it reads any .txt or ` +
+        `.jsonl you name and nothing is uploaded.`,
+    );
+  }
   if (p === "/api/attention/ov" || p === "/api/attention/ov/spectrum") {
     return refuse(
       501,

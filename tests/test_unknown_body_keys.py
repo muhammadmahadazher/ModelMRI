@@ -177,13 +177,9 @@ RAW_BODY_ALLOWED = {
     # loopback check on a `file` field, or a streamed upload — so a model
     # cannot replace the parameter. They validate their own fields explicitly.
     "/api/custom/ablate": "reads the raw Request; validates its own fields",
-    "/api/custom/scan": "reads the raw Request; validates its own fields",
     "/api/diff/models": "loopback check on `file` needs the Request",
-    "/api/experiments/compare": "reads the raw Request",
     "/api/features/evidence": "loopback check on `file` needs the Request",
     "/api/ground": "loopback check on `file` needs the Request",
-    "/api/image/adapter": "reads the raw Request",
-    "/api/image/load": "reads the raw Request",
     "/api/lens/tune": "loopback check on `file` needs the Request",
     "/api/otel/v1/traces": "OTLP wire format, not ours to constrain",
     "/api/patch/path": "reads the raw Request",
@@ -195,7 +191,6 @@ RAW_BODY_ALLOWED = {
     "/api/vla/occlude": "reads the raw Request",
     "/api/vla/share": "reads the raw Request",
     "/api/vla/sweep": "reads the raw Request",
-    "/api/weights/scan": "reads the raw Request",
 }
 
 
@@ -216,9 +211,34 @@ def test_no_new_route_takes_a_raw_body_without_saying_why():
     for route in app.routes:
         if "POST" not in (getattr(route, "methods", None) or set()):
             continue
-        for _param, ann in getattr(
+        annotations = getattr(
             getattr(route, "endpoint", None), "__annotations__", {}
-        ).items():
+        ).items()
+        # A ROUTE IS ONLY BLIND IF NOTHING VALIDATES ITS BODY.
+        #
+        # The first version of this flagged any parameter annotated `Request`,
+        # and that is not the same question. `/api/weights/scan` is
+        # `(req: ScanRequest, request: Request)` — its body IS checked against
+        # a model, and the `Request` is there for `_not_from_this_machine`,
+        # which reads the Origin header and the client address rather than the
+        # body. Flagging it put a fully-validated route on an allowlist under
+        # the reason "reads the raw Request", which it does not do, and the
+        # entry then read as a decision somebody had made rather than as this
+        # test's own imprecision. Caught when a new route with exactly that
+        # correct shape was flagged too.
+        validated = any(
+            hasattr(
+                getattr(
+                    srv, (a if isinstance(a, str) else getattr(a, "__name__", "")), None
+                ),
+                "model_fields",
+            )
+            for param, a in annotations
+            if param != "return"
+        )
+        if validated:
+            continue
+        for _param, ann in annotations:
             # `return` is in `__annotations__` too, and five routes declare
             # `-> dict` while taking no body whatsoever. Reading it as a raw
             # body flagged `/api/model/cancel` and four siblings that have
@@ -248,9 +268,30 @@ def test_the_allowlist_has_no_stale_entries():
     for route in app.routes:
         if "POST" not in (getattr(route, "methods", None) or set()):
             continue
-        for _param, ann in getattr(
+        annotations = getattr(
             getattr(route, "endpoint", None), "__annotations__", {}
-        ).items():
+        ).items()
+        # The SAME question the test above asks, and it has to be asked the
+        # same way or the two disagree. Five entries sat on this list reading
+        # "reads the raw Request" for routes that take a request model AND a
+        # `Request` — the second for `_not_from_this_machine`, which reads
+        # headers rather than the body. Their bodies were validated the whole
+        # time, so the licence was one nobody was using and the reason beside
+        # it was not true.
+        if any(
+            hasattr(
+                getattr(
+                    srv,
+                    (a if isinstance(a, str) else getattr(a, "__name__", "")),
+                    None,
+                ),
+                "model_fields",
+            )
+            for param, a in annotations
+            if param != "return"
+        ):
+            continue
+        for _param, ann in annotations:
             if _param == "return":
                 continue
             name = ann if isinstance(ann, str) else getattr(ann, "__name__", "")
@@ -258,4 +299,7 @@ def test_the_allowlist_has_no_stale_entries():
                 raw_paths.add(route.path)
 
     stale = sorted(set(RAW_BODY_ALLOWED) - raw_paths)
-    assert not stale, f"these no longer take a raw body: {stale}"
+    assert not stale, (
+        "these are on the raw-body allowlist and no longer need to be — each "
+        "either takes a request model now, or is gone:\n  " + "\n  ".join(stale)
+    )

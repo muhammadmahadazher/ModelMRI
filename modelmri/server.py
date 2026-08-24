@@ -386,6 +386,36 @@ class VLADatasetRequest(Body):
     repo_id: str = Field(min_length=1, max_length=200)
 
 
+class HeadEvidenceRequest(Body):
+    """One head, one corpus. A real model rather than a raw `Request`.
+
+    `test_unknown_body_keys` caught this route taking a raw body the moment it
+    was added, which is what that guard is for — and the shape here is
+    ordinary, so there is no reason to be on its allowlist. The consequence of
+    a raw body is not cosmetic: `{"read_attentin": false}` would have been
+    silently dropped, the sweep would have run the EXPENSIVE path, and the
+    result would have been labelled as though the flag had applied.
+    """
+
+    #: The corpus, inline. Either this or `file`, and the route says so when
+    #: neither arrives.
+    texts: list[str] | None = None
+    #: A local `.txt` or `.jsonl`. Reading it carries the not-from-this-machine
+    #: guard, because a path in a body names a file on the SERVER's disk.
+    file: str | None = Field(default=None, max_length=4096)
+    #: What to call the corpus in the result. Every number here is about the
+    #: text handed in, and a result that cannot say which text is not one
+    #: anybody can check. Filled from the filename when `file` is used.
+    label: str = Field(default="", max_length=200)
+    layer: int = Field(default=0, ge=0)
+    head: int = Field(default=0, ge=0)
+    #: Off costs one forward pass per sequence instead of two, and every span
+    #: then says where the head wrote without what it was reading. True by
+    #: default because the pair is the point.
+    read_attention: bool = True
+    top_k: int = Field(default=10, ge=1, le=100)
+
+
 class ScanRequest(Body):
     """A checkpoint or a directory of them.
 
@@ -2219,6 +2249,69 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/types")
+
+    @app.post("/api/attention/head/evidence")
+    async def head_evidence(req: HeadEvidenceRequest, request: Request):
+        """What one head does on the reader's OWN text, not on one prompt.
+
+        The attention counterpart to `/api/features/evidence`, and it took
+        until now to exist: `ablate.rank_heads` measures one prompt and the
+        number moves with it, `head_types` measures random repeated tokens and
+        says so. Neither is evidence about real text.
+
+        A corpus, so it carries the same not-from-this-machine guard every
+        other file-path route does — a request from elsewhere on the network
+        naming a path is a request to read somebody else's disk.
+        """
+        texts = req.texts
+        label = req.label
+        try:
+            if req.file:
+                refusal = _not_from_this_machine(
+                    request, "Reading a corpus off this machine's disk"
+                )
+                if refusal is not None:
+                    return refusal
+                from . import feature_corpus as fc
+
+                texts, label = fc.load_corpus(req.file)
+            if not texts:
+                return JSONResponse(
+                    {
+                        "error": "a head sweep needs text to read. Pass `texts` "
+                        "(a list of strings) or `file` (a .txt or .jsonl). "
+                        "Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.head_evidence(
+                    texts,
+                    layer=req.layer,
+                    head=req.head,
+                    corpus_label=label,
+                    read_attention=req.read_attention,
+                    top_k=req.top_k,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/head/evidence")
+
+    @app.get("/api/attention/head/evidence/cost")
+    def head_evidence_cost(n_sequences: int = 0, read_attention: bool = True):
+        """Forward passes before any are spent, like every other sweep here."""
+        try:
+            return runtime.head_evidence_cost(
+                n_sequences, read_attention=read_attention
+            )
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/head/evidence/cost")
 
     @app.get("/api/attention/ov")
     async def head_ov(layer: int = 0, head: int = 0, token: str = "", top_k: int = 10):

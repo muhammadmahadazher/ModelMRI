@@ -3202,6 +3202,59 @@ class ModelRuntime:
             )
             return out
 
+    def head_evidence(
+        self,
+        texts: list[str],
+        *,
+        layer: int,
+        head: int,
+        corpus_label: str,
+        read_attention: bool = True,
+        top_k: int = 10,
+    ) -> dict:
+        """Where this head wrote in YOUR text, and what it pushes toward.
+
+        Needs a model and text, and NOT a generation — which is why it does not
+        go through `_require_live_generation`. The corpus is the caller's, so
+        this measures what the head does on the text they care about rather
+        than on whatever happened to be in the prompt box.
+        """
+        from . import head_corpus
+
+        with self._lock:
+            n_heads = self._weights_only("what a head writes")
+            # `_block` bounds the layer against this model's real depth, which
+            # is the only place that knows it — see its own comment about
+            # `variant=ablate:9999` answering 500 from inside a ModuleList.
+            self._block(layer)
+            out = head_corpus.evidence(
+                self.model,
+                self.tokenizer,
+                lambda i: self._block(i),
+                [str(t) for t in texts],
+                layer=layer,
+                head=head,
+                n_heads=n_heads,
+                corpus_label=corpus_label,
+                read_attention=read_attention,
+                top_k=top_k,
+            )
+            out["receipt"] = self.receipt(
+                "head_evidence",
+                layer=layer,
+                head=head,
+                corpus=corpus_label,
+                n_sequences=len(texts),
+                read_attention=read_attention,
+            )
+            return out
+
+    def head_evidence_cost(self, n_sequences: int, *, read_attention: bool) -> dict:
+        """What that will cost, in forward passes, before any is spent."""
+        from . import head_corpus
+
+        return head_corpus.sweep_cost(n_sequences, read_attention=read_attention)
+
     def head_ov_spectrum(
         self, layer: int, head: int, n_samples: int = 0, seed: int = 0
     ) -> dict:
