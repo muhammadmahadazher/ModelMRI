@@ -98,6 +98,7 @@ def test_the_viewer_bundle_is_self_contained():
 def test_the_viewer_serves_and_hands_over_the_file(tmp_path):
     """End to end through the real command, with a real socket."""
     import http.client
+    import socket
     import threading
     import time
 
@@ -119,7 +120,19 @@ def test_the_viewer_serves_and_hands_over_the_file(tmp_path):
         )
     )
 
-    port = 5934
+    # A port the OS says is free, not a constant. This was hardcoded to 5934,
+    # and CI runs pytest under xdist with up to 8 workers — so two workers, or
+    # a second suite on the same machine, raced for one socket and whichever
+    # lost failed with `OSError` in a test about serving a file. Observed
+    # exactly that during a session with three suites running at once, passing
+    # in isolation every time.
+    #
+    # Bind-then-release still has a window, but it is microseconds against a
+    # constant that was guaranteed to collide.
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
     thread = threading.Thread(
         target=cli.serve_viewer,
         args=(mri,),

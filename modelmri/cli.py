@@ -1047,6 +1047,12 @@ def serve_viewer(target, *, host: str, port: int, browser: bool) -> None:
         print("  another ModelMRI may be running; try --port 5901", file=sys.stderr)
         raise SystemExit(1) from err
 
+    # The port it ACTUALLY got, not the one that was asked for. `--port 0`
+    # means "any free one", and the two lines below are the only way a reader
+    # learns which — printing the request would send them to
+    # `http://127.0.0.1:0/`, and opening that in a browser is the whole
+    # feature failing silently.
+    port = httpd.server_address[1]
     url = f"http://{host}:{port}/?f={name}"
     if browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

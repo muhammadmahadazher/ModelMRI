@@ -17,15 +17,27 @@ TCL = TestClient(create_app(), client=("127.0.0.1", 5000))   # loopback-guarded 
 
 ## Status
 
-**All seven "fix now" items are done, and all six from Next.**
+**ALL 44 DEFECTS ARE FIXED.** Every item below carries the commit that closed it.
 
 Fix now — 1.1 `627857f`, 1.2 `0f93582`, 1.3 `3493d88`, 1.4 `7e04e00`, 2.1 `d6b7dcf`, 2.2 `36ad22b`, 3.1 `1be2b5c`.
 
 Next — 2.3 `9e08788`, 2.4 `04c126d`, 3.2 `e6fa391`, 3.3+3.4 `8143c98`, 3.5 `b0b53eb`, 3.6 `d7eadaf`.
 
-Can wait — 1.6 + 3.7 + 3.8 `7839314`, 2.5 `3c2ac49`, 2.6 `a48b054`, 2.7 `b577402`.
+Can wait — 1.5 `af7c4e0`, 1.6+3.7+3.8 `7839314`, 1.7a-d `93f4d71`, 2.5 `3c2ac49`, 2.6 `a48b054`, 2.7 `b577402`, 3.9 `ee33c81`, 4.1+4.2 `f305a52`, 4.3 `da5b8a1`, 4.4 `7bda8de`.
 
-Remaining unfixed: 1.5, 1.7, 4.1, 4.2, 4.3, 4.4, 3.9.
+Four items were investigated and confirmed DELIBERATE — see "Not defects" at
+the foot of this file. Fixing any of them would be a regression.
+
+Three guards were added so these classes cannot recur silently:
+
+  `tests/test_api_contract.py`                     diffs every reachable GET
+                                                   payload against its `api.ts`
+                                                   interface — 4.4, 2.2, 3.9
+  `tests/demo_check.py::payload_shapes`            the same question for the
+                                                   demo's own handlers — 3.9
+  `tests/test_unknown_body_keys.py`                fails on a new raw-dict POST
+                                                   route outside an allowlist
+                                                   that must state a reason — 3.1
 
 Ranked: crashes/hangs/data-loss → wrong numbers in front of a user → silent failures → messages and types only.
 
