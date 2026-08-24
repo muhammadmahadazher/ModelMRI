@@ -260,6 +260,31 @@ addopts = [
   # the ones touching real config redirect MODELMRI_HOME and HF_HUB_CACHE to
   # `tmp_path` first, so workers cannot collide on a shared path.
   "--dist", "loadfile",
+  # A DEAD WORKER MUST FAIL THE RUN, NOT STALL IT.
+  #
+  # xdist's default is to restart a worker that dies and carry on, and when
+  # the death is a hard crash rather than a raised exception that turns into
+  # a wait with no end. MEASURED on CI, `tests (windows-latest, py3.13)`:
+  #
+  #   14:02:42  Windows fatal exception: code 0xc000001d
+  #   14:02:42  [gw0] node down: Not properly terminated
+  #   14:04:19  ..... 99%
+  #   14:21:53  OSError: cannot send (already closed?)  x2, in
+  #             pytest_sessionfinish
+  #   14:21:54  ##[error]The operation was canceled.
+  #
+  # Seventeen and a half minutes between the last test and the wall-clock
+  # timeout, and the job was CANCELLED rather than failed — so the run
+  # reported as slow instead of broken, and the summary that would have named
+  # the crashing test never printed. `0xc000001d` is STATUS_ILLEGAL_INSTRUCTION:
+  # a torch kernel using an instruction set that particular runner does not
+  # have. It has now happened on two separate runs.
+  #
+  # `0` means "do not restart, end the session", so the crash is reported in
+  # seconds WITH the failure summary. That is strictly more information than
+  # the 30-minute cancellation, and it is the same rule the workflow's own
+  # `timeout-minutes` comment states: a hang should fail, not wait.
+  "--max-worker-restart=0",
 ]
 
 # A HANG HAS TO SAY WHERE IT HUNG.
