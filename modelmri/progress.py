@@ -316,6 +316,32 @@ class _Tracker:
         # Llama-3.2-1B showed "5.0 GB / 2.5 GB" against a queued
         # Qwen2.5-0.5B, which has neither number.
         self._gen = 0
+        # Which job the CALLING thread last started here, so that a caller
+        # holding no token is still guarded by the generation rule.
+        #
+        # `_publish` carried that rule from the start; `publish` checked only
+        # `active` and `finish` checked nothing, and two concurrent
+        # `POST /api/ollama/pull`s then mixed. Measured through the route with
+        # the download layer stubbed -- a 1 GB pull that had transferred ZERO
+        # bytes and was still running, reported to the client as
+        #
+        #     {"hf_id": "llama3.2:1b", "stage": "ready", "active": false,
+        #      "bytes_done": 200000000, "bytes_total": 200000000}
+        #
+        # -- the 200 MB pull's bytes, the 200 MB pull's total and the 200 MB
+        # pull's completion, under the 1 GB pull's name. In the other
+        # interleaving the meter alternated between the two counters under one
+        # name and then froze at "ready" with ~800 MB still to go, because
+        # after the short pull's `finish()` the long one's `publish()` calls
+        # all hit `if not self._snap.active: return`.
+        #
+        # A thread, because every caller in the tree does its whole job on one
+        # thread -- the pull route's `run()` under `asyncio.to_thread`, the
+        # load path under `_load_slot`, the image path inside `_tracked`'s
+        # `with` -- so the thread that called `start` is the thread that
+        # publishes and finishes. A thread that never started anything here
+        # is left unguarded rather than guessed at: see `_stale`.
+        self._started = threading.local()
         # Set by the user asking to stop. The loader polls it; see
         # runtime._prefetch_weights for why a flag is enough to actually
         # halt a download that has already started.
@@ -345,10 +371,42 @@ class _Tracker:
             snap.eta_s = None
         return snap
 
+    def current_token(self) -> int | None:
+        """The token of the job in the slot right now, or None if none is.
+
+        For the caller that has to act on whatever is being tracked rather
+        than on a job it started itself: a supervisor ending a job whose
+        thread died without finishing it, and the suite's between-tests
+        cleanup. Production code should keep the token `start` handed it.
+        """
+        with self._lock:
+            return self._gen if self._snap.active else None
+
+    def _stale(self, token: int | None) -> bool:
+        """Whether this call belongs to a job something else has replaced.
+
+        Call with the lock held. `token` is what `start`/`start_external`
+        returned; `None` means the caller did not state one, and then the
+        thread it is calling from answers instead — the thread that started a
+        job here is the thread that reports on it.
+
+        A thread that has never started a job on this tracker is unknown, not
+        stale, and its writes go through as they always have. Unknown is not
+        collapsed into "current" or "obsolete": there is genuinely nothing to
+        compare, and refusing those writes would silently strand any caller
+        that hands the tracker to a helper thread — a load left `active`
+        forever, which is the failure the meter exists to prevent.
+        """
+        if token is None:
+            token = getattr(self._started, "gen", None)
+        if token is None:
+            return False
+        return token != self._gen
+
     def start_external(
         self, name: str, *, stage: str = "weights", detail: str = ""
-    ) -> None:
-        """Track a long job that reports its OWN byte counts.
+    ) -> int:
+        """Track a long job that reports its OWN byte counts. Returns its token.
 
         `start` spawns a watcher thread that polls the HuggingFace cache on
         disk, because that is the only way to see what hf_hub is doing. An
@@ -356,13 +414,19 @@ class _Tracker:
         nothing to watch — and a watcher pointed at the HF cache during an
         Ollama pull would publish an unrelated directory's size as this job's
         progress, which is the "5.0 GB / 2.5 GB" failure again in a new place.
+
+        Hand the token to `publish`/`stage`/`finish` to say which job is
+        speaking. Not passing it is supported and guarded: see `_stale`.
         """
         self._t0 = time.monotonic()
         self.cancelled.clear()
         with self._lock:
             self._gen += 1
+            gen = self._gen
             self._snap = Snapshot(active=True, hf_id=name, stage=stage, detail=detail)
         self._stop = None
+        self._started.gen = gen
+        return gen
 
     def publish(
         self,
@@ -371,16 +435,24 @@ class _Tracker:
         bytes_total: int | None = None,
         stage: str | None = None,
         detail: str | None = None,
-    ) -> None:
-        """Write a job's own numbers into the snapshot.
+        token: int | None = None,
+    ) -> bool:
+        """Write a job's own numbers into the snapshot. False if it was dropped.
 
-        Ignored once the job is no longer the active one, on the same rule as
-        `_publish`: a finished job's last chunk must not land on top of the
-        next one's.
+        Dropped once the job is no longer the one running, on the same rule as
+        `_publish`: an older job's chunk must not land on top of the current
+        one's. The docstring here used to claim that rule while the code below
+        checked only `active`, so a *concurrent* job — not merely a finished
+        one — wrote its byte counts under the live job's name.
+
+        A dropped write is not reported anywhere else, because there is one
+        snapshot and it belongs to the current job; the caller gets `False`,
+        and the job that was superseded still returns its own outcome to
+        whoever asked for it over HTTP.
         """
         with self._lock:
-            if not self._snap.active:
-                return
+            if self._stale(token) or not self._snap.active:
+                return False
             if bytes_done is not None:
                 self._snap.bytes_done = max(0, int(bytes_done))
             if bytes_total is not None:
@@ -389,9 +461,11 @@ class _Tracker:
                 self._snap.stage = stage
             if detail:
                 self._snap.detail = detail
+            return True
 
-    def start(self, hf_id: str, patterns: tuple[str, ...] | None = None) -> None:
-        """Begin tracking. `patterns` is the caller's own download allow-list.
+    def start(self, hf_id: str, patterns: tuple[str, ...] | None = None) -> int:
+        """Begin tracking, returning this job's token. `patterns` is the
+        caller's own download allow-list.
 
         Passing it is what lets the meter count a checkpoint whose weights
         live in subfolders. A caller that does not have one is not penalised:
@@ -407,28 +481,52 @@ class _Tracker:
                 active=True, hf_id=hf_id, stage="resolving", detail="contacting the Hub"
             )
         self._stop = threading.Event()
+        self._started.gen = gen
         threading.Thread(
             target=self._watch, args=(hf_id, self._stop, gen, patterns), daemon=True
         ).start()
+        return gen
 
-    def stage(self, stage: str, detail: str = "") -> None:
+    def stage(self, stage: str, detail: str = "", *, token: int | None = None) -> bool:
+        """Name what this job is doing now. False if the write was dropped.
+
+        Same guard as `publish`, for the same reason: a superseded job
+        restamping the stage would relabel the live one, and "ready" is a
+        stage.
+        """
         with self._lock:
-            if self._snap.active:
-                self._snap.stage = stage
-                if detail:
-                    self._snap.detail = detail
+            if self._stale(token) or not self._snap.active:
+                return False
+            self._snap.stage = stage
+            if detail:
+                self._snap.detail = detail
+            return True
 
-    def finish(self, error: str | None = None, *, cancelled: bool = False) -> None:
+    def finish(
+        self,
+        error: str | None = None,
+        *,
+        cancelled: bool = False,
+        token: int | None = None,
+    ) -> bool:
         """Mark this load done. `cancelled` separates a stop from a failure.
 
         Three outcomes, not two. A load somebody stopped reports `cancelled`
         rather than `error`, because the route already answers it 200 with a
         plain sentence and having the stage say "error" one field along would
         put the red box back that the 200 was there to prevent.
+
+        False means the call was dropped because another job had already
+        replaced this one. This method used to check nothing at all, and a
+        200 MB pull finishing 0.15 s after a 1 GB pull started therefore
+        marked the 1 GB pull "ready" while it was still transferring. The
+        guard also keeps a superseded caller from setting `_stop`, which
+        belongs to the CURRENT job's watcher thread and would have ended it.
         """
-        if self._stop is not None:
-            self._stop.set()
         with self._lock:
+            if self._stale(token):
+                return False
+            stop = self._stop
             self._snap.active = False
             if cancelled:
                 self._snap.stage = "cancelled"
@@ -444,6 +542,9 @@ class _Tracker:
                 self._snap.detail = "ready"
             elif cancelled:
                 self._snap.detail = error
+        if stop is not None:
+            stop.set()
+        return True
 
     def _publish(self, gen: int, **fields) -> bool:
         """Write into the snapshot, but only while this load is still the one
