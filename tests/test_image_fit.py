@@ -33,7 +33,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from test_fit import write_safetensors  # the same real-file writer
+from test_fit import (  # the same real-file writers
+    write_raw_header,
+    write_safetensors,
+)
 
 from modelmri import image_fit
 
@@ -860,3 +863,109 @@ def test_a_directory_nobody_could_read_is_not_a_download_problem(tmp_path, monke
 
     assert "permission" in got.remedy.lower()
     assert "re-download" not in got.remedy.lower()
+
+
+# ---------------- regression: audit 1.7a, a corrupt shape was an HTTP 500
+
+
+def raw_component(root, name, spec, *, variant=""):
+    """One component whose safetensors header is written VERBATIM.
+
+    `component` builds a well-formed table, which cannot ask what a damaged one
+    does. The bytes here are what a truncated or rewritten shard really holds.
+    """
+    folder = root / name if name else root
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "config.json").write_text(json.dumps({"_class_name": "X"}))
+    suffix = f".{variant}" if variant else ""
+    write_raw_header(
+        folder / f"diffusion_pytorch_model{suffix}.safetensors", {"w": spec}
+    )
+    return folder
+
+
+@pytest.mark.parametrize("shape", ["abc", [None, 4], 5])
+def test_a_shape_that_is_not_numbers_is_priced_as_unknown_not_crashed(tmp_path, shape):
+    """`count *= int(dim)` sat OUTSIDE the try that catches
+    KeyError/TypeError/ValueError, three lines below the arm written for
+    exactly this. Measured: `ValueError: invalid literal for int() with base
+    10: 'a'`, out of `_price` and out of `of()` — a function whose whole job is
+    to answer before anything is spent.
+
+    Unknown, not zero: the component keeps a disk figure from the filesystem,
+    loses its card figure, and says which file it could not read."""
+    raw_component(
+        tmp_path, "unet", {"dtype": "F32", "shape": shape, "data_offsets": [0, 16]}
+    )
+    index(tmp_path, {"unet": "UNet2DConditionModel"})
+
+    got = priced(tmp_path)
+
+    assert got.card_bytes is None
+    assert got.exact is False
+    assert got.disk_bytes > 0
+    assert "unknown shape" in got.components[0].note
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"dtype": "F32", "shape": [-4, 4], "data_offsets": [0, 16]},
+        {"dtype": "F32", "shape": [4], "data_offsets": [16, 0]},
+    ],
+)
+def test_a_negative_extent_is_not_summed_into_the_total(tmp_path, spec):
+    """A negative dimension or a reversed offset pair makes a component weigh
+    less than nothing, which would drag a checkpoint's total down towards
+    "fits" — the direction this package treats as the dangerous one. Handled
+    through the same arm as an unreadable shape, so the answer is the same
+    kind of unknown rather than a second vocabulary."""
+    raw_component(tmp_path, "unet", spec)
+    index(tmp_path, {"unet": "UNet2DConditionModel"})
+
+    got = priced(tmp_path)
+
+    assert got.card_bytes is None
+    assert got.disk_bytes > 0
+
+
+def test_a_corrupt_shape_answers_the_load_route_with_a_refusal_not_a_500(
+    tmp_path, monkeypatch
+):
+    """The reachable half of audit 1.7, driven through the route it was
+    reachable from.
+
+    `image_runtime.load` has no except arm over `image_fit.of`, and
+    `/api/image/load` answers `(Refusal, BadRequest)` — so the ValueError from
+    `_price` fell through to the bare `except Exception` and MEASURED HTTP 500
+    with "Something inside ModelMRI failed rather than refusing", from a
+    loopback caller, on nothing worse than a damaged file on their own disk.
+
+    `text_encoder` here has a config and no weights, so the load is impossible
+    for a reason the pricing pass reports AFTER it has priced the corrupt
+    unet — which is what keeps this test a test of the reader rather than of
+    diffusers, and keeps it from opening a real pipeline."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    raw_component(
+        tmp_path, "unet", {"dtype": "F32", "shape": "abc", "data_offsets": [0, 16]}
+    )
+    (tmp_path / "text_encoder").mkdir()
+    (tmp_path / "text_encoder" / "config.json").write_text("{}")
+    index(tmp_path, {"unet": "UNet2DConditionModel", "text_encoder": "CLIPTextModel"})
+
+    # The machine guard fires first for a local path — correctly — and has its
+    # own tests; patched out here to reach the layer beneath it.
+    monkeypatch.setattr("modelmri.server._not_from_this_machine", lambda *a, **k: None)
+    monkeypatch.setattr(image_fit, "_MEMO", {})
+    client = TestClient(create_app())
+
+    r = client.post("/api/image/load", json={"repo": str(tmp_path)})
+
+    assert r.status_code == 409, r.text
+    said = r.json()["error"]
+    assert "text_encoder" in said
+    assert "Something inside ModelMRI failed" not in said

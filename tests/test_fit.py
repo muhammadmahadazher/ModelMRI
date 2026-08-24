@@ -40,6 +40,19 @@ def write_safetensors(path, tensors: dict) -> None:
     path.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * offset)
 
 
+def write_raw_header(path, header) -> None:
+    """A safetensors file whose header is EXACTLY what it is handed.
+
+    `write_safetensors` builds a well-formed table from dtype/shape pairs,
+    which is the wrong tool for asking what happens to a damaged one. This
+    writes the header verbatim — including a header that is not a table at
+    all — so the reader is tested against bytes a corrupt download really
+    produces rather than against a mock.
+    """
+    blob = json.dumps(header).encode()
+    path.write_bytes(struct.pack("<Q", len(blob)) + blob + b"\0" * 64)
+
+
 CONFIG = {
     "model_type": "llama",
     "num_hidden_layers": 4,
@@ -360,3 +373,224 @@ def test_a_nested_mla_config_is_refused_too():
     nested = {"model_type": "wrapper", "text_config": dict(CONFIG, kv_lora_rank=512)}
     with pytest.raises(fit.UnsupportedArchitecture, match="latent attention"):
         fit.kv_geometry(nested, None)
+
+
+# ------------------- regression: audit 1.7, malformed checkpoints (b, c, d)
+
+
+@pytest.mark.parametrize("body", [[], 5, "abc", True, None])
+def test_a_header_that_is_valid_json_but_not_a_table_is_refused(tmp_path, body):
+    """`json.loads` succeeds on `[]`, `5`, `"abc"`, `true` and `null`, and
+    `read_header` then called `.pop()` on whatever came back. Measured on a
+    two-byte header holding `[]`: `TypeError: pop expected at most 1 argument,
+    got 2` — a raw Python exception escaping `weights_bytes`, `plan` and
+    `weights_table.table_from_safetensors` alike, past the `except BadRequest`
+    that exists to turn exactly this into a sentence."""
+    p = tmp_path / "model.safetensors"
+    write_raw_header(p, body)
+    with pytest.raises(BadRequest, match="not a tensor table"):
+        fit.read_header(p)
+
+
+def test_the_header_refusal_says_what_the_file_held_in_json_words(tmp_path):
+    """ "a int" and "a NoneType" name a Python type at somebody looking at their
+    own JSON. The sentence has to match the file they can open."""
+    p = tmp_path / "model.safetensors"
+    write_raw_header(p, 5)
+    with pytest.raises(BadRequest, match="a number"):
+        fit.read_header(p)
+
+
+@pytest.mark.parametrize("shape", ["abc", [None, 4], 5, {"rows": 4}])
+def test_a_shape_that_is_not_numbers_is_refused_by_the_arm_written_for_it(
+    tmp_path, shape
+):
+    """`weights_bytes` caught KeyError/TypeError/ValueError around the three
+    `spec[...]` lookups and then ran `int(start)` and `int(dim)` three lines
+    BELOW that arm's reach. A header that names its fields and fills them with
+    rubbish therefore crashed the reader instead of being refused by it — the
+    same defect `image_fit._price` carried, where it was reachable as a 500."""
+    (tmp_path / "config.json").write_text(json.dumps(CONFIG), encoding="utf-8")
+    write_raw_header(
+        tmp_path / "model.safetensors",
+        {"w": {"dtype": "F32", "shape": shape, "data_offsets": [0, 16]}},
+    )
+    with pytest.raises(BadRequest, match="does not recognise"):
+        fit.weights_bytes(tmp_path)
+
+
+def test_offsets_that_are_not_numbers_are_refused_too(tmp_path):
+    """`data_offsets: ["a", 4]` unpacks into two names perfectly happily and
+    dies on the `int()` below. The pair being present is not the same question
+    as the pair being readable."""
+    write_raw_header(
+        tmp_path / "model.safetensors",
+        {"w": {"dtype": "F32", "shape": [4], "data_offsets": ["a", 4]}},
+    )
+    with pytest.raises(BadRequest, match="does not recognise"):
+        fit.weights_bytes(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"dtype": "F32", "shape": [-4, 4], "data_offsets": [0, 16]},
+        {"dtype": "F32", "shape": [4], "data_offsets": [16, 0]},
+    ],
+)
+def test_a_negative_extent_never_subtracts_from_the_checkpoint_total(tmp_path, spec):
+    """A negative dimension or a reversed offset pair makes a tensor weigh less
+    than nothing, so a damaged shard would make the whole checkpoint look
+    smaller than it is. This module's docstring names that as the dangerous
+    direction — wrong towards "it fits" — so it is refused rather than summed."""
+    write_raw_header(tmp_path / "model.safetensors", {"w": spec})
+    with pytest.raises(BadRequest, match="negative size"):
+        fit.weights_bytes(tmp_path)
+
+
+def test_a_half_written_config_is_refused_rather_than_raising_a_json_error(tmp_path):
+    """This project's own Drive-backed cache publishes `config.json` mid-write,
+    so this is not hypothetical. Measured on one caught that way:
+    `JSONDecodeError: Unterminated string starting at: line 1 column 26 (char
+    25)`, straight out of `plan()`, with nothing in it naming the file."""
+    write_safetensors(tmp_path / "model.safetensors", {"a": ("F32", [4])})
+    (tmp_path / "config.json").write_text(
+        '{"num_hidden_layers": 4, "num_attention', encoding="utf-8"
+    )
+    with pytest.raises(BadRequest, match="not valid JSON") as caught:
+        fit.plan(tmp_path, seq_len=8)
+    # The next step as well as the cause: a truncated config is re-fetched,
+    # not repaired by hand.
+    assert "again" in caught.value.sentence
+
+
+@pytest.mark.parametrize("body", ["[1, 2, 3]", "5", '"abc"', "null"])
+def test_a_config_that_is_not_a_set_of_fields_is_refused(tmp_path, body):
+    """A `config.json` holding `[1, 2, 3]` parses fine and dies one frame
+    later: measured `AttributeError: 'list' object has no attribute 'get'`,
+    out of `_merged`. Valid JSON and a config are two different claims."""
+    write_safetensors(tmp_path / "model.safetensors", {"a": ("F32", [4])})
+    (tmp_path / "config.json").write_text(body, encoding="utf-8")
+    with pytest.raises(BadRequest, match="rather than a set of fields"):
+        fit.plan(tmp_path, seq_len=8)
+
+
+def test_a_parsed_config_that_is_not_a_mapping_is_refused_at_the_entry():
+    """`kv_geometry` is called directly by anything that parsed a config
+    itself, so the guard cannot live only in the file reader."""
+    with pytest.raises(BadRequest, match="rather than a set of fields"):
+        fit.kv_geometry([1, 2, 3], None)
+
+
+def test_zero_attention_heads_is_named_rather_than_divided_by():
+    """Measured: `{"num_hidden_layers": 2, "num_attention_heads": 0,
+    "hidden_size": 16}` raised `ZeroDivisionError: integer division or modulo
+    by zero` from `_head_dim`. `need()` refused an ABSENT key and accepted any
+    present one — one guarded case beside one bare one."""
+    with pytest.raises(BadRequest, match="num_attention_heads"):
+        fit.kv_geometry(
+            {"num_hidden_layers": 2, "num_attention_heads": 0, "hidden_size": 16}
+        )
+
+
+def test_zero_heads_with_a_stated_head_dim_is_worse_than_the_crash():
+    """The same config plus `head_dim` did not crash at all. It returned
+    `KVGeometry(n_heads=0, n_kv_heads=0)` and `kv_cache_bytes(...)` came back
+    as 0 bytes at 4096 tokens — a cache that costs nothing, for a model that
+    then dies on the first forward pass. Nothing about that number looks
+    wrong, which is what makes it the more dangerous half."""
+    cfg = {
+        "num_hidden_layers": 2,
+        "num_attention_heads": 0,
+        "hidden_size": 16,
+        "head_dim": 64,
+    }
+    with pytest.raises(BadRequest, match="zero bytes"):
+        fit.kv_geometry(cfg)
+
+
+def test_a_negative_layer_count_never_shrinks_the_prediction():
+    """Measured on `num_hidden_layers: -5`: `kv_cache_bytes` returned
+    -10,485,760 and `attention_bytes` -1,342,177,280 at 4096 tokens, both
+    SUBTRACTING from `plan()`'s total and moving it towards "it fits" — which
+    `longest_context` promises in its own docstring never to do ("never a
+    negative or a fabricated minimum")."""
+    with pytest.raises(BadRequest, match="negative bytes"):
+        fit.kv_geometry(dict(CONFIG, num_hidden_layers=-5), None)
+
+
+def test_a_stated_zero_kv_head_count_is_not_swallowed_by_the_mha_default():
+    """`int(config.get("num_key_value_heads") or n_heads)` treated a stated 0
+    as absent. Measured on an 8-head config: `n_kv_heads=8` — the config's own
+    number thrown away for one four times larger, by the line whose docstring
+    promises never to substitute a default."""
+    with pytest.raises(BadRequest, match="num_key_value_heads"):
+        fit.kv_geometry(dict(CONFIG, num_key_value_heads=0), None)
+
+
+def test_an_absent_kv_head_count_still_means_mha():
+    """The guard above must not turn the ABSENT case into a refusal: absent is
+    the definition of MHA, not a missing value."""
+    cfg = {k: v for k, v in CONFIG.items() if k != "num_key_value_heads"}
+    assert fit.kv_geometry(cfg, None).n_kv_heads == 8
+
+
+def test_a_stated_zero_head_dim_is_refused_rather_than_falling_through():
+    """`if stated:` sent `head_dim: 0` down the quotient path, where a config
+    that also stated 0 heads produced a KV cache of 0 bytes. A stated zero is a
+    broken config; an omitted key is a different sentence."""
+    with pytest.raises(BadRequest, match="head_dim"):
+        fit.kv_geometry(dict(CONFIG, head_dim=0), None)
+
+
+def test_a_hidden_size_smaller_than_the_head_count_is_refused():
+    """`16 // 32` is 0, and a head_dim of 0 makes the whole KV term vanish —
+    reported as free rather than as unknown. Both numbers are stated and they
+    contradict each other, which is worth saying rather than flooring."""
+    with pytest.raises(BadRequest, match="less than one element per head"):
+        fit.kv_geometry(dict(CONFIG, hidden_size=16, num_attention_heads=32), None)
+
+
+@pytest.mark.parametrize("value", [True, "abc", 4.7, [4]])
+def test_a_count_that_is_not_a_count_is_named_not_coerced(value):
+    """`int(True)` is 1 and `int(4.7)` is 4, so a flag and a fraction both read
+    as plausible layer counts. A figure this calculator invented is exactly
+    what its docstring says it will never show you as one it read."""
+    with pytest.raises(BadRequest, match="num_hidden_layers"):
+        fit.kv_geometry(dict(CONFIG, num_hidden_layers=value), None)
+
+
+def test_a_dtype_width_of_zero_would_price_every_term_at_nothing(model_dir):
+    """Every term in `plan` is multiplied by `dtype_bytes`. At 0 the weights,
+    the cache and the attention buffer all come out at nothing and `fits` is
+    True against any budget — a verdict, and the wrong one, from a number
+    nobody supplied on purpose."""
+    with pytest.raises(BadRequest, match="dtype_bytes"):
+        fit.plan(model_dir, seq_len=8, dtype_bytes=0)
+
+
+def test_no_malformed_config_can_make_plan_smaller_than_the_weights(tmp_path):
+    """The property the guards above exist to hold, checked as one: whatever a
+    damaged config says, `plan` either answers with a total that is at least
+    the weights it actually read, or it refuses. It never publishes a shrunken
+    one, and it never publishes a free cache."""
+    write_safetensors(tmp_path / "model.safetensors", {"w": ("F32", [64, 64])})
+    floor = 64 * 64 * 4
+    damaged = [
+        dict(CONFIG, num_hidden_layers=-5),
+        dict(CONFIG, num_hidden_layers=0),
+        dict(CONFIG, num_attention_heads=0),
+        dict(CONFIG, num_key_value_heads=0),
+        dict(CONFIG, head_dim=0),
+        dict(CONFIG, head_dim=-8),
+        dict(CONFIG, hidden_size=0),
+    ]
+    for cfg in damaged:
+        (tmp_path / "config.json").write_text(json.dumps(cfg), encoding="utf-8")
+        try:
+            f = fit.plan(tmp_path, seq_len=4096, dtype_bytes=1)
+        except BadRequest:
+            continue
+        assert f.kv_bytes > 0, cfg
+        assert f.attention_bytes > 0, cfg
+        assert f.total_bytes >= floor, cfg

@@ -869,6 +869,29 @@ def _price(
                 # `card` to see what a dtype conversion saved.
                 start, end = spec["data_offsets"]
                 file_disk += int(end) - int(start)
+                # THE ELEMENT COUNT BELONGS IN HERE. It used to sit below the
+                # dtype check, outside this try, and `int(dim)` on a header
+                # reading `"shape": "abc"` raised `ValueError: invalid literal
+                # for int() with base 10: 'a'` — or `TypeError` for
+                # `[null, 4]` — right past the arm written to catch exactly
+                # that. MEASURED end to end: a two-component checkpoint with
+                # one such shard answered `POST /api/image/load` with HTTP 500
+                # and "Something inside ModelMRI failed rather than refusing",
+                # because `image_runtime.load` has no except arm over this
+                # call and the route's `(Refusal, BadRequest)` never saw a
+                # ValueError. A corrupt header is the ordinary case this
+                # function exists to survive, not an internal error.
+                count = 1
+                for dim in shape:
+                    count *= int(dim)
+                # A negative dimension or a reversed offset pair SUBTRACTS
+                # from the totals, so a damaged shard would make a checkpoint
+                # look smaller than it is — the direction that says "it fits".
+                # Raised rather than branched, so it lands in the same arm and
+                # gets the same "unknown shape" treatment: card `None`, disk
+                # from the filesystem, and the file named in `trouble`.
+                if count < 0 or file_disk < 0:
+                    raise ValueError("negative extent")
             except (KeyError, TypeError, ValueError):
                 exact = False
                 card = None
@@ -881,9 +904,6 @@ def _price(
                 file_disk = size
                 trouble.append(f"{f.name} holds a {dtype} tensor of unknown width")
                 break
-            count = 1
-            for dim in shape:
-                count *= int(dim)
             width = (
                 dtype_bytes
                 if dtype_bytes is not None and dtype in _fit.FLOATING

@@ -137,6 +137,27 @@ class Fit:
 # ------------------------------------------------------------- safetensors
 
 
+def _json_kind(value) -> str:
+    """What a reader would call this, in the vocabulary of the file they wrote.
+
+    `type(value).__name__` is the language's word, not the format's: it prints
+    "a int" for `5` and "a NoneType" for `null`, which names a Python detail at
+    somebody looking at their own JSON. Both malformed-file refusals below
+    describe what is in the file instead.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true/false"
+    if isinstance(value, (int, float)):
+        return "a number"
+    if isinstance(value, str):
+        return "a string"
+    if isinstance(value, list):
+        return "a list"
+    return f"a {type(value).__name__}"
+
+
 def read_header(path: Path) -> dict:
     """The tensor table from a .safetensors file. No torch, no mmap of weights.
 
@@ -162,6 +183,24 @@ def read_header(path: Path) -> dict:
         header = json.loads(blob)
     except json.JSONDecodeError as err:
         raise BadRequest(f"{path.name}'s header is not valid JSON") from err
+    # `json.loads` succeeds on `[]`, `5`, `"abc"`, `true` and `null` — all
+    # valid JSON, none of them a tensor table — and the `.pop()` below went
+    # straight at whatever came back. MEASURED on a two-byte header holding
+    # `[]`: `TypeError: pop expected at most 1 argument, got 2`, raised out of
+    # `weights_table.table_from_safetensors`, `rows_from_safetensors`,
+    # `weights_bytes` and `plan` alike — past the `except BadRequest` in
+    # `weights_table` that exists to turn exactly this into a sentence.
+    # `imaging.read_tensor_names`, `adapter_diff._read_header` and
+    # `datasets._read_header` all carry this check already; this reader was
+    # the one without it.
+    if not isinstance(header, dict):
+        raise BadRequest(
+            f"{path.name} opens with valid JSON that is not a tensor table — "
+            f"the header is {_json_kind(header)}, so nothing in it names a "
+            f"tensor, a dtype or an offset. Re-download the file; a header "
+            f"shaped like this is a rewritten or truncated checkpoint rather "
+            f"than one this reader is too strict for."
+        )
     header.pop("__metadata__", None)
     return header
 
@@ -222,22 +261,39 @@ def weights_bytes(model_dir: Path, *, dtype_bytes: int | None = None) -> Weights
                 start, end = spec["data_offsets"]
                 dtype = spec["dtype"]
                 shape = spec["shape"]
+                # INSIDE the try, with the lookups. `int(start)` on
+                # `"data_offsets": ["a", 4]` and `int(dim)` on
+                # `"shape": "abc"` or `[null, 4]` raise the very
+                # ValueError/TypeError this arm was written to turn into a
+                # sentence, and they sat three lines below its reach — so a
+                # header that named its fields but filled them with rubbish
+                # crashed the reader instead of being refused by it.
+                span = int(end) - int(start)
+                count = 1
+                for dim in shape:
+                    count *= int(dim)
             except (KeyError, TypeError, ValueError) as err:
                 raise BadRequest(
                     f"{shard.name} describes tensor {name!r} in a shape this "
                     "reader does not recognise"
                 ) from err
+            # A negative dimension or a reversed offset pair subtracts from
+            # the total, and the total's only job is to answer "will this
+            # fit". Wrong in the direction that says yes is the direction this
+            # package treats as the dangerous one — see the module docstring.
+            if span < 0 or count < 0:
+                raise BadRequest(
+                    f"{shard.name} describes tensor {name!r} with a negative "
+                    f"size, which would subtract from the checkpoint's total "
+                    f"rather than add to it. Re-download the shard; this "
+                    f"header does not describe a file that exists."
+                )
             if dtype not in DTYPE_BYTES:
                 raise Refusal(
                     f"{shard.name} holds a {dtype} tensor, a dtype this "
                     "calculator does not know the width of. Refusing rather "
                     "than assuming one."
                 )
-            span = int(end) - int(start)
-            count = 1
-            for dim in shape:
-                count *= int(dim)
-
             disk += span
             elements += count
             width = (
@@ -336,13 +392,134 @@ def _merged(config: dict) -> dict:
     return merged
 
 
+def read_config(config_path: Path) -> dict:
+    """`config.json`, parsed into a mapping, or a refusal naming which half
+    of that failed.
+
+    Two failures, and they are worth separating because they send the reader
+    to different places.
+
+    A file that does not PARSE is a truncated or half-written download, and it
+    is not hypothetical here: this project's own Drive-backed cache publishes
+    `config.json` mid-write. Measured on one caught that way,
+    `json.loads(config_path.read_text())` raised `JSONDecodeError:
+    Unterminated string starting at: line 1 column 26 (char 25)` straight out
+    of `plan()`.
+
+    A file that parses to a LIST parses fine and dies one frame later:
+    measured `AttributeError: 'list' object has no attribute 'get'`, from
+    `_merged`. Same for `5`, `"abc"`, `true` and `null` — all valid JSON, none
+    of them a config. `imaging._read_json` already writes this rule down for
+    the image side; the calculator was reading the raw `json.loads` result.
+
+    Either way the reader saw a Python traceback about a damaged file instead
+    of a sentence naming it.
+    """
+    try:
+        loaded = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        raise BadRequest(
+            f"{config_path.name} under {config_path.parent} is not valid JSON "
+            f"({err.msg}, line {err.lineno} column {err.colno}). A config that "
+            f"stops mid-value is a download that was interrupted or a file "
+            f"still being written — fetch it again rather than editing it."
+        ) from err
+    except (OSError, UnicodeDecodeError) as err:
+        raise BadRequest(
+            f"{config_path.name} under {config_path.parent} could not be read "
+            f"as text ({type(err).__name__}). Check the file is present and "
+            f"readable by this account; nothing is guessed in its place."
+        ) from err
+    if not isinstance(loaded, dict):
+        raise BadRequest(
+            f"{config_path.name} under {config_path.parent} is valid JSON but "
+            f"holds {_json_kind(loaded)} rather than a set of fields, so there "
+            f"is no architecture in it to price. Re-download the checkpoint; "
+            f"this file is damaged."
+        )
+    return loaded
+
+
+def _count(field: str, value) -> int:
+    """A stated count that can actually describe a model, or a named refusal.
+
+    `need()` refused an ABSENT key and then accepted whatever a present one
+    held, which is the same gap this module has closed elsewhere: guarding one
+    kind of malformed input and leaving the neighbouring kind bare.
+
+    MEASURED, all on the library as it stood:
+
+      `{"num_hidden_layers": 2, "num_attention_heads": 0, "hidden_size": 16}`
+      -> ZeroDivisionError out of `_head_dim`, a raw Python traceback where a
+      sentence belongs.
+
+      the same config with `"head_dim": 64` did NOT crash. It returned
+      `KVGeometry(n_heads=0, n_kv_heads=0)` and `kv_cache_bytes(...)` came back
+      as 0 bytes at 4096 tokens — a cache that costs nothing, which is worse
+      than the crash because nothing about it looks wrong.
+
+      `{"num_hidden_layers": -5, ...}` gave `kv_cache_bytes = -10,485,760` at
+      4096 tokens and `attention_bytes = -1,342,177,280`, both SUBTRACTING
+      from `plan()`'s total and moving it towards "it fits" — the one
+      direction `longest_context` promises never to move in.
+
+    Zero is not a small model and a negative is not a smaller one. Both are a
+    config that cannot describe anything, and they are refused by name for the
+    same reason an absent key already was.
+    """
+    # bool is an int in Python, so `"num_attention_heads": true` would read as
+    # one head. `datasets._read_header` carries the identical guard for the
+    # identical reason.
+    if isinstance(value, bool):
+        raise BadRequest(
+            f"this model's config.json states {field!r} as {value!r}, a "
+            f"true/false where a count belongs. Check that file: a flag read "
+            f"as the number 1 would price a model that does not exist."
+        )
+    try:
+        count = int(value)
+    except (TypeError, ValueError) as err:
+        raise BadRequest(
+            f"this model's config.json states {field!r} as {value!r}, which is "
+            f"not a number this can count with. Check that file — a hand-edited "
+            f"or half-written config is the usual cause."
+        ) from err
+    if isinstance(value, float) and count != value:
+        raise BadRequest(
+            f"this model's config.json states {field!r} as {value!r}, and "
+            f"rounding it to {count} would be this calculator inventing the "
+            f"figure it then shows you as read. Check that file."
+        )
+    if count < 1:
+        raise BadRequest(
+            f"this model's config.json states {field!r} as {count}, and a "
+            f"model has at least one of each. Priced as stated it makes the KV "
+            f"cache {'zero' if count == 0 else 'negative'} bytes, which reads "
+            f"as a model that fits any card. Check that file rather than the "
+            f"card."
+        )
+    return count
+
+
 def kv_geometry(config: dict, header: dict | None = None) -> KVGeometry:
     """The four numbers the KV formula needs, each read rather than assumed.
 
-    A missing key is named and refused. That is the whole discipline here: a
-    default for `num_key_value_heads` would turn a GQA model into an MHA one
-    and multiply the predicted cache by the group size, silently.
+    A missing key is named and refused, and so is a key that is present and
+    unusable — see `_count`. That is the whole discipline here: a default for
+    `num_key_value_heads` would turn a GQA model into an MHA one and multiply
+    the predicted cache by the group size, silently.
     """
+    # A `config.json` holding `[1, 2, 3]` or `"text"` is valid JSON and not a
+    # config, and `_merged`'s first line is `config.get` — measured
+    # `AttributeError: 'list' object has no attribute 'get'`, escaping a
+    # function whose entire contract is to refuse what it cannot price.
+    if not isinstance(config, dict):
+        raise BadRequest(
+            f"this model's config is {_json_kind(config)} rather than a set of "
+            f"fields, so there is no architecture in it to read the KV "
+            f"geometry from. Re-download the checkpoint; a `config.json` "
+            f"shaped like this is a damaged file."
+        )
     config = _merged(config)
     _reject_unsupported(config)
 
@@ -350,10 +527,10 @@ def kv_geometry(config: dict, header: dict | None = None) -> KVGeometry:
         for name in (key, *alts):
             value = config.get(name)
             if value is not None:
-                return int(value)
+                return _count(name, value)
             raw = config.get("text_config", {})
             if isinstance(raw, dict) and raw.get(name) is not None:
-                return int(raw[name])
+                return _count(name, raw[name])
         raise BadRequest(
             f"this model's config.json has no {key!r}, so the KV cache size "
             "cannot be computed from it. Refusing rather than substituting a "
@@ -364,7 +541,16 @@ def kv_geometry(config: dict, header: dict | None = None) -> KVGeometry:
     n_heads = need("num_attention_heads", "n_head")
     # GQA: absent means every head has its own KV, which IS the definition of
     # MHA rather than a guess. Stated in `head_dim_source` either way.
-    n_kv_heads = int(config.get("num_key_value_heads") or n_heads)
+    #
+    # `is None`, not `or`. The `or` here treated a STATED zero as absent and
+    # substituted `n_heads`: measured, `"num_key_value_heads": 0` on an
+    # 8-head config came back as `n_kv_heads=8` — the config's own number
+    # thrown away and replaced with one four times larger, silently, by the
+    # line whose docstring promises never to substitute a default.
+    stated_kv = config.get("num_key_value_heads")
+    n_kv_heads = (
+        n_heads if stated_kv is None else _count("num_key_value_heads", stated_kv)
+    )
 
     head_dim, source = _head_dim(config, header, n_heads, n_kv_heads)
     return KVGeometry(n_layers, n_heads, n_kv_heads, head_dim, source)
@@ -380,28 +566,55 @@ def _head_dim(
     `ablate.head_geometry` reads off a loaded model; then the quotient, which
     is measurably wrong on Qwen3 and Gemma-3 and is labelled as a fallback.
     """
+    # `is not None`, not truthiness: a stated `"head_dim": 0` fell through
+    # here to the quotient below and, on a config that also stated 0 heads,
+    # produced a KV cache of 0 bytes at 4096 tokens with nothing marking it
+    # unknown. A stated zero is a broken config, not an omitted key, and the
+    # two get different sentences.
     stated = config.get("head_dim")
-    if stated:
-        return int(stated), "config.json head_dim"
+    if stated is not None:
+        return _count("head_dim", stated), "config.json head_dim"
 
     if header:
         for name, spec in header.items():
             if not name.endswith("k_proj.weight"):
                 continue
-            shape = spec.get("shape") or []
-            if len(shape) == 2 and n_kv_heads:
-                rows = int(shape[0])
-                if rows % n_kv_heads == 0:
+            shape = spec.get("shape") if isinstance(spec, dict) else None
+            if isinstance(shape, list) and len(shape) == 2 and n_kv_heads:
+                # `int(shape[0])` on a header whose shape reads `["abc", 512]`
+                # or `[null, 512]` raised straight out of this reader. A row
+                # count that cannot be read is not a row count; the quotient
+                # below already announces itself as a fallback, so falling
+                # through to it is the honest move rather than crashing.
+                try:
+                    rows = int(shape[0])
+                except (TypeError, ValueError):
+                    rows = 0
+                if rows > 0 and rows % n_kv_heads == 0:
                     return rows // n_kv_heads, f"{name} rows / num_key_value_heads"
             break
 
-    hidden = config.get("hidden_size") or config.get("n_embd")
-    if not hidden:
+    hidden = config.get("hidden_size")
+    if hidden is None:
+        hidden = config.get("n_embd")
+    if hidden is None:
         raise BadRequest(
             "this model's config.json states neither `head_dim` nor "
             "`hidden_size`, so head_dim cannot be determined."
         )
-    return int(hidden) // n_heads, "hidden_size / num_attention_heads (a fallback)"
+    size = _count("hidden_size", hidden)
+    if size // n_heads < 1:
+        # `16 // 32` is 0, and a head_dim of 0 makes the whole KV term vanish
+        # — a cache reported as free rather than as unknown. Both numbers are
+        # stated and they contradict each other, which is a thing to say out
+        # loud rather than to floor.
+        raise BadRequest(
+            f"this model's config.json spreads a hidden_size of {size} across "
+            f"{n_heads} attention heads, which leaves less than one element "
+            f"per head. One of those two numbers is wrong; this cannot tell "
+            f"which, so it prices neither. Check that file."
+        )
+    return size // n_heads, "hidden_size / num_attention_heads (a fallback)"
 
 
 # --------------------------------------------------------------- the totals
@@ -432,6 +645,15 @@ def plan(
     """The whole calculation for one sequence length, every term visible."""
     if seq_len < 1:
         raise BadRequest("seq_len must be at least 1")
+    # Every term is multiplied by this. At 0 the weights, the cache and the
+    # attention buffer all price out at nothing and `fits` comes back True
+    # against any budget — a verdict, and the wrong one, from a number nobody
+    # supplied on purpose.
+    if dtype_bytes < 1:
+        raise BadRequest(
+            f"dtype_bytes must be at least 1; {dtype_bytes} would price every "
+            f"tensor in this checkpoint at nothing or less."
+        )
 
     directory = Path(model_dir)
     config_path = directory / "config.json"
@@ -440,7 +662,7 @@ def plan(
             f"no config.json under {directory}, so the KV geometry cannot be "
             "read. This calculator does not guess an architecture."
         )
-    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config = read_config(config_path)
 
     shards = sorted(directory.glob("*.safetensors"))
     header = read_header(shards[0]) if shards else None
