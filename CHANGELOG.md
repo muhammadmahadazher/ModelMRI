@@ -6,6 +6,58 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A runtime audit, and the 44 defects it found.** Seven agents ran the
+  surface rather than reading it — every HTTP route, every CLI subcommand, the
+  MCP server over stdio, the library readers against empty/zero/negative/NaN/
+  bool-as-int inputs, and every piece of process-wide mutable state hammered
+  from a thread pool. 112 raw findings, each handed to an independent agent
+  told to reproduce it or refute it; 44 survived. All 44 are fixed, with the
+  repro and the measured before/after recorded in
+  `docs/audit-2026-08-21-runtime.md`.
+
+  The ones a reader would have hit:
+
+  - `POST /api/traces/import` 500'd **inside** its write transaction, so a bad
+    token field on a re-import left the stored trace with zero steps and no
+    FTS entry — permanently. Validation now runs before the transaction opens.
+  - `/api/image/unload` and a second `/api/image/load` blocked forever on a
+    lock with no timeout, and starved the asyncio executor while doing it: 28
+    blocked clicks stopped `/api/model/unload` answering at all. The image side
+    has the load-slot contract the text side already had.
+  - `modelmri uninstall` held the terminal for ~124 seconds with no output
+    before its prompt, because it walked the same tree twice with a redundant
+    stat per entry. 3.5 seconds now, same numbers.
+  - A corrupt checkpoint raised a Python traceback out of four different
+    readers instead of refusing, one of them reachable as an HTTP 500. Worse
+    than the crash: a config claiming zero attention heads or negative layers
+    priced the KV cache at 0 or a **negative** number, shrinking the total
+    toward "it fits".
+  - A machine with `pyarrow` and no `av` got a completed sweep — 200 OK, zero
+    rows, "0 of 25650 frames measured by ATTENTION_ENTROPY" — instead of the
+    refusal naming the missing package that the route had carried all along.
+  - `python -m modelmri.cli check <file> --no-errors` exited 0 having done
+    nothing, which in CI is indistinguishable from a gate that ran and passed.
+  - Eleven POST routes annotated `body: dict` bypassed all request-model
+    discipline, so a typo'd key was silently dropped: `{"rulez": …}` for
+    `{"rules": …}` on `/api/rubric/score` answered "no run matched any rule"
+    for a corpus where 64 of 111 runs had errors.
+
+  And a family of quieter ones, all the same rule: **unknown must never
+  collapse into zero.** `/api/hub/models` published `downloads: 0, likes: 0`
+  with the Hub unreachable; `/api/image/search?limit=0` reported
+  `limit_asked: 24`; `GET /api/vla/actions/cost?stride=-1` priced 161 forward
+  passes and reported `stride: 1`; `/api/vla` answered `n_layers: 0` beside
+  `repo: null`. Every one of them says `null` now, and every cap says how much
+  it cut.
+
+  Three guards keep these classes from recurring silently:
+  `tests/test_api_contract.py` diffs every reachable GET payload against its
+  `api.ts` interface, `demo_check.py::payload_shapes` asks the same of the
+  demo's own handlers, and `test_unknown_body_keys.py` fails on a new raw-dict
+  route that does not state why it needs one.
+
 ### Changed
 
 - **The model button opens on a model you actually have.** It opened on a
