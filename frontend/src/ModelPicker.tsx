@@ -573,7 +573,12 @@ export default function ModelPicker({ open, onClose, onPick, current }: Props) {
                       </span>
                     )}
                     <span className="spacer" />
-                    {m.downloads > 0 && (
+                    {/* `!= null` before the comparison, because `null` is
+                        UNKNOWN here and not a zero. With the Hub unreachable
+                        every curated row carries one, and `null > 0` is
+                        false in JS — so this rendered correctly by accident
+                        while the type said it could not happen. */}
+                    {m.downloads != null && m.downloads > 0 && (
                       <span className="meta">{fmt(m.downloads)} downloads</span>
                     )}
                   </button>

@@ -62,6 +62,61 @@ def test_an_unreachable_hub_is_a_refusal_that_leaks_nothing(monkeypatch, boom):
     assert "On this machine" in body
 
 
+def test_an_unreachable_hub_publishes_unknown_counts_rather_than_zeros(
+    monkeypatch,
+):
+    """`suggested()` deliberately survives an outage — a picker with names and
+    no metadata beats one with nothing in it. What it must not do is fill the
+    gap with numbers.
+
+    MEASURED before this: with the Hub down, `GET /api/hub/models` returned
+    200 and every curated row carried `downloads: 0, likes: 0, updated: ""` —
+    byte-identical to a real repo nobody has downloaded, and rendered beside a
+    download button. `params` and `size_gb` in that same dict already said
+    `None` for exactly this reason; these three had not caught up.
+    """
+
+    def explode(*_a, **_k):
+        raise OSError("no route to host")
+
+    monkeypatch.setattr(hub, "_api", explode)
+    monkeypatch.setattr(hub, "token", lambda: None)
+
+    rows = hub.suggested()
+    assert rows, "an outage must still offer the names"
+    for row in rows:
+        assert row["id"]
+        assert row["downloads"] is None, row["id"]
+        assert row["likes"] is None, row["id"]
+        assert row["updated"] is None, row["id"]
+
+
+def test_a_repo_that_publishes_no_count_is_unknown_not_least_popular(monkeypatch):
+    """The listing is SORTED by downloads, so an absent count rendered as 0
+    sorts as the least popular thing on the page — a claim nobody made. And
+    `isinstance(True, int)` is True, so a bool must not count as 1."""
+    monkeypatch.setattr(hub, "token", lambda: None)
+    monkeypatch.setattr(
+        hub,
+        "_api",
+        lambda *_a, **_k: [
+            {"id": "someone/quiet", "safetensors": {"total": 600_000_000}},
+            {"id": "someone/odd", "downloads": True, "likes": "many"},
+            {"id": "someone/real", "downloads": 0, "likes": 0, "lastModified": ""},
+        ],
+    )
+    monkeypatch.setattr(hub, "_resolve_access", lambda entries, _tok: entries)
+
+    quiet, odd, real = hub.search("x")
+    assert quiet["downloads"] is None and quiet["likes"] is None
+    assert quiet["updated"] is None
+    assert odd["downloads"] is None, "a bool is not a count of one"
+    assert odd["likes"] is None, "a string is not a count"
+    # A PUBLISHED zero is still a zero. The point is telling the two apart.
+    assert real["downloads"] == 0 and real["likes"] == 0
+    assert real["updated"] is None, "an empty date string is not a date"
+
+
 def test_the_real_hub_error_survives_in_the_log(monkeypatch, caplog):
     """Not pasting the exception is only right if it still exists somewhere."""
 

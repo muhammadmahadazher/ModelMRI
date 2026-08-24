@@ -386,12 +386,12 @@ def search(query: str = "", limit: int = 24) -> list[dict]:
         out.append(
             {
                 "id": m.get("id"),
-                "downloads": m.get("downloads", 0),
-                "likes": m.get("likes", 0),
+                "downloads": _count(m.get("downloads")),
+                "likes": _count(m.get("likes")),
                 "gated": gated,
                 # Filled in below. Never assume: a token is not access.
                 "usable": not gated,
-                "updated": (m.get("lastModified") or "")[:10],
+                "updated": _updated(m.get("lastModified")),
                 "params": _param_hint(m),
                 "size_gb": weight_bytes(m) / 1e9 or None,
             }
@@ -520,6 +520,36 @@ def _param_hint(model: dict) -> str | None:
         return None
 
 
+def _count(value) -> int | None:
+    """A published count, or `None` when the Hub published none.
+
+    Not `0`. The listing is SORTED by downloads, so a repo whose count is
+    merely absent would sort as the least popular thing on the page — a claim
+    nobody made, rendered as a fact. `isinstance(True, int)` is True, so a
+    bool is rejected rather than counted as 1.
+
+    The same rule, in the same words, as `image_catalog._count`. It was
+    written there first and this module kept `m.get("downloads", 0)`, which
+    is how `GET /api/hub/models` came to publish `downloads: 0, likes: 0`
+    with the Hub unreachable — byte-identical to a real repo with no
+    downloads.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _updated(value) -> str | None:
+    """The last-modified DAY, or `None` when the Hub published none.
+
+    `""` was the old answer for both "the listing carried no date" and "we
+    never reached the listing", and a blank cell reads as neither.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:10]
+
+
 def suggested() -> list[dict]:
     """The curated starter list, annotated the same way as search results.
 
@@ -539,23 +569,30 @@ def _suggested_entry(repo: str, tok: str | None) -> dict:
     """One curated model, annotated. Never raises: offline still offers the
     name, because a picker with nothing in it is worse than one with names
     and no metadata."""
+    # `None`, not `0`, for the three fields the Hub is the only source of.
+    # This dict is what a reader gets when the Hub does not answer, and a 0
+    # here is not a placeholder — it is a measurement of popularity that
+    # nobody took. MEASURED with the Hub unreachable: every curated row came
+    # back `downloads: 0, likes: 0, updated: ""`, indistinguishable from a
+    # real repo nobody has downloaded. `params` and `size_gb` in this same
+    # dict already said `None` for exactly this reason.
     entry = {
         "id": repo,
-        "downloads": 0,
-        "likes": 0,
+        "downloads": None,
+        "likes": None,
         "gated": False,
         "usable": True,
-        "updated": "",
+        "updated": None,
         "params": None,
         "size_gb": None,
         "suggested": True,
     }
     try:
         info = _api(f"/models/{repo}", tok, timeout=6)
-        entry["downloads"] = info.get("downloads", 0)
-        entry["likes"] = info.get("likes", 0)
+        entry["downloads"] = _count(info.get("downloads"))
+        entry["likes"] = _count(info.get("likes"))
         entry["gated"] = bool(info.get("gated", False))
-        entry["updated"] = (info.get("lastModified") or "")[:10]
+        entry["updated"] = _updated(info.get("lastModified"))
         entry["params"] = _param_hint(info)
         entry["size_gb"] = weight_bytes(info) / 1e9 or None
     except (OSError, ValueError, TypeError, AttributeError, http.client.HTTPException):

@@ -313,7 +313,11 @@ function HubRow({
       <span className="mid">{m.id}</span>
       <span className="meta">
         {m.task_label}
-        {m.downloads > 0 ? ` · ${downloads(m.downloads)} downloads` : ""}
+        {/* `null` is UNKNOWN, not zero — neither renders a count, but only
+            one of them is a fact about the repo. */}
+        {m.downloads != null && m.downloads > 0
+          ? ` · ${downloads(m.downloads)} downloads`
+          : ""}
         {/* THREE STATES, THREE RENDERINGS. This printed the first and
             collapsed the other two into silence:
 

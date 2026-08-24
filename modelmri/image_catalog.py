@@ -251,7 +251,10 @@ def search(query: str = "", task: str = "", limit: int = DEFAULT_RESULTS) -> lis
                 "downloads": _count(m.get("downloads")),
                 "likes": _count(m.get("likes")),
                 "gated": gated,
-                "updated": (m.get("lastModified") or "")[:10],
+                # `None`, not `""`, for the same reason as the counts above.
+                # A blank cell reads as "not much" rather than "the listing
+                # said nothing", and the two are not the same news.
+                "updated": _updated(m.get("lastModified")),
                 # `None`, never 0. The Hub publishes nothing to go on for GGUF
                 # and pickle repos, and a picker rendering "0.0 GB" for an
                 # unknown invites the exact click a size column prevents.
@@ -629,6 +632,17 @@ def discovered(roots=None) -> dict:
         "truncated": truncated,
         "scan_limit": imaging.SCAN_DIRS_LIMIT,
     }
+
+
+def _updated(value) -> str | None:
+    """The last-modified DAY, or `None` when the listing carried none.
+
+    The same rule as `hub._updated`, which is where the sentence explaining
+    it lives.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    return value[:10]
 
 
 def _count(value):

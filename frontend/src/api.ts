@@ -1723,13 +1723,17 @@ export interface ImageHubModel {
   task_label: string;
   /** What the TASK is consistent with. Never this checkpoint's family. */
   families_possible: string[];
-  downloads: number;
-  likes: number;
+  /** `null` is UNKNOWN, never zero — the listing is sorted by downloads, so
+   *  an absent count rendered as 0 sorts as the least popular thing on the
+   *  page. `image_catalog._count` has always sent `null`; this declaration
+   *  was the half that had not caught up. */
+  downloads: number | null;
+  likes: number | null;
   /** Its licence has to be accepted, and a token has to be on this machine,
    *  before the weights will move. */
   gated: boolean;
-  /** `YYYY-MM-DD`, or empty when the listing carried no date. */
-  updated: string;
+  /** `YYYY-MM-DD`, or `null` when the listing carried no date. */
+  updated: string | null;
   /** `null` is UNKNOWN and must never render as a size. */
   size_bytes: number | null;
   /** Answered by looking at this machine's cache, not guessed from the
@@ -2384,11 +2388,17 @@ export interface HubAuth {
 
 export interface HubModel {
   id: string;
-  downloads: number;
-  likes: number;
+  /** `null` is UNKNOWN, never zero. With the Hub unreachable the curated
+   *  rows still carry their names and nothing else — a count of 0 there
+   *  would be a measurement of popularity nobody took, and it read
+   *  identically to a real repo nobody has downloaded. */
+  downloads: number | null;
+  likes: number | null;
   gated: boolean;
   usable: boolean;
-  updated: string;
+  /** `YYYY-MM-DD`, or `null` when the listing carried no date or was never
+   *  reached. `""` used to mean both. */
+  updated: string | null;
   params: string | null;
   /** Download size from the repo's own metadata. null when it publishes
    *  none — GGUF and pickle repos mostly. Never render null as 0. */
