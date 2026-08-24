@@ -1245,7 +1245,17 @@ def scan_weights(target, *, as_json: bool = False, limit: int = 200) -> int:
     print(f"ModelMRI {__version__} — what is inside {where}")
     print()
     if not reports:
-        print("  nothing weight-shaped here.")
+        # An unopenable directory walks to an empty tree, so "nothing
+        # weight-shaped here" was printed for a folder whose contents nobody
+        # ever saw — the unearned all-clear the server side already refuses
+        # to give. `readable` is the difference between the two.
+        for line in _wrap(
+            weights_scan.summary(
+                reports, [], [], readable=getattr(reports, "readable", True)
+            ),
+            76,
+        ):
+            print(f"  {line}")
         return 0
 
     mark = {
@@ -1265,15 +1275,24 @@ def scan_weights(target, *, as_json: bool = False, limit: int = 200) -> int:
     bad = [r for r in reports if r.dangerous]
     unknown = [r for r in reports if r.verdict == weights_scan.UNSCANNED]
     print()
-    if bad:
-        for line in _wrap(bad[0].means(), 76):
-            print(f"  {line}")
-    else:
-        print(
-            f"  {len(reports)} file(s) read, nothing executable found. "
-            f"{len(unknown)} could not be read and are reported as unscanned "
-            f"rather than clean."
-        )
+    # `weights_scan.summary`, not a sentence written here. The copy that used
+    # to live at this spot said "N file(s) read, nothing executable found. M
+    # could not be read" with N counting the unread files too — the exact
+    # contradiction the shared version's docstring says was settled once
+    # already — and it never mentioned the `--limit` cap at all, so a tree
+    # over the limit printed a verdict on a subset as if it were the whole
+    # tree. `ScanTree` carries both facts; this now reads them.
+    for line in _wrap(
+        weights_scan.summary(
+            reports,
+            bad,
+            unknown,
+            n_total=getattr(reports, "n_total", len(reports)),
+            readable=getattr(reports, "readable", True),
+        ),
+        76,
+    ):
+        print(f"  {line}")
     return 1 if bad else 0
 
 

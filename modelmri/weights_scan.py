@@ -649,6 +649,85 @@ def guard(path: str | Path, *, confirm: bool = False) -> Report:
     return report
 
 
+def summary(
+    reports, dangerous, unscanned, *, n_total: int | None = None, readable: bool = True
+) -> str:
+    """One sentence that does not contradict itself.
+
+    The first version said "N file(s) read and nothing executable found" and
+    then "N could not be read", which are opposite claims about the same N —
+    and on a directory of Python source, where every file is unscanned by
+    design, it printed both about all of them. A summary whose two halves
+    disagree is worse than either half alone.
+
+    Here rather than in `server.py`, where it used to live, because `cli.py`
+    grew its own copy of the same sentence and the copy went stale: it
+    reproduced the read/unread contradiction this docstring says was already
+    settled once, and it dropped the walk's cap entirely. Two writers of one
+    sentence is how one of them ends up wrong.
+    """
+    if not readable:
+        # BEFORE the "nothing found" line, which would otherwise be a claim
+        # about the contents of a folder nobody managed to open. MEASURED: a
+        # directory this account had no rights to walked to an empty list and
+        # was reported as "Nothing weight-shaped was found at that path",
+        # with three measured counts of zero beside it.
+        return (
+            "That folder could not be opened, so what is in it is UNKNOWN "
+            "rather than nothing — this is not a clean bill of health. Check "
+            "the permissions on it, or point the scan at a path this can "
+            "read. `modelmri scan` runs as YOU; the server runs as whoever "
+            "started it, and the two do not always see the same folders."
+        )
+    if dangerous:
+        return dangerous[0].means()
+    if not reports:
+        return "Nothing weight-shaped was found at that path."
+
+    # ABOVE the `read == 0` branch, not below it. It used to be built after,
+    # and that branch returned first: a scan of this repo with `limit=1`
+    # answered "NONE of the 1 file(s) here could be looked inside" beside
+    # `n_found: 86, truncated: true` in the same payload — the sentence and
+    # the counts it summarises disagreeing about how many files there were.
+    capped = (
+        f" This is the first {len(reports)} of {n_total} weight-shaped file(s) "
+        f"found here — the rest were NOT scanned, so nothing below says "
+        f"anything about them."
+        if n_total is not None and n_total > len(reports)
+        else ""
+    )
+    read = len(reports) - len(unscanned)
+    if read == 0:
+        # The recorded reason, when every report agrees on one. "there is no
+        # file at that path" and "this is a format the scanner cannot read"
+        # both land in this branch and they are not the same news: the first
+        # is a typo in the request, the second is a real file nobody can
+        # vouch for. Guessing aloud at which one it was — as the sentence
+        # used to, unconditionally — gets it wrong half the time.
+        reasons = {r.reason for r in reports if getattr(r, "reason", "")}
+        why = (
+            f" The reason recorded for "
+            f"{'it' if len(reports) == 1 else 'all of them'}: {reasons.pop()}"
+            if len(reasons) == 1
+            else (
+                " They are formats this cannot read, or Python source, which "
+                "runs in full when imported and cannot be made safe by a scan."
+            )
+        )
+        return (
+            f"NONE of the {len(reports)} file(s) here could be looked "
+            f"inside.{why} This is not a clean bill of health.{capped}"
+        )
+    tail = (
+        f" {len(unscanned)} could not be read and are reported as unscanned "
+        f"rather than clean — a scanner that answers 'safe' for a file it "
+        f"could not open is worse than no scanner."
+        if unscanned
+        else ""
+    )
+    return f"{read} file(s) read and nothing executable found.{tail}{capped}"
+
+
 def prefer_safetensors(names: list[str]) -> str:
     """The sentence to say when a repo offers both. `""` when it does not.
 

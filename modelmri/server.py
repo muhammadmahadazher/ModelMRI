@@ -934,54 +934,19 @@ def _from_this_machine(request) -> bool:
 def _scan_summary(
     reports, dangerous, unscanned, *, n_total: int | None = None, readable: bool = True
 ) -> str:
-    """One sentence that does not contradict itself.
+    """The scanner's own summary sentence, kept at the name callers import.
 
-    The first version said "N file(s) read and nothing executable found" and
-    then "N could not be read", which are opposite claims about the same N —
-    and on a directory of Python source, where every file is unscanned by
-    design, it printed both about all of them. A summary whose two halves
-    disagree is worse than either half alone.
+    The sentence itself moved to `weights_scan.summary` when `cli.py` was
+    found carrying a second, staler copy of it. This wrapper stays because
+    the route and its tests reach for it here, and because the import is
+    deferred: `weights_scan` walks pickle opcodes and is not needed to build
+    the app.
     """
-    if not readable:
-        # BEFORE the "nothing found" line, which would otherwise be a claim
-        # about the contents of a folder nobody managed to open. MEASURED: a
-        # directory this account had no rights to walked to an empty list and
-        # was reported as "Nothing weight-shaped was found at that path",
-        # with three measured counts of zero beside it.
-        return (
-            "That folder could not be opened, so what is in it is UNKNOWN "
-            "rather than nothing — this is not a clean bill of health. Check "
-            "the permissions on it, or point the scan at a path this server "
-            "can read."
-        )
-    if dangerous:
-        return dangerous[0].means()
-    if not reports:
-        return "Nothing weight-shaped was found at that path."
+    from . import weights_scan
 
-    read = len(reports) - len(unscanned)
-    if read == 0:
-        return (
-            f"NONE of the {len(reports)} file(s) here could be looked inside — "
-            f"they are formats this cannot read, or Python source, which runs "
-            f"in full when imported and cannot be made safe by a scan. This is "
-            f"not a clean bill of health."
-        )
-    capped = (
-        f" This is the first {len(reports)} of {n_total} weight-shaped file(s) "
-        f"found here — the rest were NOT scanned, so nothing below says "
-        f"anything about them."
-        if n_total is not None and n_total > len(reports)
-        else ""
+    return weights_scan.summary(
+        reports, dangerous, unscanned, n_total=n_total, readable=readable
     )
-    tail = (
-        f" {len(unscanned)} could not be read and are reported as unscanned "
-        f"rather than clean — a scanner that answers 'safe' for a file it "
-        f"could not open is worse than no scanner."
-        if unscanned
-        else ""
-    )
-    return f"{read} file(s) read and nothing executable found.{tail}{capped}"
 
 
 def create_app(

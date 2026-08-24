@@ -418,3 +418,37 @@ def test_two_scans_that_disagree_about_the_walk_are_not_equal():
     # Unhashable, like the list it extends.
     with pytest.raises(TypeError):
         hash(walked)
+
+
+def test_the_cli_scan_reports_the_limit_it_stopped_at(tmp_path, capsys):
+    """`modelmri scan` carried its OWN copy of the summary sentence, and the
+    copy went stale two ways: it counted unread files inside "N file(s) read",
+    and it never mentioned `--limit` at all — so a tree over the limit printed
+    a verdict on a subset as if it were the whole tree, with nothing in the
+    output to say otherwise. It reads the shared summary now.
+    """
+    from modelmri.cli import scan_weights
+
+    for n in range(3):
+        (tmp_path / f"w{n}.pt").write_bytes(b"not really a pickle")
+    rc = scan_weights(str(tmp_path), limit=1)
+    said = capsys.readouterr().out
+    assert rc == 0
+    assert "of 3 weight-shaped file(s)" in said
+    assert "3 file(s) read" not in said
+
+
+def test_the_cli_does_not_call_an_unopenable_folder_empty(monkeypatch, capsys):
+    """An unopenable directory walks to an empty tree, and the CLI printed
+    "nothing weight-shaped here" for contents nobody ever saw — the unearned
+    all-clear the whole module exists to refuse. `readable` is the difference.
+    """
+    from modelmri import cli as C
+
+    monkeypatch.setattr(ws, "scan_dir", lambda *a, **k: ws.ScanTree(readable=False))
+    monkeypatch.setattr(C.Path, "is_dir", lambda self: True)
+    rc = C.scan_weights("somewhere")
+    said = capsys.readouterr().out
+    assert rc == 0
+    assert "nothing weight-shaped here" not in said
+    assert "could not be opened" in said

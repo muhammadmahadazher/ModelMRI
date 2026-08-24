@@ -199,3 +199,51 @@ def test_an_unresolvable_path_is_a_refusal_not_a_500(client, monkeypatch):
     r = client.post("/api/weights/scan", json={"path": "whatever"})
     assert r.status_code == 422
     assert "not a path this machine can resolve" in r.json()["error"]
+
+
+def test_the_summary_reports_the_cap_even_when_nothing_could_be_read():
+    """MEASURED: `POST /api/weights/scan {"path":"modelmri","limit":1}` came
+    back with `n_found: 86, truncated: true` and the sentence "NONE of the 1
+    file(s) here could be looked inside" — the summary and the counts it
+    summarises disagreeing about how many files there were, in one payload.
+
+    The `read == 0` branch returned before the cap clause was built. Anything
+    that reaches that branch on a truncated walk hits it, so a directory of
+    Python source over the limit is the everyday case, not a corner.
+    """
+    from modelmri.server import _scan_summary
+
+    unread = [weights_scan.Report(path="a.py", verdict=weights_scan.UNSCANNED)]
+    said = _scan_summary(unread, [], unread, n_total=86)
+    assert "NONE of the 1" in said
+    assert "first 1 of 86" in said
+
+
+def test_a_path_that_does_not_exist_says_so_rather_than_guessing():
+    """One unread file gets its RECORDED reason, not the branch's guess.
+
+    "there is no file at that path" and "this is a format the scanner cannot
+    read" both land in the `read == 0` branch, and they are not the same news
+    — the first is a typo in the request, the second is a real file nobody can
+    vouch for. The sentence used to assert the second for both.
+    """
+    from modelmri.server import _scan_summary
+
+    gone = weights_scan.scan("no-such-directory-anywhere/absent.safetensors")
+    said = _scan_summary([gone], [], [gone])
+    assert "there is no file at that path" in said
+    assert "formats this cannot read" not in said
+
+
+def test_two_unread_files_disagreeing_get_the_general_sentence():
+    """The recorded reason is only quoted when every report agrees on one.
+    Attributing one file's reason to another's is worse than saying neither."""
+    from modelmri.server import _scan_summary
+
+    mixed = [
+        weights_scan.Report(path="a.py", verdict=weights_scan.UNSCANNED, reason="one."),
+        weights_scan.Report(path="b.py", verdict=weights_scan.UNSCANNED, reason="two."),
+    ]
+    said = _scan_summary(mixed, [], mixed)
+    assert "formats this cannot read" in said
+    assert "one." not in said and "two." not in said
