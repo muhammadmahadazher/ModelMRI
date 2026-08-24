@@ -1849,14 +1849,14 @@ def main() -> None:
             # The answer `open` already gives for the same failure, suggestion
             # included. `serve` let this escape as a traceback, so the two
             # commands answered one situation two different ways.
-            print(
-                f"modelmri: cannot listen on {args.host}:{args.port} — {err}",
-                file=sys.stderr,
-            )
-            print(
-                "  another ModelMRI may be running; try --port 5901",
-                file=sys.stderr,
-            )
+            # Bound to locals so this fits the one-line shape `open` uses at
+            # the top of this file. The leak scanner exempts a line that
+            # carries `file=sys.stderr`, and splitting the call across lines
+            # left the `{err}` on a line of its own — flagged, correctly, since
+            # from the scanner's side it could have been going anywhere.
+            host, port = args.host, args.port
+            print(f"modelmri: cannot listen on {host}:{port} — {err}", file=sys.stderr)
+            print("  another ModelMRI may be running; try --port 5901", file=sys.stderr)
             raise SystemExit(3) from None
     elif args.command == "open":
         from pathlib import Path

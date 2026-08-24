@@ -733,3 +733,55 @@ def test_the_disk_refusing_to_answer_is_not_a_local_directory(monkeypatch):
     monkeypatch.setattr(Path, "is_dir", explode)
     assert ir._is_local_dir("anything/at/all") is False
     assert ir._is_local_dir("~") is False
+
+
+def test_unload_refuses_instead_of_blocking_while_a_load_holds_the_handle():
+    """`load` holds `self._lock` across identify, prefetch (a child process
+    pulling gigabytes), the opcode scan and `from_pretrained`. `unload` waited
+    on that lock with no timeout.
+
+    Measured against a held lock: both `/api/image/unload` and a second
+    `/api/image/load` returned NOTHING for as long as it was held, while the
+    text side under the identical setup answered 409 in 2.04s with a sentence.
+
+    The wait was not the worst of it. `/api/image/unload` runs its body through
+    `asyncio.to_thread`, so every blocked caller occupies a thread from the
+    default executor — `min(32, cpu + 4)`. Twenty-eight blocked unload clicks
+    starved `/api/model/unload` of a thread entirely, so the TEXT side's
+    working refusal never ran either: one stuck image load could take the whole
+    request path down.
+    """
+    import threading
+    import time
+
+    handle = ir.ImageHandle()
+    held, release = threading.Event(), threading.Event()
+
+    def hold():
+        handle._lock.acquire()
+        held.set()
+        release.wait(20)
+        handle._lock.release()
+
+    threading.Thread(target=hold, daemon=True).start()
+    assert held.wait(5), "the holder never took the lock"
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(Refusal) as caught:
+            handle.unload()
+        took = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert took < ir.LOAD_QUEUE_WAIT_S + 2, (
+        f"waited {took:.1f}s — the ceiling is meant to bound this"
+    )
+    said = caught.value.sentence
+    assert "Cannot unload yet" in said
+    assert "/api/image/cancel" in said, "name the control that DOES work"
+
+
+def test_unload_still_works_when_nothing_holds_the_handle():
+    """So the ceiling cannot become "unload always refuses"."""
+    assert ir.ImageHandle().unload().loaded is False

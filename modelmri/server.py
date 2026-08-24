@@ -2845,9 +2845,17 @@ def create_app(
         }
 
     @app.post("/api/image/unload")
-    async def image_unload() -> dict:
+    async def image_unload():
         """Drop it and hand the memory back, not merely forget it."""
-        status = await asyncio.to_thread(app.state.image.unload)
+        try:
+            status = await asyncio.to_thread(app.state.image.unload)
+        except Refusal as err:
+            # A load is in flight and holding the handle. This used to block
+            # here with no ceiling, and because the body runs through
+            # `asyncio.to_thread` each blocked caller sat on a thread from the
+            # default executor — 28 of them starved `/api/model/unload`, whose
+            # own refusal was working the whole time and never got a thread.
+            return JSONResponse({"error": err.sentence}, status_code=409)
         return status.to_dict()
 
     def _image_can(what: str):

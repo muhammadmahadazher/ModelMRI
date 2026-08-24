@@ -43,6 +43,7 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +57,13 @@ log = logging.getLogger(__name__)
 # pipelines cluster around 2-7 GB in fp16; a 12 GB one is SDXL-plus-refiner
 # territory and worth a sentence rather than a silent twenty-minute download.
 LARGE_PIPELINE_BYTES = 12_000_000_000
+
+# How long a second caller waits for the handle before being refused. The same
+# figure `runtime.LOAD_QUEUE_WAIT_S` uses, and for the same reason: one
+# pipeline loads at a time by design, so a second request is a 409 rather than
+# a queue slot. Waiting without a ceiling is what let a stuck load hold every
+# later request — including the unload somebody presses to escape it.
+LOAD_QUEUE_WAIT_S = 2.0
 
 # Components whose weights count toward what will be resident. `safety_checker`
 # is excluded deliberately -- it is loaded as None by most modern pipelines and
@@ -417,7 +425,7 @@ class ImageHandle:
             if not (local_ok and _is_local_dir(repo))
             else list(_WEIGHT_PATTERNS)
         )
-        with self._lock, _tracked(repo, allow) as tracking:
+        with self._load_slot(f"load {repo!r}"), _tracked(repo, allow) as tracking:
             tracking.stage("identify", "reading the checkpoint's own JSON")
             # Configs only. The family decides both whether this is loadable
             # at all and WHICH loader opens it, and both answers are in a few
@@ -538,6 +546,46 @@ class ImageHandle:
             )
             return self.status_
 
+    @contextmanager
+    def _load_slot(self, what: str) -> Iterator[None]:
+        """The handle lock, with a ceiling on how long a caller waits for it.
+
+        `load` holds this across identify, prefetch (a child process pulling
+        gigabytes), the opcode scan and `from_pretrained`, and `unload` waited
+        on it with no timeout at all. Measured against a held lock: both
+        `/api/image/unload` and a second `/api/image/load` returned NOTHING for
+        as long as it was held, while the text side under the identical setup
+        answered 409 in 2.04s with a sentence.
+
+        Worse than the wait. `/api/image/unload` is `async def` running its
+        body through `asyncio.to_thread`, so every blocked caller occupies a
+        thread from the default executor — `min(32, cpu + 4)`, which is 28
+        here and 8 on a four-core machine. Twenty-eight blocked unload clicks
+        starved `/api/model/unload` of a thread entirely, so the TEXT side's
+        working refusal never ran either. One stuck image load could take the
+        process's whole request path down with it.
+
+        `runtime.ModelRuntime._load_slot` is the original and this is
+        deliberately the same shape, down to `what` being the ACTION rather
+        than a model id — "Cannot load 'unload' yet" is the mistake that
+        comment records.
+        """
+        if not self._lock.acquire(timeout=LOAD_QUEUE_WAIT_S):
+            held = self.status_.repo
+            busy = (
+                f"loading {held}" if held else "another image load is already running"
+            )
+            raise Refusal(
+                f"Cannot {what} yet: {busy}. A pipeline is several checkpoints "
+                f"and the download cannot be interrupted safely part-way, so "
+                f"one loads at a time. POST /api/image/cancel stops the one in "
+                f"flight."
+            )
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def unload(self) -> ImageStatus:
         """Drop it and hand the memory back, not merely forget it.
 
@@ -545,7 +593,7 @@ class ImageHandle:
         allocated until the next collection, and the next thing the user does
         is usually load something else.
         """
-        with self._lock:
+        with self._load_slot("unload"):
             had = self.status_.repo
             self.pipe = None
             # Dropped with the model it belongs to. A processor left behind
