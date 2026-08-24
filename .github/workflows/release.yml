@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - uses: astral-sh/setup-uv@v10.0.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: false
 
