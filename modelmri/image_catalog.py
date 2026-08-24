@@ -133,6 +133,12 @@ DEFAULT_TASK = "text-to-image"
 
 MAX_RESULTS = 50
 
+#: What a caller gets when it names no limit. Here rather than repeated in two
+#: signatures and two `or 24` fallbacks, which is how `limit=0` came to be
+#: REPORTED as 24: the fallback rewrote the number before it was recorded, so
+#: the payload stated a figure the caller had never sent.
+DEFAULT_RESULTS = 24
+
 
 def tasks() -> list[dict]:
     """Every task that can be searched, for a picker to render.
@@ -152,7 +158,7 @@ def tasks() -> list[dict]:
     ]
 
 
-def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
+def search(query: str = "", task: str = "", limit: int = DEFAULT_RESULTS) -> list[dict]:
     """Image models on the Hub, annotated with size and whether they are here.
 
     Nothing is downloaded. This reads a listing, and the one thing it touches
@@ -176,7 +182,11 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
             f"checkpoints nothing here can load."
         )
 
-    asked = int(limit or 24)
+    # `int(limit)`, not `int(limit or DEFAULT_RESULTS)`. The `or` rewrote a
+    # zero into the default and THEN recorded it, so `?limit=0` came back
+    # saying `limit_asked: 24` — the payload stating a number nobody sent.
+    # The signature already supplies the default for a caller that omits it.
+    asked = int(limit)
     used = max(1, min(asked, MAX_RESULTS))
 
     params: list[tuple[str, str]] = [
@@ -266,7 +276,7 @@ def search(query: str = "", task: str = "", limit: int = 24) -> list[dict]:
     return _Rows(out, limit_asked=asked, limit_used=used, cache_capped=cache_capped)
 
 
-def _across_all_tasks(query: str = "", limit: int = 24) -> list[dict]:
+def _across_all_tasks(query: str = "", limit: int = DEFAULT_RESULTS) -> list[dict]:
     """One search over every image task the catalogue knows.
 
     The Hub ANDs repeated `filter` values, so ten tags is ten calls rather
@@ -280,7 +290,11 @@ def _across_all_tasks(query: str = "", limit: int = 24) -> list[dict]:
     tell them apart. Only when EVERY task failed is this a refusal, because
     then nothing was searched at all.
     """
-    asked = int(limit or 24)
+    # `int(limit)`, not `int(limit or DEFAULT_RESULTS)`. The `or` rewrote a
+    # zero into the default and THEN recorded it, so `?limit=0` came back
+    # saying `limit_asked: 24` — the payload stating a number nobody sent.
+    # The signature already supplies the default for a caller that omits it.
+    asked = int(limit)
     used = max(1, min(asked, MAX_RESULTS))
     # Per task, so one crowded tag cannot fill the whole page and hide the
     # other nine. Merged and re-capped below.

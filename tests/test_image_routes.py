@@ -374,6 +374,38 @@ def test_an_unreachable_hub_answers_503_rather_than_500(client, monkeypatch):
     assert "Could not reach the HuggingFace Hub" in r.json()["error"]
 
 
+def test_a_clamped_limit_is_named_whichever_way_it_moved(client, monkeypatch):
+    """The notice condition was `limit_asked > limit_used`, so it only fired
+    for a limit clamped DOWN. `?limit=-1` was recorded honestly as `asked=-1,
+    used=1` and then went unmentioned, because `-1 > 1` is False — a clamp the
+    reader is not told about reads as "this is all there is" either way.
+
+    Nothing here reaches the Hub: the row builder is stubbed, because what is
+    under test is the sentence the route writes about its own clamp.
+    """
+    from modelmri import image_catalog
+
+    monkeypatch.setattr(
+        "modelmri.image_catalog.search",
+        lambda q, t, limit: image_catalog._Rows(
+            [],
+            limit_asked=int(limit),
+            limit_used=max(1, min(int(limit), image_catalog.MAX_RESULTS)),
+            cache_capped=False,
+        ),
+    )
+    for asked, used in ((0, 1), (-1, 1), (999, image_catalog.MAX_RESULTS)):
+        d = client.get(f"/api/image/search?limit={asked}").json()
+        assert d["limit_asked"] == asked
+        assert d["limit_used"] == used
+        assert f"{asked} were asked for" in d["means"], asked
+        assert f"built from {used}" in d["means"], asked
+
+    # And an unclamped limit says nothing about a clamp that did not happen.
+    d = client.get("/api/image/search?limit=24").json()
+    assert "were asked for" not in d["means"]
+
+
 # ------------------------------------------- covering the picture up
 
 

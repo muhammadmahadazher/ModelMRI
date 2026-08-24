@@ -2544,10 +2544,15 @@ def create_app(
         # Every cap that shaped this list is named. A truncation nobody is
         # told about reads as "this is all there is".
         cut = []
-        if rows.limit_asked > rows.limit_used:
+        # `!=`, not `>`. A limit is clamped in BOTH directions — `?limit=-1`
+        # was honestly recorded as `asked=-1, used=1`, and then went unsaid,
+        # because `-1 > 1` is False. A clamp the reader is not told about
+        # reads as "this is all there is" whichever way it moved.
+        if rows.limit_asked != rows.limit_used:
             cut.append(
-                f"{rows.limit_asked} were asked for and the Hub is queried for "
-                f"at most {rows.limit_used}"
+                f"{rows.limit_asked} were asked for and this list was built "
+                f"from {rows.limit_used} — the Hub is queried for at most "
+                f"{image_catalog.MAX_RESULTS} and never for fewer than one"
             )
         if rows.cache_capped:
             cut.append(

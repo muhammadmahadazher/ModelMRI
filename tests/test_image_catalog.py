@@ -564,6 +564,35 @@ def test_a_limit_inside_the_cap_reports_no_clamp(monkeypatch):
     assert rows.limit_asked == rows.limit_used == 5
 
 
+def test_a_limit_of_zero_is_reported_as_zero_not_as_the_default(monkeypatch):
+    """MEASURED: `GET /api/image/search?limit=0` answered `limit_asked: 24` —
+    the DEFAULT, not what was sent. `int(limit or 24)` rewrote the zero before
+    it was recorded, so the payload stated a number the caller never sent and
+    the clamp that actually happened went unmentioned.
+
+    The signature already supplies the default for a caller that omits the
+    argument; the `or` was only ever reachable for an explicit zero.
+    """
+    _hub(monkeypatch, [SIZED])
+    _cache(monkeypatch)
+
+    rows = image_catalog.search(limit=0)
+    assert rows.limit_asked == 0
+    assert rows.limit_used == 1
+
+
+def test_a_negative_limit_is_recorded_as_asked_and_clamped_up(monkeypatch):
+    """The other direction of the same clamp. `asked=-1, used=1` was already
+    honest; what was missing was the route saying so, because its notice
+    condition was `asked > used` and `-1 > 1` is False."""
+    _hub(monkeypatch, [SIZED])
+    _cache(monkeypatch)
+
+    rows = image_catalog.search(limit=-1)
+    assert rows.limit_asked == -1
+    assert rows.limit_used == 1
+
+
 def test_a_truncated_list_does_not_compare_equal_to_a_complete_one():
     """Inheriting `list.__eq__` compared the ROWS alone, so a complete list of
     50 and a list of 50 truncated from 200 were equal — the silent-truncation
