@@ -1134,7 +1134,7 @@ def create_app(
             # today only because nothing broader is written above it, and
             # anyone who ever widens an arm here to RuntimeError turns Stop
             # into a red 409.
-            return JSONResponse({"cancelled": True, "message": str(err)})
+            return JSONResponse({"cancelled": True, "message": err.sentence})
         except TooBig as err:
             # capacity.py's own refusal, raised by _preflight before a byte
             # moves. Still a plain ValueError there, and this arm answers the
@@ -1321,7 +1321,12 @@ def create_app(
                 "free_bytes": free,
                 "ok": False,
                 "overridable": err.overridable,
-                "warning": str(err),
+                # `err.sentence`, not `str(err)`. `TooBig` carries an authored
+                # sentence for exactly this slot — see errors.py — and these
+                # two were the last places in this file still publishing
+                # whatever `str()` returned. CodeQL flagged the same shape
+                # elsewhere; these were not flagged and were wrong anyway.
+                "warning": err.sentence,
             }
         return {
             **found,
@@ -1374,7 +1379,12 @@ def create_app(
                 "free_bytes": free,
                 "ok": False,
                 "overridable": err.overridable,
-                "warning": str(err),
+                # `err.sentence`, not `str(err)`. `TooBig` carries an authored
+                # sentence for exactly this slot — see errors.py — and these
+                # two were the last places in this file still publishing
+                # whatever `str()` returned. CodeQL flagged the same shape
+                # elsewhere; these were not flagged and were wrong anyway.
+                "warning": err.sentence,
             }
         return {
             "name": name,
@@ -2850,7 +2860,7 @@ def create_app(
             # the panel does not paint a red error over something they did on
             # purpose — the same shape `/api/model/load` uses for its own
             # `LoadCancelled`, because they are the same event.
-            return JSONResponse({"cancelled": True, "message": str(err)})
+            return JSONResponse({"cancelled": True, "message": err.sentence})
         # No separate `except Unsafe`. It is a `Refusal`, so the clause below
         # already answers 409 with its sentence intact — the extra arm added
         # nothing and named a type the leak check does not have on its
@@ -4815,7 +4825,7 @@ def create_app(
         try:
             doc["cost"] = ledger_mod.bill(steps, ledger_mod.load_prices()).to_dict()
         except BadRequest as err:
-            doc["cost"] = {"error": str(err), "means": str(err)}
+            doc["cost"] = {"error": err.sentence, "means": err.sentence}
         return doc
 
     # An Inspect `.eval` log is a zip, so this takes bytes rather than a path:
@@ -5898,7 +5908,7 @@ def create_app(
         try:
             doc["cost"] = ledger_mod.bill(steps, ledger_mod.load_prices()).to_dict()
         except BadRequest as err:
-            doc["cost"] = {"error": str(err), "means": str(err)}
+            doc["cost"] = {"error": err.sentence, "means": err.sentence}
         doc["available"] = True
         return doc
 

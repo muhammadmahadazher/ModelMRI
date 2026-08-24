@@ -610,8 +610,11 @@ def test_a_truncated_list_does_not_compare_equal_to_a_complete_one():
     assert complete != half_read
     assert complete == identical
     # `!=` is inherited from `list` unless overridden, so it would have
-    # disagreed with `__eq__` above.
-    assert not (complete != identical)
+    # disagreed with `__eq__` above. Called by name rather than as
+    # `not (a != b)`: the two dunders are pinned separately here, and the
+    # operator form reads as a redundant comparison because against a
+    # class that defines only `__eq__` it would be one.
+    assert complete.__ne__(identical) is False
     # Against a plain list it still compares as a list, so a test may write
     # `rows == [...]` and mean it.
     assert complete == rows

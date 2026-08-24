@@ -297,11 +297,11 @@ def test_a_store_that_cannot_write_does_not_cost_you_the_generation(tmp_path):
 def test_recording_adds_no_network_path(tmp_path):
     """Prompts and generations are the reader's own text. They go to the same
     SQLite file the panel already reads, on this machine, and nowhere else."""
-    import pathlib
+    from pathlib import Path
 
     import modelmri.traces as traces_mod
 
-    source = pathlib.Path(traces_mod.__file__).read_text(encoding="utf-8")
+    source = Path(traces_mod.__file__).read_text(encoding="utf-8")
     for outbound in ("urllib", "requests", "httpx", "socket"):
         assert outbound not in source, f"traces.py grew an outbound path: {outbound}"
 

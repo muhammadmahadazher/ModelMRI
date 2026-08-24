@@ -104,13 +104,25 @@ def test_the_gemma_that_motivated_this_is_allowed(stub_config):
     sent the maintainer here, so Gemma gets its own assertion when the
     installed transformers knows about it.
     """
-    try:
-        from transformers import Gemma4Config as config_cls
-    except ImportError:
-        try:
-            from transformers import Gemma3Config as config_cls
-        except ImportError:
-            pytest.skip("this transformers has neither Gemma 4 nor Gemma 3")
+    # Resolved by name rather than by two nested `import ... as config_cls`
+    # blocks. In that shape the name is bound on the success path of either
+    # `try` and unbound on neither — which is correct, and impossible to prove
+    # by reading: CodeQL raised it as `py/uninitialized-local-variable` at
+    # error severity, and a reader has to trace the same three paths to
+    # convince themselves the `skip` really does leave. One lookup, one
+    # binding, one place the skip happens.
+    import transformers
+
+    config_cls = next(
+        (
+            getattr(transformers, name)
+            for name in ("Gemma4Config", "Gemma3Config")
+            if hasattr(transformers, name)
+        ),
+        None,
+    )
+    if config_cls is None:
+        pytest.skip("this transformers has neither Gemma 4 nor Gemma 3")
 
     mapped = MODEL_FOR_CAUSAL_LM_MAPPING.get(config_cls, None)
     assert mapped is not None, (

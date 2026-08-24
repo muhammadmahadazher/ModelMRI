@@ -563,7 +563,10 @@ def _hammer(store, *, threads: int, per_thread: int) -> tuple[list, list]:
         for _ in range(per_thread):
             try:
                 store.put(b"x" * 64)
-            except BaseException as err:
+            # `Exception`, not `BaseException`. The escapes this counts are
+            # KeyError and RuntimeError; catching BaseException as well would
+            # swallow a KeyboardInterrupt and log it as a store failure.
+            except Exception as err:
                 with guard:
                     errors.append(err)
             # Observed the way any other caller observes it — under the

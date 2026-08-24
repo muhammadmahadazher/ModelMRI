@@ -708,7 +708,29 @@ def load_prompts(path: str | Path) -> list[str]:
     Both, because the file people already have is usually one of the two and
     asking them to convert it is a reason not to run the sweep at all.
     """
-    target = Path(path)
+    # `.expanduser().resolve()`, for the reason `/api/weights/scan` states at
+    # its own call site: without it a path is used as written, so `../../..`
+    # walks wherever it likes and nothing downstream can tell that happened.
+    # Resolving normalises the traversal FIRST, so the file that gets read is
+    # the file that gets named in every refusal below.
+    #
+    # It is not a sandbox and is not meant to be one — reading a local corpus
+    # IS the feature. What makes that safe is WHO may ask: the one route that
+    # reaches here with a caller-supplied path (`/api/lens/tune`) carries
+    # `_not_from_this_machine` above it, and `modelmri sweep` is the person at
+    # the keyboard naming their own file. CodeQL raised this as py/path-injection
+    # against exactly the shape the sibling readers had already normalised.
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        # A path the OS will not even normalise — a bad drive letter, a symlink
+        # loop, a name too long. A fact about the input, so a refusal rather
+        # than the traceback `Path.resolve` would otherwise raise through four
+        # routes. `/api/weights/scan` answers the same way for the same cause.
+        raise BadRequest(
+            f"{path!r} is not a path this machine can resolve. Check the drive, "
+            f"and that no link in it points at itself."
+        ) from None
     try:
         text = target.read_text(encoding="utf-8")
     except UnicodeDecodeError:

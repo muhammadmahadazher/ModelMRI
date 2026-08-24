@@ -226,7 +226,23 @@ def local_hf_models() -> list[dict]:
 
 
 class LoadCancelled(RuntimeError):
-    """The user stopped a load. Not an error in the code, and not silent."""
+    """The user stopped a load. Not an error in the code, and not silent.
+
+    Carries `sentence` for the reason `Refusal` and `BadRequest` do, written
+    out in `errors.py`: the route publishes this text to a browser, and
+    `str()` on an exception is whatever the raiser happened to pass —
+    including, on a subclass somebody adds later, a tuple repr or a library's
+    own words. `sentence` is set once, here, from the authored argument, so
+    what reaches the reader is provably something a person wrote. CodeQL
+    raised `str(err)` on the image sibling as py/stack-trace-exposure, and it
+    is right about the shape even where today's raisers happen to be careful.
+    """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        #: Empty for `LoadCancelled()` with no argument — the caller is then
+        #: saying nothing, and inventing a sentence for them would be worse.
+        self.sentence = str(args[0]) if args else ""
 
 
 def download_size(hf_id: str) -> int:

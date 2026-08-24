@@ -401,7 +401,13 @@ def test_two_scans_that_disagree_about_the_walk_are_not_equal():
     walked = ws.ScanTree([], n_total=0, readable=True)
     unopenable = ws.ScanTree([], n_total=0, readable=False)
     assert walked != unopenable
-    assert not (walked == unopenable)
+    # `__eq__` called by name, not `not (a == b)`. Defining `__eq__` sets
+    # `__ne__` to its negation ONLY if `__ne__` is not also defined, and
+    # this class defines both — so the two are pinned separately, which the
+    # operator form cannot express (CodeQL reads it as a redundant
+    # comparison, and against a normal class it would be right).
+    assert walked.__eq__(unopenable) is False
+    assert walked.__ne__(unopenable) is True
 
     capped = ws.ScanTree([1, 2, 3], n_total=84)
     whole = ws.ScanTree([1, 2, 3], n_total=3)

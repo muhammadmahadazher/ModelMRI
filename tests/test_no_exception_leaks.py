@@ -466,3 +466,60 @@ def test_a_falsy_strerror_falls_back_to_the_class_and_not_the_path(monkeypatch):
     # The class survives, because which KIND of failure it was is the
     # actionable half and a class name cannot carry a path.
     assert "FileNotFoundError" in said
+
+
+# ------------------------------------------- the two cancel exceptions
+
+
+def test_a_stopped_load_publishes_an_authored_sentence():
+    """`LoadCancelled` and `ImageLoadCancelled` are RuntimeErrors, and both
+    routes answer 200 with their text — so that text is published, and until
+    now it was whatever `str()` returned.
+
+    Safe in practice, because both raisers pass a literal. Not PROVABLY safe,
+    which is the distinction `errors.py` draws for `Refusal` and `BadRequest`:
+    `sentence` is set once from the authored argument, so a static analyser —
+    and a reader — can see the published value is something a person wrote.
+    CodeQL raised the image route's `str(err)` as py/stack-trace-exposure and
+    is right about the shape even where today's raisers happen to be careful.
+
+    The empty case is deliberate: a no-argument raise says nothing, and
+    inventing a sentence for it would be worse than an empty one.
+    """
+    from modelmri.image_runtime import ImageLoadCancelled
+    from modelmri.runtime import LoadCancelled
+
+    for cls in (LoadCancelled, ImageLoadCancelled):
+        said = "Load stopped before the weights arrived."
+        assert cls(said).sentence == said, cls.__name__
+        # Identical to `str()` today, which is what makes the swap a no-op for
+        # every caller. If they ever diverge, `sentence` is the published one.
+        assert cls(said).sentence == str(cls(said)), cls.__name__
+        assert cls().sentence == "", cls.__name__
+
+
+def test_no_cancel_or_price_sink_publishes_str_of_the_exception():
+    """A grep over the four sinks that were converted, so a future edit that
+    reintroduces `str(err)` in one of them fails here rather than in a CodeQL
+    run three commits later.
+
+    Narrow on purpose. `str(err)` on a `Refusal` is the DELIBERATE relay this
+    project has always used and there are dozens of those; the ones pinned
+    here are the slots where the caught type is a `RuntimeError` subclass or
+    where CodeQL traced a path to a library exception.
+    """
+    import re
+
+    source = (
+        Path(__file__).resolve().parents[1] / "modelmri" / "server.py"
+    ).read_text(encoding="utf-8")
+    for slot in (
+        r'"cancelled": True, "message": ([^}]+)',
+        r'doc\["cost"\] = \{"error": ([^,]+),',
+        r'"overridable": err\.overridable,\s*(?:#[^\n]*\n\s*)*"warning": ([^,]+),',
+    ):
+        found = re.findall(slot, source)
+        assert found, f"the sink {slot!r} moved — repoint this test at it"
+        for value in found:
+            assert "str(err)" not in value, f"{slot}: publishes {value.strip()}"
+            assert "sentence" in value, f"{slot}: publishes {value.strip()}"

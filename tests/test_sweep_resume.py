@@ -325,8 +325,11 @@ def test_the_sweep_subcommand_takes_a_resume_id():
         sys.argv = ["modelmri", "sweep", "--help"]
         try:
             cli.main()
-        except SystemExit:
-            pass
+        except SystemExit as stop:
+            # `--help` exits 0 through argparse. Asserted rather than
+            # swallowed: a bare `pass` here would have read as green for a
+            # command that exited 2 because the parser rejected it.
+            assert stop.code in (0, None), stop.code
     finally:
         sys.argv = argv
 

@@ -113,7 +113,7 @@ def test_the_venv_figure_comes_from_the_same_walk_as_the_data_directory(
     """
     from modelmri import policy
 
-    root, _hub = home
+    _root, _hub = home
     venv = policy.venv_dir()
     (venv / "lib").mkdir(parents=True, exist_ok=True)
     (venv / "lib" / "torch.so").write_bytes(b"z" * 7000)

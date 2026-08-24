@@ -851,7 +851,16 @@ class ImageLoadCancelled(RuntimeError):
     request was fine and the answer is that it did not finish. The route
     answers 200 with a plain sentence, the way the text side does, so the
     panel does not paint a red error over something the reader did on purpose.
+
+    `sentence` for the same reason `runtime.LoadCancelled` carries one — the
+    route publishes this text to a browser, and `str()` on an exception is
+    whatever the raiser passed rather than something provably authored. CodeQL
+    flagged the `str(err)` at that route as py/stack-trace-exposure.
     """
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.sentence = str(args[0]) if args else ""
 
 
 @contextmanager
