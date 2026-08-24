@@ -317,3 +317,30 @@ def test_a_hub_id_is_not_sent_through_the_filesystem_gate(tmp_path, monkeypatch)
     monkeypatch.setattr(custom, "resolve_dir_under_roots", spy)
     assert behavdiff.is_hub_id("Qwen/Qwen3-0.6B")
     assert not called
+
+
+def test_an_empty_path_is_not_the_servers_own_directory():
+    """`Path("").resolve()` is the process's working directory, and that is
+    not a corner case here — it exists, it is inside an allowed root, and the
+    resolver therefore accepted it.
+
+    MEASURED before the bound: `POST /api/gguf/load {"path": ""}` answered 409
+    "<the repo this server was started in> is not a file" — naming a directory
+    the request never mentioned, with no next step. Worse on the sibling:
+    `POST /api/quantdiff/behaviour {"quantised": "<real .gguf>", "original":
+    ""}` was not refused at all, and handed the cwd to the loader as "the
+    full-precision checkpoint" for a run documented as expensive.
+    """
+    c = _client()
+    r = c.post("/api/gguf/load", json={"path": ""})
+    assert r.status_code == 422
+    assert "at least 1 character" in str(r.json()["detail"])
+
+    for body in (
+        {"quantised": "", "original": ""},
+        {"quantised": "model.gguf", "original": ""},
+        {"quantised": "", "original": "model"},
+    ):
+        r = c.post("/api/quantdiff/behaviour", json=body)
+        assert r.status_code == 422, body
+        assert "at least 1 character" in str(r.json()["detail"]), body

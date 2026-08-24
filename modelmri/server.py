@@ -305,7 +305,13 @@ class LoadRequest(Body):
 
 
 class GgufLoad(Body):
-    path: str
+    # `min_length=1`, and it is not decoration. `Path("").resolve()` is the
+    # process's own working directory, which exists and is inside an allowed
+    # root, so an empty field did not fail as an empty field — it named the
+    # server's source tree. MEASURED: `{"path": ""}` answered 409 "<the repo
+    # this server was started in> is not a file", a directory the request
+    # never mentioned, with no next step a reader could take.
+    path: str = Field(min_length=1, max_length=4096)
     # None means "whatever this accelerator prefers". Named explicitly rather
     # than defaulted to float32 here, because the dtype is half of the memory
     # figure and a silent default would make the preflight describe a load
@@ -316,8 +322,13 @@ class GgufLoad(Body):
 
 
 class QuantCompare(Body):
-    quantised: str
-    original: str
+    # Both bounded, for the reason spelled out on `GgufLoad.path` — and this
+    # route is where the empty string was worst. `original` resolved to the
+    # cwd, the cwd IS an allowed root, and the empty field was handed to the
+    # loader as "the full-precision checkpoint": a run documented as expensive
+    # proceeding against the server's own source tree, not refused at all.
+    quantised: str = Field(min_length=1, max_length=4096)
+    original: str = Field(min_length=1, max_length=4096)
     prompt: str = "The capital of France is"
     # Off makes the run cheaper when only the token-level answer is wanted.
     attention: bool = True
