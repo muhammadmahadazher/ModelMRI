@@ -60,13 +60,30 @@ The release advertises an average L0 of 71. That is the same class of silent
 wrongness as the input-convention bug above — right shape, plausible
 magnitudes, a gate that was never applied — so `_activate` is the one place
 either rule lives.
+
+## Two fidelity numbers, and only one of them was in activation space
+
+`calibrate` answers "does this SAE reconstruct the stream it is attached to",
+in FVU and in L0. Both are taken against the SAE's own input, and both can read
+well while the model on top stops predicting: FVU is measured against the
+directions carrying the residual stream's VARIANCE, and the directions the next
+token depends on are not those directions.
+
+`ce_recovered` at the bottom of this file asks the output-space question —
+splice the reconstruction back in, run the model, and see how much of its
+predictive loss survives against an ablation floor. Its long comment is where
+the floor, the corpus and the shared splice are argued; the short version is
+that the floor is half the number, it is named in the payload, and all three
+raw losses come back so the other normalisation can be computed from them.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -884,3 +901,665 @@ class SAEHandle:
         """Unit-norm decoder direction for one feature ([d_in])."""
         v = self.W_dec[feature_id]
         return v / (v.norm() + 1e-8)
+
+
+# --------------------------------------------------- fidelity, in the output space
+#
+# Everything above measures this SAE in ACTIVATION space. `fvu` is the share of
+# the stream's variance the reconstruction misses, `rel_err` the size of the
+# residual, `l0` how many features it took to get there — the SAE's own claim,
+# checked against the SAE's own input. Those numbers can all read well while
+# the model built on top of them stops predicting, because FVU is taken against
+# the directions carrying the VARIANCE of the residual stream and the
+# directions the next token depends on are not the same directions.
+#
+# CE-recovered asks the output-space question instead: splice the
+# reconstruction back in where the activation was, run the model again, and see
+# how much of its predictive loss survives — normalised against a floor that
+# says what destroying the activation costs in the first place.
+#
+#     CE_recovered = (CE_ablate - CE_recon) / (CE_ablate - CE_clean)
+#
+# ## The floor is half the number, and it is usually unsaid
+#
+# Mean-ablation and zero-ablation are both defensible and they are different
+# denominators, so the same reconstruction scores a different percentage under
+# each. A bare "97% recovered" does not say which was used and cannot be
+# converted into the other one after the fact. So `floor` is a required
+# argument with no default — there is no house answer to a question the reader
+# has to be told the answer to — it comes back BY NAME in the payload, and all
+# three raw losses come back beside the ratio so a reader holding the other
+# convention can normalise these numbers themselves.
+#
+# ## The corpus is the other half
+#
+# CE is a loss ON SOME TEXT, exactly the way a feature's top activation is a
+# top activation IN SOME CORPUS (feature_corpus.py makes this argument at
+# length). The label, the sha256 of the token ids, the sequence count and the
+# number of PREDICTED tokens travel with the ratio, because "this SAE recovers
+# 97%" and "this SAE recovered 97% of the loss on the 4,000 tokens you handed
+# it" are different claims and only the second one was measured.
+#
+# ## One splice, not two
+#
+# The reconstruction is written back through `feature_ablate`'s own hook
+# helpers, with the arithmetic `feature_ablate` uses for its residual baseline
+# — `x_recon[p] = recon[p] + mu[p]`, here with the window being every token.
+# Two implementations of one intervention is how they drift, and `+ mu[p]` is
+# exactly the part that would drift: when the calibrated convention centers,
+# the SAE reconstructs `x - mean(x)` and the stream handed back to the model is
+# that reconstruction plus the ORIGINAL per-token mean.
+#
+# ## The convention is the one calibration already chose
+#
+# `SAECalibration` picks between four input conventions by lowest FVU, and this
+# uses that choice rather than making its own. Two numbers on one panel taken
+# under two conventions describe two different splices, and nothing in either
+# number would say so.
+
+#: Replace the activation with the mean activation vector measured over this
+#: corpus at this hook, or with zeros. Both are published choices; neither is
+#: the default, because the reader has to be told which one produced the
+#: percentage they are reading.
+FLOOR_MEAN = "mean_ablate"
+FLOOR_ZERO = "zero_ablate"
+CE_FLOORS: tuple[str, ...] = (FLOOR_MEAN, FLOOR_ZERO)
+
+# Positions per chunk when the next-token loss is taken. A pass's logits are
+# [S, vocab] in the model's dtype and `log_softmax` needs them in float32: on
+# Qwen3-1.7B's 151,936-entry vocabulary that is 607,744 bytes per position, so
+# a 512-token sequence upcast whole would materialise 311 MB beside the logits
+# the model already produced. Sixty-four positions is 38.9 MB. That is
+# arithmetic rather than a measurement, and it is why the number is a named
+# constant rather than a comment about being careful.
+NLL_CHUNK_TOKENS = 64
+
+# Below this, the denominator `CE_ablate - CE_clean` is not a measurement of
+# anything and the ratio divides by noise. Same basis as
+# `feature_ablate.RESOLUTION_KL`: these losses are float32 sums over a
+# vocabulary, and a difference of that size is the summation showing itself.
+# It is a FLOOR under the real test, which is the write-back deviation measured
+# on the corpus in hand — see `ce_recovered`.
+MIN_DENOMINATOR_NATS = 1e-6
+
+# How far writing the model's own residual stream back into the hook unchanged
+# may move its loss. The reconstruction and the floor go in through that same
+# hook, so if the write-back does not land — a resid_post SAE hooked on a
+# block's input, a block that runs twice — all three losses are measuring the
+# write-back. Same tolerance and same reasoning as
+# `feature_ablate.WRITEBACK_TOLERANCE`, and like that one it is compared
+# against a no-hook replay, so a nondeterministic accelerator raises its own
+# bar rather than tripping this.
+SPLICE_TOLERANCE_NATS = 1e-6
+
+
+@dataclass
+class CEFidelity:
+    """CE-recovered, the three losses under it, and what they are losses OF.
+
+    The ratio is not the first field on purpose. It is the only number here
+    that depends on a choice the reader did not make — the floor — and the
+    three losses it is built from are all present so that choice can be undone.
+    """
+
+    repo: str
+    hook: str
+    layer: int
+    point: str
+
+    #: "mean_ablate" or "zero_ablate", by name, because the percentage is not
+    #: interpretable without it.
+    floor: str
+    floor_means: str
+    #: Tokens the mean floor vector was averaged over. None for the zero floor,
+    #: which is not averaged from anything — never 0, which would claim a mean
+    #: taken over an empty corpus.
+    n_floor_tokens: int | None
+
+    #: Nats per predicted token, all three, on the corpus named below.
+    ce_clean: float
+    ce_recon: float
+    ce_ablate: float
+    numerator: float  # ce_ablate - ce_recon
+    denominator: float  # ce_ablate - ce_clean
+    #: NOT clamped, in either direction. Below zero is a real answer and it
+    #: means the reconstruction predicts worse than destroying the activation
+    #: does; clamping it to 0 would report a broken SAE as a merely useless one.
+    ce_recovered: float
+
+    corpus_label: str
+    corpus_sha256: str
+    n_sequences: int
+    n_sequences_given: int
+    truncated: bool
+    #: Tokens the loss was taken over. The first token of a sequence is fed and
+    #: never predicted, so this is `sum(len(seq) - 1)` and not the number of
+    #: tokens that went in — which is `n_tokens_seen`, beside it.
+    n_tokens: int
+    n_tokens_seen: int
+
+    #: Which input convention the splice used, and how well it reconstructs in
+    #: activation space. Carried whole rather than summarised: a CE-recovered
+    #: taken in a different convention is a different measurement, and `fvu`
+    #: and `l0` beside it are the activation-space half of the same panel.
+    calibration: SAECalibration
+    #: True when this run calibrated the SAE, on the first sequence of this
+    #: corpus. False when it reused a calibration taken somewhere else, in
+    #: which case `calibration.n_tokens` says what that one was measured on.
+    calibrated_here: bool
+
+    #: What the same pass costs run twice with no hook at all, and what writing
+    #: the captured stream back unchanged costs, both in nats per token on the
+    #: first sequence. The second is the resolution of every difference above.
+    replay_deviation_nats: float
+    splice_deviation_nats: float
+
+    passes: int
+    elapsed_s: float
+
+    def means(self) -> str:
+        return (
+            f"CE-recovered {self.ce_recovered:.4f} for {self.repo} at "
+            f"{self.hook}, against the {self.floor} floor, measured on "
+            f"{self.corpus_label}: {self.n_tokens:,} predicted tokens in "
+            f"{self.n_sequences:,} sequences. The three losses it is built "
+            f"from, in nats per token — the model's own {self.ce_clean:.6f}, "
+            f"with the SAE's reconstruction spliced in {self.ce_recon:.6f}, "
+            f"with the activation replaced by the floor {self.ce_ablate:.6f}. "
+            f"{self.floor_means} A different floor gives a different "
+            f"percentage from these same three losses, which is why all three "
+            f"are here. The reconstruction was taken in the "
+            f"'{self.calibration.convention}' input convention — the one "
+            f"calibration measured the lowest FVU ({self.calibration.fvu:g}) "
+            f"for, on {self.calibration.n_tokens:,} tokens — and a figure "
+            f"taken in another convention describes another splice. Nothing "
+            f"is clamped: below zero would mean the reconstruction predicts "
+            f"worse than the floor does. The denominator this is divided by is "
+            f"{self.denominator:.6f} nats/token, against the "
+            f"{self.splice_deviation_nats:.3e} that writing the model's own "
+            f"stream back unchanged moved the same loss by."
+            + (
+                f" {self.n_sequences:,} of {self.n_sequences_given:,} "
+                f"sequences were scored; the rest were NOT MEASURED, which is "
+                f"not the same as measured and found not to matter."
+                if self.truncated
+                else ""
+            )
+        )
+
+    def to_dict(self) -> dict:
+        return {**asdict(self), "means": self.means()}
+
+
+def ce_recovered_passes(n_sequences: int) -> int:
+    """Exactly what `ce_recovered` will spend, in forward passes: `3n + 2`.
+
+    Three per sequence — the model's own pass, which also captures the stream
+    the other two are built from; the reconstruction spliced in; the floor
+    spliced in — plus two taken once on the first sequence: a plain replay with
+    no hook at all, and the captured stream written back unchanged. Those two
+    are the resolution every difference is read against, and they are the only
+    reason this is not `3n`.
+
+    Exact and portable, which is the half of "what will this cost" that
+    transfers between machines. `estimate_ce_recovered_cost` is the other half.
+    """
+    # `isinstance(True, int)` is True, so a stray flag would price a two-pass
+    # run and be reported as a corpus of one sequence.
+    if isinstance(n_sequences, bool):
+        raise BadRequest("n_sequences is a count of sequences, not a flag.")
+    n_sequences = int(n_sequences)
+    if n_sequences < 1:
+        raise BadRequest(
+            "CE-recovered needs at least one sequence to be a loss on "
+            "anything; there is nothing to price for a corpus of 0."
+        )
+    return 3 * n_sequences + 2
+
+
+def _sum_nll(
+    logits: torch.Tensor, ids: torch.Tensor, *, chunk: int = NLL_CHUNK_TOKENS
+) -> tuple[float, int]:
+    """Summed next-token loss over one `[1, S]` sequence, and the tokens in it.
+
+    A SUM and a count rather than a mean, because the caller accumulates over a
+    corpus of unequal sequences and a mean of means would weight a six-token
+    sequence like a six-hundred-token one.
+
+    Position t's logits are scored against token t+1, so the first token of a
+    sequence is fed and never predicted — which is why the count returned is
+    `S - 1`. Summed in float64: a float32 running total over a corpus loses the
+    low bits of every late token, and the quantity this file reports is a
+    DIFFERENCE between two such totals.
+    """
+    targets = ids[0, 1:]
+    n = int(ids.shape[1]) - 1
+    total = 0.0
+    for start in range(0, n, chunk):
+        stop = min(start + chunk, n)
+        # float32 for the softmax, on a slice, for the reason
+        # NLL_CHUNK_TOKENS is a named constant.
+        log_probs = torch.log_softmax(logits[0, start:stop].float(), dim=-1)
+        want = targets[start:stop].to(log_probs.device).unsqueeze(-1)
+        total += float(log_probs.gather(-1, want).squeeze(-1).double().sum())
+        del log_probs, want
+    return -total, n
+
+
+def _corpus_sha256(sequences: list[torch.Tensor]) -> str:
+    """A stable identity for the exact token ids that were scored.
+
+    The label is what the reader calls the corpus; this is what actually ran,
+    so two results carrying the same label over different text are
+    distinguishable. Hashed one sequence at a time with a separator between
+    them, so [[1, 2], [3]] and [[1], [2, 3]] do not collide.
+    """
+    digest = hashlib.sha256()
+    for ids in sequences:
+        digest.update(b"\x00")
+        digest.update(
+            ",".join(str(int(t)) for t in ids.flatten().tolist()).encode("ascii")
+        )
+    return digest.hexdigest()
+
+
+def _sequence_for_ce(value: object, index: int) -> torch.Tensor:
+    """One `[1, S]` id tensor, or a sentence saying what arrived instead."""
+    if not isinstance(value, torch.Tensor):
+        raise BadRequest(
+            f"sequence {index} is a {type(value).__name__}, not a tensor of "
+            f"token ids. CE-recovered scores the model's own loss on ids it "
+            f"can be fed; tokenize the text first."
+        )
+    ids = value.unsqueeze(0) if value.dim() == 1 else value
+    if ids.dim() != 2 or int(ids.shape[0]) != 1:
+        raise BadRequest(
+            f"sequence {index} is shaped {tuple(value.shape)}; CE-recovered "
+            f"reads one unbatched sequence at a time, [S] or [1, S]. Batching "
+            f"pads, and a padded position contributes a loss on a token nobody "
+            f"wrote."
+        )
+    if int(ids.shape[1]) < 2:
+        raise BadRequest(
+            f"sequence {index} is {int(ids.shape[1])} token(s) long. The first "
+            f"token of a sequence is fed and never predicted, so a sequence "
+            f"shorter than two tokens contributes no loss at all — it would be "
+            f"counted in the corpus and score nothing."
+        )
+    return ids
+
+
+@torch.no_grad()
+def ce_recovered(
+    model,
+    block: torch.nn.Module,
+    sequences,
+    sae: SAEHandle,
+    *,
+    floor: str,
+    corpus_label: str,
+    max_sequences: int | None = None,
+) -> CEFidelity:
+    """How much of the model's predictive loss survives this SAE's reconstruction.
+
+    `block` is the module the SAE is attached to (`runtime._block(sae.layer)`),
+    `sequences` an ordered collection of token-id tensors — `[S]` or `[1, S]`,
+    already on the model's device — and `floor` one of `CE_FLOORS`, by name,
+    with no default.
+
+    Three passes per sequence and two more on the first; the exact figure is
+    `ce_recovered_passes(n)` and it can be asked BEFORE this is called.
+
+    **Two sweeps, and the floor is the reason.** Mean-ablation replaces the
+    activation with one vector averaged over the whole corpus, which is not
+    known until every sequence has been read once. Sweep one takes the model's
+    own loss, captures the stream, splices the reconstruction and accumulates
+    that mean; sweep two splices the floor. `sequences` is therefore read twice
+    and has to be a re-iterable collection rather than a generator. What is
+    held between the sweeps is the token ids and one `[d_in]` accumulator —
+    never the activations, which are recomputed rather than cached, because a
+    corpus of those is `tokens x d_model x 4` bytes against eight bytes a token
+    for the ids.
+
+    **An SAE that reconstructs nothing is not refused here**, and that is the
+    one place this parts company with `feature_ablate.rank_features`. That
+    function refuses an unusable calibration because ranking the causal effects
+    of a non-decomposition ranks arbitrary directions. Here a broken SAE has a
+    real answer — a CE-recovered at or below zero — and refusing to print it
+    would hide exactly the finding this measurement exists to make.
+    `calibration.usable` and `calibration.fvu` come back either way.
+    """
+    started = time.perf_counter()
+    passes = 0
+
+    if floor not in CE_FLOORS:
+        raise BadRequest(
+            f"unknown floor {floor!r} — CE-recovered normalises against one of "
+            f"{', '.join(CE_FLOORS)}, and there is no default because the two "
+            f"give different percentages for the same reconstruction. "
+            f"'{FLOOR_MEAN}' replaces the activation with the mean vector of "
+            f"this corpus at this hook; '{FLOOR_ZERO}' replaces it with zeros."
+        )
+    if not corpus_label or not str(corpus_label).strip():
+        raise BadRequest(
+            "CE-recovered is a loss on some text, so the text has to be named. "
+            "Pass corpus_label — the file name, or whatever the reader will "
+            "recognise it by."
+        )
+    if isinstance(max_sequences, bool):
+        raise BadRequest("max_sequences is a count of sequences, not a flag.")
+
+    given = [_sequence_for_ce(s, i) for i, s in enumerate(sequences)]
+    if not given:
+        raise BadRequest(
+            "CE-recovered needs at least one sequence — an empty corpus has no "
+            "loss to recover."
+        )
+    if max_sequences is None:
+        used = given
+    else:
+        limit = int(max_sequences)
+        if limit < 1:
+            raise BadRequest(
+                f"max_sequences is {limit}; it caps how much of the corpus is "
+                f"scored, so it has to be at least 1 or there is nothing left "
+                f"to score."
+            )
+        used = given[:limit]
+    truncated = len(used) < len(given)
+
+    # Local import for the reason `ablate.estimate_cost` imports `budget`
+    # locally: this is the only place in this module that needs the model-side
+    # machinery, and `saes.py` is imported by plenty of code that never runs a
+    # forward pass. The hooks are IMPORTED rather than rewritten —
+    # `feature_ablate` already owns "write a tensor into this block's residual
+    # stream", it already knows resid_pre is the block's input and resid_post
+    # its output, and a second copy here would be a second answer to that.
+    from .feature_ablate import _register_capture, _register_edit
+
+    device = None
+    dtype = None
+    clean_nll = 0.0
+    recon_nll = 0.0
+    ablate_nll = 0.0
+    n_tokens = 0
+    n_tokens_seen = 0
+    floor_sum = torch.zeros(sae.d_in, dtype=torch.float64)
+    n_floor_tokens = 0
+    calibrated_here = sae.calibration is None
+    replay_deviation: float | None = None
+    splice_deviation: float | None = None
+
+    def spliced(ids: torch.Tensor, edited: torch.Tensor) -> tuple[float, int]:
+        """One pass with `edited` ([S, d_in] cpu float32) written into the hook."""
+        nonlocal passes
+        xd = edited.to(device=device, dtype=dtype).unsqueeze(0)
+        handle = _register_edit(block, sae.point, xd)
+        try:
+            out = model(ids).logits
+        finally:
+            handle.remove()
+        passes += 1
+        got = _sum_nll(out, ids)
+        del out
+        return got
+
+    # ---- sweep one: the model's own loss, the reconstruction's, and the mean
+    for index, ids in enumerate(used):
+        sink: list[torch.Tensor] = []
+        handle = _register_capture(block, sae.point, sink)
+        try:
+            logits = model(ids).logits
+        finally:
+            handle.remove()
+        passes += 1
+        if not sink:
+            # A plain RuntimeError and a 500, for the reason `feature_ablate`
+            # gives the same event: the caller hands in the block, `runtime`
+            # builds it from the SAE's own layer index, so a hook that never
+            # fires means this package contradicted itself and the traceback
+            # belongs in the log rather than in front of a reader.
+            raise RuntimeError(
+                "the capture hook on the SAE's block never fired, so there is "
+                "no residual stream to reconstruct."
+            )
+        captured = sink[0]
+        device, dtype = captured.device, captured.dtype
+        x = captured[0].detach().to("cpu").float()  # [S, d_in]
+        if x.shape[-1] != sae.d_in:
+            raise RuntimeError(
+                f"captured a stream of width {x.shape[-1]} for an SAE with "
+                f"d_in={sae.d_in}; runtime.py checks this at load time, so "
+                "reaching it means the wrong block was handed in."
+            )
+        nll, n = _sum_nll(logits, ids)
+        clean_nll += nll
+        n_tokens += n
+        n_tokens_seen += int(ids.shape[1])
+        del logits, sink, captured
+
+        # `encode` calibrates on first use — here on this corpus's first
+        # sequence — and reuses an existing calibration otherwise. Which of the
+        # two happened is `calibrated_here` in the payload, rather than
+        # something the reader has to infer from `calibration.n_tokens`.
+        feats = sae.encode(x)
+        # feature_ablate.py's residual baseline with the window being every
+        # token: `x_recon[p] = recon[p] + mu[p]`. `mu` is the per-token mean
+        # the calibrated convention removed, and it is HELD rather than
+        # recomputed — the reconstruction lives in the centered space, and the
+        # stream handed back to the model is that plus the ORIGINAL mean. For
+        # an uncentered convention it is zero and this is the reconstruction
+        # alone.
+        cal = sae.calibration
+        assert cal is not None  # encode() always leaves one behind
+        mu = x.mean(-1, keepdim=True) if cal.center else torch.zeros_like(x[:, :1])
+        x_recon = sae.decode(feats) + mu
+        del feats
+
+        if index == 0:
+            # The two passes that are not per-sequence. `replay` is the same
+            # pass again with no hook at all — this model's own reproducibility
+            # — and the write-back is the captured stream spliced back
+            # unchanged, which is the only check that the edit lands where the
+            # capture came from. Every difference below is read against them.
+            replay_logits = model(ids).logits
+            passes += 1
+            replay_nll, _ = _sum_nll(replay_logits, ids)
+            del replay_logits
+            replay_deviation = abs(replay_nll - nll) / n
+            writeback_nll, _ = spliced(ids, x.clone())
+            splice_deviation = abs(writeback_nll - nll) / n
+
+        recon_nll += spliced(ids, x_recon)[0]
+
+        if floor == FLOOR_MEAN:
+            # Accumulated in float64 without materialising a float64 copy of
+            # `x`. This vector REPLACES the stream rather than being subtracted
+            # from it, so its low bits are the floor's low bits.
+            floor_sum += torch.sum(x, dim=0, dtype=torch.float64)
+            n_floor_tokens += int(x.shape[0])
+        del x, x_recon
+
+    calibration = sae.calibration
+    assert calibration is not None
+    assert replay_deviation is not None and splice_deviation is not None
+
+    if splice_deviation > max(replay_deviation, SPLICE_TOLERANCE_NATS):
+        raise Refusal(
+            f"writing this model's own residual stream back into {sae.hook} "
+            f"unchanged moves its loss by {splice_deviation:.3e} nats per "
+            f"token, and running the same pass again with no hook at all moves "
+            f"it {replay_deviation:.3e}. The reconstruction and the floor go in "
+            f"through that same hook, so all three losses would be measuring "
+            f"the write-back rather than the SAE. It would work at a hook point "
+            f"whose input can be replaced by the tensor read out of it."
+        )
+
+    if floor == FLOOR_MEAN:
+        floor_vector = (floor_sum / n_floor_tokens).float()
+        floor_means = (
+            f"The floor is mean-ablation: at every token the stream at "
+            f"{sae.hook} was replaced by a single vector, the mean of this "
+            f"corpus's own {n_floor_tokens:,} activations there."
+        )
+        floor_tokens: int | None = n_floor_tokens
+    else:
+        floor_vector = torch.zeros(sae.d_in)
+        floor_means = (
+            f"The floor is zero-ablation: at every token the stream at "
+            f"{sae.hook} was replaced by the zero vector, which is not a point "
+            f"this stream ever visits."
+        )
+        floor_tokens = None
+
+    # ---- sweep two: the floor, now that it is known ------------------------
+    for ids in used:
+        # `repeat` rather than `expand`: this tensor is handed to the model's
+        # own kernels and a stride-0 view is not something every backend reads
+        # the same way. One [S, d_in] float32 copy per sequence, freed with it.
+        ablate_nll += spliced(ids, floor_vector.unsqueeze(0).repeat(ids.shape[1], 1))[0]
+
+    ce_clean = clean_nll / n_tokens
+    ce_recon = recon_nll / n_tokens
+    ce_ablate = ablate_nll / n_tokens
+    denominator = ce_ablate - ce_clean
+    numerator = ce_ablate - ce_recon
+
+    resolvable = max(replay_deviation, splice_deviation, MIN_DENOMINATOR_NATS)
+    if denominator <= resolvable:
+        # THE REFUSAL. At or below this the floor costs the model nothing this
+        # run can resolve — the hook point does not matter for this text — and
+        # the ratio becomes a small difference over a smaller one, which is
+        # noise amplified without limit. A NEGATIVE denominator lands here too,
+        # and it is the same statement said louder: destroying the activation
+        # made the model predict better, so there is no lost loss to take a
+        # percentage of. The three losses are real measurements and they are in
+        # the sentence, because they are still the answer to a question the
+        # reader can ask.
+        raise Refusal(
+            f"CE-recovered has no meaning for {sae.repo} at {sae.hook} on "
+            f"{corpus_label}: replacing the activation with the {floor} floor "
+            f"moves this model's loss by {denominator:+.3e} nats per token, at "
+            f"or under the {resolvable:.3e} this run can resolve, so the ratio "
+            f"would divide by noise. The three losses are real and here they "
+            f"are, in nats per token over {n_tokens:,} predicted tokens — the "
+            f"model's own {ce_clean:.6f}, with the reconstruction spliced in "
+            f"{ce_recon:.6f}, with the floor spliced in {ce_ablate:.6f}. "
+            f"Measure at a hook point this text's predictions depend on, or on "
+            f"a corpus where they do."
+        )
+
+    return CEFidelity(
+        repo=sae.repo,
+        hook=sae.hook,
+        layer=sae.layer,
+        point=sae.point,
+        floor=floor,
+        floor_means=floor_means,
+        n_floor_tokens=floor_tokens,
+        ce_clean=round(ce_clean, 6),
+        ce_recon=round(ce_recon, 6),
+        ce_ablate=round(ce_ablate, 6),
+        numerator=round(numerator, 6),
+        denominator=round(denominator, 6),
+        # Six places on the ratio, and it is computed from the UNROUNDED
+        # losses: a reconstruction that recovers 0.999999 and one that recovers
+        # 1.0 exactly are different objects, and the identity case has to come
+        # back exact or the splice is not checkable at all.
+        ce_recovered=round(numerator / denominator, 6),
+        corpus_label=str(corpus_label),
+        corpus_sha256=_corpus_sha256(used),
+        n_sequences=len(used),
+        n_sequences_given=len(given),
+        truncated=truncated,
+        n_tokens=n_tokens,
+        n_tokens_seen=n_tokens_seen,
+        calibration=calibration,
+        calibrated_here=calibrated_here,
+        replay_deviation_nats=replay_deviation,
+        splice_deviation_nats=splice_deviation,
+        passes=passes,
+        elapsed_s=round(time.perf_counter() - started, 2),
+    )
+
+
+@torch.no_grad()
+def estimate_ce_recovered_cost(
+    model,
+    block: torch.nn.Module,
+    ids: torch.Tensor,
+    sae: SAEHandle,
+    *,
+    n_sequences: int,
+    device_kind: str = "cpu",
+) -> dict:
+    """What would `ce_recovered` cost here? The pass count exactly, the rest measured.
+
+    `ce_recovered_passes` is exact and transfers between machines. What a pass
+    costs does not, so this runs ONE real iteration — the edit hook, the
+    forward, the chunked float32 loss — and lets `budget` project from it. The
+    probe body is built here rather than by the caller because it has to match
+    the loop: `budget.probe_pass` records what happens when a probe does less
+    work than the loop it prices.
+
+    `ids` is one representative sequence, and representative means the LENGTH —
+    a pass over 64 tokens does not price a pass over 512. This spends three
+    passes of its own: a warm-up, a capture, and the probe.
+
+    Retained bytes are what the loop holds across passes: the captured stream
+    and the reconstruction built from it, both `[S, d_in]` float32, plus the
+    float64 accumulator behind the mean floor. Stated from the shapes rather
+    than measured, because it is arithmetic and not an observation.
+    """
+    from . import budget
+    from .feature_ablate import _register_capture, _register_edit
+
+    projected = ce_recovered_passes(n_sequences)
+
+    # Warm the kernels before anything is timed. The first pass after a load
+    # pays device init and measured several times the steady rate elsewhere in
+    # this package, so probing it would price the whole sweep at that rate.
+    model(ids)
+
+    sink: list[torch.Tensor] = []
+    handle = _register_capture(block, sae.point, sink)
+    try:
+        model(ids)
+    finally:
+        handle.remove()
+    if not sink:
+        raise RuntimeError(
+            "the capture hook on the SAE's block never fired, so there is no "
+            "pass to price."
+        )
+    xd = sink[0][0].detach().unsqueeze(0)
+
+    def one_iteration() -> None:
+        edit = _register_edit(block, sae.point, xd)
+        try:
+            logits = model(ids).logits
+        finally:
+            edit.remove()
+        _sum_nll(logits, ids)
+
+    seq = int(ids.shape[1])
+    probe = budget.probe_pass(one_iteration, device_kind)
+    estimate = budget.project(
+        probe,
+        projected,
+        retained_bytes=2 * seq * sae.d_in * 4 + sae.d_in * 8,
+    )
+    return {
+        "estimate": estimate.to_dict(),
+        "probe": probe.to_dict(),
+        "passes": projected,
+        "n_sequences": int(n_sequences),
+        "probed_sequence_length": seq,
+        "means": (
+            f"{projected} forward passes — three per sequence (the model's "
+            f"own, the reconstruction spliced in, the floor spliced in) plus "
+            f"two taken once for the resolution. The count is exact and it "
+            f"transfers; the seconds were measured from one pass over {seq} "
+            f"tokens on this machine and do not."
+        ),
+    }
