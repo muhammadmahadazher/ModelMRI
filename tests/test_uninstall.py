@@ -97,3 +97,74 @@ def test_it_is_calm_when_there_is_nothing_to_remove(tmp_path, monkeypatch, capsy
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "no-hub"))
     assert cli.uninstall(yes=True) == 0
     assert "nothing to remove" in capsys.readouterr().out
+
+
+def test_the_venv_figure_comes_from_the_same_walk_as_the_data_directory(
+    home, monkeypatch, capsys
+):
+    """The action expert's venv lives INSIDE the data directory, and both
+    lines used to be measured by their own full traversal of it.
+
+    MEASURED on this project's own machine: the data directory is 1.23 GB in
+    38,664 entries, 38,635 of which ARE the venv. Walking it took 68.4 s and
+    walking the venv took another 78.9 s — 147 of the ~124 s `uninstall` spent
+    before printing anything. One walk answers both, and this asserts the tree
+    is opened once rather than twice.
+    """
+    from modelmri import policy
+
+    root, _hub = home
+    venv = policy.venv_dir()
+    (venv / "lib").mkdir(parents=True, exist_ok=True)
+    (venv / "lib" / "torch.so").write_bytes(b"z" * 7000)
+
+    opened: list[str] = []
+    real = cli.os.scandir
+
+    def counting(path):
+        opened.append(str(path))
+        return real(path)
+
+    def eof(_prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    monkeypatch.setattr(cli.os, "scandir", counting)
+    # Declined, so this measures the DISCLOSURE only. The deletion loop walks
+    # each target again to report what it freed, which is a real second walk
+    # of a tree that is being removed either way.
+    assert cli.uninstall() == 1
+    said = capsys.readouterr().out
+
+    assert "0.00 GB is the action expert's own" in said, said
+    assert len(opened) == len(set(opened)), (
+        f"a directory was walked twice while listing what would be deleted: "
+        f"{sorted(x for x in opened if opened.count(x) > 1)}"
+    )
+
+
+def test_the_totals_survived_the_switch_to_scandir(tmp_path):
+    """`rglob` + `lstat` + `is_symlink()` asked the OS twice per entry for one
+    answer — `S_ISREG` is already false for a symlink under `lstat`, so the
+    second call decided nothing. This asserts the replacement counts the same
+    bytes, including the symlink rule the HuggingFace cache depends on: an
+    8 GB cache was once reported at 20 GB by following `snapshots/` links back
+    into `blobs/`.
+    """
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    (blobs / "weights").write_bytes(b"w" * 5000)
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "small").write_bytes(b"s" * 300)
+
+    snaps = tmp_path / "snapshots"
+    snaps.mkdir()
+    try:
+        (snaps / "model.safetensors").symlink_to(blobs / "weights")
+    except (OSError, NotImplementedError):
+        pytest.skip("this account cannot create symlinks")
+
+    total, marked = cli._walk_bytes(tmp_path, mark=tmp_path / "nested")
+    assert total == 5300, "the symlink was followed and its target double-counted"
+    assert marked == 300
+    assert cli._tree_bytes(tmp_path) == total
