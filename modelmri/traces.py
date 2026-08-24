@@ -532,6 +532,36 @@ class TraceStore:
                     f"string or a number; this one is a "
                     f"{type(parent).__name__}."
                 )
+            # THE FIELDS THE INSERT ACTUALLY BINDS. `parent_id` above got this
+            # treatment and these five did not, so a step carrying
+            # `tokens_in: {"a": 1}` passed every check here and then raised
+            # `sqlite3.InterfaceError: Error binding parameter 9` from inside
+            # the write — after `_retract_from_index` and `DELETE FROM step`
+            # had already run.
+            #
+            # That is not a 500 with a bad sentence. It is DATA LOSS: measured,
+            # importing a good trace and then re-importing the same id with one
+            # bad token field left the stored trace with 0 steps and its
+            # full-text entry gone, permanently. With a fresh id it committed a
+            # phantom row that `GET /api/traces` lists as healthy and empty.
+            for field in (
+                "tokens_in",
+                "tokens_out",
+                "tokens_cache_read",
+                "tokens_cache_write",
+                "tokens_reasoning",
+            ):
+                count = s.get(field)
+                # `bool` first: `isinstance(True, int)` is True, and `True`
+                # would bind as 1 — a token count nobody reported.
+                if count is not None and (
+                    isinstance(count, bool) or not isinstance(count, int)
+                ):
+                    raise BadRequest(
+                        f"step {i}'s {field!r} is a count of tokens, so it is a "
+                        f"whole number or absent; this one is a "
+                        f"{type(count).__name__}."
+                    )
             timings.append((_ms(s, "started_ms", i), _ms_or_none(s, "duration_ms", i)))
 
         trace_id = str(doc.get("id") or uuid.uuid4().hex[:12])
@@ -967,11 +997,28 @@ def _ms(step: dict, field: str, index: int) -> int:
         )
     raw = step[field]
     try:
-        return int(raw)
-    except (TypeError, ValueError) as err:
+        value = int(raw)
+    except (TypeError, ValueError, OverflowError) as err:
+        # `OverflowError` for the same reason as the other two, and it is a
+        # SEPARATE arm because `int(float("inf"))` raises it rather than
+        # ValueError. Without it, `started_ms: Infinity` escaped this function
+        # entirely and died inside the insert. `otel.py` and `ollama.py`
+        # already catch it alongside the other two.
         raise BadRequest(
             f"step {index}: {field} must be a whole number of milliseconds, got {raw!r}"
         ) from err
+    # AND IT HAS TO FIT. `int` is unbounded in Python and the column is a
+    # SQLite INTEGER, so `2**63` converted cleanly here and then raised
+    # `OverflowError: Python int too large to convert to SQLite INTEGER` from
+    # the bind — inside the write, after the old steps had been deleted.
+    if not -(2**63) <= value <= 2**63 - 1:
+        raise BadRequest(
+            f"step {index}: {field} is {raw!r}, which is past the range a "
+            f"timestamp column holds (64-bit). A run that started that many "
+            f"milliseconds from the epoch is not a run this can place on a "
+            f"timeline."
+        )
+    return value
 
 
 def _ms_or_none(step: dict, field: str, index: int) -> int | None:

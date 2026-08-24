@@ -655,3 +655,80 @@ def test_exactly_limit_matches_is_not_reported_as_truncated(tmp_path):
     out = store.search("needle", limit=25)
     assert len(out["results"]) == 25
     assert out["truncated"] is False
+
+
+# ------------------------------- a failed import must not eat the old trace
+
+
+def _one_step_trace(trace_id="keepme", **step):
+    return {
+        "id": trace_id,
+        "name": "the good one",
+        "started_at": "2026-01-01T00:00:00Z",
+        "steps": [
+            {"id": "s0", "kind": "llm_call", "name": "call", "started_ms": 0, **step}
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "bad"),
+    [
+        ("a dict where a count belongs", {"tokens_in": {"a": 1}}),
+        ("a list where a count belongs", {"tokens_out": [1, 2]}),
+        # `isinstance(True, int)` is True, so this would have bound as 1 — a
+        # token count nobody reported.
+        ("a bool where a count belongs", {"tokens_in": True}),
+        ("an infinite start", {"started_ms": float("inf")}),
+        ("a start past int64", {"started_ms": 2**63}),
+    ],
+)
+def test_a_bad_step_is_refused_before_the_write_opens(tmp_path, label, bad):
+    """The validation loop checked `kind` and `parent_id` and not the five
+    token fields the insert binds, and `_ms` caught TypeError and ValueError
+    but not OverflowError.
+
+    So a step carrying `tokens_in: {"a": 1}` passed every check and then raised
+    `sqlite3.InterfaceError: Error binding parameter 9` from INSIDE the write —
+    after `_retract_from_index` and `DELETE FROM step` had already run.
+
+    That is not a 500 with a bad sentence, it is DATA LOSS. Measured: import a
+    good trace, re-import the same id with one bad field, and the stored trace
+    is left with 0 steps and its full-text entry gone, permanently.
+    """
+    store = TraceStore(tmp_path / "t.sqlite")
+    store.import_trace(_one_step_trace())
+    assert len(store.get_trace("keepme")["steps"]) == 1
+
+    with pytest.raises(BadRequest):
+        store.import_trace(_one_step_trace(**bad))
+
+    kept = store.get_trace("keepme")
+    assert len(kept["steps"]) == 1, f"{label}: the stored trace was destroyed"
+    assert store.search("good"), f"{label}: the full-text entry was destroyed"
+
+
+def test_a_bad_step_does_not_commit_a_phantom_trace(tmp_path):
+    """With a FRESH id the same failure committed a row that `GET /api/traces`
+    lists as a healthy trace with 0 steps."""
+    store = TraceStore(tmp_path / "t.sqlite")
+
+    with pytest.raises(BadRequest):
+        store.import_trace(_one_step_trace("brandnew", tokens_in={"a": 1}))
+
+    assert store.get_trace("brandnew") is None, "a phantom trace was committed"
+
+
+def test_a_legitimate_token_count_still_stores(tmp_path):
+    """So the guard cannot become "refuse every token count"."""
+    store = TraceStore(tmp_path / "t.sqlite")
+    store.import_trace(
+        _one_step_trace(tokens_in=120, tokens_out=8, tokens_cache_read=None)
+    )
+
+    (step,) = store.get_trace("keepme")["steps"]
+    assert step["tokens_in"] == 120
+    assert step["tokens_out"] == 8
+    # Absent stays absent — a 0 here would assert the provider reported no
+    # cache use.
+    assert step["tokens_cache_read"] is None
