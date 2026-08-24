@@ -8,7 +8,10 @@ dead-unit count is real.
 from __future__ import annotations
 
 import math
+import sys
 import textwrap
+import threading
+import time
 
 import pytest
 
@@ -347,7 +350,7 @@ def test_running_without_any_input_refuses(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = tmp_path / "noex.py"
     p.write_text(
-        "from torch import nn\ndef load():\n    return nn.Sequential(nn.Linear(4, 2))\n",
+        "from torch import nn\n\n\ndef load():\n    return nn.Linear(4, 2)\n",
         encoding="utf-8",
     )
     h = custom.CustomHandle()
@@ -442,6 +445,345 @@ def test_unload_clears_everything(adapter):
     assert st.loaded is False and h.model is None and h.rows == []
     with pytest.raises(custom.AdapterError, match="no custom model is loaded"):
         h.run()
+
+
+# --------------- a second request while the first one is still in flight
+
+
+class _Gate:
+    """A file handshake the adapter under test takes part in.
+
+    Timing IS the test here, and a `sleep` is the wrong instrument for it: one
+    long enough on a laptop is not long enough on a loaded CI box, and a test
+    that only sometimes interleaves is a test that only sometimes catches the
+    bug. The adapter announces that it is inside and then blocks until this
+    side lets it through, so the ordering is exact.
+
+    It blocks with a deadline, and this side waits with one: a gate nobody
+    opens has to fail its test rather than hang the suite.
+    """
+
+    def __init__(self, folder, name: str) -> None:
+        self.inside = folder / f"{name}.inside"
+        self.go = folder / f"{name}.go"
+
+    @property
+    def source(self) -> str:
+        """A `_gate()` the generated adapter calls from its top level."""
+        return textwrap.dedent(
+            f"""
+            import os as _os
+            import time as _time
+
+            def _gate():
+                open({str(self.inside)!r}, "w").close()
+                _deadline = _time.monotonic() + 30
+                while not _os.path.exists({str(self.go)!r}):
+                    if _time.monotonic() > _deadline:
+                        raise TimeoutError("the test never opened this gate")
+                    _time.sleep(0.005)
+            """
+        )
+
+    def arrived(self, timeout: float = 30.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.inside.exists():
+                return True
+            time.sleep(0.005)
+        return False
+
+    def release(self) -> None:
+        self.go.write_text("", encoding="utf-8")
+
+
+def _joined(threads, timeout: float = 60.0) -> None:
+    for t in threads:
+        t.join(timeout=timeout)
+    alive = [t.name for t in threads if t.is_alive()]
+    assert not alive, f"threads never finished: {alive}"
+
+
+def test_a_run_landing_after_an_unload_does_not_write_onto_the_empty_status(tmp_path):
+    """`run()` releases the lock for the forward pass and re-takes it to store
+    the result — and it stored onto `self.status_`, whatever that pointed at
+    by then rather than the model the numbers actually describe.
+
+    MEASURED 3/3 through the routes, with a 1.5s forward pass and
+    `/api/custom/unload` 0.5s in, `GET /api/custom` answered:
+
+        {"loaded": false, "path": null, "name": null, "input_shape": [3, 8],
+         "input_origin": "user", "input_reason": "the shape you entered"}
+
+    Nothing is loaded, and the departed model's input shape sits there with
+    "the shape you entered" attached to it. `handle.rows` and `handle.meta`
+    came back populated AFTER the unload had emptied them — the thing
+    `test_unload_clears_everything` above asserts must not happen, which
+    passed only because nothing was ever in flight while it ran.
+    """
+    gate = _Gate(tmp_path, "unload_midrun")
+    (tmp_path / "gated_adapter.py").write_text(
+        gate.source
+        + textwrap.dedent(
+            """
+            from torch import nn
+
+
+            class Gated(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.fc = nn.Linear(8, 3)
+
+                def forward(self, x):
+                    _gate()          # in flight, and holding still
+                    return self.fc(x)
+
+
+            def load():
+                return Gated()
+            """
+        ),
+        encoding="utf-8",
+    )
+    custom.add_root(str(tmp_path))
+
+    h = custom.CustomHandle()
+    h.load(tmp_path / "gated_adapter.py")
+    out: dict = {}
+    t = threading.Thread(target=lambda: out.update(run=h.run(shape=[3, 8])))
+    t.start()
+    try:
+        assert gate.arrived(), "the forward pass never started"
+        st = h.unload()
+    finally:
+        gate.release()
+    _joined([t])
+
+    assert st.loaded is False
+    assert st.input_shape is None, "an unloaded model reported an input shape"
+    assert st.input_origin == "" and st.input_reason == ""
+    assert h.status().input_shape is None, "the run wrote onto the empty status"
+    assert h.rows == [] and h.meta == {}, "the run repopulated an unloaded handle"
+
+    # The caller still gets its own answer. The forward pass really did run,
+    # and the return value is a statement about that run, not about what is
+    # loaded now — dropping it would be inventing a second failure.
+    assert out["run"]["input_shape"] == [3, 8]
+    assert [r["name"] for r in out["run"]["layers"]] == ["fc"]
+
+
+def test_a_run_landing_after_a_second_load_does_not_reshape_the_new_model(tmp_path):
+    """The same write, aimed at a model that IS loaded — someone else's.
+
+    MEASURED 3/3: a 1.5s forward at shape [3, 8], a different adapter loaded
+    0.5s in, and the new model — whose own inferred input is [1, 4] — reported
+    `input_shape: [3, 8]`, `input_origin: "user"`, "the shape you entered",
+    for a shape nobody entered for it. Running at the shape the panel then
+    showed came back 422: "mat1 and mat2 shapes cannot be multiplied (3x8 and
+    4x2)", a refusal about arithmetic the reader never asked for.
+    """
+    gate = _Gate(tmp_path, "swap_midrun")
+    (tmp_path / "gated_adapter.py").write_text(
+        gate.source
+        + textwrap.dedent(
+            """
+            from torch import nn
+
+
+            class Gated(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.fc = nn.Linear(8, 3)
+
+                def forward(self, x):
+                    _gate()
+                    return self.fc(x)
+
+
+            def load():
+                return Gated()
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "other_adapter.py").write_text(
+        textwrap.dedent(
+            """
+            from torch import nn
+
+
+            class Other(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.fc = nn.Linear(4, 2)
+
+                def forward(self, x):
+                    return self.fc(x)
+
+
+            def load():
+                return Other()
+            """
+        ),
+        encoding="utf-8",
+    )
+    custom.add_root(str(tmp_path))
+
+    h = custom.CustomHandle()
+    h.load(tmp_path / "gated_adapter.py")
+    t = threading.Thread(target=lambda: h.run(shape=[3, 8]))
+    t.start()
+    try:
+        assert gate.arrived(), "the forward pass never started"
+        swapped = h.load(tmp_path / "other_adapter.py")
+    finally:
+        gate.release()
+    _joined([t])
+
+    st = h.status()
+    assert st.name == "Other"
+    assert st.input_shape == swapped.input_shape == [1, 4]
+    assert st.input_origin == "inferred", "a shape nobody entered, called 'user'"
+    assert h.rows == [] and h.meta == {}, "the previous model's map survived a load"
+
+    # And the shape the panel shows is one this model can actually take.
+    assert h.run(shape=st.input_shape)["input_shape"] == [1, 4]
+
+
+def test_one_adapter_import_does_not_break_a_concurrent_one(tmp_path):
+    """`_import_adapter` puts the adapter's folder on `sys.path` and takes it
+    off again, and the two halves used to race across threads.
+
+    MEASURED through the routes, two adapters in ONE folder loaded together,
+    each importing a different sibling module beside them:
+
+        a_fast.py -> 200 in 0.31s
+        b_slow.py -> 422 in 1.37s  "b_slow.py raised while being imported:
+                                    ModuleNotFoundError: No module named
+                                    'sib_alpha'"
+        CONTROL  b alone           -> 200 in 1.27s
+        CONTROL  different folders -> both 200
+
+    The second load saw the entry already there, set `added = False`, and the
+    FIRST load's `finally` removed the folder out from under it mid-import. So
+    the refusal told the reader their file was broken — about a module sitting
+    right beside it, which the two controls show is fine — and
+    `_import_adapter` has no way to tell that apart from a genuinely broken
+    adapter. `/api/custom/scan` lists adapters per folder, so two adapters in
+    one directory is the ordinary case, and one browser tab is only safe
+    because the panel disables its own button.
+    """
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    (tmp_path / "sib_alpha.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "sib_beta.py").write_text("VALUE = 2\n", encoding="utf-8")
+    first, second = _Gate(tmp_path, "first"), _Gate(tmp_path, "second")
+    tail = "\nfrom torch import nn\n\n\ndef load():\n    return nn.Linear(4, 2)\n"
+    (tmp_path / "a_fast.py").write_text(
+        first.source + "\n_gate()\nimport sib_beta" + tail, encoding="utf-8"
+    )
+    (tmp_path / "b_slow.py").write_text(
+        second.source + "\n_gate()\nimport sib_alpha" + tail, encoding="utf-8"
+    )
+    custom.add_root(str(tmp_path))
+
+    client = TestClient(create_app())
+    out: dict = {}
+
+    def load(name: str) -> None:
+        r = client.post("/api/custom/load", json={"path": str(tmp_path / name)})
+        out[name] = (r.status_code, (r.json().get("error") or ""))
+
+    threads = [
+        threading.Thread(target=load, args=(n,)) for n in ("a_fast.py", "b_slow.py")
+    ]
+    try:
+        threads[0].start()
+        assert first.arrived(), "the first import never started"
+        threads[1].start()
+        # Bounded, and its outcome is deliberately NOT asserted, because the
+        # two builds differ here and that is the whole point: unlocked, the
+        # second import is already inside by now with `added = False`, which
+        # is the state the bug needs; locked, it is parked at the lock and
+        # cannot arrive until the first one leaves.
+        second.arrived(timeout=2.0)
+        # Let the first one all the way OUT before the second one moves, so
+        # its `finally` has certainly run. Releasing both together left the
+        # removal racing the second import and the bug went unobserved: this
+        # test passed against the unfixed module until the join went in.
+        first.release()
+        _joined(threads[:1])
+        second.release()
+        _joined(threads)
+    finally:
+        first.release()
+        second.release()
+        for name in ("sib_alpha", "sib_beta"):
+            sys.modules.pop(name, None)
+        client.close()
+
+    for name in ("a_fast.py", "b_slow.py"):
+        code, err = out[name]
+        assert code == 200, f"{name}: {code} {err}"
+
+
+def test_only_one_adapter_folder_is_on_sys_path_at_a_time(tmp_path):
+    """The quieter half of the same bug, and why this is a lock rather than a
+    reference count on the path entry.
+
+    While ANY adapter is importing, its folder sits at `sys.path[0]` for every
+    import in the whole process — MEASURED: a module that raised
+    ModuleNotFoundError before the load and again after it imported fine
+    during it. That window cannot be closed; CPython resolves imports through
+    a process-global `sys.path` and has no per-thread equivalent. What can be
+    bounded is how much of it is open at once, and that is what separates the
+    two candidate fixes: reference-counting repairs the removal race and
+    leaves the rest, MEASURED at a peak of 3 of 3 user folders on `sys.path`
+    during three concurrent loads, against 1 of 3 under this lock.
+    """
+    folders, gates = [], []
+    for name in ("one", "two"):
+        folder = tmp_path / name
+        folder.mkdir()
+        gate = _Gate(folder, name)
+        (folder / "slow.py").write_text(
+            gate.source + "\n_gate()\nfrom torch import nn\n\n\ndef load():\n"
+            "    return nn.Linear(4, 2)\n",
+            encoding="utf-8",
+        )
+        custom.add_root(str(folder))
+        folders.append(folder)
+        gates.append(gate)
+
+    handles = [custom.CustomHandle(), custom.CustomHandle()]
+    threads = [
+        threading.Thread(target=h.load, args=(f / "slow.py",))
+        for h, f in zip(handles, folders, strict=True)
+    ]
+    try:
+        threads[0].start()
+        assert gates[0].arrived(), "the first import never started"
+        threads[1].start()
+        # Bounded and unasserted for the same reason as the test above: the
+        # second import is either inside or parked at the lock, and this is
+        # the window in which both would be visible if it were inside.
+        gates[1].arrived(timeout=1.0)
+        # `_import_adapter` inserts `str(path.parent)` off an already-resolved
+        # path, so comparing the same string is comparing what it wrote.
+        on_path = [f for f in folders if str(f.resolve()) in sys.path]
+    finally:
+        for gate in gates:
+            gate.release()
+        _joined(threads)
+
+    assert len(on_path) == 1, (
+        f"{len(on_path)} adapter folders shadowed the process at once: {on_path}"
+    )
+    # And nothing is left behind once both are done.
+    assert [f for f in folders if str(f.resolve()) in sys.path] == []
 
 
 # --------------------------------------------------------------- discovery

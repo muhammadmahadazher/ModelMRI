@@ -289,6 +289,39 @@ def _under_roots(path: str | Path, *, want: str) -> Path:
 # ------------------------------------------------------------------- loading
 
 
+# ONE ADAPTER IMPORT AT A TIME, PROCESS-WIDE.
+#
+# `_import_adapter` puts the adapter's own directory on `sys.path` and takes
+# it off again, and that pair does not survive being interleaved. Measured:
+# two adapters in ONE folder loaded together — a 0.3s import and a 1.2s one,
+# each importing a different sibling module — and the fast one's `finally`
+# removed the shared entry while the slow one was still running its top
+# level. The slow one came back 422 "b_slow.py raised while being imported:
+# ModuleNotFoundError: No module named 'sib_alpha'" about a file sitting
+# right beside it, and `_import_adapter` cannot tell that apart from a
+# genuinely broken adapter — so the refusal blamed the reader's own code for
+# something ModelMRI had done to it. The same two files in two folders both
+# returned 200, which is what says it was the shared entry and not
+# concurrency itself.
+#
+# Serialising also bounds the second, quieter hazard. While any adapter is
+# importing, its directory sits at `sys.path[0]` for EVERY import in the
+# process: measured, a module that raised ModuleNotFoundError before the load
+# and again after it imported fine during it. That window cannot be closed —
+# CPython resolves imports through a process-global `sys.path` and offers no
+# per-thread equivalent — but under this lock it is one directory for the
+# length of one import. Reference-counting the entry, the other fix on the
+# table, repairs the removal race and leaves the rest: three concurrent loads
+# from three folders put a peak of 3 of 3 user directories on `sys.path` at
+# once with this lock disabled, and 1 of 3 with it. Measured.
+#
+# Re-entrant, because the code running under it is the reader's. An adapter
+# whose top level loads another adapter would deadlock on a plain `Lock`, and
+# re-entry from the SAME thread cannot interleave the insert/remove pair,
+# which is the only thing this lock is here to prevent.
+_IMPORT_LOCK = threading.RLock()
+
+
 def _import_adapter(path: Path):
     """Import a .py file as a throwaway module. This runs its top level."""
     mod_name = f"modelmri_adapter_{uuid.uuid4().hex[:12]}"
@@ -298,38 +331,43 @@ def _import_adapter(path: Path):
     module = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = module
     # The adapter's own directory on sys.path, so `from my_net import Net`
-    # works the way it does when you run your training script.
+    # works the way it does when you run your training script. The test, the
+    # insert, the exec and the removal are one operation — see `_IMPORT_LOCK`.
     parent = str(path.parent)
-    added = parent not in sys.path
-    if added:
-        sys.path.insert(0, parent)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as err:
-        sys.modules.pop(mod_name, None)
-        raise AdapterError(
-            f"{path.name} raised while being imported: "
-            f"{type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
-        ) from err
-    finally:
+    with _IMPORT_LOCK:
+        added = parent not in sys.path
         if added:
-            try:
-                sys.path.remove(parent)
-            except ValueError:
-                # Already the narrowest type there is: `list.remove` raises
-                # ValueError and nothing else, and only when the value is
-                # absent. It can be absent because `exec_module` two lines up
-                # ran the adapter's top level — the user's code, which is free
-                # to rebind or clean `sys.path` on its way past.
-                #
-                # Continuing is right in the strongest sense: the entry we
-                # added is gone, which is the state this `finally` exists to
-                # reach. What it does NOT cover is the mirror case — an
-                # adapter that appended the same directory itself, because
-                # `.remove` deletes only the first equal entry and leaves the
-                # duplicate behind. That is a leak in `sys.path`, not a crash,
-                # and it belongs to the file that put it there.
-                pass
+            sys.path.insert(0, parent)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as err:
+            sys.modules.pop(mod_name, None)
+            raise AdapterError(
+                f"{path.name} raised while being imported: "
+                f"{type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
+            ) from err
+        finally:
+            if added:
+                try:
+                    sys.path.remove(parent)
+                except ValueError:
+                    # Already the narrowest type there is: `list.remove` raises
+                    # ValueError and nothing else, and only when the value is
+                    # absent. It can be absent because `exec_module` two lines
+                    # up ran the adapter's top level — the user's code, which
+                    # is free to rebind or clean `sys.path` on its way past. It
+                    # can no longer be absent because a CONCURRENT adapter load
+                    # took it out from under this one; that is what the lock
+                    # above removed.
+                    #
+                    # Continuing is right in the strongest sense: the entry we
+                    # added is gone, which is the state this `finally` exists
+                    # to reach. What it does NOT cover is the mirror case — an
+                    # adapter that appended the same directory itself, because
+                    # `.remove` deletes only the first equal entry and leaves
+                    # the duplicate behind. That is a leak in `sys.path`, not a
+                    # crash, and it belongs to the file that put it there.
+                    pass
     return module
 
 
@@ -975,12 +1013,38 @@ class CustomHandle:
         rows, meta = inspect(model, example)
         used = list(getattr(example, "shape", []) or [])
         with self._lock:
-            self.rows = rows
-            self.meta = meta
-            self.status_.input_shape = used
-            if shape:
-                self.status_.input_origin = "user"
-                self.status_.input_reason = "the shape you entered"
+            # Onto the status this run STARTED against, never onto whatever
+            # `self.status_` points at by the time it finishes. The lock is
+            # released above for the forward pass, which is the slow part, so
+            # an unload or a second load can land in the middle of one — and
+            # did. Measured 3/3 against a 1.5s forward: an unload 0.5s in
+            # produced a status reading `loaded: false, path: null, name:
+            # null` beside the departed model's `input_shape: [3, 8]` and "the
+            # shape you entered", and repopulated `rows`/`meta` AFTER the
+            # unload had emptied them. Loading a DIFFERENT model 0.5s in put
+            # [3, 8] onto a model whose own input is [1, 4], and the next run
+            # at the shape the panel then showed came back 422 on a matmul
+            # mismatch the reader had never asked for.
+            #
+            # Identity is the whole test: `load()` and `unload()` both replace
+            # `status_` wholesale, so the object already IS this run's
+            # generation marker. `runtime.py` keeps an integer `epoch` for the
+            # same class of problem because its model state is mutated in
+            # place and has no such object to point at; here one exists, and a
+            # parallel counter would only be a second thing to keep in step
+            # with it.
+            #
+            # When it has moved on, these numbers describe a model that is
+            # gone and there is nowhere honest to put them: drop them. The
+            # caller still gets its own result below — that is a statement
+            # about the run that ran, and it stays true either way.
+            if self.status_ is status:
+                self.rows = rows
+                self.meta = meta
+                status.input_shape = used
+                if shape:
+                    status.input_origin = "user"
+                    status.input_reason = "the shape you entered"
         return {
             "layers": [r.to_dict() for r in rows],
             "input_shape": used,
