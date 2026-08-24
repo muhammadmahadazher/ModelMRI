@@ -345,11 +345,22 @@ def check_distinct_frames(reader, sample: int = DECODE_SAMPLE) -> Check:
         digest = hashlib.sha256(bytes(memoryview(rgb).tobytes())).hexdigest()[:16]
         digests.setdefault(digest, []).append(ep.index)
 
+    collisions = [v for v in digests.values() if len(v) > 1]
     measured = {
         "episodes_sampled": len(picked),
         "distinct_images": len(digests),
         "failed": failed[:4],
-        "collisions": [v for v in digests.values() if len(v) > 1][:4],
+        "collisions": collisions[:4],
+        # Both lists above are capped at 4, so both need their true length
+        # beside them the way every other capped list in this file does.
+        # MEASURED on a machine without PyAV, where DECODE_SAMPLE is 6 against
+        # a cap of 4: the payload read `episodes_sampled: 6, failed: [4
+        # entries], distinct_images: 0` and contradicted itself -- counting the
+        # list said 4 of 6 failed and 2 decoded, `distinct_images: 0` said none
+        # did. The frontend derives "showing 4 of N" from `n_<key>` generically,
+        # so with these absent it rendered the capped list as the whole story.
+        "n_failed": len(failed),
+        "n_collisions": len(collisions),
     }
     if failed and not digests:
         return Check(
@@ -369,7 +380,6 @@ def check_distinct_frames(reader, sample: int = DECODE_SAMPLE) -> Check:
             f"nothing else in this audit would have said so.",
             measured,
         )
-    collisions = [v for v in digests.values() if len(v) > 1]
     if collisions:
         return Check(
             "distinct frames",

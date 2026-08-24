@@ -196,6 +196,84 @@ def test_no_decoder_is_unchecked_rather_than_broken():
     assert "not readable here" in check.detail
 
 
+def test_a_capped_failure_list_carries_the_number_that_actually_failed():
+    """`failed` is sliced to 4, and the count beside it is the whole story.
+
+    MEASURED on a machine without PyAV -- the DEFAULT state for anyone who has
+    not installed the video extra, since `DECODE_SAMPLE` is 6 against a cap of
+    4: the payload came back `episodes_sampled: 6, failed: [4 entries],
+    distinct_images: 0`. A reader counting the list saw 4 of 6 failed and
+    concluded 2 episodes decoded; `distinct_images: 0` in the same response
+    said none did. The frontend reads `n_<key>` to decide whether to print
+    "showing 4 of 6", so with `n_failed` absent it rendered 4 failures as the
+    complete list.
+    """
+    reader = _healthy(n_eps=6, per=10)  # FakeReader.raw_frame raises for all 6
+
+    check = vla_audit.check_distinct_frames(reader)
+
+    assert check.verdict == UNCHECKED
+    assert len(check.measured["failed"]) == 4, "the list is still capped"
+    assert check.measured["n_failed"] == 6, (
+        "every one of the 6 sampled episodes failed to decode, and the payload "
+        "has to say 6 rather than leave the reader to count the capped list"
+    )
+    assert check.measured["episodes_sampled"] == 6
+    assert check.measured["distinct_images"] == 0
+    # The three numbers now agree: 6 sampled, 6 failed, 0 decoded.
+    assert (
+        check.measured["n_failed"] + check.measured["distinct_images"]
+        == check.measured["episodes_sampled"]
+    )
+
+
+def test_a_capped_collision_list_carries_the_number_of_groups_found():
+    """The same cap sits on `collisions`, and it was the file's other silent one.
+
+    MEASURED with 12 episodes paired onto 6 distinct images: `collisions` came
+    back with 4 entries and no count, while the detail sentence said "6
+    group(s)" -- the sentence and the payload disagreed about how many there
+    were, and only the sentence was right.
+    """
+    n = 12
+    eps = [
+        FakeEpisode(i, 10, i * 10, from_ts=i * 1.0, to_ts=(i + 1) * 1.0)
+        for i in range(n)
+    ]
+    table = {"episode_index": [i // 10 for i in range(n * 10)]}
+    # Episodes 0/1 share an image, 2/3 share the next, and so on: 6 groups.
+    frames = {i: bytes([i // 2]) * 96 for i in range(n)}
+    reader = FakeReader(eps, table, frames=frames)
+
+    check = vla_audit.check_distinct_frames(reader, sample=n)
+
+    assert check.verdict == BROKEN
+    assert len(check.measured["collisions"]) == 4, "the list is still capped"
+    assert check.measured["n_collisions"] == 6
+    assert check.measured["n_failed"] == 0, (
+        "nothing failed to decode here, and an absent field would be read as "
+        "unknown rather than zero"
+    )
+    assert "6 group(s)" in check.detail, check.detail
+
+
+def test_the_failure_count_is_present_even_when_every_frame_decodes():
+    """An absent `n_failed` reads as unknown, not as zero.
+
+    The healthy path is the one that would tempt an implementation to omit the
+    field, and a payload that carries it only when something went wrong makes
+    the reader guess which of the two an absence means.
+    """
+    reader = _healthy()
+    reader._images = {i: bytes([i]) * 96 for i in range(4)}
+
+    check = vla_audit.check_distinct_frames(reader)
+
+    assert check.verdict == OK
+    assert check.measured["n_failed"] == 0
+    assert check.measured["n_collisions"] == 0
+
+
 # ----------------------------------------------------------- normalisation
 
 
