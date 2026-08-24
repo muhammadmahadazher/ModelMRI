@@ -17,7 +17,15 @@ TCL = TestClient(create_app(), client=("127.0.0.1", 5000))   # loopback-guarded 
 
 ## Status
 
-**All seven "fix now" items are done**, plus four from Next — 1.1 `627857f`, 1.3 `3493d88`, 1.4 `7e04e00`, 2.2 `36ad22b`, 1.2 `0f93582`, 2.1 `d6b7dcf`. 3.1 `1be2b5c`. From Next: 2.3 `9e08788`, 3.3+3.4 `8143c98`, 3.6 `d7eadaf`. Remaining unfixed: 2.4, 3.2, 3.5, 1.7a, 4.1, 2.5, and all of Can-wait.
+**All seven "fix now" items are done, and all six from Next.**
+
+Fix now — 1.1 `627857f`, 1.2 `0f93582`, 1.3 `3493d88`, 1.4 `7e04e00`, 2.1 `d6b7dcf`, 2.2 `36ad22b`, 3.1 `1be2b5c`.
+
+Next — 2.3 `9e08788`, 2.4 `04c126d`, 3.2 `e6fa391`, 3.3+3.4 `8143c98`, 3.5 `b0b53eb`, 3.6 `d7eadaf`.
+
+Can wait — 1.6 + 3.7 + 3.8 `7839314`, 2.5 `3c2ac49`, 2.6 `a48b054`, 2.7 `b577402`.
+
+Remaining unfixed: 1.5, 1.7, 4.1, 4.2, 4.3, 4.4, 3.9.
 
 Ranked: crashes/hangs/data-loss → wrong numbers in front of a user → silent failures → messages and types only.
 
