@@ -7867,7 +7867,12 @@ button:disabled,
   margin: 6px 0 8px;
   border: 1px solid var(--line);
   border-radius: var(--r-2, 6px);
-  background: var(--color-bg);
+  /* `--color-card`, the token the other text inputs here use. The first
+     version read `--color-bg`, which this project does not define — and
+     `tests/test_css_vars.py` is exactly the guard for that: an undefined var
+     with no fallback drops the WHOLE declaration, so the box would have had
+     no background at all rather than a wrong one. */
+  background: var(--color-card);
   color: var(--color-ink);
   resize: vertical;
 }
