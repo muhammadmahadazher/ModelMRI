@@ -516,3 +516,164 @@ def test_created_is_a_fact_about_the_model_not_about_the_request():
     # And an unknown one is 1970 rather than "now": obviously not a real
     # creation date, where `now` looks plausible and is wrong.
     assert openai_api._first_seen("definitely/not-on-this-disk-xyz") == 0
+
+
+# --------------------------------------------------------------------------
+# One store, several completions at once.
+#
+# `app.state.mri_store` is a single object, and BOTH `/v1/chat/completions`
+# and `/v1/completions` reach it through `asyncio.to_thread` — so concurrent
+# requests asking for `{"modelmri": {"mri": true}}` run `put` at the same
+# time, on a body that held no lock at all.
+#
+# MEASURED on the unlocked version, 16 threads, default switchinterval: 4
+# escapes in 960,000 puts — {'KeyError': 2, 'RuntimeError': 2}. With
+# `sys.setswitchinterval(1e-6)`, which widens the window without changing the
+# code: 61,019 escapes in 320,000 puts and 34,508 observations of the store
+# holding more than its stated limit. `next(iter(self._held))` raises
+# RuntimeError when an insert resizes the dict mid-iteration, and two threads
+# reading the same `oldest` make the loser's `del` raise KeyError.
+#
+# Neither is in `/v1`'s `except (Refusal, BadRequest)`, so both arrived as a
+# 500 on a completion that had already been generated and committed — the
+# work paid for, and nothing handed back.
+#
+# These are not a proof of absence: a race that survives is one that got
+# lucky. What they do is fail loudly against the unlocked version, which the
+# fix has to beat. The same standard as `test_traces_concurrency.py`, against
+# the sibling store on the same `app.state`.
+
+
+def _hammer(store, *, threads: int, per_thread: int) -> tuple[list, list]:
+    """Run `put` from `threads` threads at once; collect escapes and overflows.
+
+    Exceptions are collected rather than left to kill a worker in silence — an
+    exception on a worker thread is how this stayed invisible, and it is also
+    how it reached a user: as somebody else's 500.
+    """
+    import threading as _threading
+
+    errors: list = []
+    over: list = []
+    guard = _threading.Lock()
+    start = _threading.Barrier(threads)
+
+    def worker():
+        start.wait()
+        for _ in range(per_thread):
+            try:
+                store.put(b"x" * 64)
+            except BaseException as err:
+                with guard:
+                    errors.append(err)
+            # Observed the way any other caller observes it — under the
+            # store's own lock. An unlocked peek lands inside `put`'s own
+            # insert-then-evict window and reports an overflow no caller can
+            # ever see.
+            with store._lock:
+                held = len(store._held)
+            if held > store.limit:
+                with guard:
+                    over.append(held)
+
+    workers = [_threading.Thread(target=worker) for _ in range(threads)]
+    for t in workers:
+        t.start()
+    for t in workers:
+        t.join(timeout=60)
+    return errors, over
+
+
+def test_concurrent_puts_do_not_500_a_completion_that_already_succeeded():
+    """The reported shape: an exception out of `put`, on work already done.
+
+    Run under `sys.setswitchinterval(1e-6)`, which widens the window without
+    touching the code. At the default 5ms the rate is 4 per million and a
+    suite-sized run passes on the unlocked version too — which would make
+    this a test that says this machine was fast, not that the store is safe.
+    """
+    import sys as _sys
+
+    was = _sys.getswitchinterval()
+    _sys.setswitchinterval(1e-6)
+    try:
+        store = openai_api.MriStore(limit=8)
+        errors, over = _hammer(store, threads=16, per_thread=3000)
+    finally:
+        _sys.setswitchinterval(was)
+
+    assert not errors, (
+        f"{len(errors)} of 48,000 puts escaped as an exception `/v1`'s "
+        f"`except (Refusal, BadRequest)` does not catch, which is a 500 on a "
+        f"completion already generated: {[type(e).__name__ for e in errors[:5]]}"
+    )
+    assert not over, (
+        f"the store held more than its stated limit of {store.limit}: "
+        f"{sorted(set(over))}"
+    )
+    assert len(store._held) == store.limit
+
+
+def test_an_id_is_recorded_as_evicted_before_it_stops_being_held():
+    """`GET /v1/mri/{id}` asks TWO questions — `get`, then `was_evicted` — and
+    no lock inside this class can span the gap between them. So the ORDER
+    inside `put` is what closes it.
+
+    Recording the eviction after the delete left a window where an id this
+    server had issued answered None to the first and False to the second, and
+    the route turns that pair into the 404 that says "this server has never
+    issued that id" — sending a client to check its id when the real answer
+    was "ask again, sooner". `MriStore`'s own docstring is explicit that those
+    are different answers with different fixes.
+
+    Asserted at the instant of eviction rather than by racing two threads at
+    it: the window is a single bytecode wide, so a threaded version passes
+    against the wrong order most runs, which is worse than no test.
+    """
+    store = openai_api.MriStore(limit=1)
+    still_held: list[bool] = []
+
+    class _Watch(set):
+        def add(self, item):
+            still_held.append(item in store._held)
+            return super().add(item)
+
+    store._evicted = _Watch()
+    first = store.put(b"a")
+    store.put(b"b")
+
+    assert still_held == [True], (
+        "the id stopped being held before it was recorded as evicted, so a "
+        "reader between the route's two questions sees neither"
+    )
+    # And the settled state is still the one the route documents.
+    assert store.get(first) is None
+    assert store.was_evicted(first) is True
+
+
+def test_every_method_that_touches_the_store_serialises_it():
+    """Against the source, because the defect was an ABSENCE.
+
+    Nothing in the class said the rule existed, so the three methods simply
+    did not follow one. A fourth added tomorrow is the same bug, and the
+    sibling store carries the identical test for the identical reason.
+    """
+    import inspect
+    import re
+
+    src = inspect.getsource(openai_api.MriStore)
+    offenders = []
+    for part in re.split(r"\n    def ", src)[1:]:
+        name = part.split("(")[0]
+        if name == "__init__":
+            continue
+        if (
+            re.search(r"self\._(held|evicted)\b", part)
+            and "with self._lock" not in part
+        ):
+            offenders.append(name)
+    assert not offenders, (
+        "these read or write the shared mapping without holding the lock, "
+        "which is what 500'd completions that had already been generated: "
+        + ", ".join(offenders)
+    )

@@ -2024,3 +2024,17 @@ def main() -> None:
         print("    HF_HOME/HF_HUB_CACHE where models download (HuggingFace's)")
     else:
         parser.print_help()
+
+
+if __name__ == "__main__":
+    # `python -m modelmri.cli` used to import this module, define `main`, and
+    # exit 0 without calling it. MEASURED: `doctor --help`,
+    # `totally-bogus --nonsense` and `check <missing>.json --no-errors` each
+    # returned rc=0 with zero bytes on stdout AND stderr — and the third of
+    # those is a CI gate, where exiting 0 without running is indistinguishable
+    # from running and passing.
+    #
+    # `modelmri/__main__.py` routes the conventional spelling to the same
+    # `main`; this is the one directory down, kept because the wrong guess
+    # should be wrong loudly rather than silently.
+    raise SystemExit(main())

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -146,21 +147,60 @@ class MriStore:
         # Ids evicted rather than never-issued. Just the ids, so this stays
         # small; it is what lets 410 and 404 be different answers.
         self._evicted: set[str] = set()
+        # One store, several requests. `/v1/chat/completions` and
+        # `/v1/completions` both reach this through `asyncio.to_thread`, so
+        # concurrent completions asking for `{"mri": true}` land in `put` at
+        # once — and every line of it used to run unserialised.
+        #
+        # MEASURED on this class, 16 threads, default switchinterval: 4
+        # escapes in 960,000 puts — {'KeyError': 2, 'RuntimeError': 2}. With
+        # `sys.setswitchinterval(1e-6)` to widen the window rather than change
+        # the code: 61,019 escapes in 320,000 puts, and 34,508 observations of
+        # the store holding MORE than its stated limit. `next(iter(self._held))`
+        # raised RuntimeError when an insert resized the dict mid-iteration,
+        # and two threads reading the same `oldest` made the loser's `del`
+        # raise KeyError. Neither is in the route's `except (Refusal,
+        # BadRequest)`, so both became a 500 on a completion that had already
+        # been generated and committed — the worst shape a failure can take
+        # here, because the work is done and paid for and the caller gets
+        # nothing.
+        #
+        # `threading.Lock`, not the `RLock` the sibling store on the same
+        # `app.state` uses (`traces.py`): that one needs reentrancy because its
+        # methods call each other, and these three do not touch each other at
+        # all. A non-reentrant lock keeps it that way — a future method that
+        # calls another while holding it hangs, loudly, instead of quietly
+        # reading a half-evicted mapping, which is the failure class this whole
+        # comment exists about.
+        self._lock = threading.Lock()
 
     def put(self, blob: bytes) -> str:
         mri_id = _rid("mri")
-        self._held[mri_id] = blob
-        while len(self._held) > self.limit:
-            oldest = next(iter(self._held))
-            del self._held[oldest]
-            self._evicted.add(oldest)
+        with self._lock:
+            self._held[mri_id] = blob
+            while len(self._held) > self.limit:
+                oldest = next(iter(self._held))
+                # Recorded as evicted BEFORE it stops being held, and the order
+                # is the point. `/v1/mri/{id}` asks two questions in sequence —
+                # `get` then `was_evicted` — and no lock this class can hold
+                # spans the gap between them. Deleting first opened a window
+                # where an id this server had issued answered None to one and
+                # False to the other, and the route turned that pair into the
+                # 404 that says "this server has never issued that id" — the
+                # answer that sends somebody to check their id, when the real
+                # one was "ask again, sooner". Adding first, the worst a
+                # caller can see is a blob that is still there.
+                self._evicted.add(oldest)
+                del self._held[oldest]
         return mri_id
 
     def get(self, mri_id: str) -> bytes | None:
-        return self._held.get(mri_id)
+        with self._lock:
+            return self._held.get(mri_id)
 
     def was_evicted(self, mri_id: str) -> bool:
-        return mri_id in self._evicted
+        with self._lock:
+            return mri_id in self._evicted
 
 
 def _now() -> int:

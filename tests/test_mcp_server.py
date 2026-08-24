@@ -111,6 +111,53 @@ def test_the_descriptions_say_what_the_number_is_not():
     assert "biased" in by_name["logit_lens"]["description"]
 
 
+def test_the_status_description_claims_only_what_the_payload_answers():
+    """It claimed two things this tool does not answer.
+
+    "What model is loaded on this machine" — MEASURED against a real
+    `/api/session` holding a 3.3 GB SDXL pipeline and a VLA, both resident:
+    `status` answered `loaded: false, hf_id: null`, because `call` lifts
+    `model` out of the envelope and the image and VLA handles beside it go
+    nowhere. An agent asked what was loaded and was told nothing was.
+
+    "and whether a generation exists to measure" — no such field has ever
+    existed in either payload. `ModelStatus` is exactly the eight keys below.
+
+    Narrowed rather than widened, and the test above this one is why: carrying
+    image and VLA keys over --attach would make them null there and absent
+    in-process, so one tool would answer two shapes depending on a flag the
+    calling agent cannot see. The measurements that need a generation say so
+    in their own descriptions and refuse by name when there is not one.
+    """
+    desc = {t["name"]: t["description"] for t in mcp_server._tools()}["status"]
+    payload = mcp_server.Server().call("status", {})
+
+    assert set(payload) == {
+        "loaded",
+        "hf_id",
+        "device",
+        "dtype",
+        "n_params",
+        "instruct",
+        "gguf",
+        "n_layers",
+    }
+    assert not [k for k in payload if "gener" in k]
+    assert "generation" not in desc, (
+        "the description promises a field the payload does not carry: " + desc
+    )
+
+    # It says WHICH kind of model, and that the others are outside it.
+    assert "text model" in desc
+    assert "image" in desc and "robot policy" in desc
+
+    # And the last clause is checkable: there is nothing here to act on an
+    # image pipeline or a VLA with, which is why narrowing costs an agent
+    # nothing.
+    names = {t["name"] for t in mcp_server._tools()}
+    assert not [n for n in names if "image" in n or "vla" in n]
+
+
 # --------------------------------------------- refusals travel as refusals
 
 

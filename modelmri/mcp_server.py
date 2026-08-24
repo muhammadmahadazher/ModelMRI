@@ -86,12 +86,37 @@ def _tools() -> list:
     """
     return [
         {
+            # This description claimed two things the payload does not answer.
+            #
+            # "What model is loaded on this machine" — MEASURED against a real
+            # `/api/session` holding a 3.3 GB SDXL pipeline and a VLA: this
+            # tool answered `loaded: false, hf_id: null`, because `call` lifts
+            # `model` out of the envelope and the image and VLA handles beside
+            # it go nowhere. NARROWED to the text model rather than widened to
+            # carry them, and the reason is in `call` below: in-process this
+            # Server holds a bare ModelRuntime with no image or VLA handle at
+            # all, so those keys could only ever be null — unknown — over
+            # --attach and absent in process. One tool answering two shapes
+            # depending on a flag the calling agent cannot see is the exact
+            # thing `test_status_is_the_same_document_in_process_and_over_attach`
+            # exists to stop. An agent could not act on them either way: there
+            # is no image or VLA tool on this surface.
+            #
+            # "and whether a generation exists to measure" — NO such field has
+            # ever existed. `ModelStatus` is exactly loaded, hf_id, device,
+            # dtype, n_params, instruct, gguf, n_layers, and `runtime.py` says
+            # why in as many words beside `n_layers`: these are properties of
+            # the LOADED MODEL, not of a run. So the clause is dropped rather
+            # than the field added. The tools that need a generation already
+            # say so in their own descriptions and refuse by name when there
+            # is not one, which is where that answer is actionable.
             "name": "status",
             "description": (
-                "What model is loaded on this machine, on what device and in "
-                "what dtype, and whether a generation exists to measure. "
-                "Returns loaded=false rather than an error when nothing is "
-                "loaded."
+                "The text model loaded on this machine, on what device and "
+                "in what dtype. Returns loaded=false rather than an error "
+                "when nothing is loaded. Text only — an image pipeline or a "
+                "robot policy can be resident on this machine while this "
+                "reads loaded=false, and neither has a tool here."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },

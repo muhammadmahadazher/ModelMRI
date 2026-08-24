@@ -30,6 +30,7 @@ plausible-wrong output to refuse. Refusing needs both sides to state units.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import threading
@@ -418,10 +419,72 @@ def serve(port: int = 0) -> None:
         httpd.server_close()
 
 
+def _port(raw: str) -> int:
+    """A port number, or argparse's own refusal naming what was sent.
+
+    `int(argv[i + 1])` accepted anything `int()` did, and the socket was left
+    to complain. MEASURED, both `--port 70000` and `--port -1` reached
+    `ThreadingHTTPServer` and escaped as an unhandled
+    `OverflowError: bind(): port must be 0-65535` -- a traceback out of a
+    socket call, which reads as the sidecar being broken rather than the
+    argument being wrong. Refused here so it is answered as what it is.
+    """
+    try:
+        port = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be a whole number between 0 and 65535, and this call sent "
+            f"{raw!r}. 0 asks the OS for a free port, which is what "
+            f"`modelmri policy start` sends."
+        ) from None
+    if not 0 <= port <= 65535:
+        raise argparse.ArgumentTypeError(
+            f"must be between 0 and 65535, and this call sent {port}. 0 asks "
+            f"the OS for a free port."
+        )
+    return port
+
+
 def main(argv: list[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    port = 0
-    if "--port" in argv:
-        port = int(argv[argv.index("--port") + 1])
-    serve(port)
+    # argparse, not the hand-rolled scan this had. That scan looked for
+    # `--port` and IGNORED every other argument, so `--help` fell through to
+    # `serve(0)`: MEASURED, `python -m modelmri_policy --help` printed
+    # `MODELMRI_POLICY_PORT=53649` and then served until it was killed at a
+    # 10s timeout (rc=124). Somebody reading a sidecar's usage got a listening
+    # socket instead, and in a terminal there is nothing to say which -- the
+    # ready line is the only output either way.
+    #
+    # The silent half was as bad: a typo like `--prot 5000` was dropped on the
+    # floor and the sidecar came up on an OS-chosen port, and `--port` with
+    # nothing after it raised IndexError from inside argv indexing rather than
+    # saying which flag was short of a value.
+    #
+    # stdlib, so the "no framework in this venv" rule at the top of this file
+    # is untouched -- that rule is about lerobot's pins, and argparse has none.
+    parser = argparse.ArgumentParser(
+        prog="modelmri-policy",
+        description=(
+            "Hold one robot policy in this process and answer ModelMRI's "
+            f"contract (v{CONTRACT}) on {HOST}. Started for you by `modelmri "
+            "policy start`; run it by hand to debug a sidecar that will not "
+            "come up."
+        ),
+        epilog=(
+            f"Prints `{READY_PREFIX}<port>` on stdout once it is listening AND "
+            f"its imports are warm, then serves until interrupted. That line "
+            f"is the handshake: a parent that has seen it can call /status."
+        ),
+    )
+    parser.add_argument(
+        "--port",
+        type=_port,
+        default=0,
+        metavar="N",
+        help=(
+            "port to listen on. 0 (the default) asks the OS for a free one "
+            "and reports it on the ready line."
+        ),
+    )
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    serve(args.port)
     return 0
