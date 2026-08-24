@@ -229,3 +229,89 @@ def test_a_token_count_smaller_than_the_grid_is_refused():
     said = str(caught.value)
     assert "9 attention tokens" in said
     assert "4x4" in said
+
+
+# --------------------------- one id check, not three different ones
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "pusht",  # a bare name — the commonest typo
+        "../../etc/passwd",  # traversal
+        "/etc/passwd",
+        "a/b/c",  # too many segments
+        "a//b",
+        "a b/c",  # a space
+        "",
+        None,
+    ],
+)
+def test_a_string_that_is_not_a_repo_id_is_refused_by_both_resolvers(bad):
+    """Three resolvers each rolled their own check, and `validate_repo_id` —
+    a hard dependency — had zero call sites.
+
+    `vla._snapshot` tested `"/" not in repo`, which `pusht` fails and
+    `../../etc/passwd` PASSES: so a traversal string reached the not-cached
+    arm and came back as "Download it first (`huggingface-cli download
+    ../../etc/passwd`)", a command that cannot run, for a string that is not
+    an id at all. That arm's own comment scopes it to "a WELL-FORMED id that
+    is not cached" and nothing enforced the well-formed half.
+
+    `vla_data.snapshot_path` had no check whatsoever, so the same inputs hit
+    `repo_id.split("/", 1)` and raised ValueError — answered as HTTP 500 by
+    `/api/vla/dataset` and as a raw traceback by `modelmri audit`. A `None`
+    gave AttributeError, the same defect wearing a different exception.
+    """
+    from modelmri.vla_data import snapshot_path
+
+    with pytest.raises(Refusal) as caught:
+        vla._snapshot(bad)
+    assert "is not a repository id" in str(caught.value)
+
+    with pytest.raises(Refusal) as caught:
+        snapshot_path(None, bad)
+    assert "is not a dataset id" in str(caught.value), (
+        "the dataset resolver names what it wanted, not the generic word"
+    )
+
+
+def test_a_well_formed_id_still_reaches_the_not_cached_answer():
+    """So the guard cannot become "refuse everything" — a real id that simply
+    is not on this disk must still get the sentence about downloading it."""
+    with pytest.raises(Refusal) as caught:
+        vla._snapshot("lerobot/definitely-not-cached-here")
+
+    said = str(caught.value)
+    assert "is not a repository id" not in said
+    assert "not cached" in said or "download" in said.lower()
+
+
+def test_the_audit_command_with_no_dataset_uses_its_own_default(monkeypatch):
+    """`discover(repo_id=repo_id or None)` passed None EXPLICITLY, overriding
+    the `repo_id: str = DEFAULT_DATASET` default that exists for exactly the
+    no-argument case — so `modelmri audit` alone reached `None.split("/")`
+    and printed an AttributeError about this program's internals.
+
+    Asserted on what `discover` RECEIVES rather than on the source text: the
+    first version of this test grepped for `repo_id or None`, which the fix's
+    own explanatory comment contains, so it failed against correct code.
+    """
+    from modelmri import cli, vla_data
+
+    seen = {}
+
+    def spy(cls_or_self=None, **kwargs):
+        seen.update(kwargs)
+        raise ImportError("stopping before any disk work")
+
+    monkeypatch.setattr(
+        vla_data.LeRobotV3Reader, "discover", classmethod(lambda cls, **kw: spy(**kw))
+    )
+
+    cli.audit_dataset("")
+
+    assert "repo_id" not in seen or seen["repo_id"], (
+        f"discover was handed {seen!r}; a None or empty repo_id defeats the "
+        f"default that makes the bare command work"
+    )

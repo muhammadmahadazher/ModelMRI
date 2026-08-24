@@ -455,3 +455,63 @@ def describe() -> dict:
         "legacy": legacy_shown,
         "platform": sys.platform,
     }
+
+
+def validate_repo_id(raw: str, *, kind: str = "repository") -> str:
+    """One repository id, checked once, or a Refusal naming what is wrong.
+
+    THREE RESOLVERS EACH ROLLED THEIR OWN CHECK, and a dependency that already
+    does this properly sat installed with zero call sites. Measured, before
+    this existed:
+
+      `vla_data.snapshot_path("pusht")`   ValueError: not enough values to
+                                          unpack -> HTTP 500, CLI traceback
+      `modelmri audit` with no argument   AttributeError: 'NoneType' has no
+                                          attribute 'split'
+      `vla._snapshot("../../etc/passwd")` 409 "is not cached. Download it first
+                                          (huggingface-cli download
+                                          ../../etc/passwd)" -- a command that
+                                          cannot run, for a string that is not
+                                          an id at all
+
+    `huggingface_hub.utils.validate_repo_id` catches the traversal, the empty
+    string, `a/b/c`, `a//b` and anything with a space. It does NOT catch
+    `pusht`, because a bare name IS a valid Hub id for a canonical repo like
+    `gpt2` -- so the slash is required separately here. The callers build
+    `datasets--{owner}--{name}` and `models--{owner}--{name}` directory names,
+    which structurally need a namespace; that requirement belongs to them
+    rather than to the Hub's grammar, and stating it here keeps the two
+    sentences apart.
+
+    The wording is `vla._snapshot`'s, which already read well and was the only
+    one of the three that said anything useful.
+    """
+    from .errors import Refusal
+
+    text = (raw or "").strip()
+    try:
+        from huggingface_hub.utils import HFValidationError
+        from huggingface_hub.utils import validate_repo_id as _hf
+    except ImportError:  # pragma: no cover - the library is a hard dependency
+        # If the validator is ever unavailable the slash rule below still
+        # stands. Refusing to run because a checker could not be imported
+        # would be a worse answer than the weaker check.
+        HFValidationError = None
+    if HFValidationError is not None:
+        try:
+            _hf(text)
+        except HFValidationError:
+            raise Refusal(
+                f"`{text or '(nothing)'}` is not a {kind} id. A HuggingFace id "
+                f"is `owner/name` — `lerobot/smolvla_base`, not "
+                f"`smolvla_base` — and this one is not a name the Hub allows "
+                f"at all."
+            ) from None
+
+    if "/" not in text:
+        raise Refusal(
+            f"`{text or '(nothing)'}` is not a {kind} id. A HuggingFace id is "
+            f"`owner/name` — `lerobot/smolvla_base`, not `smolvla_base` — so "
+            f"there is no owner here to look under."
+        )
+    return text

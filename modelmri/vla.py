@@ -224,17 +224,16 @@ def hub_root(hf_home: str | Path | None = None) -> Path:
 
 
 def _snapshot(repo: str, hf_home: str | Path | None = None) -> Path:
-    if "/" not in (repo or ""):
-        # The commonest way to get this wrong, and it used to crash on the
-        # unpacking below with "not enough values to unpack" — a message about
-        # this function's internals rather than about what was typed. The
-        # sibling case (a well-formed id that is not cached) has always
-        # answered with a sentence; this one now matches it.
-        raise Refusal(
-            f"`{repo.strip() or '(nothing)'}` is not a repository id. A "
-            f"HuggingFace id is `owner/name` — `lerobot/smolvla_base`, not "
-            f"`smolvla_base` — so there is no owner here to look under."
-        )
+    # A SLASH IS NOT ENOUGH. This tested `"/" not in repo`, which `pusht`
+    # fails and `../../etc/passwd` passes — so a traversal string reached the
+    # not-cached arm below and came back as "Download it first
+    # (`huggingface-cli download ../../etc/passwd`)": a command that cannot
+    # run, for a string that is not an id at all. That arm's own comment
+    # scopes it to "a WELL-FORMED id that is not cached", and nothing was
+    # enforcing the well-formed half.
+    #
+    # Shared with `vla_data.snapshot_path`, which had no check whatsoever.
+    repo = paths.validate_repo_id(repo)
     owner, name = repo.split("/", 1)
     base = hub_root(hf_home) / f"models--{owner}--{name}"
     snaps = sorted((base / "snapshots").glob("*")) if base.is_dir() else []

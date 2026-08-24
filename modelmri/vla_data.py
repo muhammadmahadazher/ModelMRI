@@ -111,7 +111,21 @@ def _read_all(files: list) -> dict:
 
 
 def snapshot_path(hf_home: str | Path | None, repo_id: str = DEFAULT_DATASET) -> Path:
-    """Resolve the newest snapshot dir for a cached LeRobot dataset."""
+    """Resolve the newest snapshot dir for a cached LeRobot dataset.
+
+    THE ID IS CHECKED BEFORE IT IS SPLIT. `vla._snapshot` grew this guard and
+    wrote the sentence for it; this copy never received one, so the same typo
+    that gets a refusal there crashed here on the unpack below — `pusht` gave
+    `ValueError: not enough values to unpack`, answered as HTTP 500 by
+    `/api/vla/dataset` and as a raw traceback by `modelmri audit`. A `None`
+    reaching it gave `AttributeError` instead, which is the same defect wearing
+    a different exception.
+    """
+    # Imported here, the way every other `paths` use in this module is — the
+    # file keeps it lazy so importing the reader costs nothing.
+    from . import paths
+
+    repo_id = paths.validate_repo_id(repo_id, kind="dataset")
     owner, name = repo_id.split("/", 1)
     roots = dataset_roots(hf_home)
     tried = [r / f"datasets--{owner}--{name}" for r in roots]

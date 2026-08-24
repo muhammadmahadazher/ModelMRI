@@ -316,7 +316,18 @@ def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     from .vla_data import LeRobotV3Reader
 
     try:
-        reader = LeRobotV3Reader.discover(repo_id=repo_id or None)
+        # `discover()` with NOTHING when no dataset was named, rather than
+        # `repo_id=repo_id or None`. That `or None` passed None EXPLICITLY,
+        # which overrode the `repo_id: str = DEFAULT_DATASET` default that
+        # exists for exactly the no-argument case — so `modelmri audit` on its
+        # own reached `None.split("/")` and printed an AttributeError about
+        # this program's internals. The default is the whole point of the
+        # parameter; passing None defeats it.
+        reader = (
+            LeRobotV3Reader.discover(repo_id=repo_id)
+            if repo_id
+            else LeRobotV3Reader.discover()
+        )
     except ImportError as err:
         # `err.name` and never `err` — the same rule `_missing_reader_dep`
         # already follows on the HTTP side. The module name is the useful half
