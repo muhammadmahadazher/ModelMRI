@@ -92,7 +92,10 @@ class Sweep:
     metric: str
     unit: str
     dataset: str
-    policy: str
+    #: `None` when no policy was resident, never `""`. The sibling field on
+    #: `/api/vla` says `null` for the same fact, and a sweep read back out of
+    #: sqlite months later has only this to say what produced it.
+    policy: str | None
     camera: str
     episode_stride: int
     frame_stride: int
@@ -430,7 +433,7 @@ def run(
         metric=metric,
         unit=unit,
         dataset=getattr(reader, "repo_id", ""),
-        policy=getattr(handle.status(), "repo", "") or "",
+        policy=getattr(handle.status(), "repo", None) or None,
         camera=getattr(reader, "camera", ""),
         episode_stride=episode_stride,
         frame_stride=frame_stride,
@@ -474,7 +477,10 @@ def save(sweep: Sweep) -> int:
             [
                 (
                     sweep.dataset,
-                    sweep.policy,
+                    # `""` in the COLUMN, not in the payload. This is half of
+                    # the lookup key `stored()` queries on, and a NULL there
+                    # would not match the `""` a caller sends.
+                    sweep.policy or "",
                     sweep.metric,
                     sweep.camera,
                     r.episode,

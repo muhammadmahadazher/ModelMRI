@@ -686,6 +686,29 @@ export interface SAECalibration {
   unusable_at: number;
 }
 
+/** Which published SAE this is, and how each coordinate got chosen.
+ *
+ *  `chosen_by` is the half that matters: every coordinate is either "caller"
+ *  or a sentence naming the rule and the alternatives it beat, so the panel
+ *  can tell a deliberate choice from a default. `available` is the index for
+ *  THIS layer only, and `null` in it never means "none exist" — it means the
+ *  Hub listing could not be read. */
+export interface SAERelease {
+  repo: string;
+  layout: string;
+  /** `null` when the release is several files, as SAELens releases are. */
+  file: string | null;
+  layer: number;
+  point: string;
+  width: string | null;
+  /** What the directory name CLAIMS the average L0 is. The MEASURED one is
+   *  `SAECalibration.l0`, computed on a different corpus — read side by
+   *  side, never interchanged. */
+  advertised_l0: number | null;
+  chosen_by: Record<string, string>;
+  available: Record<string, number[]> | null;
+}
+
 export interface SAEStatus {
   loaded: boolean;
   repo: string | null;
@@ -694,6 +717,13 @@ export interface SAEStatus {
   d_in: number | null;
   d_sae: number | null;
   calibration?: SAECalibration | null;
+  /** "relu" or "jumprelu". `null` when nothing is loaded — an unloaded panel
+   *  does not have a plain-ReLU SAE, it has no SAE. */
+  activation: string | null;
+  /** `[min, max]` of the JumpReLU thresholds. `null` for a ReLU SAE, which
+   *  has no thresholds at all rather than thresholds of zero. */
+  threshold_span: [number, number] | null;
+  release: SAERelease | null;
 }
 
 export interface FeaturesSummary {
@@ -989,12 +1019,29 @@ export const promptOnce = (
 
 export interface VLAStatus {
   loaded: boolean;
+  /** "unavailable" until a tower is loaded, "perception" after. The Python
+   *  comment listed "data" and "full" too and neither was ever assigned. */
   mode: string;
   reason: string;
   repo: string | null;
-  n_layers: number;
-  n_heads: number;
+  /** `null` is UNKNOWN, never a zero or a "cpu" nobody chose. These are read
+   *  off a checkpoint, so with nothing loaded there is no answer — and the
+   *  sibling fields `repo` and `warmup_ms` already said so with `null` while
+   *  these published a confident 0. A resting `/api/vla` reported
+   *  `n_layers: 0, n_heads: 0` beside `repo: null`, which reads as a tower
+   *  that exists and has no layers. */
+  device: string | null;
+  n_layers: number | null;
+  n_heads: number | null;
   grid: number[];
+  /** Input square and patch edge, in pixels. */
+  image_size: number | null;
+  patch_size: number | null;
+  /** Tokens this tower prepends before the patches — a class token, plus
+   *  registers in DINOv2-style towers. 0 for SigLIP, which SmolVLA uses.
+   *  `null` until the first analysis, because it is COUNTED by running the
+   *  tower rather than read from a config. */
+  n_prefix_tokens: number | null;
   warmup_ms: number | null;
   /** Configured server-side; named before anything is opened. */
   dataset_repo: string;
@@ -1851,13 +1898,41 @@ export interface ImageFilmstripRun {
   means: string;
 }
 
+/** What a filmstrip would cost, before any of it runs.
+ *
+ *  This declared 7 of the 16 keys the route sends. Nine went undeclared, and
+ *  most of them are `null` today because the route does not compute them yet
+ *  — declared at that real nullability rather than dropped, because `null` is
+ *  UNKNOWN here and a panel that renders one as 0 quotes a cost nobody
+ *  measured. `json<T>` is a bare cast, so nothing caught the gap;
+ *  `tests/test_api_contract.py` does now. */
 export interface ImageFilmstripPlan {
   steps: number;
+  /** One per step, or two when classifier-free guidance is on — which
+   *  nothing here can know without the pipeline, so it is never assumed. */
+  denoiser_passes: number;
   frames: number;
   decoded_steps: number[];
   skipped_steps: number[];
   vae_decodes: number;
+  /** One more than `vae_decodes` when the pipeline will not accept
+   *  `output_type="latent"` and decodes its own final frame anyway. */
+  vae_decodes_if_pipeline_also_decodes: number;
+  latents_kept: number;
+  /** `null` is UNKNOWN — the route cannot size a latent without a pipeline
+   *  resident. None of these may ever render as 0. */
+  latent_bytes: number | null;
+  total_bytes: number | null;
+  fits: boolean | null;
   frame_pixels: number;
+  png_bytes: number | null;
+  peak_device_bytes: number | null;
+  selection: {
+    mode: string;
+    every: number | null;
+    at: number[] | null;
+    include_final: boolean;
+  };
   means: string;
 }
 
@@ -2821,8 +2896,12 @@ export const getTrace = (id: string) =>
  *
  *  `available: false` is the ordinary answer. Most sessions carry no run.
  */
-export interface SessionTraceDoc extends TraceDoc {
-  available: boolean;
+export interface SessionTraceAbsent {
+  available: false;
+}
+
+export interface SessionTraceCarried extends TraceDoc {
+  available: true;
   /** What the sender's run held, against `steps.length` here. */
   n_steps_total: number;
   /** How many steps the file dropped to fit its cap. */
@@ -2831,15 +2910,39 @@ export interface SessionTraceDoc extends TraceDoc {
   step_ref?: string | null;
 }
 
+/** TWO SHAPES, and the docstring above already said so — "`available: false`
+ *  is the ordinary answer" — while the type declared `id`, `name`,
+ *  `started_at`, `steps`, `n_steps_total` and `truncated` as always present.
+ *  MEASURED with no `.mri` open, the route sends `{available: false}` and
+ *  nothing else. `json<T>` is a bare cast, so the declaration and the comment
+ *  contradicted each other with nothing to notice. */
+export type SessionTraceDoc = SessionTraceAbsent | SessionTraceCarried;
+
 export const getSessionTrace = () =>
   fetch("/api/session/trace").then((r) => json<SessionTraceDoc>(r));
 
-/** What the last generation cost, including what watching it cost.
+/** Nothing has been generated yet, so there is nothing to report.
+ *
+ *  The route sends exactly these two keys in this state — measured — while
+ *  `TelemetryReport` used to declare seventeen more as required on one flat
+ *  interface. `json<T>` is a bare cast, so nothing complained and every
+ *  reader of a measurement field was reading `undefined` typed as a number.
+ *
+ *  A union rather than seventeen optional fields, because the two states are
+ *  genuinely different documents and `available` says which. Absent, not
+ *  null: `null` would say a measurement was attempted and failed, which is
+ *  what the `| null` fields inside the measured shape mean. */
+export interface TelemetryUnavailable {
+  available: false;
+  reason?: string;
+}
+
+/** What the last generation actually cost, including what watching it cost.
  *
  *  Every field may be null and none is ever faked — CPU has no allocator to
  *  ask, and a 0 in a memory column is a claim that nothing was used. */
-export interface TelemetryReport {
-  available: boolean;
+export interface TelemetryMeasured {
+  available: true;
   reason?: string;
   prompt_tokens: number;
   generated_tokens: number;
@@ -2861,6 +2964,8 @@ export interface TelemetryReport {
   notes: string[];
   means: string;
 }
+
+export type TelemetryReport = TelemetryUnavailable | TelemetryMeasured;
 
 export const getTelemetry = () =>
   fetch("/api/telemetry").then((r) => json<TelemetryReport>(r));
@@ -3528,6 +3633,16 @@ export interface SweepRow {
 export interface VLASweep {
   metric: string;
   unit: string;
+  /** What was swept, carried on the result rather than assumed from whatever
+   *  is loaded now. A sweep outlives the session that ran it — it is saved to
+   *  sqlite and read back — so a table that did not name its own dataset,
+   *  policy and camera could be read against the wrong three. All three were
+   *  sent from the start and declared nowhere. */
+  dataset: string;
+  /** `null` when no policy was resident. It used to collapse to `""`, while
+   *  the sibling `/api/vla` field for the same fact correctly said `null`. */
+  policy: string | null;
+  camera: string;
   rows: SweepRow[];
   n_frames: number;
   n_episodes: number;
@@ -3550,6 +3665,11 @@ export interface VLASweep {
   means: string;
   strip: {
     rows: { episode: number; timesteps: number[]; values: number[] }[];
+    /** The strip repeats the metric and its unit, because it is rendered
+       away from the header that names them and a heat strip with no unit is
+       a picture of nothing in particular. */
+    metric: string;
+    unit: string;
     /** `null` when no row was measured — the RANGE of a metric nobody
      *  observed. 0.0 there read as a flat result rather than as no result. */
     low: number | null;

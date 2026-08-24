@@ -188,23 +188,46 @@ def _vision_config(policy_snap: Path, hf_home: str | Path | None):
 @dataclass
 class VLAStatus:
     loaded: bool = False
-    mode: str = "unavailable"  # unavailable | data | perception | full
+    #: `unavailable` until a tower is loaded, `perception` after. `data` and
+    #: `full` were in this comment as if they were states this reports, and
+    #: neither is ever assigned anywhere in the codebase — a documented enum
+    #: whose two extra values could only ever mislead a reader grepping for
+    #: where they come from. `full` is the opt-in policy sidecar, which
+    #: `/api/policy` answers for; the dataset half is `/api/vla/episodes`.
+    mode: str = "unavailable"  # unavailable | perception
     reason: str = ""
     repo: str | None = None
-    device: str = "cpu"
-    n_layers: int = 0
-    n_heads: int = 0
+    #: `None`, not `"cpu"`. With nothing loaded there is no placement to
+    #: report, and naming a device reads as a decision that was made.
+    device: str | None = None
+    #: `None`, not 0, for all five. These are read off a checkpoint, so with
+    #: nothing loaded they are UNKNOWN — and the sibling fields `repo` and
+    #: `warmup_ms` in this same dataclass already said so with `null` while
+    #: these five published a confident zero. A resting `/api/vla` reported
+    #: `n_layers: 0, n_heads: 0` beside `repo: null`, which reads as a tower
+    #: that exists and has no layers.
+    n_layers: int | None = None
+    n_heads: int | None = None
     grid: list[int] = field(default_factory=list)  # [32, 32]
-    image_size: int = 0
-    patch_size: int = 0
+    image_size: int | None = None
+    patch_size: int | None = None
     warmup_ms: int | None = None
     # Tokens this tower prepends before the patches -- a class token, and
     # registers on top of that in DINOv2-style towers. 0 for SigLIP, which is
     # what SmolVLA uses and why `reshape(n_heads, grid, grid)` worked here for
     # as long as it did. Reported so a reader knows the map covers the patches
     # and not the whole sequence.
-    n_prefix_tokens: int = 0
-    dataset: dict | None = None
+    #
+    # `None` when nothing is loaded, because a REAL 0 here is a fact about a
+    # tower — SigLIP prepends none — and "no tower" is not that fact.
+    n_prefix_tokens: int | None = None
+    # `dataset: dict | None` used to sit here. It was declared, serialised on
+    # every `/api/vla` response, and assigned NOWHERE in the codebase — so it
+    # was always `null`, and the TypeScript that declared it said so too. A
+    # field that can only ever hold one value is not a field; removed rather
+    # than given an invented assignment. `/api/vla/episodes` is where the open
+    # dataset is described, and `/api/vla` already names the configured one as
+    # `dataset_repo`.
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -390,10 +390,14 @@ export default function VLAPanel() {
               {heatKey && (
                 <>
                   <label className="meta">vision layer {layer}</label>
+                  {/* `?? 1` is unreachable in practice — this slider renders
+                      only once a tower has produced a heat map — but
+                      `n_layers` is `null` when nothing is loaded now, and a
+                      `max` of NaN silently disables the control. */}
                   <input
                     type="range"
                     min={0}
-                    max={vla.n_layers - 1}
+                    max={(vla.n_layers ?? 1) - 1}
                     value={layer}
                     onChange={(e) => setLayer(Number(e.target.value))}
                   />

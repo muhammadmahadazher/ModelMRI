@@ -20,7 +20,7 @@ import {
   SearchResult,
   searchTraces,
   SessionState,
-  SessionTraceDoc,
+  SessionTraceCarried,
   TraceDoc,
   TraceStep,
   TraceSummary,
@@ -799,13 +799,19 @@ with trace("my-agent"):
               reader looking at four blocks is looking at a run that had nine
               steps, and the cap is invisible from here — the timeline draws
               what it was given and looks complete either way. */}
-          {fromSession && (doc as SessionTraceDoc).truncated > 0 && (
+          {/* `SessionTraceCarried`, not `SessionTraceDoc`. The doc type is a
+              union now — the no-run answer is `{available: false}` and
+              carries none of these fields — and casting to the union asked
+              for a property that half of it does not have. `fromSession` is
+              set only after `openCarried` saw `available: true`, so this is
+              the member that is actually in hand. */}
+          {fromSession && (doc as SessionTraceCarried).truncated > 0 && (
             <div className="hint">
               This is {doc.steps.length} of{" "}
-              {(doc as SessionTraceDoc).n_steps_total} steps.{" "}
-              {(doc as SessionTraceDoc).truncated} did not fit in the session
-              file, so the timeline below is a section of the run rather than
-              the run.
+              {(doc as SessionTraceCarried).n_steps_total} steps.{" "}
+              {(doc as SessionTraceCarried).truncated} did not fit in the
+              session file, so the timeline below is a section of the run
+              rather than the run.
             </div>
           )}
           <div className="timeline" style={{ height: nLanes * 36 + 8 }}>
