@@ -32,6 +32,7 @@ filled in with a plausible integer at any layer.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # What a readout's `score` column actually IS. A classifier publishes a
@@ -69,6 +70,33 @@ def _size(width: Any, height: Any) -> list[int] | None:
     return None
 
 
+def _env(status) -> dict:
+    """Where this run actually happened — kept BESIDE the section, never in it.
+
+    `/api/image/share` stamps the file's device and dtype, and it read them off
+    the handle's LIVE status at the moment the button was pressed. Load a
+    second checkpoint between the run and the share and the file said the old
+    model ran at the new one's device and dtype: a provenance claim about
+    hardware that never touched it.
+
+    Recorded here, at capture time, so the two can no longer disagree. The key
+    is stripped on the way out and never reaches the file — `session.build`
+    passes this dict through `session._image`, which rebuilds the section from
+    the fields it knows and drops everything else.
+    """
+    return {
+        "device": getattr(status, "device", "") or "",
+        "dtype": getattr(status, "dtype", "") or "",
+    }
+
+
+def _index(value: Any) -> int | None:
+    """A non-negative index, or `None` for one nobody measured."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return int(value)
+
+
 def _provenance(status, kind: str) -> dict:
     """Which checkpoint drew this, in the four fields the reader requires.
 
@@ -84,6 +112,32 @@ def _provenance(status, kind: str) -> dict:
         "revision": str(getattr(status, "revision", "") or ""),
         "kind": kind,
     }
+
+
+def _no_local_path(text: str, repo: str) -> str:
+    """One `means` sentence, with this machine's path taken out of it.
+
+    `_shared_name` protects the provenance FIELD, and for a while that was
+    read as the whole job. It is not. `image_cv.Prediction.means` opens with
+    `f"{self.model_name} is ..."` and `image_attention.AttentionRun.means`
+    says "averaged over ... of {self.model}" -- and both are handed
+    `status.repo`, which is a Hub id for a Hub model and an ABSOLUTE PATH for
+    one loaded out of a local folder. So the field said `sd-turbo` while the
+    paragraph under it said `C:\\Users\\<their real name>\\models\\sd-turbo`,
+    in the one artefact in this project designed to leave the machine.
+
+    Replaced rather than dropped: the sentence is about which checkpoint was
+    measured and is worth less without a name in it. The name that goes in is
+    the one the provenance field already publishes, so the file says the same
+    thing in both places.
+    """
+    if not text or not repo:
+        return text or ""
+    shared = _shared_name(repo)
+    if shared == repo:
+        # Not a path -- a Hub id is already the name, and nothing needs saying.
+        return text
+    return text.replace(repo, shared or "this checkpoint")
 
 
 def _shared_name(repo: str) -> str:
@@ -180,13 +234,18 @@ def from_filmstrip(status, strip, *, attention=None) -> dict:
         "steps_never_reached": list(getattr(strip, "steps_never_reached", []) or []),
     }
     if attention is not None:
-        out["attention"] = _attention(attention)
+        out["attention"] = _attention(attention, getattr(status, "repo", "") or "")
     out["means"] = _means(out, strip, oversized)
+    out["_env"] = _env(status)
     return out
 
 
-def _attention(run) -> dict:
-    """The cross-attention run, in the reader's shape."""
+def _attention(run, repo: str = "") -> dict:
+    """The cross-attention run, in the reader's shape.
+
+    `repo` is the raw id the handle was loaded with, needed only so the nested
+    `means` can be scrubbed of it -- see `_no_local_path`.
+    """
     row = run.to_dict() if hasattr(run, "to_dict") else dict(run)
     return {
         "tokens": list(row.get("tokens") or []),
@@ -203,13 +262,16 @@ def _attention(run) -> dict:
         # made. `padding_from` is why a reader is not told the model is
         # fascinated by `<pad>`, and `columns_unlabelled` is a cap on what can
         # be SHOWN rather than on what was measured.
-        "padding_from": int(row.get("padding_from") or 0),
+        # `None` survives here for the reason it survives in the reader: 0 is
+        # the claim that the padding starts at column zero, so every measured
+        # column is `<pad>` and none of them is the prompt.
+        "padding_from": _index(row.get("padding_from")),
         "conditioning_width": int(row.get("conditioning_width") or 0),
         "columns_unlabelled": int(row.get("columns_unlabelled") or 0),
         "steps_requested": int(row.get("steps_requested") or 0),
         "steps_measured": int(row.get("steps_measured") or 0),
         "resolutions": list(row.get("resolutions") or []),
-        "means": str(row.get("means") or ""),
+        "means": _no_local_path(str(row.get("means") or ""), repo),
     }
 
 
@@ -226,19 +288,48 @@ def from_attention(status, run) -> dict:
         "prompt": "",
         "seed": getattr(run, "seed", None),
         "scheduler": "",
-        "attention": _attention(run),
+        "attention": _attention(run, getattr(status, "repo", "") or ""),
     }
+    attn = out["attention"]
+    # THE PROMPT'S TOKENS, NOT THE CONDITIONING'S COLUMNS. `_tokenize` pads to
+    # the tokenizer's `model_max_length` -- 77 for CLIP -- so `len(tokens)` is
+    # the padded width and counting it here announced "cross-attention over 77
+    # prompt token(s)" for a three-word prompt. `padding_from` is the index
+    # where the prompt stops being the prompt, which is the number this
+    # sentence was always about.
+    boundary = attn.get("padding_from")
+    columns = len(attn["tokens"])
+    if isinstance(boundary, int) and 0 < boundary <= columns:
+        counted = f"{boundary} prompt token(s)"
+        padded = (
+            f" The maps cover {columns} columns; the {columns - boundary} past "
+            f"the prompt are padding and carry real mass, which is why the "
+            f"boundary travels with them."
+            if columns > boundary
+            else ""
+        )
+    else:
+        # Reported, never guessed. A run whose boundary was not measured is not
+        # a run whose prompt happens to be exactly as long as the padding.
+        counted = f"{columns} conditioning column(s)"
+        padded = (
+            " Where the prompt stops and the padding starts was not measured "
+            "for this run, so these are columns rather than words."
+        )
     out["means"] = (
-        f"Cross-attention over {len(out['attention']['tokens'])} prompt token(s) "
-        f"across {out['attention']['steps_measured']} denoising step(s), with no "
+        f"Cross-attention over {counted} across "
+        f"{attn['steps_measured']} denoising step(s), with no "
         f"decoded frames beside it — capturing the maps does not decode the "
         f"picture, and this file carries what was measured rather than a frame "
-        f"nobody rendered. " + _seed_sentence(out["seed"])
+        f"nobody rendered.{padded} " + _seed_sentence(out["seed"])
     )
+    out["_env"] = _env(status)
     return out
 
 
-def from_readout(status, prediction, *, picture: str = "") -> dict:
+def from_readout(
+    status, prediction, *, picture: str = "", picture_size: Any = None
+) -> dict:
     """What a classifier, a detector or a segmenter said about one picture.
 
     THE KIND IS READ OFF THE PREDICTION, NOT PASSED IN. `image_cv` decides the
@@ -278,11 +369,20 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
         if not isinstance(row, dict):
             continue
         score = row.get(score_key)
-        if not isinstance(score, (int, float)) or isinstance(score, bool):
+        if (
+            not isinstance(score, (int, float))
+            or isinstance(score, bool)
+            or not math.isfinite(score)
+        ):
             # The reader refuses a row with no finite score because it would
             # render as a blank bar among measured ones. Dropped here rather
             # than shipped for the reader to reject -- and counted, below, so
             # the drop is reported instead of only applied.
+            #
+            # `isfinite` is not decoration: a head that produced NaN publishes
+            # a `float`, passes a type check, and is refused by the reader --
+            # so the share button answered 422 on a readout it had just made,
+            # which is the failure this whole module exists to prevent.
             continue
         keep = {
             # A checkpoint that published no `id2label` gets indices AND a
@@ -295,7 +395,16 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
             "query": row.get("query"),
         }
         box = row.get("box_xyxy")
-        if isinstance(box, (list, tuple)) and len(box) == 4:
+        if (
+            isinstance(box, (list, tuple))
+            and len(box) == 4
+            and all(
+                isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and math.isfinite(v)
+                for v in box
+            )
+        ):
             keep["box_xyxy"] = [float(v) for v in box]
         rows.append(keep)
     dropped = len(source or []) - len(rows)
@@ -312,12 +421,30 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
         "readout": {
             "kind": kind or "readout",
             "rows": rows,
-            "means": str(payload.get("means") or ""),
+            # `image_cv.Prediction.means` opens with the model NAME, and the
+            # name it is handed is `status.repo` -- a Hub id for a Hub model
+            # and an absolute path for a local folder. See `_no_local_path`.
+            "means": _no_local_path(
+                str(payload.get("means") or ""), getattr(status, "repo", "") or ""
+            ),
         },
     }
+    tensor_size = _size(payload.get("width"), payload.get("height"))
     too_big = False
     if picture:
-        size = _size(payload.get("width"), payload.get("height"))
+        # THE PICTURE'S OWN PIXELS, MEASURED BY THE CALLER, NOT THE TENSOR'S.
+        # This read `payload["width"]/["height"]`, which is the shape of the
+        # tensor the processor built -- 224x224 for most classifiers. The bytes
+        # carried beside it are the ORIGINAL upload, so a 4000x3000 photograph
+        # travelled in a frame declaring itself 224x224 and `downsampled:
+        # False`: a false statement about the file's own contents, and one the
+        # replay panel acts on by squashing the photograph into a square.
+        #
+        # `size` in this format means "the resolution of these bytes" -- it is
+        # what a map gets drawn onto -- so the only honest number is the
+        # picture's. The tensor's shape is a different fact and is stated as
+        # one, below.
+        size = _size(*picture_size) if picture_size is not None else None
         # `image_input` accepts a 32 MB upload and a `.mri` frame is capped at
         # 4 MB, so a large photograph produced a payload the reader refuses
         # and the share button answered 422 on a readout it had just made.
@@ -325,15 +452,14 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
         # without the picture, and the sentence says which half is missing.
         too_big = len(picture) > _reader().MAX_IMAGE_FRAME_BYTES
         if size is not None and not too_big:
-            # The picture the reader supplied, carried so the boxes have
-            # something to be drawn on -- at the size the MODEL was shown,
-            # which is what the box coordinates are in.
             out["frames"] = [
                 {
                     "step": 0,
                     "timestep": None,
                     "png": picture,
                     "size": size,
+                    # True, and now checkable: these are the bytes that
+                    # arrived, at the resolution they arrived at.
                     "downsampled": False,
                     "latent_rms": None,
                 }
@@ -364,6 +490,23 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
             f" {dropped} row(s) were left out of this file because they carried "
             f"no finite score."
         )
+    if tensor_size is not None:
+        # WHICH GEOMETRY THE NUMBERS ARE IN. The boxes come back in the
+        # coordinate space of the TENSOR the processor built, and the picture
+        # beside them is the upload at its own resolution. A reader who scaled
+        # boxes to the picture without knowing that would put every rectangle
+        # in the wrong place -- wrong in the way that looks like a finding.
+        carried = out.get("frames") or []
+        drawn = (
+            f", while the picture carried here is {carried[0]['size'][0]}x"
+            f"{carried[0]['size'][1]} — scale them before drawing"
+            if carried and carried[0]["size"] != tensor_size
+            else ""
+        )
+        said += (
+            f" The model was shown a {tensor_size[0]}x{tensor_size[1]} tensor "
+            f"and any coordinates above are in that space{drawn}."
+        )
     if "frames" not in out and picture:
         # TWO REASONS, TWO SENTENCES, because they have two remedies: one is
         # "this checkpoint did not publish the geometry" and the other is
@@ -376,12 +519,54 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
             f"readout above is unaffected, and a smaller image would travel "
             f"with it."
             if too_big
-            else " The picture is not carried: it did not state the resolution "
-            "the model was shown it at, and boxes drawn over the wrong one "
-            "land nowhere."
+            else " The picture is not carried: its own resolution could not be "
+            "read, and a frame that does not state its size is one no map can "
+            "be put back onto."
         )
     out["means"] = said
+    out["_env"] = _env(status)
     return out
+
+
+def refusal(run: dict) -> str:
+    """Why this run cannot become a `.mri`, in a sentence, or "".
+
+    THE WRITER SAYS IT, NOT THE READER. `session.build` validates the section
+    through `session._image` before writing a byte, so a run the reader refuses
+    surfaces as a 422 quoting the FORMAT -- "this session's image readout
+    carries no rows" -- at somebody who asked for a file and has no idea what a
+    row is. The two cases below are the ones this writer can genuinely produce,
+    and each names what happened and what to do instead.
+
+    Checked here rather than inside `from_readout` because a readout that found
+    nothing is a real result worth looking at on screen; it is only unshareable,
+    and refusing to record it would delete a measurement to avoid a download.
+    """
+    if not run or not run.get("provenance"):
+        return (
+            "there is no image run to share. Capture a filmstrip or a "
+            "cross-attention run first — a `.mri` carries a measurement, and "
+            "this one would carry nothing."
+        )
+    readout = run.get("readout")
+    if readout is not None and not readout.get("rows"):
+        kind = readout.get("kind") or "readout"
+        return (
+            f"this {kind} came back with no scored rows, so the file would "
+            f"carry a heading and nothing under it. That is a real answer on "
+            f"screen — the model looked and found nothing above the cut — but "
+            f"it is not a measurement anybody can open. Lower the threshold, "
+            f"raise `top_k`, or run a picture the model has something to say "
+            f"about, then share that."
+        )
+    if not any(run.get(key) for key in ("frames", "attention", "readout")):
+        return (
+            "this run carries no measurement to put in a file — no frames, no "
+            "cross-attention and no readout. Provenance and a prompt describe "
+            "an image run; they are not one. Capture a filmstrip or the "
+            "cross-attention over it first."
+        )
+    return ""
 
 
 def _seed_sentence(seed) -> str:
@@ -403,8 +588,12 @@ def _means(out: dict, strip, oversized: int = 0) -> str:
     # "there was nothing to carry", the other is "it did not fit", and they
     # send a reader to two different places.
     dropped = len(getattr(strip, "frames", []) or []) - len(frames) - oversized
+    length = run or requested
     parts = [
-        f"{len(frames)} decoded frame(s) of a {run or requested}-step run",
+        f"{len(frames)} decoded frame(s) of a {length}-step run"
+        if length
+        else f"{len(frames)} decoded frame(s); this run did not report how "
+        f"many steps it took"
     ]
     if out.get("skipped_steps"):
         parts.append(

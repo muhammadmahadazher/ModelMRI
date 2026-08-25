@@ -6148,8 +6148,13 @@ export interface ImageRunAttention {
     blocks: number;
   }[];
   /** Where the padding starts. CLIP pads to 77 and the padded tail carries
-   *  real attention mass, which is a genuine finding and a terrible chart. */
-  padding_from: number;
+   *  real attention mass, which is a genuine finding and a terrible chart.
+   *
+   *  `null` when the file never measured the boundary, and NOT 0 — 0 is the
+   *  claim that the padding starts at column zero, so every measured column
+   *  is `<pad>` and none of them is the prompt. That is the exact conclusion
+   *  this field exists to prevent. */
+  padding_from: number | null;
   conditioning_width: number;
   /** Columns that were MEASURED and have no label to put on them. A cap on
    *  what can be shown, not on what was measured. */
@@ -6194,6 +6199,9 @@ export interface ImageRunSection {
   provenance: {
     repo: string;
     family: string;
+    /** `""` is a CLAIM — "this checkpoint's config published no
+     *  `architectures`" — and the server accepts it, exactly as it accepts an
+     *  empty `revision`. */
     architecture: string;
     /** `""` is a CLAIM — "this checkpoint published none" — and the server
      *  accepts it. What it refuses is the field being absent, which cannot be
@@ -6208,8 +6216,10 @@ export interface ImageRunSection {
   scheduler: string;
   frames?: ImageRunFrame[];
   png_bytes_total?: number;
-  steps_requested: number;
-  steps_run: number;
+  /** `null` when the file does not say — never 0. "3 of 0 step(s) decoded"
+   *  is a sentence about a run that cannot have happened. */
+  steps_requested: number | null;
+  steps_run: number | null;
   decoded_steps: number[];
   /** Ran and was not decoded — a CHOICE. */
   skipped_steps: number[];
@@ -6256,6 +6266,11 @@ export const getImageSharePlan = () =>
           n_attention_steps?: number;
           n_readout_rows?: number;
           seed?: number | null;
+          /** THE PROMPT THE RUN WAS MADE WITH, which is not the prompt in the
+           *  box. The share button captioned files from the live field, so
+           *  editing it after a capture shipped a `.mri` labelled with a
+           *  prompt that was never run. */
+          prompt?: string;
           means: string;
         }>(r),
       );

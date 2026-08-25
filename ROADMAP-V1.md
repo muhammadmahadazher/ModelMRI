@@ -56,6 +56,45 @@ replayed, and the same for a cross-attention-only run. The strip reports 4 of
 that never arrived (a GAP), and the pipeline running 7 for a request of 6 as a
 fact about the scheduler rather than a rounding.
 
+AUDITED THE SAME DAY, and the audit is the reason this section is worth
+trusting rather than merely finished. Eighteen defects were confirmed against
+the 1,913 new lines and fixed; six more were claimed and refuted. What the
+real ones had in common was the project's own worst failure mode — a number
+nobody measured, written down as a fact:
+
+  an absent `padding_from` became 0, and 0 is not "no padding" here, it is
+  the claim that the boundary is at column zero — so every measured column of
+  a forwarded `.mri` was coloured and labelled `<pad>`, which is the exact
+  conclusion the field exists to prevent. It keeps its `None` now, as `seed`
+  always did, and so do `steps_requested` and `steps_run`, which between them
+  had the panel announcing "1 of 0 step(s) decoded".
+
+  a readout `.mri` rendered as a denoising run: "not repeatable — running
+  this prompt again gives a different trajectory" over a classifier that
+  repeats exactly, and the input photograph captioned "step 0".
+
+  the provenance field was scrubbed of this machine's path and the PROSE
+  beside it was not. `image_cv` and `image_attention` both open their `means`
+  with the model name, and the name they are handed is a Hub id for a Hub
+  model and an absolute path for a local folder — so the file said
+  `sd-turbo` in the field and the user's home directory in the paragraph.
+
+  the writer emitted three payloads its own reader refuses — a NaN score, an
+  empty architecture, a detector that found nothing — each surfacing as a 422
+  quoting the file format at somebody who had just pressed Share.
+
+  a run stayed shareable across a load, so a `.mri` could name one
+  checkpoint's run with another's device and dtype; and `/api/image/load`
+  priced a second pipeline against the resident text model alone, so the
+  guard that exists to refuse before an OOM could not fire on the one case
+  that needs it.
+
+Every fix is pinned by a test, and each of those tests was mutation-checked:
+the fix was reverted, the test confirmed red, the file restored and
+checksummed. One of them did not go red — a unit test of the new byte counter
+passed whether or not the route called it — and was rewritten to drive the
+route.
+
 The single largest expansion of what the tool can open. Everything here obeys
 the same discovery contract the text side already has: pull from HuggingFace,
 read from Ollama, or find what is already on this disk — and refuse by name

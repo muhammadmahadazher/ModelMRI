@@ -785,3 +785,67 @@ def test_unload_refuses_instead_of_blocking_while_a_load_holds_the_handle():
 def test_unload_still_works_when_nothing_holds_the_handle():
     """So the ceiling cannot become "unload always refuses"."""
     assert ir.ImageHandle().unload().loaded is False
+
+
+# ------------------------------- the run belongs to the model that produced it
+
+
+def test_a_successful_load_drops_the_run_the_previous_model_made(tmp_path, monkeypatch):
+    """`unload` cleared `last_run` and its comment says exactly why: a run left
+    behind "would be shareable as though the next checkpoint had produced it,
+    and the file would name the wrong weights".
+
+    `load` did not clear it. So loading a second pipeline over a resident one
+    walked straight through the door that comment was written about: the strip
+    stayed shareable, `/api/image/share` read the LIVE status for the file's
+    device and dtype, and the `.mri` named one checkpoint's run with another
+    one's hardware."""
+    _stub_load(monkeypatch)
+    handle = ir.ImageHandle()
+    handle.last_run = {"provenance": {"repo": "the first model"}}
+
+    assert handle.load(str(_pipeline(tmp_path, mb=4))).loaded is True
+    assert handle.last_run == {}
+
+
+def test_a_refused_load_keeps_the_resident_models_run(tmp_path):
+    """The other half, and why this is cleared at the commit point rather than
+    on the way in: a load that refuses -- on the scan, on the capacity guard,
+    on a missing variant -- leaves the resident pipeline untouched, and its run
+    is still that pipeline's run."""
+    from modelmri import capacity
+
+    handle = ir.ImageHandle()
+    run = {"provenance": {"repo": "the resident model"}}
+    handle.last_run = run
+
+    with pytest.raises(capacity.TooBig):
+        handle.load(str(_pipeline(tmp_path, mb=4)), already_held_bytes=6_000_000_000)
+    assert handle.last_run == run
+
+
+def test_a_resident_pipeline_prices_itself_for_the_next_load():
+    """`/api/image/load` priced a second pipeline against the resident TEXT
+    model alone, so a machine already holding an image pipeline was quoted as
+    though it held nothing -- and `load` builds the new pipeline before
+    dropping the old one, so both are resident across the call. That is the one
+    case where the refusal is most needed and it could not fire."""
+    import torch
+
+    handle = ir.ImageHandle()
+    assert handle.resident_bytes() == 0
+
+    class Pipe:
+        def __init__(self):
+            self.unet = torch.nn.Linear(64, 64)
+            # Neither of these holds weights, and neither may raise: a
+            # scheduler has no `named_parameters` and most modern pipelines
+            # carry `safety_checker` as None.
+            self.scheduler = object()
+            self.safety_checker = None
+
+    handle.pipe = Pipe()
+    # Measured off the live module rather than from the checkpoint on disk,
+    # for the reason the text side gives: what matters is what is in memory
+    # NOW, which differs from the file whenever a dtype was cast at load.
+    assert handle.resident_bytes() == (64 * 64 + 64) * 4

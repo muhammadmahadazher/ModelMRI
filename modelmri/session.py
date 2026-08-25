@@ -929,13 +929,20 @@ def _image(doc: dict) -> dict:
     `decoded_width`/`decoded_height` beside the emitted pair for this, so the
     writer has nothing to invent and the reader refuses a frame that does not.
 
-    THE PROVENANCE IS NOT OPTIONAL, and `revision` is not optional either --
-    but an EMPTY revision is allowed where a missing one is refused. "" is a
-    claim, and a true one for a checkpoint loaded out of a local folder that
-    published no revision; a missing field is silence. The difference matters
-    because the whole value of this section is that somebody else can rerun it,
-    and "no revision was published" and "nobody wrote one down" are different
+    THE PROVENANCE IS NOT OPTIONAL, and neither `revision` nor `architecture`
+    is -- but an EMPTY one of either is allowed where a missing one is refused.
+    "" is a claim, and a true one for a checkpoint loaded out of a local folder
+    that published no revision, or whose `config.json` carries no
+    `architectures`; a missing field is silence. The difference matters because
+    the whole value of this section is that somebody else can rerun it, and
+    "the checkpoint published none" and "nobody wrote one down" are different
     answers to the only question that makes that possible.
+
+    UNKNOWN COUNTS KEEP THEIR `None`. `seed`, `steps_requested`, `steps_run`
+    and `attention.padding_from` all survive as `None` rather than collapsing
+    to 0, because 0 is an answer here and a wrong one: "seed 0", "a 0-step
+    run", "the padding starts at column zero and none of these columns is your
+    prompt". A file that never stated them is not a file claiming those.
 
     A SECTION WITH NO MEASUREMENT IS REFUSED. Provenance and a prompt describe
     a run; they are not one. At least one of `frames`, `attention` or `readout`
@@ -961,13 +968,27 @@ def _image(doc: dict) -> dict:
             "the only reason to send it."
         )
     keep_prov: dict = {}
-    for name in ("repo", "family", "architecture", "kind"):
+    for name in ("repo", "family", "kind"):
         value = provenance.get(name)
         if not isinstance(value, str) or not value.strip():
             raise SessionError(
                 f"this session's image section does not say which {name} produced it."
             )
         keep_prov[name] = value[:MAX_RANKING_TEXT]
+    architecture = provenance.get("architecture")
+    if not isinstance(architecture, str):
+        # `revision`'s rule, for `revision`'s reason. A transformers config
+        # that omits `architectures` gives `imaging` nothing to report, and ""
+        # is the true answer -- "this checkpoint published none" -- while a
+        # missing key is silence. Refusing "" refused every share of such a
+        # checkpoint at the reader, after the measurement had already been
+        # made and paid for.
+        raise SessionError(
+            "this session's image section does not state an architecture. An "
+            "empty one is accepted and means the checkpoint published none; a "
+            "missing one cannot be told apart from nobody having looked."
+        )
+    keep_prov["architecture"] = architecture[:MAX_RANKING_TEXT]
     revision = provenance.get("revision")
     if not isinstance(revision, str):
         # See the docstring: "" is accepted and means "this checkpoint
@@ -996,12 +1017,15 @@ def _image(doc: dict) -> dict:
         int(seed) if isinstance(seed, int) and not isinstance(seed, bool) else None
     )
 
+    # `None` survives, exactly as `seed`'s does. "3 of 0 step(s) decoded" is a
+    # sentence about a run that cannot have happened, and a file that never
+    # said how long the run was is not a file claiming it was zero steps long.
     for name in ("steps_requested", "steps_run"):
         value = raw.get(name)
         out[name] = (
             int(value)
             if isinstance(value, int) and not isinstance(value, bool) and value >= 0
-            else 0
+            else None
         )
 
     def _steps(value, what: str) -> list[int]:
@@ -1221,7 +1245,6 @@ def _image(doc: dict) -> dict:
         # on what was measured. Both are carried rather than recomputed,
         # because both are claims the writer made and this reader cannot check.
         for name in (
-            "padding_from",
             "conditioning_width",
             "columns_unlabelled",
             "steps_requested",
@@ -1233,6 +1256,21 @@ def _image(doc: dict) -> dict:
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0
                 else 0
             )
+        # `padding_from` is NOT in that loop, and the difference is the whole
+        # point of the field. The four above are counts, and a reader shown 0
+        # of them is shown nothing -- every panel gates them on `> 0`. This one
+        # is an INDEX, and 0 asserts that the padding starts at column zero:
+        # that every measured column is `<pad>` and none of them is the prompt.
+        # That is the exact conclusion the field exists to prevent, stated
+        # about a file that never measured the boundary at all.
+        boundary = attention.get("padding_from")
+        keep_attn["padding_from"] = (
+            int(boundary)
+            if isinstance(boundary, int)
+            and not isinstance(boundary, bool)
+            and boundary >= 0
+            else None
+        )
         resolutions = attention.get("resolutions")
         keep_attn["resolutions"] = (
             [

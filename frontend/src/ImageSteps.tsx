@@ -7,6 +7,7 @@ import {
   imageStepsRun,
   ImageFilmstripRun,
   ImageStepTrace,
+  getImageSharePlan,
   shareImageRun,
 } from "./api";
 
@@ -103,9 +104,24 @@ export default function ImageSteps({ steps }: { steps: number }) {
     setBusy("share");
     setErr("");
     try {
-      const blob = await shareImageRun({
-        note: prompt ? `denoising run: ${prompt}` : "",
-      });
+      // THE CAPTION COMES FROM THE RUN, NOT FROM THE BOX. This read the live
+      // `prompt` field, so capturing a strip, editing the box and then
+      // sharing wrote a `.mri` captioned with a prompt that produced none of
+      // the frames inside it — a false sentence in the one artefact here
+      // designed to be read by somebody who cannot check it.
+      //
+      // The server holds the run's own prompt and hands it back with the
+      // plan, so the note is a fact about the file rather than about the UI's
+      // current state. A plan that cannot be read leaves the note empty: no
+      // caption is a smaller loss than a wrong one.
+      let note = "";
+      try {
+        const plan = await getImageSharePlan();
+        note = plan.prompt ? `denoising run: ${plan.prompt}` : "";
+      } catch {
+        note = "";
+      }
+      const blob = await shareImageRun({ note });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

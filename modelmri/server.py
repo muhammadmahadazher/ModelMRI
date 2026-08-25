@@ -3517,6 +3517,13 @@ def create_app(
                 for row, _ in weights_table.rows_from_module(runtime.model)
             )
 
+        # AND THE IMAGE PIPELINE ALREADY RESIDENT, which this did not count.
+        # `ImageHandle.load` builds the new pipeline before dropping the old
+        # one, so both are in memory across the call -- and a machine holding
+        # one 7 GB pipeline was priced as though it held nothing, which is the
+        # one case where the guard's refusal is most needed.
+        already += app.state.image.resident_bytes()
+
         try:
             status = await asyncio.to_thread(
                 app.state.image.load,
@@ -3631,16 +3638,15 @@ def create_app(
         rather than an error: most of the time nothing has been run yet.
         """
         run = getattr(app.state.image, "last_run", None) or {}
-        if not run.get("provenance"):
-            return {
-                "available": False,
-                "means": (
-                    "Nothing has been run through this image model yet, so "
-                    "there is nothing to share. Capture a filmstrip or a "
-                    "cross-attention run first — a `.mri` carries a "
-                    "measurement, not a model."
-                ),
-            }
+        # ONE ANSWER TO "CAN THIS BE SHARED", asked here and at the POST. A
+        # detector that found nothing produces a run with a readout and no
+        # rows: the plan said `available: True` and the download then failed
+        # with the reader quoting the file format at somebody who asked for a
+        # file. `image_share.refusal` names the cause and the next step, and
+        # both routes read the same one.
+        cannot = image_share.refusal(run)
+        if cannot:
+            return {"available": False, "means": cannot}
         frames = run.get("frames") or []
         attention = run.get("attention") or {}
         readout = run.get("readout") or {}
@@ -3652,6 +3658,11 @@ def create_app(
             "png_bytes": sum(len(f.get("png") or "") for f in frames),
             "n_attention_steps": len(attention.get("steps") or []),
             "n_readout_rows": len(readout.get("rows") or []),
+            # THE RUN'S PROMPT, not the box the user is typing in. The share
+            # button built its note from the live prompt field, so editing the
+            # box after a capture and then sharing shipped a file captioned
+            # with a prompt that was never run.
+            "prompt": run.get("prompt", ""),
             # `None` and 0 are different answers, and an unseeded run is the
             # one where that matters most: it cannot be reproduced at all.
             "seed": run.get("seed"),
@@ -3694,25 +3705,22 @@ def create_app(
         from . import session as session_mod
 
         run = dict(getattr(app.state.image, "last_run", None) or {})
-        if not run.get("provenance"):
-            return JSONResponse(
-                {
-                    "error": (
-                        "there is no image run to share. Capture a filmstrip "
-                        "or a cross-attention run first — a `.mri` carries a "
-                        "measurement, and this one would carry nothing."
-                    )
-                },
-                status_code=409,
-            )
+        cannot = image_share.refusal(run)
+        if cannot:
+            return JSONResponse({"error": cannot}, status_code=409)
 
-        status = app.state.image.status()
+        # THE RUN'S OWN DEVICE AND DTYPE, recorded when it was captured. Read
+        # off the live handle, these described whatever was resident when the
+        # button was pressed -- so loading a second checkpoint and then sharing
+        # stamped the first model's run with the second one's hardware. See
+        # `image_share._env`.
+        env = run.get("_env") or {}
 
         def build() -> bytes:
             return session_mod.build(
                 model_id=run["provenance"].get("repo", ""),
-                device=status.device,
-                dtype=status.dtype or None,
+                device=env.get("device", ""),
+                dtype=env.get("dtype") or None,
                 n_params=None,
                 # See the docstring: an image run has no token strip and no
                 # generation, and inventing them would render as a text run
@@ -3824,12 +3832,15 @@ def create_app(
         except (Refusal, BadRequest) as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
 
+        # One snapshot, taken before the run. See `/api/image/filmstrip`.
+        was = handle.status()
+
         try:
             run = await asyncio.to_thread(
                 image_attention.capture,
                 handle.require(),
                 req.prompt,
-                model_name=handle.status().repo,
+                model_name=was.repo,
                 steps=req.steps,
                 seed=req.seed,
             )
@@ -3837,7 +3848,7 @@ def create_app(
             # own: capturing the maps never decodes a frame, which is most of
             # the cost. `from_attention` says so in the file rather than
             # letting a reader assume the frames were lost.
-            handle.last_run = image_share.from_attention(handle.status(), run)
+            handle.last_run = image_share.from_attention(was, run)
             return run.to_dict()
         except (image_attention.NotSupported, Refusal) as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -3969,15 +3980,22 @@ def create_app(
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)
 
+        # One snapshot, taken before the run. See `/api/image/filmstrip`.
+        was = handle.status()
+
         try:
             picture = image_input.decode(req.image)
+            # The upload's OWN resolution, read off the decoded header before
+            # the processor gets to resize anything. It is what the bytes in
+            # the shared frame actually are, and it is not the tensor's shape:
+            # a 4000x3000 photograph goes into a 224x224 tensor and the frame
+            # has to say which number is which.
+            shown_at = tuple(picture.size)
             # A TENSOR, prepared by the checkpoint's own processor. `image_cv`
             # deliberately does no image loading, so that what the model is
             # shown is exactly what was built for it rather than whatever a
             # convenience path guessed.
-            tensor = image_input.to_tensor(
-                picture, processor, device=handle.status().device
-            )
+            tensor = image_input.to_tensor(picture, processor, device=was.device)
             found = await asyncio.to_thread(
                 image_cv.predict,
                 handle.require(),
@@ -3985,7 +4003,7 @@ def create_app(
                 top_k=req.top_k,
                 processor=processor,
                 mask_threshold=req.mask_threshold,
-                model_name=handle.status().repo,
+                model_name=was.repo,
             )
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
@@ -3999,7 +4017,7 @@ def create_app(
         # a list of numbers over nothing. `req.image` is what was decoded, so
         # what travels is what the model was actually shown.
         handle.last_run = image_share.from_readout(
-            handle.status(), found, picture=req.image
+            was, found, picture=req.image, picture_size=shown_at
         )
         return found.to_dict()
 
@@ -4154,12 +4172,20 @@ def create_app(
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)
 
+        # ONE SNAPSHOT, TAKEN BEFORE THE RUN, USED FOR BOTH. `status()` was
+        # called again after the `await` to build the share, and an `await` is
+        # exactly where a concurrent `/api/image/load` gets to run: the strip
+        # would then be filed under whichever checkpoint happened to be
+        # resident when the thread came back, which is the one thing this
+        # section exists to state correctly.
+        was = handle.status()
+
         try:
             found = await asyncio.to_thread(
                 image_steps.filmstrip,
                 handle.require(),
                 req.prompt,
-                model_name=handle.status().repo,
+                model_name=was.repo,
                 seed=req.seed,
                 steps=req.steps,
                 every=req.every,
@@ -4178,7 +4204,7 @@ def create_app(
         # than merely a slow one: with `seed=None` the trajectory does not
         # repeat, so a second run would produce a DIFFERENT picture and file
         # it under the same prompt. See `ImageHandle.last_run`.
-        handle.last_run = image_share.from_filmstrip(handle.status(), found)
+        handle.last_run = image_share.from_filmstrip(was, found)
         return found.to_dict()
 
     @app.post("/api/image/attribution")

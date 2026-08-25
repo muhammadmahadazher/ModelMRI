@@ -215,11 +215,36 @@ def test_a_frame_with_no_step_is_refused():
 # --------------------------------------------------------- the provenance
 
 
-@pytest.mark.parametrize("field", ["repo", "family", "architecture", "kind"])
+@pytest.mark.parametrize("field", ["repo", "family", "kind"])
 def test_provenance_names_every_field_it_is_missing(field):
     with pytest.raises(BadRequest) as caught:
         session.parse(_build(image=_image(provenance=_provenance(**{field: ""}))))
     assert field in caught.value.sentence
+
+
+def test_an_empty_architecture_is_a_claim_and_is_accepted():
+    """`architecture` is not in the loop above, and this is why. A transformers
+    `config.json` that carries no `architectures` gives `imaging` nothing to
+    report, so "" is the true answer -- the checkpoint published none.
+
+    Refusing it refused the SHARE, at the reader, after the measurement had
+    already been made: `image_share` writes what the status carries, and
+    `session.build` validates the writer's own output before writing a byte.
+    So a readout of such a checkpoint could be measured and never sent."""
+    parsed = session.parse(
+        _build(image=_image(provenance=_provenance(architecture="")))
+    )
+    assert parsed.image["provenance"]["architecture"] == ""
+
+
+def test_a_missing_architecture_is_refused():
+    """The other half, exactly as for `revision`: "" is a claim and absence is
+    silence, and the two cannot be told apart once they are folded together."""
+    prov = _provenance()
+    del prov["architecture"]
+    with pytest.raises(BadRequest) as caught:
+        session.parse(_build(image=_image(provenance=prov)))
+    assert "architecture" in caught.value.sentence
 
 
 def test_an_empty_revision_is_a_claim_and_is_accepted():
@@ -391,3 +416,68 @@ def test_a_frame_past_the_byte_cap_is_refused():
 def test_a_section_that_is_not_fields_is_refused():
     with pytest.raises(BadRequest):
         session._image({"image": [1, 2, 3]})
+
+
+# ------------------------------------------- unknown counts keep their None
+
+
+@pytest.mark.parametrize("written", [None, "five", -3, 2.0, True])
+def test_an_unmeasured_padding_boundary_stays_unknown(written):
+    """THE WORST NUMBER THIS FORMAT COULD INVENT.
+
+    `padding_from` is an INDEX, not a count. Every other number beside it --
+    `conditioning_width`, `columns_unlabelled`, `steps_measured` -- degrades
+    safely at 0, because a panel shown 0 of them shows nothing and every one
+    is gated on `> 0`. This one at 0 is an ASSERTION: the padding starts at
+    column zero, so every measured column is `<pad>` and none of them is your
+    prompt.
+
+    That is the exact conclusion the field exists to prevent, and collapsing an
+    absent claim into 0 made the replay panel state it in prose over a run
+    whose boundary was never measured.
+
+    Kept apart from a real 0 deliberately: `image_attention` reads 0 as "there
+    is no padding" (`if self.padding_from and ...`) and so does the live panel.
+    A file that says 0 is saying that; a file that says nothing is saying
+    nothing."""
+    raw = _image()
+    if written is None:
+        raw["attention"].pop("padding_from", None)
+    else:
+        raw["attention"]["padding_from"] = written
+    parsed = session.parse(_build(image=raw))
+    assert parsed.image["attention"]["padding_from"] is None
+
+
+def test_a_measured_padding_boundary_survives_including_zero():
+    """The other half. 0 here is a real claim -- "the padding starts at column
+    zero" -- and this reader has no standing to second-guess it."""
+    for written in (0, 5):
+        raw = _image()
+        raw["attention"]["padding_from"] = written
+        parsed = session.parse(_build(image=raw))
+        assert parsed.image["attention"]["padding_from"] == written
+
+
+@pytest.mark.parametrize("field", ["steps_requested", "steps_run"])
+@pytest.mark.parametrize("written", [None, "twenty", -1, True])
+def test_an_unstated_run_length_stays_unknown(field, written):
+    """ "3 of 0 step(s) decoded" is a sentence about a run that cannot have
+    happened: nothing decodes three frames of a zero-step run. A file that
+    never said how long the run was is not a file claiming it was zero."""
+    raw = _image(frames=[_frame()])
+    if written is None:
+        raw.pop(field, None)
+    else:
+        raw[field] = written
+    parsed = session.parse(_build(image=raw))
+    assert parsed.image[field] is None
+
+
+def test_a_stated_run_length_survives():
+    raw = _image(frames=[_frame()])
+    raw["steps_requested"] = 50
+    raw["steps_run"] = 50
+    parsed = session.parse(_build(image=raw))
+    assert parsed.image["steps_requested"] == 50
+    assert parsed.image["steps_run"] == 50

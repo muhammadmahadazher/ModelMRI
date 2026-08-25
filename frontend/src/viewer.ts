@@ -391,8 +391,18 @@ export async function viewerFetch(
     // it guards is the one that makes the picture worth anything: which
     // checkpoint drew it. A strip rendered under ModelMRI's chrome with no
     // model behind it is the confusion the section exists to prevent.
-    const repo = (img.provenance as Record<string, unknown>).repo;
-    if (typeof repo !== "string" || !repo.trim()) {
+    const prov = img.provenance as Record<string, unknown>;
+    // `repo`, `family` and `kind` — the three `session._image` requires to be
+    // non-empty. `architecture` and `revision` are checked for PRESENCE only,
+    // because "" is a claim there ("the checkpoint published none") and the
+    // reader accepts it; absence is silence and it does not.
+    const named = ["repo", "family", "kind"].every(
+      (k) => typeof prov[k] === "string" && (prov[k] as string).trim() !== "",
+    );
+    const stated = ["architecture", "revision"].every(
+      (k) => typeof prov[k] === "string",
+    );
+    if (!named || !stated) {
       return {
         status: 422,
         payload: {

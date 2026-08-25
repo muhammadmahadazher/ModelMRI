@@ -14,6 +14,7 @@ while the two drifted apart.
 
 from __future__ import annotations
 
+import pathlib
 from dataclasses import dataclass, field
 
 import pytest
@@ -211,6 +212,9 @@ class FakePrediction:
     boxes: list = field(default_factory=list)
     classes_top: list = field(default_factory=list)
     segments: list = field(default_factory=list)
+    #: `image_cv.Prediction.means` opens with the model NAME, so this is where
+    #: a local checkpoint's absolute path enters the shared prose.
+    means_text: str = "read off the head"
 
     def to_dict(self) -> dict:
         return {
@@ -220,7 +224,7 @@ class FakePrediction:
             "boxes": list(self.boxes),
             "classes_top": list(self.classes_top),
             "segments": list(self.segments),
-            "means": "read off the head",
+            "means": self.means_text,
         }
 
 
@@ -279,19 +283,55 @@ def test_the_kind_comes_off_the_prediction_and_cannot_be_mislabelled():
 
 def test_a_readout_carries_the_picture_its_boxes_are_drawn_on():
     pred = FakePrediction(boxes=[{"index": 1, "label": "cat", "score": 0.5}])
-    got = _reads(image_share.from_readout(FakeStatus(), pred, picture=PNG))
+    got = _reads(
+        image_share.from_readout(
+            FakeStatus(), pred, picture=PNG, picture_size=(640, 480)
+        )
+    )
     assert got["frames"][0]["size"] == [640, 480]
 
 
-def test_a_picture_with_no_stated_size_is_left_out_and_the_reason_given():
-    """Boxes drawn over a picture of the wrong resolution land nowhere, so no
-    picture beats a wrong one — and the file says which happened."""
+def test_the_frame_states_the_pictures_own_size_and_not_the_tensors():
+    """THE TWO NUMBERS ARE DIFFERENT AND THE FILE CARRIES THE RIGHT ONE.
+
+    A classifier is shown a 224x224 tensor and the bytes carried beside its
+    answer are the upload -- 4000x3000, whatever the photograph was. This wrote
+    the TENSOR's shape into the frame's `size` and `downsampled: False` beside
+    it, which is a false statement about the file's own contents: `size` means
+    "the resolution of these bytes", it is what a map gets drawn onto, and the
+    replay panel acts on it by squashing the photograph into a square.
+
+    The tensor's shape is a real fact and is stated as one, in prose, because
+    the box coordinates are in that space and a reader scaling them to the
+    picture without knowing would put every rectangle in the wrong place."""
     pred = FakePrediction(
-        width=0, height=0, boxes=[{"index": 1, "label": "cat", "score": 0.5}]
+        width=224,
+        height=224,
+        boxes=[{"index": 1, "label": "cat", "score": 0.5, "box_xyxy": [1, 2, 3, 4]}],
     )
-    got = _reads(image_share.from_readout(FakeStatus(), pred, picture=PNG))
+    got = _reads(
+        image_share.from_readout(
+            FakeStatus(), pred, picture=PNG, picture_size=(4000, 3000)
+        )
+    )
+    assert got["frames"][0]["size"] == [4000, 3000]
+    assert got["frames"][0]["downsampled"] is False
+    assert "224x224 tensor" in got["means"]
+    assert "scale them before drawing" in got["means"]
+
+
+def test_a_picture_whose_own_size_was_not_measured_is_left_out():
+    """No picture beats a wrong one, and the file says which happened.
+
+    The size is measured by the CALLER, off the decoded header, because the
+    caller is the only one holding the decoded picture. Absent, it is not
+    guessed from the tensor -- that guess is the bug the test above pins."""
+    pred = FakePrediction(boxes=[{"index": 1, "label": "cat", "score": 0.5}])
+    got = _reads(
+        image_share.from_readout(FakeStatus(), pred, picture=PNG, picture_size=None)
+    )
     assert "frames" not in got
-    assert "did not state the resolution" in got["means"]
+    assert "own resolution could not be read" in got["means"]
 
 
 def test_a_row_with_no_finite_score_is_dropped_and_counted():
@@ -444,3 +484,185 @@ def test_the_writer_reads_the_reader_s_caps_rather_than_restating_them(
     got = image_share.from_filmstrip(FakeStatus(), strip)
     assert got["frames"] == []
     assert "larger than a `.mri` carries" in got["means"]
+
+
+# ------------------------------------- the machine's path never leaves with it
+
+
+LOCAL = str(pathlib.Path(__file__).resolve().parent)
+
+
+def test_a_local_checkpoint_path_is_scrubbed_from_the_readout_prose():
+    """`_shared_name` protects the provenance FIELD, and for a while that was
+    read as the whole job. It is not.
+
+    `image_cv.Prediction.means` opens with the model NAME and the name it is
+    handed is `status.repo` -- a Hub id for a Hub model and an ABSOLUTE PATH
+    for one loaded out of a local folder. So the field said `sd-turbo` while
+    the paragraph under it carried the whole path, in the one artefact in this
+    project designed to leave the machine.
+    """
+    pred = FakePrediction(boxes=[{"index": 1, "label": "cat", "score": 0.5}])
+    pred.means_text = f"{LOCAL} is a detector, read from the SHAPE of its output."
+    got = _reads(image_share.from_readout(FakeStatus(repo=LOCAL), pred))
+    assert LOCAL not in got["means"]
+    assert LOCAL not in got["readout"]["means"]
+    assert LOCAL not in got["provenance"]["repo"]
+    # Replaced, not deleted: the sentence is about which checkpoint was
+    # measured and is worth less with the name cut out of it.
+    assert pathlib.Path(LOCAL).name in got["readout"]["means"]
+
+
+def test_a_local_checkpoint_path_is_scrubbed_from_the_attention_prose():
+    """The same leak through the other arm. `AttentionRun.means` names
+    `self.model`, and `capture` is handed `status.repo` -- with a comment
+    already warning that a drive letter must not ship.
+    """
+
+    class Local(FakeAttention):
+        def to_dict(self) -> dict:
+            out = FakeAttention.to_dict(self)
+            out["means"] = f"Cross-attention from 1 denoising steps of {LOCAL}."
+            return out
+
+    got = _reads(image_share.from_attention(FakeStatus(repo=LOCAL), Local()))
+    assert LOCAL not in got["attention"]["means"]
+    assert pathlib.Path(LOCAL).name in got["attention"]["means"]
+
+
+def test_a_hub_id_is_left_exactly_as_it_is():
+    """The other half: a Hub id IS the name, so nothing needs saying and
+    nothing is rewritten."""
+    hub = "PixArt-alpha/PixArt-XL-2-512x512"
+    said = f"{hub} is a detector."
+    assert image_share._no_local_path(said, hub) == said
+
+
+# -------------------------------- the prose counts the prompt, not the padding
+
+
+def test_the_attention_sentence_counts_prompt_tokens_not_padded_columns():
+    """`_tokenize` pads to the tokenizer's `model_max_length` -- 77 for CLIP --
+    so the token list is the PADDED width. Counting it announced
+    "cross-attention over 77 prompt token(s)" for a two-word prompt, which is
+    the `<pad>` confusion the boundary exists to prevent, restated in prose.
+    """
+
+    class Padded(FakeAttention):
+        def to_dict(self) -> dict:
+            out = FakeAttention.to_dict(self)
+            out["tokens"] = ["an", "astronaut", "<pad>", "<pad>", "<pad>"]
+            out["steps"] = [
+                {
+                    "step": 0,
+                    "timestep": 999.0,
+                    "per_token": [0.4, 0.3, 0.1, 0.1, 0.1],
+                    "blocks": 28,
+                }
+            ]
+            out["padding_from"] = 2
+            return out
+
+    got = _reads(image_share.from_attention(FakeStatus(), Padded()))
+    assert "2 prompt token(s)" in got["means"]
+    assert "5 prompt token(s)" not in got["means"]
+    # And the padded tail is REPORTED rather than dropped: it carries real
+    # attention mass, which is the finding.
+    assert "3 past the prompt are padding" in got["means"]
+
+
+def test_an_unmeasured_boundary_makes_the_sentence_say_columns_not_words():
+    """Reported, never guessed. A run whose boundary was not measured is not a
+    run whose prompt happens to be exactly as long as the padding."""
+
+    class NoBoundary(FakeAttention):
+        def to_dict(self) -> dict:
+            out = FakeAttention.to_dict(self)
+            out.pop("padding_from")
+            return out
+
+    got = _reads(image_share.from_attention(FakeStatus(), NoBoundary()))
+    assert got["attention"]["padding_from"] is None
+    assert "conditioning column(s)" in got["means"]
+    assert "was not measured" in got["means"]
+
+
+# ------------------------------------------------- never emit what it refuses
+
+
+def test_a_non_finite_score_is_dropped_rather_than_shipped_and_refused():
+    """A head that produced NaN publishes a `float`: it passes a type check,
+    and the reader refuses it for not being finite. So the share button
+    answered 422 on a readout it had just made -- the exact failure this
+    module exists to prevent."""
+    pred = FakePrediction(
+        boxes=[
+            {"index": 1, "label": "cat", "score": 0.5},
+            {"index": 2, "label": "dog", "score": float("nan")},
+            {"index": 3, "label": "cow", "score": float("inf")},
+        ]
+    )
+    got = _reads(image_share.from_readout(FakeStatus(), pred))
+    assert [r["label"] for r in got["readout"]["rows"]] == ["cat"]
+    # Reported, never only applied.
+    assert "2 row(s) were left out" in got["means"]
+
+
+def test_a_non_finite_box_is_dropped_rather_than_drawn_at_nan():
+    pred = FakePrediction(
+        boxes=[
+            {
+                "index": 1,
+                "label": "cat",
+                "score": 0.5,
+                "box_xyxy": [1.0, float("nan"), 3.0, 4.0],
+            }
+        ]
+    )
+    got = _reads(image_share.from_readout(FakeStatus(), pred))
+    assert got["readout"]["rows"][0]["box_xyxy"] is None
+
+
+def test_a_readout_with_no_rows_is_refused_by_the_writer_with_a_next_step():
+    """A detector that found nothing above the cut is a REAL answer on screen
+    and an unshareable one: the file would carry a heading and nothing under
+    it, and the reader says so by quoting the file format at somebody who
+    asked for a download. Named here instead, with what to do about it."""
+    empty = image_share.from_readout(FakeStatus(), FakePrediction(boxes=[]))
+    why = image_share.refusal(empty)
+    assert "no scored rows" in why
+    assert "Lower the threshold" in why
+    # And the reader would indeed have refused it, which is why this exists.
+    with pytest.raises(BadRequest):
+        _reads(empty)
+
+
+def test_a_run_with_measurements_is_not_refused():
+    made = image_share.from_filmstrip(FakeStatus(), FakeStrip())
+    assert image_share.refusal(made) == ""
+    assert "no image run to share" in image_share.refusal({})
+
+
+def test_the_run_environment_is_recorded_and_never_reaches_the_file():
+    """`/api/image/share` stamped the file's device and dtype off the LIVE
+    handle, so loading a second checkpoint between the run and the share said
+    the old model ran on the new one's hardware. Recorded at capture time
+    instead -- and stripped on the way out, because `session.build` rebuilds
+    the section from the fields the reader knows."""
+    out = image_share.from_filmstrip(FakeStatus(), FakeStrip())
+    assert out["_env"] == {"device": "cuda:0", "dtype": "float16"}
+    assert "_env" not in _reads(out)
+
+
+def test_the_padding_boundary_keeps_its_unknown_through_the_writer():
+    """A writer that read an absent boundary as 0 emitted the claim that every
+    measured column is padding."""
+
+    class NoBoundary(FakeAttention):
+        def to_dict(self) -> dict:
+            out = FakeAttention.to_dict(self)
+            out["padding_from"] = None
+            return out
+
+    got = _reads(image_share.from_attention(FakeStatus(), NoBoundary()))
+    assert got["attention"]["padding_from"] is None

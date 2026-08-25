@@ -821,3 +821,118 @@ def test_the_replay_route_says_not_available_rather_than_404(client):
     measurement is broken" for the ordinary case."""
     d = client.get("/api/image/replay").json()
     assert d["available"] is False
+
+
+# ---------------------------------- the run belongs to the model that made it
+
+
+def test_the_file_carries_the_runs_own_device_and_dtype(client):
+    """Stamped off the LIVE handle, these described whatever was resident when
+    the button was pressed. The run records its own at capture time."""
+    from modelmri import session
+
+    run = _shareable()
+    run["_env"] = {"device": "cuda:3", "dtype": "bfloat16"}
+    client.app.state.image.last_run = run
+    parsed = session.parse(client.post("/api/image/share", json={}).content)
+    assert parsed.meta["device"] == "cuda:3"
+    assert parsed.meta["dtype"] == "bfloat16"
+    # And the private key never reaches the file: `session.build` rebuilds the
+    # section from the fields the reader knows.
+    assert "_env" not in parsed.image
+
+
+def test_the_plan_hands_back_the_runs_own_prompt(client):
+    """The share button captioned files from the LIVE prompt box, so editing
+    it after a capture shipped a `.mri` labelled with a prompt that produced
+    none of the frames in it."""
+    client.app.state.image.last_run = _shareable()
+    d = client.get("/api/image/share/plan").json()
+    assert d["prompt"] == "an astronaut riding a horse"
+
+
+def test_a_readout_with_no_rows_is_refused_by_both_share_routes(client):
+    """ONE ANSWER TO "CAN THIS BE SHARED", asked at the plan and at the POST.
+    The plan said `available: True` and the download then failed with the
+    reader quoting the file format at somebody who asked for a file."""
+    client.app.state.image.last_run = {
+        "provenance": {
+            "repo": "facebook/detr-resnet-50",
+            "family": "transformers",
+            "architecture": "DetrForObjectDetection",
+            "revision": "",
+            "kind": "detection",
+        },
+        "prompt": "",
+        "seed": None,
+        "scheduler": "",
+        "readout": {"kind": "detection", "rows": [], "means": "nothing above the cut"},
+        "means": "0 box(s) from a detection readout.",
+    }
+    plan = client.get("/api/image/share/plan").json()
+    assert plan["available"] is False
+    assert "no scored rows" in plan["means"]
+
+    r = client.post("/api/image/share", json={})
+    assert r.status_code == 409
+    # The same sentence from both, and it names a next step rather than a
+    # field name.
+    assert r.json()["error"] == plan["means"]
+    assert "Lower the threshold" in r.json()["error"]
+
+
+def test_an_empty_architecture_survives_the_whole_round_trip(client):
+    """A `config.json` with no `architectures` gives `imaging` nothing to
+    report. "" is the true answer and the reader refused it, so a readout of
+    such a checkpoint could be measured and never sent."""
+    from modelmri import session
+
+    run = _shareable()
+    run["provenance"]["architecture"] = ""
+    client.app.state.image.last_run = run
+    r = client.post("/api/image/share", json={})
+    assert r.status_code == 200
+    parsed = session.parse(r.content)
+    assert parsed.image["provenance"]["architecture"] == ""
+
+
+def test_the_load_route_prices_the_resident_image_pipeline_too(client):
+    """`/api/image/load` counted the resident TEXT model and nothing else, so a
+    machine already holding an image pipeline was quoted as though it held
+    none of it -- and `ImageHandle.load` builds the new pipeline before
+    dropping the old, so both are resident across the call. The guard that
+    exists to refuse before an OOM approved the load, and the OOM arrived as a
+    500 with a traceback.
+
+    Driven through the ROUTE rather than through `resident_bytes` alone: a unit
+    test of the counter passes whether or not anything calls it, which
+    mutation testing confirmed by deleting the call and staying green.
+    """
+    import torch
+
+    handle = client.app.state.image
+
+    class Pipe:
+        def __init__(self):
+            self.unet = torch.nn.Linear(64, 64)
+            # Neither holds weights and neither may raise: a scheduler has no
+            # `named_parameters`, and most modern pipelines carry
+            # `safety_checker` as None.
+            self.scheduler = object()
+            self.safety_checker = None
+
+    handle.pipe = Pipe()
+    priced = {}
+
+    def capture(repo, **kw):
+        priced.update(kw)
+        raise RuntimeError("stop here -- what was quoted is the whole question")
+
+    handle.load = capture
+    try:
+        client.post("/api/image/load", json={"repo": "stabilityai/sd-turbo"})
+    finally:
+        del handle.load
+        handle.pipe = None
+
+    assert priced["already_held_bytes"] == (64 * 64 + 64) * 4

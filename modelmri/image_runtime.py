@@ -402,6 +402,46 @@ class ImageHandle:
 
     # ------------------------------------------------------------- loading
 
+    def resident_bytes(self) -> int:
+        """What THIS pipeline is holding in memory right now, or 0.
+
+        The mirror of the text side's count, and it exists for the same
+        arithmetic: `/api/image/load` priced a second pipeline against the
+        resident TEXT model alone, so a machine already holding an image
+        pipeline was quoted as if it held nothing. `load` does not drop the old
+        pipeline before building the new one -- both are resident across the
+        call -- so the guard that exists to refuse before an OOM approved the
+        load and the OOM arrived as a 500.
+
+        Measured off the live components rather than from the checkpoint on
+        disk, for the reason the text side gives: what matters is what is in
+        memory NOW, which differs from the file whenever a dtype was cast at
+        load. Components that are not modules (a scheduler, a tokenizer, a
+        `safety_checker` loaded as None) hold no weights and contribute
+        nothing.
+        """
+        pipe = self.pipe
+        if pipe is None:
+            return 0
+        from . import weights_table
+
+        total = 0
+        for name in WEIGHTED_COMPONENTS:
+            part = getattr(pipe, name, None)
+            if part is None or not callable(getattr(part, "named_parameters", None)):
+                continue
+            try:
+                total += sum(
+                    row.bytes or 0 for row, _ in weights_table.rows_from_module(part)
+                )
+            except Exception:
+                # A component this cannot walk is counted as 0 rather than
+                # failing the load it was called to price. Under-counting one
+                # part is a worse quote; refusing every load because one
+                # exotic component has no `named_parameters` is worse still.
+                continue
+        return total
+
     def load(
         self,
         repo: str,
@@ -527,6 +567,19 @@ class ImageHandle:
                 variant=sizing.variant or None,
             )
             self.pipe = pipe
+            # DROPPED WITH THE MODEL IT BELONGS TO, exactly as `unload` drops
+            # it and for exactly that reason -- which is the bug: `unload`
+            # cleared this and `load` did not, so loading a second checkpoint
+            # over a resident one left the FIRST model's run shareable under
+            # the second one's name. The comment in `unload` said a left-behind
+            # run "would be shareable as though the next checkpoint had
+            # produced it"; that is precisely what this path did.
+            #
+            # Cleared here, at the commit point, rather than on the way in: a
+            # load that refuses -- on the scan, on the capacity guard, on a
+            # missing variant -- leaves the resident pipeline untouched, and
+            # its run is still that pipeline's run.
+            self.last_run = {}
             # Best-effort and NEVER fatal: a diffusion pipeline has no image
             # processor and does not want one, so its absence must not fail a
             # load. What must not happen is a measurement that needs it
