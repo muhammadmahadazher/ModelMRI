@@ -3416,6 +3416,156 @@ class ModelRuntime:
             self._last_lens = {**out, "epoch": self.epoch}
             return out
 
+    def token_anchors(self, position: int | None = None, **kw) -> dict:
+        """The smallest set of the prompt's own tokens that HOLDS the answer.
+
+        The opposite question from `attribute_tokens`, and the pair is the
+        point: that one masks a token out and measures what breaks — necessity.
+        This one keeps a few and perturbs everything else, and asks whether the
+        prediction survives — sufficiency. A token can be necessary and not
+        sufficient, and both rankings are real; conflating them is the mistake
+        `anchors.py` was written against.
+        """
+        from . import anchors as anchors_mod
+        from . import attribute
+
+        with self._lock:
+            self._require_live_generation(
+                "Generate something first, then ask which of its tokens hold "
+                "the answer on their own."
+            )
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise BadRequest(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+            control = attribute.control_token_ids(self.tokenizer)
+            pool, perturbation = anchors_mod.donor_pool(
+                self.tokenizer, control_ids=control
+            )
+            out = anchors_mod.find_anchor(
+                self.model,
+                self.last_ids.unsqueeze(0).to(self.device),
+                position=position,
+                pool=pool,
+                perturbation=perturbation,
+                control_ids=control,
+                typed_span=self.last_user_span,
+                n_prompt=int(self.last_n_prompt_tokens or 0),
+                decode=lambda t: self.tokenizer.decode([t]),
+                **kw,
+            )
+            out["receipt"] = self.receipt("anchors", position=position, **kw)
+            return out
+
+    def token_gradients(self, position: int | None = None, **kw) -> dict:
+        """Integrated gradients over the input embeddings, with the gap named.
+
+        NOT a causal measurement, and the module says so at length: a gradient
+        answers what the output was sensitive to in the limit of an
+        infinitesimal nudge, where `attribute_tokens` answers what happens when
+        a token is actually removed. Both are here because they disagree, and
+        the completeness gap is what says whether this one converged at all.
+        """
+        from . import gradients as grad_mod
+
+        with self._lock:
+            self._require_live_generation(
+                "Generate something first, then attribute it to its inputs."
+            )
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise BadRequest(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+            out = grad_mod.integrated_gradients(
+                self.model,
+                self.tokenizer,
+                self.last_ids.to(self.device),
+                position=position,
+                **kw,
+            ).to_dict()
+            out["receipt"] = self.receipt("gradients", position=position, **kw)
+            return out
+
+    def patch_screen(self, clean: str, corrupt: str, **kw) -> dict:
+        """Rank patching sites cheaply, then check the screen against the exact
+        grid on the few it shortlisted.
+
+        A SCREEN, and the payload says so in its own field names: the numbers
+        are a first-order approximation and the module measures its own
+        agreement with the thing it approximates rather than asking to be
+        trusted.
+        """
+        from . import patch_screen as screen_mod
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Screening patch sites means running "
+                    "the model forward and backward, and a `.mri` carries "
+                    "activations rather than the weights that produced them."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no gradient to take. "
+                    "Load the same checkpoint through HuggingFace."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            blocks = decoder_blocks(self.model)
+            if blocks is None:
+                raise Refusal(
+                    "this architecture publishes no decoder blocks, so there "
+                    "are no patching sites to screen."
+                )
+            out = screen_mod.screen(
+                self.model,
+                self.tokenizer,
+                list(blocks),
+                clean,
+                corrupt,
+                device=self.device,
+                **kw,
+            )
+            out["receipt"] = self.receipt("patch_screen", **kw)
+            return out
+
+    def neuron_evidence(
+        self, texts: list[str], neuron: int, *, layer: int, top_k: int = 10
+    ) -> dict:
+        """What one MLP neuron fires on, for a model that has no SAE.
+
+        A neuron browser is not a worse SAE, it is a blunter instrument —
+        neurons are polysemantic, which is the entire reason SAEs exist — and
+        the module says so where a reader will see it rather than in a
+        footnote.
+        """
+        from . import neurons as neuron_mod
+
+        with self._lock:
+            self._weights_only("what a neuron fires on")
+            block = self._block(layer)
+            out = neuron_mod.evidence(
+                self.model,
+                block,
+                self.tokenizer,
+                [str(t) for t in texts],
+                neuron,
+                device=self.device,
+                top_k=top_k,
+            )
+            out["receipt"] = self.receipt(
+                "neuron_evidence", layer=layer, neuron=neuron, n_sequences=len(texts)
+            )
+            return out
+
     def attribute_tokens(self, position: int | None = None) -> dict:
         """Rank the prompt's own tokens by how far masking one moves the answer.
 

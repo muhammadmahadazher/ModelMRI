@@ -79,6 +79,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/attention/types` | Head Types |
 | `GET` | `/api/vla/attention` | Vla Attention |
 | `GET` | `/api/vla/attention/meta` | Vla Attention Meta |
+| `POST` | `/api/attention/anchors` | Token Anchors |
+| `POST` | `/api/attention/gradients` | Token Gradients |
 | `POST` | `/api/attention/head/evidence` | Head Evidence |
 
 
@@ -121,6 +123,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/vla/episodes` | Vla Episodes |
 | `GET` | `/api/vla/frame` | Vla Frame |
 | `GET` | `/api/vla/occlude/cost` | Vla Occlude Cost |
+| `GET` | `/api/vla/ood` | Vla Ood Score |
+| `GET` | `/api/vla/ood/cost` | Vla Ood Cost |
 | `GET` | `/api/vla/sweep/cost` | Vla Sweep Cost |
 | `POST` | `/api/vla/actions/compare` | Vla Actions Compare |
 | `POST` | `/api/vla/actions/knockout` | Vla Actions Knockout |
@@ -207,10 +211,12 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/judge` | Judge Score |
 | `POST` | `/api/judge/plan` | Judge Plan |
 | `POST` | `/api/lens/tune` | Train Tuned Lens |
+| `POST` | `/api/neurons/evidence` | Neuron Evidence |
 | `POST` | `/api/otel/v1/traces` | Otel Ingest |
 | `POST` | `/api/patch` | Patch Trace |
 | `POST` | `/api/patch/graph` | Patch Graph |
 | `POST` | `/api/patch/path` | Path Trace |
+| `POST` | `/api/patch/screen` | Patch Screen |
 | `POST` | `/api/patchscope` | Patchscope |
 | `POST` | `/api/probe` | Probe Layers |
 | `POST` | `/api/quantdiff/behaviour` | Quantdiff Behaviour |

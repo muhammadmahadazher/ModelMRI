@@ -386,6 +386,103 @@ class VLADatasetRequest(Body):
     repo_id: str = Field(min_length=1, max_length=200)
 
 
+class RobotExportRequest(Body):
+    """Write a robot finding into a container Foxglove already opens.
+
+    NO PATH. The caller names a FILE STEM and the server decides where it
+    lands, under its own exports directory. Every other file route here reads
+    a path and is guarded by who may ask or by which roots it may touch;
+    neither guard fits a WRITE — `resolve_under_roots` refuses a path that
+    does not exist yet, which is every new file — so the path is not a
+    parameter at all. `serve_viewer` sanitises a stem the same way and for the
+    same reason.
+    """
+
+    #: Rebuilt character by character rather than escaped: anything outside
+    #: this alphabet could walk the path or collide with a sibling.
+    name: str = Field(default="", max_length=60)
+    #: "mcap" today. ".rrd" is refused with its reasons — see `robot_export`.
+    container: str = Field(default="mcap", min_length=1, max_length=16)
+    #: What the sweep's numbers are numbers OF. A measurement written into
+    #: another tool's timeline with no unit is a line on a chart.
+    resolution: str = Field(default="", max_length=400)
+
+
+class AnchorRequest(Body):
+    """Which prediction to find a sufficient token set for.
+
+    `position` defaults to the last PROMPT token, the same expression
+    `attribute_tokens` uses and for the same reason: that distribution is the
+    model's answer before any of its own output feeds back in.
+    """
+
+    position: int | None = Field(default=None, ge=0)
+    #: How many candidate tokens the search may consider, and how large the
+    #: anchor may grow. Both caps are reported in the answer rather than
+    #: applied quietly.
+    max_candidates: int = Field(default=12, ge=1, le=64)
+    max_size: int = Field(default=4, ge=1, le=16)
+    #: Draws behind the published precision. The target below must be
+    #: REACHABLE at this many draws — Wilson's lower bound for a perfect run
+    #: is `n/(n+z**2)`, so 0.95 needs 73 — and the module refuses the pair
+    #: rather than walking into an anchor it cannot certify.
+    n_samples: int = Field(default=64, ge=2, le=4096)
+    target: float = Field(default=0.90, gt=0.0, lt=1.0)
+    seed: int = Field(default=0, ge=0, lt=2**31)
+
+
+class GradientRequest(Body):
+    """Integrated gradients over the input embeddings, and its own resolution.
+
+    `steps` is the approximation's resolution and the completeness gap it
+    produces is reported beside the attributions — a gap that is a large share
+    of the measured move means the bars do not add up to what happened, and
+    the module refuses rather than publishing them as a decomposition.
+    """
+
+    position: int | None = Field(default=None, ge=0)
+    #: "zero", or whatever else the module offers; named in the answer,
+    #: because a different baseline is a different attribution.
+    baseline: str = Field(default="zero", min_length=1, max_length=32)
+    target_kind: str = Field(default="logprob", min_length=1, max_length=32)
+    steps: int = Field(default=32, ge=2, le=1024)
+    #: "refuse" or "report". The default refuses a run whose attributions do
+    #: not sum to the move they claim to explain.
+    on_gap: str = Field(default="refuse", min_length=1, max_length=16)
+
+
+class PatchScreenRequest(Body):
+    """A clean/corrupt pair, screened before the exact grid runs.
+
+    The screen is a first-order approximation and its numbers are NOT
+    `patch.trace`'s. It measures its own agreement with the exact answer on
+    the few sites it shortlists, and that agreement travels in the payload.
+    """
+
+    clean: str = Field(min_length=1, max_length=8000)
+    corrupt: str = Field(min_length=1, max_length=8000)
+    shortlist: int = Field(default=12, ge=1, le=256)
+    #: How many of the shortlist get the EXACT patch, to measure the screen
+    #: against. Below this there is no agreement figure worth publishing.
+    verify: int = Field(default=6, ge=2, le=64)
+
+
+class NeuronEvidenceRequest(Body):
+    """One MLP neuron, over the reader's own corpus.
+
+    For the models with no published SAE, which is most of them. A neuron
+    browser is a blunter instrument than an SAE rather than a worse one —
+    neurons are polysemantic, and that is the whole reason SAEs exist.
+    """
+
+    texts: list[str] | None = None
+    file: str | None = Field(default=None, max_length=4096)
+    label: str = Field(default="", max_length=200)
+    layer: int = Field(default=0, ge=0)
+    neuron: int = Field(default=0, ge=0)
+    top_k: int = Field(default=10, ge=1, le=100)
+
+
 class HeadEvidenceRequest(Body):
     """One head, one corpus. A real model rather than a raw `Request`.
 
@@ -2249,6 +2346,204 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/attention/types")
+
+    # NO `/api/vla/export` ROUTE YET, and the reason is a gap rather than a
+    # decision. `robot_export.write` takes a `Sweep` — rows plus the metric,
+    # unit, dataset, policy, camera and strides that say what the rows ARE —
+    # and nothing here can hand it one after the fact: `vla_sweep.run` returns
+    # a Sweep and `vla_sweep.stored` returns bare rows, so a route would have
+    # to rebuild the rest by guessing at a unit and a frame total. Writing a
+    # measurement into somebody else's timeline with an invented unit is the
+    # exact failure `robot_export`'s own docstring is about.
+    #
+    # So the export is a library and CLI feature until `vla_sweep` grows a
+    # retrieval that returns what it stored. Stated here rather than left as
+    # an absence, because the next person to look will otherwise assume it was
+    # forgotten.
+
+    @app.get("/api/vla/ood")
+    async def vla_ood_score(
+        episode: int = 0,
+        space: str = "observation.state",
+        frame_stride: int = 1,
+        max_frames: int = 5000,
+    ):
+        """How unusual each frame of an episode is, against the rest of the set.
+
+        A DISTANCE AND A PERCENTILE, never a verdict. "OOD" as a boolean would
+        be a threshold somebody chose, and this project does not ship those —
+        so the reference set is named in every payload, the null it is gated
+        on is measured here, and what a reader does with the number is theirs.
+        """
+        from . import vla_ood
+
+        def run():
+            return vla_ood.score_episode(
+                _reader(),
+                episode,
+                space=space,
+                frame_stride=frame_stride,
+                max_frames=max_frames,
+            ).to_dict()
+
+        try:
+            return await asyncio.to_thread(run)
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/ood")
+
+    @app.get("/api/vla/ood/cost")
+    async def vla_ood_cost(
+        episode: int = 0, space: str = "observation.state", frame_stride: int = 1
+    ):
+        """What that will read, before it reads it."""
+        from . import vla_ood
+
+        try:
+            return await asyncio.to_thread(
+                lambda: vla_ood.estimate(
+                    _reader(), episode, space=space, frame_stride=frame_stride
+                )
+            )
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/ood/cost")
+
+    @app.post("/api/attention/anchors")
+    async def token_anchors(req: AnchorRequest):
+        """The smallest set of prompt tokens that HOLDS the answer on its own.
+
+        The other half of `/api/attention/attribute`, and the pair is the
+        point: that route masks a token out and measures what breaks
+        (necessity), this one keeps a few and perturbs the rest (sufficiency).
+        A token can be necessary and not sufficient. Both are real, they
+        disagree, and a reader shown one of them alone will read it as both.
+        """
+        try:
+            return await asyncio.to_thread(
+                lambda: runtime.token_anchors(
+                    req.position,
+                    max_candidates=req.max_candidates,
+                    max_size=req.max_size,
+                    n_samples=req.n_samples,
+                    target=req.target,
+                    seed=req.seed,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/anchors")
+
+    @app.post("/api/attention/gradients")
+    async def token_gradients(req: GradientRequest):
+        """Integrated gradients over the inputs, with the completeness gap.
+
+        NOT a causal measurement, and this is the one place in the tool where
+        that distinction has to be read rather than assumed: a gradient says
+        what the output was sensitive to in the limit of an infinitesimal
+        nudge, and `/api/attention/attribute` says what happens when a token is
+        actually removed. The gap between the attributions and the move they
+        claim to explain travels in the payload, because a large one means
+        they are not a decomposition of anything.
+        """
+        try:
+            return await asyncio.to_thread(
+                lambda: runtime.token_gradients(
+                    req.position,
+                    baseline=req.baseline,
+                    target_kind=req.target_kind,
+                    steps=req.steps,
+                    on_gap=req.on_gap,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/gradients")
+
+    @app.post("/api/patch/screen")
+    async def patch_screen(req: PatchScreenRequest):
+        """Rank patching sites in two passes instead of hundreds — and measure
+        the screen against the exact grid on the few it shortlists.
+
+        A screen whose agreement with the thing it screens for was never
+        measured is a guess with a leaderboard, so that agreement is computed
+        here rather than asserted, and the saving in passes is reported beside
+        it. The numbers are structurally distinguishable from `/api/patch`'s:
+        different field names and an explicit `approximate` flag.
+        """
+        try:
+            return await asyncio.to_thread(
+                lambda: runtime.patch_screen(
+                    req.clean,
+                    req.corrupt,
+                    shortlist=req.shortlist,
+                    verify=req.verify,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/patch/screen")
+
+    @app.post("/api/neurons/evidence")
+    async def neuron_evidence(req: NeuronEvidenceRequest, request: Request):
+        """What one MLP neuron fires on, for a model with no published SAE.
+
+        Which is most models. `/api/features/evidence` needs an SAE in the
+        registry and answers nothing without one; this reads the neurons
+        directly. Blunter, and it says so: neurons are polysemantic, which is
+        the entire reason sparse autoencoders exist.
+        """
+        texts = req.texts
+        label = req.label
+        try:
+            if req.file:
+                refusal = _not_from_this_machine(
+                    request, "Reading a corpus off this machine's disk"
+                )
+                if refusal is not None:
+                    return refusal
+                from . import feature_corpus as fc
+
+                texts, label = fc.load_corpus(req.file)
+            if not texts:
+                return JSONResponse(
+                    {
+                        "error": "a neuron sweep needs text to read. Pass "
+                        "`texts` (a list of strings) or `file` (a .txt or "
+                        ".jsonl). Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.neuron_evidence(
+                    texts, req.neuron, layer=req.layer, top_k=req.top_k
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/neurons/evidence")
 
     @app.post("/api/attention/head/evidence")
     async def head_evidence(req: HeadEvidenceRequest, request: Request):
