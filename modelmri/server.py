@@ -3836,14 +3836,22 @@ def create_app(
         was = handle.status()
 
         try:
-            run = await asyncio.to_thread(
-                image_attention.capture,
-                handle.require(),
-                req.prompt,
-                model_name=was.repo,
-                steps=req.steps,
-                seed=req.seed,
-            )
+            # ONE MEASUREMENT AT A TIME ON THIS PIPELINE. These read
+            # activations by hooking the DENOISER MODULE, and a hook belongs
+            # to the module rather than to the call that installed it -- so a
+            # second capture running now drives its own steps through the
+            # same hook and both results end up holding a mixture of two
+            # runs. Neither raises; both look like a measurement of their own
+            # prompt. See `ImageHandle.measuring`.
+            with handle.measuring("capture cross-attention"):
+                run = await asyncio.to_thread(
+                    image_attention.capture,
+                    handle.require(),
+                    req.prompt,
+                    model_name=was.repo,
+                    steps=req.steps,
+                    seed=req.seed,
+                )
             # A capture with no strip beside it is a legitimate share on its
             # own: capturing the maps never decodes a frame, which is most of
             # the cost. `from_attention` says so in the file rather than
@@ -3996,15 +4004,23 @@ def create_app(
             # shown is exactly what was built for it rather than whatever a
             # convenience path guessed.
             tensor = image_input.to_tensor(picture, processor, device=was.device)
-            found = await asyncio.to_thread(
-                image_cv.predict,
-                handle.require(),
-                tensor,
-                top_k=req.top_k,
-                processor=processor,
-                mask_threshold=req.mask_threshold,
-                model_name=was.repo,
-            )
+            # ONE MEASUREMENT AT A TIME ON THIS PIPELINE. These read
+            # activations by hooking the DENOISER MODULE, and a hook belongs
+            # to the module rather than to the call that installed it -- so a
+            # second capture running now drives its own steps through the
+            # same hook and both results end up holding a mixture of two
+            # runs. Neither raises; both look like a measurement of their own
+            # prompt. See `ImageHandle.measuring`.
+            with handle.measuring("read this model out"):
+                found = await asyncio.to_thread(
+                    image_cv.predict,
+                    handle.require(),
+                    tensor,
+                    top_k=req.top_k,
+                    processor=processor,
+                    mask_threshold=req.mask_threshold,
+                    model_name=was.repo,
+                )
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)
@@ -4181,18 +4197,26 @@ def create_app(
         was = handle.status()
 
         try:
-            found = await asyncio.to_thread(
-                image_steps.filmstrip,
-                handle.require(),
-                req.prompt,
-                model_name=was.repo,
-                seed=req.seed,
-                steps=req.steps,
-                every=req.every,
-                at=req.at,
-                include_final=req.include_final,
-                frame_pixels=req.frame_pixels,
-            )
+            # ONE MEASUREMENT AT A TIME ON THIS PIPELINE. These read
+            # activations by hooking the DENOISER MODULE, and a hook belongs
+            # to the module rather than to the call that installed it -- so a
+            # second capture running now drives its own steps through the
+            # same hook and both results end up holding a mixture of two
+            # runs. Neither raises; both look like a measurement of their own
+            # prompt. See `ImageHandle.measuring`.
+            with handle.measuring("film this run"):
+                found = await asyncio.to_thread(
+                    image_steps.filmstrip,
+                    handle.require(),
+                    req.prompt,
+                    model_name=was.repo,
+                    seed=req.seed,
+                    steps=req.steps,
+                    every=req.every,
+                    at=req.at,
+                    include_final=req.include_final,
+                    frame_pixels=req.frame_pixels,
+                )
         except (Refusal, BadRequest) as err:
             code = 422 if isinstance(err, BadRequest) else 409
             return JSONResponse({"error": err.sentence}, status_code=code)

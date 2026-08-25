@@ -333,6 +333,10 @@ class ImageHandle:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # NOT `_lock`. That one is the load slot, held across a multi-gigabyte
+        # download; a capture waiting behind it would be waiting for something
+        # unrelated to it. See `measuring`.
+        self._measure_lock = threading.Lock()
         self.pipe = None
         # The checkpoint's OWN preprocessor, and `None` when it did not ship
         # one. It is not a convenience: a ViT is trained on a specific size
@@ -613,6 +617,45 @@ class ImageHandle:
                 load_seconds=round(seconds, 2),
             )
             return self.status_
+
+    @contextmanager
+    def measuring(self, what: str) -> Iterator[None]:
+        """One capture at a time on this pipeline.
+
+        SEPARATE FROM `_load_slot`, and deliberately: that one guards the
+        weights arriving, this one guards a measurement reading them. A load
+        can take minutes and a capture seconds, so sharing a slot would make
+        every filmstrip wait behind a download that has nothing to do with it.
+
+        WHY THIS EXISTS AT ALL. `image_steps.watch` installs a forward hook on
+        the DENOISER MODULE and fills a per-call collector from it. The hook
+        belongs to the module, not to the call -- so a second capture running
+        at the same time drives its own denoising steps through the same hook,
+        and both collectors end up holding a mixture of two runs. Neither
+        raises. Both return a filmstrip that looks exactly like a measurement
+        of its own prompt.
+
+        This is the image half of the defect `patch.trace` had against the
+        text runtime's generation thread, where a one-token decode step landed
+        in a patch cache and produced an IndexError. There the shapes happened
+        to disagree; here they do not, so nothing would have noticed.
+
+        `handle.last_run` is the second casualty: two captures racing means
+        whichever finishes last owns it, and the share carries that one under
+        whatever the panel happens to say.
+        """
+        if not self._measure_lock.acquire(timeout=0):
+            raise Refusal(
+                f"Cannot {what} yet: another measurement is already running on "
+                f"this pipeline. Both read activations by hooking the denoiser, "
+                f"so running them together would mix one run's steps into the "
+                f"other's -- and neither result would say so. Wait for the one "
+                f"in flight to finish."
+            )
+        try:
+            yield
+        finally:
+            self._measure_lock.release()
 
     @contextmanager
     def _load_slot(self, what: str) -> Iterator[None]:
