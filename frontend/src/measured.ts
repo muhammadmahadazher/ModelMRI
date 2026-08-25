@@ -195,3 +195,33 @@ export function howLong(ms: number | null): string {
   const m = Math.floor(ms / 60_000);
   return `${m}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
+
+/**
+ * `n` with the suffix English actually uses, and thousands separated.
+ *
+ * The mirror of `fmt.ordinal` in the Python half, and it exists for the same
+ * reason and against the same bug: appending "th" to an integer is right for
+ * 4 through 10 and wrong for every other digit. The robot panel printed
+ * "every 2th eligible row" beside a reference set of 12,745 rows — a typo in
+ * the sentence a reader is being asked to trust a measurement through.
+ *
+ * `ordinal(1)` → "1st", `ordinal(11)` → "11th", `ordinal(1013)` → "1,013th".
+ */
+export function ordinal(n: number): string {
+  const whole = Math.trunc(n);
+  const last2 = Math.abs(whole) % 100;
+  const last1 = Math.abs(whole) % 10;
+  // 11, 12 and 13 take "th" despite their last digit — and so do 111 and
+  // 1013, which is what makes the last digit alone the wrong thing to read.
+  const suffix =
+    last2 === 11 || last2 === 12 || last2 === 13
+      ? "th"
+      : last1 === 1
+        ? "st"
+        : last1 === 2
+          ? "nd"
+          : last1 === 3
+            ? "rd"
+            : "th";
+  return `${whole.toLocaleString()}${suffix}`;
+}

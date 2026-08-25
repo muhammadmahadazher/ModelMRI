@@ -42,6 +42,7 @@ function vec(xs: number[]): string {
 }
 
 import EpisodeTimeline from "./EpisodeTimeline";
+import EpisodeOod from "./EpisodeOod";
 import VLACausal from "./VLACausal";
 import VLAAudit from "./VLAAudit";
 import VLAActions from "./VLAActions";
@@ -244,6 +245,7 @@ export default function VLAPanel() {
               </div>
               {/* No `onSeek`: there is no frame here for a click to move. */}
               <EpisodeTimeline episode={episode} ready />
+              <EpisodeOod episode={episode} ready />
             </div>
           )}
           <div className="row">
@@ -453,6 +455,13 @@ export default function VLAPanel() {
           series are the recording's own parquet columns, so this reads with
           no model in the process at all. */}
       <EpisodeTimeline episode={episode} ready={Boolean(ds)} onSeek={setT} />
+
+      {/* The same episode measured a second way, on the same `t`. It is its
+          own block rather than another lane because it is gated on its own
+          cost — two passes over every parquet row of the dataset, against the
+          timeline's one episode-sized read — and a control that expensive
+          should be pressed rather than scrolled past. */}
+      <EpisodeOod episode={episode} ready={Boolean(ds)} />
 
       {/* Directly under the attention map, on purpose: the causal map is
           meant to be read against it, and the number that matters most is how

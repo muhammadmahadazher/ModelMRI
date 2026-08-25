@@ -82,3 +82,66 @@ def test_the_disk_refusal_names_a_size_it_can_see():
     assert _human(4.0) == "4.0 GB"
     # The TB arm is this function's own — `bytes_si` stops at GB.
     assert _human(1200.0) == "1.2 TB"
+
+
+# ---------------------------------------------------------------- ordinals
+
+
+@pytest.mark.parametrize(
+    "n,want",
+    [
+        # The four that "th" gets right, and the six digits it does not.
+        (1, "1st"),
+        (2, "2nd"),
+        (3, "3rd"),
+        (4, "4th"),
+        (9, "9th"),
+        # The teens are "th" despite their last digit, which is the rule a
+        # last-digit lookup alone gets wrong.
+        (11, "11th"),
+        (12, "12th"),
+        (13, "13th"),
+        (21, "21st"),
+        (22, "22nd"),
+        (23, "23rd"),
+        (101, "101st"),
+        (111, "111th"),
+        (112, "112th"),
+        (113, "113th"),
+        # Separated, because these appear in sentences beside row counts that
+        # are separated too.
+        (1013, "1,013th"),
+        (1021, "1,021st"),
+    ],
+)
+def test_an_ordinal_carries_the_suffix_english_uses(n, want):
+    assert fmt.ordinal(n) == want
+
+
+def test_no_sentence_in_the_package_builds_an_ordinal_by_appending_th():
+    """The defect this exists to stop, and it shipped four times.
+
+    `f"{n}th"` is right for 4 through 10 and wrong for every other digit. On
+    the dataset the OOD reference samples from it read "every 2th eligible
+    row"; the scorer's refusal read "the 1th output has nothing to compare
+    against". A reader is being asked to trust a measurement through those
+    sentences.
+
+    Only INTEGER-valued ordinals are the mistake. `"98.486th percentile"` is
+    conventional and correct, so a `{...:.3f}th` is left alone — the pattern
+    below deliberately does not match a format spec carrying a decimal place.
+    """
+    import re
+    from pathlib import Path
+
+    # `{name}th` or `{name:,}th` — an interpolation with no decimal places,
+    # immediately followed by the suffix.
+    appended = re.compile(r"\{[^{}:]+(?::[^{}.]*)?\}th\b")
+    guilty = []
+    for path in sorted((Path(fmt.__file__).parent).rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for i, line in enumerate(path.read_text("utf-8").splitlines(), 1):
+            if appended.search(line):
+                guilty.append(f"{path.name}:{i}: {line.strip()}")
+    assert not guilty, "use fmt.ordinal:\n  " + "\n  ".join(guilty)

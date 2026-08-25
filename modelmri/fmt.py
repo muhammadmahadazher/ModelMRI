@@ -92,6 +92,34 @@ def measured_value(value: float, decimals: int = 4) -> float:
     return round(value, decimals)
 
 
+def ordinal(n: int) -> str:
+    """`n` with the suffix English actually uses, and thousands separated.
+
+    Four sentences in this package built one by appending "th" to an integer,
+    which is right for 4 through 10 and wrong for every other digit. On the
+    dataset the OOD reference is sampled from, the sentence read "every 2th
+    eligible row"; the scorer's own refusal read "the 1th output has nothing
+    to compare against". These are sentences a reader is being asked to trust
+    a measurement through, and a typo in one of them is not free.
+
+    >>> ordinal(1), ordinal(2), ordinal(3), ordinal(4)
+    ('1st', '2nd', '3rd', '4th')
+    >>> ordinal(11), ordinal(12), ordinal(13)
+    ('11th', '12th', '13th')
+    >>> ordinal(21), ordinal(102), ordinal(1013)
+    ('21st', '102nd', '1,013th')
+    """
+    n = int(n)
+    # 11, 12 and 13 are "th" despite ending in 1, 2, 3 — and so are 111, 212
+    # and 1013, which is what makes the last digit alone the wrong thing to
+    # look at.
+    if abs(n) % 100 in (11, 12, 13):
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(abs(n) % 10, "th")
+    return f"{n:,}{suffix}"
+
+
 def bytes_si(n: float) -> str:
     """A byte count in the unit that keeps its significant digits.
 

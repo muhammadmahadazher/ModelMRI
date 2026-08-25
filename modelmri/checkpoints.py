@@ -36,6 +36,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import vla
 from .errors import BadRequest
+from .fmt import ordinal as _ordinal
 
 # Frames per comparison. Each costs one tower pass per side, and the loads
 # dominate — so this is about the table and the wait rather than memory.
@@ -127,8 +128,15 @@ class Comparison:
     def means(self) -> str:
         parts = [
             f"{self.checkpoint_a} against {self.checkpoint_b} over "
-            f"{self.n_frames} frames of {self.n_episodes} episodes, every "
-            f"{self.frame_stride}th frame, through the {self.camera} camera "
+            f"{self.n_frames} frames of {self.n_episodes} episodes, "
+            # "every 1st frame" is not English, and a stride of 1 is the
+            # default here — so the ordinary case gets the ordinary sentence.
+            + (
+                "every frame"
+                if self.frame_stride == 1
+                else f"every {_ordinal(self.frame_stride)} frame"
+            )
+            + f", through the {self.camera} camera "
             f"of {self.dataset}. Both towers saw identical frames."
         ]
         first = self.first_divergent

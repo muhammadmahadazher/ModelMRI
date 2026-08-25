@@ -74,6 +74,7 @@ import unicodedata
 from dataclasses import dataclass, field
 
 from .errors import BadRequest
+from .fmt import ordinal as _ordinal
 
 # The longest pair `edit_similarity` will align. The dynamic programme is
 # O(len(a) * len(b)) cells and there is no way around that; the two-row form
@@ -2125,7 +2126,7 @@ def score_rows(
     for index, output in enumerate(outputs):
         if per_row is not None and index >= len(per_row):
             raise BadRequest(
-                f"there are more outputs than references — the {index + 1:,}th "
+                f"there are more outputs than references — the {_ordinal(index + 1)} "
                 f"output has nothing to compare against."
             )
         this = per_row[index] if per_row is not None else reference

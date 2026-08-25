@@ -5309,3 +5309,174 @@ export const patternsAcross = (name: string, limit: number) =>
     : fetch(
         `/api/patterns/across?name=${encodeURIComponent(name)}&limit=${limit}`,
       ).then((r) => json<PatternsAcrossRuns>(r));
+
+/** How unusual one frame is, against a NAMED reference set.
+ *
+ *  A distance and a percentile, never a verdict. "OOD" as a boolean would be
+ *  a threshold somebody chose, and this project does not ship those. */
+export interface OodFrame {
+  t: number;
+  /** Mahalanobis distance from the reference mean, over the directions that
+   *  reference set actually varies in — so it is in units of that set's own
+   *  spread and nothing else. */
+  distance: number;
+  /** Share of reference rows AT OR BELOW this distance. Exact, not read off
+   *  the histogram. */
+  percentile: number;
+  /** What one row of the sample is worth, in percentage points. A percentile
+   *  taken in a sample of N cannot be resolved finer than one row. */
+  percentile_resolution: number;
+  /** Further out than EVERY reference row. The percentile then reads 100.0,
+   *  which otherwise looks like "measured at exactly the top". */
+  beyond_reference_max: boolean;
+  /** Movement along directions the reference set never varied in, in the
+   *  column's own raw units — a different quantity on a different scale, so
+   *  it is beside the distance rather than folded into it. `null` when the
+   *  reference varied everywhere. */
+  off_manifold: number | null;
+  /** Beat the largest distance any held-out in-distribution row reached.
+   *  `null` — never `false` — when no null could be drawn. */
+  clears_null: boolean | null;
+}
+
+export interface OodDistances {
+  min: number;
+  max: number;
+  mean: number;
+  count: number;
+  percentile_levels: number[];
+  percentiles: { q: number; value: number }[];
+  /** Nearest rank over every reference distance, held exactly. These are NOT
+   *  read off the histogram below, which exists for drawing. */
+  percentile_method: string;
+  histogram: { bin_edges: number[]; counts: number[]; bin_width: number };
+}
+
+/** What the distances were measured against. Without this the number means
+ *  nothing, which is why it travels in every payload rather than in a tooltip. */
+export interface OodReference {
+  repo_id: string;
+  space: string;
+  /** Width taken from the first readable row, beside what `info.json` claims.
+   *  Both, because when they disagree one is wrong and nothing here can say
+   *  which. */
+  dimensions: number;
+  dimensions_declared: number | null;
+  rows_total: number;
+  rows_with_column: number;
+  rows_eligible: number;
+  rows_read: number;
+  rows_malformed: number;
+  /** 1 when every eligible row was read. Above 1 this is a SAMPLE. */
+  row_stride: number;
+  sampled: boolean;
+  /** Held OUT of the reference, its mean, its covariance and its null — a
+   *  frame compared against a distribution it helped define is partly
+   *  measuring itself. */
+  excluded_episode: number | null;
+  excluded_rows: number;
+  /** The dataset's own row map, or summed episode lengths — the second is an
+   *  assumption and says so. */
+  row_span_from: string;
+  rows_per_dimension: number;
+  directions_kept: number;
+  directions_dropped: number;
+  variance_floor: number;
+  condition_ratio: number;
+  metric: string;
+  distances: OodDistances;
+  percentile_resolution: number;
+  /** The largest distance reached by rows drawn from this same dataset and
+   *  held out of the reference. `null` when none could be drawn. */
+  null_max: number | null;
+  null_draws: number;
+  /** Where the maximum of `null_draws` draws is EXPECTED to sit, from the
+   *  draw count alone. The null's RESOLUTION — not a reading of this null. */
+  null_covers_percentile: number | null;
+  /** Where `null_max` ACTUALLY landed among the reference distances. These
+   *  two are different quantities and are not expected to agree. */
+  null_max_percentile: number | null;
+  null_max_beyond_reference_max: boolean | null;
+  null_position_caveat: string;
+  null_reason: string;
+  null_description: string;
+}
+
+export interface EpisodeOod {
+  repo_id: string;
+  episode: number;
+  space: string;
+  frame_stride: number;
+  reference: OodReference;
+  /** Every scored frame in TIME order — what a per-frame chart plots. */
+  frames: OodFrame[];
+  /** The most distant, CAPPED. `n_ranked_total` is how many were scored, so
+   *  the cap is reported rather than only applied. */
+  ranked: OodFrame[];
+  n_ranked_total: number;
+  n_frames: number;
+  frames_total: number;
+  /** A sample of what could not be scored, each with a sentence. Capped;
+   *  `n_unscored` carries the true count. */
+  unscored: { t: number; why: string }[];
+  n_unscored: number;
+  seconds: number;
+  means: string;
+}
+
+/** What that read will cost, before it reads it.
+ *
+ *  `forward_passes` is 0 and says why: nothing here runs a model. The
+ *  reference set is the dataset's own recorded vectors and the distance is
+ *  arithmetic over them, so the cost is parquet rows. */
+export interface EpisodeOodCost {
+  repo_id: string;
+  episode: number;
+  space: string;
+  frame_stride: number;
+  forward_passes: number;
+  forward_passes_why: string;
+  cost_unit: string;
+  passes_over_the_data: number;
+  passes_why: string;
+  rows_total: number;
+  rows_with_column: number;
+  rows_eligible: number;
+  rows_to_read: number;
+  rows_in_episode: number;
+  rows_in_episode_shards: number;
+  row_stride: number;
+  sampled: boolean;
+  /** A ceiling, not a count: the actual figure depends on what is readable. */
+  reference_rows: number;
+  reference_rows_is_a_ceiling: boolean;
+  null_draws: number;
+  null_draws_is_a_ceiling: boolean;
+  null_reason: string;
+  frames: number;
+  frames_total: number;
+  files_total: number;
+  files_with_column: number;
+  dimensions_declared: number | null;
+  row_span_from: string;
+  readability_why: string;
+  peak_bytes: number;
+  peak_basis: string;
+  /** `null` when nothing has timed this machine's parquet reads — this is
+   *  disk-bound, and a duration measured on somebody else's disk is a number
+   *  people plan around. `seconds_from` says which of those it is. */
+  seconds: number | null;
+  seconds_from: string;
+}
+
+export const getEpisodeOod = (episode: number, space: string, frameStride = 1) =>
+  fetch(
+    `/api/vla/ood?episode=${episode}&space=${encodeURIComponent(space)}` +
+      `&frame_stride=${frameStride}`,
+  ).then((r) => json<EpisodeOod>(r));
+
+export const getEpisodeOodCost = (episode: number, space: string, frameStride = 1) =>
+  fetch(
+    `/api/vla/ood/cost?episode=${episode}&space=${encodeURIComponent(space)}` +
+      `&frame_stride=${frameStride}`,
+  ).then((r) => json<EpisodeOodCost>(r));

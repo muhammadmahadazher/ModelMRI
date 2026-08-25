@@ -1,5 +1,5 @@
 import { CSSProperties, useEffect, useState } from "react";
-import { measured, percent } from "./measured";
+import { measured, ordinal, percent } from "./measured";
 import {
   errorText,
   occludeFrame,
@@ -406,7 +406,12 @@ export default function VLACausal({
               entirely, and the top of a list is read as the worst thing there
               is. */}
           <div className="vla-verdict differ">
-            <b>Every {sweep.frame_stride}th frame.</b> This ranks{" "}
+            <b>
+              {sweep.frame_stride === 1
+                ? "Every frame."
+                : `Every ${ordinal(sweep.frame_stride)} frame.`}
+            </b>{" "}
+            This ranks{" "}
             {sweep.n_frames} of {sweep.frames_total} frames by{" "}
             <b>{sweep.metric}</b> and nothing else — the top of it is the worst
             frame <i>that was sampled</i>, which is not the same claim.

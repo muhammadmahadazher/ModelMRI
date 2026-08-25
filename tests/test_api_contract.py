@@ -244,6 +244,11 @@ RECORDED = {
         # bundle key path, api.ts interface
         (("timeline",), "EpisodeTimeline"),
         (("timeline", "tracks", 0), "TimelineTrack"),
+        (("ood",), "EpisodeOod"),
+        (("ood", "reference"), "OodReference"),
+        (("ood", "reference", "distances"), "OodDistances"),
+        (("ood", "frames", 0), "OodFrame"),
+        (("ood_cost",), "EpisodeOodCost"),
     ],
 }
 

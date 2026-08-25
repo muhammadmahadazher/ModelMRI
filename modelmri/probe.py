@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass, field
 
 from .errors import BadRequest, Refusal
 from .feature_ablate import CONTROL_SEED
+from .fmt import ordinal as _ordinal
 
 # Enforced, not documented. A probe on four examples of a 768-dimensional
 # stream separates them perfectly and means nothing; a held-out set of two
@@ -183,7 +184,7 @@ class ProbeReport:
         # expected false-positive rate is not.
         chance_warning = (
             f"ONLY {len(self.readable)} LAYER CLEARED, and sweeping "
-            f"{len(self.layers)} layers against a {NULL_HIGH}th-percentile "
+            f"{len(self.layers)} layers against a {_ordinal(NULL_HIGH)}-percentile "
             f"band produces {self.expected_false_positives} by chance — read "
             f"this as noise unless it repeats on more examples. "
             if len(self.readable) <= self.expected_false_positives + 1

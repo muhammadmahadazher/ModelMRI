@@ -8049,3 +8049,72 @@ button:disabled,
   text-align: left;
 }
 .vla-still-readable .row { justify-content: flex-start; }
+
+/* --------------------------------------------------- how unusual each frame
+   Deliberately the timeline's lane at the timeline's width: this is the same
+   episode measured a second way, and two charts of one episode that do not
+   line up are the failure the panel above exists to prevent. */
+.episode-ood { margin-top: 18px; }
+.ood-controls { align-items: center; gap: 8px; flex-wrap: wrap; }
+.ood-chips { align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ood-cost { font-variant-numeric: tabular-nums; }
+
+.ood-chart {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--color-ink) 1.5%, transparent);
+  cursor: crosshair;
+  touch-action: none;
+}
+.ood-chart svg { display: block; width: 100%; height: 96px; }
+
+.ood-line { stroke: var(--color-vla); stroke-width: 1.5; stroke-linejoin: round; }
+
+/* Two MEASURED quantities drawn where they fall, not thresholds. Dashed so
+   neither can be mistaken for a series, and distinguishable from each other
+   because a frame's position between them is the whole reading. */
+.ood-rule { stroke-width: 1; }
+.ood-rule.null { stroke: var(--sem-agent); stroke-dasharray: 5 3; }
+.ood-rule.ref  { stroke: var(--ink-4); stroke-dasharray: 2 3; }
+
+/* Past every reference row the percentile saturates at 100 and stops
+   separating frames. Marked so a reader does not read one as merely tall. */
+.ood-beyond { fill: var(--sem-error); stroke: none; }
+
+.ood-legend { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.ood-legend li { display: flex; align-items: baseline; gap: 6px; }
+.ood-swatch {
+  width: 14px;
+  height: 0;
+  flex: none;
+  align-self: center;
+  border-top: 2px dashed var(--ink-4);
+}
+.ood-swatch.null { border-top-color: var(--sem-agent); }
+.ood-swatch.ref { border-top-color: var(--ink-4); }
+
+.ood-readout {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+}
+.ood-readout > span { display: grid; gap: 1px; }
+.ood-readout b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.ood-ranked { margin-top: 10px; }
+.ood-ranked ol {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.ood-ranked li { display: flex; align-items: baseline; gap: 8px; }

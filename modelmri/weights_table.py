@@ -126,6 +126,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .errors import BadRequest, Refusal
+from .fmt import ordinal as _ordinal
 
 # How many rows a table carries by default. Large enough that every tensor of
 # an ordinary dense model fits -- Qwen3-1.7B has 311 -- and small enough that
@@ -423,7 +424,7 @@ class Health:
             if self.complete
             else (
                 f"{self.scanned:,} of its {self.elements:,} elements were read, "
-                f"every {self.stride}th one. EVERY COUNT BELOW IS A COUNT OVER "
+                f"every {_ordinal(self.stride)} one. EVERY COUNT BELOW IS A COUNT OVER "
                 f"THAT SAMPLE, not over the tensor."
             )
         )

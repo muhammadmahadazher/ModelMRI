@@ -118,6 +118,7 @@ from dataclasses import asdict, dataclass, field
 
 from . import fmt
 from .errors import BadRequest, Refusal
+from .fmt import ordinal as _ordinal
 
 # The four fills, named on every result. There is no neutral one — see the
 # module docstring — so the point of shipping several is that a finding which
@@ -734,7 +735,7 @@ class Attribution:
                 parts.append(
                     f"AND THAT SPAN IS SMALLER THAN THE PRECISION THIS IS "
                     f"REPORTED AT. The whole map fits inside one unit of the "
-                    f"{SCORE_DECIMALS}th decimal, which is also how much the "
+                    f"{_ordinal(SCORE_DECIMALS)} decimal, which is also how much the "
                     f"same sweep moves between batch sizes on a convolution — "
                     f"so the ranking above is a ranking of rounding, and no "
                     f"window here is distinguishable from any other."

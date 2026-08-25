@@ -71,6 +71,7 @@ from dataclasses import dataclass, field
 
 from . import fmt, vision_attr
 from .errors import BadRequest, Refusal
+from .fmt import ordinal as _ordinal
 from .vision_attr import SCORE_DECIMALS
 
 log = logging.getLogger(__name__)
@@ -671,7 +672,7 @@ class Prediction:
             if self.map_stride > 1:
                 parts.append(
                     f"THE MAP RETURNED HERE IS SUBSAMPLED, every "
-                    f"{self.map_stride}th cell on each axis, because the full "
+                    f"{_ordinal(self.map_stride)} cell on each axis, because the full "
                     f"one is past the {MAX_MAP_CELLS:,} cells this carries. The "
                     f"counts and areas above are from the FULL map; only the "
                     f"picture is thinned."

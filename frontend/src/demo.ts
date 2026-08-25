@@ -916,6 +916,46 @@ export async function demoFetch(
     return ok(v.timeline);
   }
 
+  // Model-free like the timeline, and far more expensive: two passes over
+  // every parquet row of the dataset to fit the reference metric, then the
+  // episode's own rows against it. 12,746 reference rows on this recording.
+  // A visitor should not have to run that to see what the readout says, so
+  // the real answer is baked — and so is the cost estimate beside it, which
+  // is the thing that tells them what running it would take on their own.
+  //
+  // THE SPACE IS PART OF THE ANSWER. A distance in `observation.state` says
+  // nothing about `action`, so a request for another column is refused by
+  // name rather than served this one's numbers under that label.
+  if (p === "/api/vla/ood" || p === "/api/vla/ood/cost") {
+    const v = await bundle<any>("vla");
+    const cost = p.endsWith("/cost");
+    const wantEpisode = Number(q.get("episode") ?? v.episode);
+    const wantSpace = q.get("space") ?? v.ood_space;
+    const wantStride = Number(q.get("frame_stride") ?? 1);
+    if (wantEpisode !== v.episode || wantSpace !== v.ood_space) {
+      return refuse(
+        422,
+        `this demo scored episode ${v.episode} of ${v.dataset.repo_id} in ` +
+          `\`${v.ood_space}\`, not episode ${wantEpisode} in ` +
+          `\`${wantSpace}\`. Installed, ModelMRI scores any episode in any ` +
+          `column the dataset publishes.`,
+      );
+    }
+    // A stride is not cosmetic here: it changes which frames were scored and
+    // therefore every count in the payload. Re-labelling the baked stride-1
+    // answer as a strided one would misreport `n_frames` against
+    // `frames_total`.
+    if (wantStride !== 1) {
+      return refuse(
+        422,
+        `this demo scored every frame of episode ${v.episode}; a stride of ` +
+          `${wantStride} would score a different set of them, and re-labelling ` +
+          `these numbers as that set's would misreport how many were read.`,
+      );
+    }
+    return ok(cost ? v.ood_cost : v.ood);
+  }
+
   // ---------------------------------------------------------- image models
   //
   // NOT-LOADED, not refused. `/api/image` describes what this process is

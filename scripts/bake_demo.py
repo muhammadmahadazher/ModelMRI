@@ -27,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "frontend" / "public" / "demo"
 PROMPT = "The Eiffel Tower is located in the city of"
 VLA_EPISODE, VLA_FRAME = 3, 60
+#: The column the OOD score is measured in. `observation.state` is in every
+#: LeRobot dataset; a distance in one column says nothing about another, so
+#: this is baked into the bundle beside the score rather than assumed by the
+#: page reading it.
+VLA_OOD_SPACE = "observation.state"
 VLA_LAYERS = [0, 3, 6, 9, 11]
 
 # EVERY key `/api/paths` sends, synthesised. Never the baker's own values —
@@ -642,6 +647,18 @@ def main() -> int:
                 # than refuse. The frames above are a strip of six; this is
                 # all 159 timesteps.
                 "timeline": get(f"/api/vla/timeline?episode={VLA_EPISODE}"),
+                # How unusual each frame of that episode is against the rest
+                # of the dataset. Also model-free — the reference set is the
+                # dataset's own recorded vectors — but unlike the timeline it
+                # costs two passes over every parquet row, which is exactly
+                # why a visitor should not have to run it to see what it says.
+                # The space travels with it: the number is meaningless without
+                # the column it was measured in.
+                "ood_space": VLA_OOD_SPACE,
+                "ood": get(f"/api/vla/ood?episode={VLA_EPISODE}&space={VLA_OOD_SPACE}"),
+                "ood_cost": get(
+                    f"/api/vla/ood/cost?episode={VLA_EPISODE}&space={VLA_OOD_SPACE}"
+                ),
             },
         )
     except urllib.error.HTTPError as err:

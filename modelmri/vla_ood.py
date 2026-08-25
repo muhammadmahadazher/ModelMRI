@@ -196,6 +196,7 @@ from pathlib import Path
 
 from . import fmt
 from .errors import BadRequest, Refusal
+from .fmt import ordinal as _ordinal
 
 # THREE THINGS BORROWED FROM `vla_data`, EACH SO THERE IS ONE OF IT RATHER
 # THAN TWO.
@@ -551,7 +552,7 @@ class EpisodeOOD:
     def means(self) -> str:
         ref = self.reference
         sampling = (
-            f"every {ref.row_stride}th eligible row"
+            f"every {_ordinal(ref.row_stride)} eligible row"
             if ref.sampled
             else "every eligible row"
         )
