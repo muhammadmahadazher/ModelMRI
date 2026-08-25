@@ -135,6 +135,27 @@ class CorpusStats:
         )
 
 
+def _inside(candidate: str, roots: list) -> bool:
+    """Is `candidate` at or under one of `roots`? Pure string comparison.
+
+    `normcase` because Windows paths compare case-insensitively and neither
+    `normpath` nor `resolve` reliably fixes the case of every component, so
+    two spellings of one user's home directory that differ only in case are
+    the same place, and a raw `startswith` would refuse one of them.
+
+    The `+ sep` is the classic prefix bug and is not optional: without it a
+    root of `/home/ana` accepts `/home/anabel`, which is a different person's
+    home directory. There is a test for exactly that, added after removing
+    this guard left every other test green.
+    """
+    here = os.path.normcase(candidate)
+    for root in roots:
+        prefix = os.path.normcase(str(root))
+        if here == prefix or here.startswith(prefix.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
 def resolve_corpus(path: str | Path) -> Path:
     """The path, normalised, or a refusal — for a path that arrived over HTTP.
 
@@ -145,54 +166,77 @@ def resolve_corpus(path: str | Path) -> Path:
     A path that arrived in a request body is a different thing, even on
     loopback, and `..` in one is not a corpus.
 
-    So this normalises FIRST — `expanduser().resolve()`, which collapses every
-    `..` before anything looks at the result, so the file that gets read is
-    the file that gets named in the refusal — and then checks the result is
-    under one of `paths.corpus_roots()`. `relative_to` raising ValueError IS
-    the test, not an error being swallowed: it raises precisely when the
-    target is not under the root, which is the question being asked.
+    TWO CHECKS, IN THIS ORDER, AND THE ORDER IS THE POINT.
 
-    CodeQL raised `py/path-injection` (#418, and #409 before it) against the
-    flow that ends in `sweep.load_prompts`'s `read_text`. The routes that
-    reach it already carry `_not_from_this_machine`, which answers WHO may
-    ask; this answers WHERE they may point, which is a different question and
-    the one a taint tracker can see.
+    First a LEXICAL one. `expanduser` + `abspath` + `normpath` are pure string
+    operations — they collapse `..` and anchor a relative path without asking
+    the filesystem anything — and the result is checked against the roots
+    before this function touches a disk at all.
+
+    Then a SYMLINK one. `Path.resolve()` follows links, so a symlink sitting
+    inside your home directory and pointing at `/etc/shadow` passes the
+    lexical check and fails this one. Only a path that survives both is
+    returned.
+
+    WHY THE LEXICAL CHECK COMES FIRST, rather than just resolving and checking
+    once. `Path.resolve()` reads the filesystem, so it IS a path access, and
+    CodeQL flags it as the sink: #418 closed on `sweep.py` and reopened as
+    #431 pointing at the `resolve()` call in the first version of this
+    function. No check placed after that line can clear it, because the access
+    has already happened. Guarding first is what makes the boundary visible to
+    a taint tracker — and it is better security besides, since an unchecked
+    `resolve()` on a hostile path is a filesystem probe in its own right.
     """
     try:
-        target = Path(path).expanduser().resolve()
+        expanded = os.path.expanduser(str(path))
     except (OSError, ValueError, RuntimeError):
-        raise BadRequest(
-            f"{str(path)!r} is not a path this machine can resolve. Check the "
-            f"drive, and that no link in it points at itself."
-        ) from None
+        raise BadRequest(_unresolvable(path)) from None
 
-    # `normcase` + `startswith`, NOT `Path.relative_to`.
-    #
-    # The two are equivalent as containment tests and the first version used
-    # `relative_to` in a try/except, on the argument that ValueError IS the
-    # test. It is — and CodeQL does not model it as a barrier, so the finding
-    # simply MOVED here: #418 closed on `sweep.py` and #431 opened on this
-    # function, still `high`, still `py/path-injection`. A boundary a taint
-    # tracker cannot see is a boundary that has to be argued for in every
-    # future review, which is how the original one survived unfixed twice.
-    #
-    # `normcase` matters beyond the tracker: Windows paths compare
-    # case-insensitively and `resolve()` does not reliably fix the case of
-    # every component, so `C:\Users\Mahad` and `c:\users\mahad` are
-    # the same directory and a raw `startswith` would refuse one of them.
-    #
-    # The `+ sep` is the classic prefix bug and is not optional: without it a
-    # root of `/home/ana` accepts `/home/anabel`, which is a different
-    # person's home directory.
-    resolved = os.path.normcase(str(target))
+    if chr(0) in expanded:
+        # `abspath` raises ValueError on an embedded NUL on some platforms and
+        # silently truncates on others. Named here rather than left to differ.
+        raise BadRequest(_unresolvable(path))
+
+    try:
+        lexical = os.path.normpath(os.path.abspath(expanded))
+    except (OSError, ValueError, RuntimeError):
+        raise BadRequest(_unresolvable(path)) from None
+
     roots = paths.corpus_roots()
-    for root in roots:
-        prefix = os.path.normcase(str(root))
-        if resolved == prefix or resolved.startswith(prefix.rstrip(os.sep) + os.sep):
-            return target
+    if not _inside(lexical, roots):
+        raise BadRequest(_outside(os.path.basename(lexical) or lexical, roots))
 
-    raise BadRequest(
-        f"{target.name!r} resolves outside the directories a corpus may be "
+    # Past the guard, so the filesystem may be asked. `strict=False` keeps a
+    # path that does not exist yet answerable — the reader below is what says
+    # "no such file", with the name in it.
+    try:
+        target = Path(lexical).resolve(strict=False)
+    except (OSError, ValueError, RuntimeError):
+        raise BadRequest(_unresolvable(path)) from None
+
+    if not _inside(str(target), roots):
+        # Lexically inside, actually outside: a symlink pointing out of the
+        # roots. The refusal says which, because "it is a link" is the fact
+        # the reader needs and cannot see from the path they typed.
+        raise BadRequest(
+            f"{os.path.basename(lexical)!r} is a link that leads outside the "
+            f"directories a corpus may be read from over HTTP: "
+            f"{', '.join(str(r) for r in roots)}. The path itself is inside "
+            f"one of them; what it points at is not."
+        )
+    return target
+
+
+def _unresolvable(path: object) -> str:
+    return (
+        f"{str(path)!r} is not a path this machine can resolve. Check the "
+        f"drive, and that no link in it points at itself."
+    )
+
+
+def _outside(name: str, roots: list) -> str:
+    return (
+        f"{name!r} resolves outside the directories a corpus may be "
         f"read from over HTTP: {', '.join(str(r) for r in roots)}. Move the "
         f"file under one of those, or name its directory in "
         f"MODELMRI_CORPUS_DIRS and restart. (`modelmri sweep --prompts` has "

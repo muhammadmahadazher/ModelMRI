@@ -1,13 +1,34 @@
 /* ModelMRI — design v5 "VANTAGE / INSTRUMENT"
    From the owner's saved recipe (poistudio VANTAGE hero): warm paper ground,
-   cobalt ASCII-dither artwork, Switzer type, centered editorial headline,
+   cobalt ASCII-dither artwork, centered editorial headline,
    white plates with hairlines. Light-first. */
 
 @import "tailwindcss";
 
+/* GEIST, not Switzer. Switzer is a good face and it was chosen for a hero;
+   this is an instrument whose every screen is dense small text — control
+   labels, refusal sentences, panel prose — and Geist was drawn for exactly
+   that: a slightly larger x-height, more open apertures, and unambiguous
+   `1 l I` and `0 O` at 11-13px, which is the size most of this page lives at.
+   Nothing about the colour tokens changes; every contrast pair in this file
+   names the SIZE it was measured at, and those sizes are untouched.
+
+   Vendored as a Latin subset beside the others rather than imported from
+   `@fontsource-variable/geist`, for the reason the JetBrains note below
+   gives: 29 KB of woff2 against pulling the package's Cyrillic, Greek and
+   italic files into the graph. SIL Open Font License, copied to
+   `Geist-OFL.txt` next to it. The npm package is NOT a dependency — the file
+   is the dependency, and it is in the tree.
+
+   THE MONO IS DELIBERATELY NOT CHANGED. Geist ships a mono and it would have
+   been the tidier pairing, but the note below is load-bearing: that face is
+   subset to include the box-drawing and maths glyphs the panels actually
+   draw with, and swapping it risks a column of measurements falling back to
+   whatever the OS supplies — which is the precise failure that note exists to
+   record. The numerals stay where they are. */
 @font-face {
-  font-family: "Switzer";
-  src: url("./fonts/Switzer-Variable.woff2") format("woff2");
+  font-family: "Geist";
+  src: url("./fonts/Geist-Variable.woff2") format("woff2");
   font-weight: 100 900;
   font-display: swap;
 }
@@ -31,7 +52,7 @@
 }
 
 @theme {
-  --font-sans: "Switzer", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "SF Mono",
     Consolas, monospace;
 }

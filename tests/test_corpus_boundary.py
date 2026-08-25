@@ -220,3 +220,60 @@ def test_the_root_itself_is_inside_the_root(tmp_path, monkeypatch):
     # `resolve_corpus` answers about the path, not about what is at it, so a
     # directory resolves fine here and the reader below is what refuses it.
     assert fc.resolve_corpus(tmp_path) == tmp_path.resolve()
+
+
+def test_a_symlink_out_of_the_roots_is_refused(tmp_path, monkeypatch):
+    """A path can be lexically inside and actually outside.
+
+    `abspath` + `normpath` are string operations: they collapse `..` and know
+    nothing about links. A symlink sitting in your home directory and pointing
+    at somewhere outside it passes that check completely. Resolving catches
+    it — which is why the boundary checks TWICE, once before touching the disk
+    and once after following links.
+    """
+    import tempfile
+
+    root = tmp_path / "inside"
+    root.mkdir()
+    secret_dir = tmp_path / "outside"
+    secret_dir.mkdir()
+    secret = secret_dir / "secret.txt"
+    secret.write_text("not yours\n", encoding="utf-8")
+
+    link = root / "innocent.txt"
+    try:
+        link.symlink_to(secret)
+    except (OSError, NotImplementedError):
+        pytest.skip("this machine will not create a symlink without privileges")
+
+    monkeypatch.setattr(paths, "_home", lambda: None)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "nowhere"))
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: root))
+    monkeypatch.delenv("MODELMRI_CORPUS_DIRS", raising=False)
+
+    with pytest.raises(BadRequest) as caught:
+        fc.load_corpus(link)
+    assert "link that leads outside" in caught.value.sentence
+
+
+def test_a_symlink_that_stays_inside_is_read(tmp_path, monkeypatch):
+    """The other half: a link is not suspicious for being a link. Refusing
+    every symlink would break a corpus directory somebody keeps tidy."""
+    import tempfile
+
+    root = tmp_path / "inside"
+    root.mkdir()
+    real = root / "real.txt"
+    real.write_text("a\nb\n", encoding="utf-8")
+    link = root / "alias.txt"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("this machine will not create a symlink without privileges")
+
+    monkeypatch.setattr(paths, "_home", lambda: None)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "nowhere"))
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: root))
+    monkeypatch.delenv("MODELMRI_CORPUS_DIRS", raising=False)
+
+    assert fc.load_corpus(link)[0] == ["a", "b"]
