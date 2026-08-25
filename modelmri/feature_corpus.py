@@ -198,7 +198,15 @@ def resolve_corpus(path: str | Path) -> Path:
         raise BadRequest(_unresolvable(path))
 
     try:
-        lexical = os.path.normpath(os.path.abspath(expanded))
+        # ONE VALUE, normalised once, then guarded and used. `normcase` is
+        # folded in here rather than applied to a copy at the comparison,
+        # because a guard on a DERIVED string does not protect the original —
+        # and a tracker that cannot see the checked value reach the sink
+        # reports the sink as unguarded, which is what it has been doing.
+        # On POSIX `normcase` is the identity; on Windows it lowercases, and
+        # Windows paths are case-insensitive, so the folded form opens the
+        # same file.
+        lexical = os.path.normcase(os.path.normpath(os.path.abspath(expanded)))
     except (OSError, ValueError, RuntimeError):
         raise BadRequest(_unresolvable(path)) from None
 
@@ -210,11 +218,10 @@ def resolve_corpus(path: str | Path) -> Path:
     # reappearing at whichever path API came next (#418 → #431 → #432).
     # `_inside` is still used below, where the value it checks has already
     # been through this guard.
-    here = os.path.normcase(lexical)
     allowed = False
     for root in roots:
         prefix = os.path.normcase(str(root))
-        if here == prefix or here.startswith(prefix.rstrip(os.sep) + os.sep):
+        if lexical == prefix or lexical.startswith(prefix.rstrip(os.sep) + os.sep):
             allowed = True
             break
     if not allowed:
@@ -224,10 +231,6 @@ def resolve_corpus(path: str | Path) -> Path:
     # path that does not exist yet answerable — the reader below is what says
     # "no such file", with the name in it.
     try:
-        # `lexical`, never `here`. `normcase` lowercases on Windows and it
-        # exists only so two spellings of one directory COMPARE equal —
-        # opening the folded form would be reading a different string than the
-        # one that was checked, on any filesystem that is case-sensitive.
         target = Path(lexical).resolve(strict=False)
     except (OSError, ValueError, RuntimeError):
         raise BadRequest(_unresolvable(path)) from None
