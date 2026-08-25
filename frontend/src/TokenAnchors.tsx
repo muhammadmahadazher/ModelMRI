@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Anchors, errorText, Proportion, tokenAnchors } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** The smallest set of the prompt's own tokens that HOLDS the answer.
  *
@@ -126,17 +127,12 @@ export default function TokenAnchors({
 
   return (
     <div className="token-anchors">
-      <div className="sect sub">
-        <span className="dot d-attn" />
-        <h3>WHAT HOLDS THE ANSWER ON ITS OWN</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        “Rank tokens” removes a token and measures what breaks — necessity.
-        This keeps a few and perturbs everything else, and asks whether the
-        prediction survives — sufficiency. A token can be necessary and not
-        sufficient, so the two rankings are expected to disagree.
-      </p>
+      <Disclosure
+        dot="d-attn"
+        title="WHAT HOLDS THE ANSWER ON ITS OWN"
+        asks="Which of your tokens hold the prediction on their own? Sufficiency — the opposite question from ranking, and the two are expected to disagree."
+        hasResult={data !== null}
+      >
 
       <div className="row">
         <label className="meta" htmlFor="an-samples">
@@ -346,6 +342,7 @@ export default function TokenAnchors({
           position {position}.
         </div>
       )}
+    </Disclosure>
     </div>
   );
 }

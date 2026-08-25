@@ -7,6 +7,7 @@ import {
   HeadOvSpectrum,
 } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** What a head is WIRED to do, beside what it did on this generation.
  *
@@ -78,15 +79,12 @@ export default function HeadWiring({
 
   return (
     <div className="head-wiring">
-      <div className="sect sub">
-        <span className="dot d-attn" />
-        <h3>WHAT THIS HEAD IS WIRED TO DO</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        Read off the weights, not off this generation — so it is the same every
-        time, and it is about head {head} rather than about what you just typed.
-      </p>
+      <Disclosure
+        dot="d-attn"
+        title="WHAT THIS HEAD IS WIRED TO DO"
+        asks="What does this head do off its WEIGHTS alone — the same answer on every prompt, rather than on the one you just typed."
+        hasResult={ov !== null || spectrum !== null}
+      >
 
       <div className="row">
         <label className="meta" htmlFor="ov-token">
@@ -208,6 +206,7 @@ export default function HeadWiring({
           this one
         </div>
       )}
+    </Disclosure>
     </div>
   );
 }

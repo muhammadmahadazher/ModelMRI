@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { errorText, PatchScreen, patchScreen, ScreenSite } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** The route's own floor (`patch_screen.MIN_VERIFY`). One site verified
  *  is not an agreement between two rankings, it is a coincidence, so the
@@ -79,17 +80,12 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
 
   return (
     <div className="patch-screen">
-      <div className="sect sub">
-        <span className="dot d-attn" />
-        <h3>SCREEN THE GRID, THEN CHECK THE SCREEN</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        One gradient pass ranks every site at once, then the shortlisted few
-        are patched for real and compared against what the screen said. The
-        saving is the point and the checking is what makes it worth anything —
-        so both are measured, not claimed.
-      </p>
+      <Disclosure
+        dot="d-attn"
+        title="SCREEN THE GRID, THEN CHECK THE SCREEN"
+        asks="Rank every patching site in two passes instead of hundreds — and measure the ranking against the exact grid on the few it shortlists."
+        hasResult={data !== null}
+      >
 
       <div className="ps-prompts">
         <label className="meta" htmlFor="ps-clean">
@@ -278,6 +274,7 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
           <div className="hint">{data.means}</div>
         </>
       )}
+    </Disclosure>
     </div>
   );
 }

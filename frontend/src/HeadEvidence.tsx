@@ -6,6 +6,7 @@ import {
   HeadEvidence as Evidence,
 } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** What this head does on YOUR text — beside what it did on one prompt.
  *
@@ -90,16 +91,12 @@ export default function HeadEvidencePanel({
 
   return (
     <div className="head-evidence">
-      <div className="sect sub">
-        <span className="dot d-attn" />
-        <h3>WHERE THIS HEAD ACTS IN YOUR TEXT</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        Paste a few lines — one per line. This measures where head {head} writes
-        into the stream across all of them, and what it was reading at each. The
-        prompt in the box above is not involved.
-      </p>
+      <Disclosure
+        dot="d-attn"
+        title="WHERE THIS HEAD ACTS IN YOUR TEXT"
+        asks="Where does this head write, across a body of text you choose? The prompt above is not involved."
+        hasResult={out !== null}
+      >
 
       <textarea
         className="corpus-box"
@@ -225,6 +222,7 @@ export default function HeadEvidencePanel({
           that reading was taken on another head — read it again for this one
         </div>
       )}
+    </Disclosure>
     </div>
   );
 }

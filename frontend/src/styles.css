@@ -8962,3 +8962,66 @@ main > .panel[data-mri-group-label]::after {
 @media (max-width: 640px) {
   .icv-rest { display: none; }
 }
+
+/* ------------------------------------------------- folded sub-measurements
+   A panel that opens with four stacked blocks of dials reads as difficult
+   even when every control in it is simple. Closed, these are an index of the
+   questions the panel can answer; open, they are exactly what they were.
+
+   The head keeps the `.sect.sub` shape — dot, title, measurement rule — so a
+   folded block still looks like part of the instrument rather than like a
+   generic accordion. It is a real button, so it inherits the page's focus
+   ring rather than needing one of its own. */
+.fold {
+  margin-top: var(--sp-5);
+}
+.fold-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+}
+.fold-head h3 {
+  margin: 0;
+  white-space: nowrap;
+}
+.fold-head .rule {
+  flex: 1;
+}
+/* A chevron drawn from a border, so it takes the ink colour and needs no
+   glyph — a font that lacks the character would otherwise leave a box. */
+.fold-mark {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-right: 1.5px solid var(--color-mute);
+  border-bottom: 1.5px solid var(--color-mute);
+  transform: rotate(-45deg) translate(-1px, -1px);
+  transition: transform var(--dur-small) var(--ease-standard);
+}
+.fold.open .fold-mark {
+  transform: rotate(45deg) translate(-2px, -2px);
+}
+@media (hover: hover) and (pointer: fine) {
+  .fold-head:hover .fold-mark { border-color: var(--color-ink); }
+}
+/* The question stays visible whether the block is open or closed. Closed, it
+   is the only thing saying what is in there, so it is not part of the fold. */
+.fold-asks {
+  margin: 2px 0 0;
+}
+.fold-body {
+  margin-top: var(--sp-3);
+}
+/* `hidden` is the mechanism; this makes it survive the flex/grid `display`
+   rules elsewhere in the file, which otherwise override it. */
+.fold-body[hidden] {
+  display: none;
+}

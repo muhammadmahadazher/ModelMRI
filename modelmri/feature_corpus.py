@@ -203,13 +203,31 @@ def resolve_corpus(path: str | Path) -> Path:
         raise BadRequest(_unresolvable(path)) from None
 
     roots = paths.corpus_roots()
-    if not _inside(lexical, roots):
+    # THE COMPARISON IS INLINE, not behind `_inside`, and that is not style.
+    # A taint tracker models a barrier by looking at the guarding CONDITION,
+    # and it does not follow a boolean back through a helper — so with the
+    # `startswith` one call away the guard was invisible and the finding kept
+    # reappearing at whichever path API came next (#418 → #431 → #432).
+    # `_inside` is still used below, where the value it checks has already
+    # been through this guard.
+    here = os.path.normcase(lexical)
+    allowed = False
+    for root in roots:
+        prefix = os.path.normcase(str(root))
+        if here == prefix or here.startswith(prefix.rstrip(os.sep) + os.sep):
+            allowed = True
+            break
+    if not allowed:
         raise BadRequest(_outside(os.path.basename(lexical) or lexical, roots))
 
     # Past the guard, so the filesystem may be asked. `strict=False` keeps a
     # path that does not exist yet answerable — the reader below is what says
     # "no such file", with the name in it.
     try:
+        # `lexical`, never `here`. `normcase` lowercases on Windows and it
+        # exists only so two spellings of one directory COMPARE equal —
+        # opening the folded form would be reading a different string than the
+        # one that was checked, on any filesystem that is case-sensitive.
         target = Path(lexical).resolve(strict=False)
     except (OSError, ValueError, RuntimeError):
         raise BadRequest(_unresolvable(path)) from None

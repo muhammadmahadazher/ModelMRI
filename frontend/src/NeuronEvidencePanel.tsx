@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { errorText, getSession, NeuronEvidence, neuronEvidence } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** A string as CODE POINTS, which is the unit the route counts offsets
  *  in. `Array.from` is the one string split that respects surrogate
@@ -100,16 +101,12 @@ export default function NeuronEvidencePanel({
 
   return (
     <div className="neuron-evidence">
-      <div className="sect sub">
-        <span className="dot d-feat" />
-        <h3>WHAT ONE NEURON FIRES ON</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        For a model with no published sparse autoencoder, which is most of
-        them. One line of text per sequence — nothing is downloaded, and the
-        corpus is yours.
-      </p>
+      <Disclosure
+        dot="d-feat"
+        title="WHAT ONE NEURON FIRES ON"
+        asks="What does one MLP neuron respond to, in text you supply? For the models with no published sparse autoencoder, which is most of them."
+        hasResult={data !== null}
+      >
 
       <textarea
         className="corpus-box"
@@ -271,6 +268,7 @@ export default function NeuronEvidencePanel({
           <div className="hint">{data.means}</div>
         </>
       )}
+    </Disclosure>
     </div>
   );
 }

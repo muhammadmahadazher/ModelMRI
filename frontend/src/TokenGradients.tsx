@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { errorText, TokenGradients as Grads, tokenGradients } from "./api";
 import { measured } from "./measured";
+import Disclosure from "./Disclosure";
 
 /** What the answer was SENSITIVE to, with the gap that says whether the bars
  *  add up to anything.
@@ -129,17 +130,12 @@ export default function TokenGradients({
 
   return (
     <div className="token-gradients">
-      <div className="sect sub">
-        <span className="dot d-attn" />
-        <h3>WHAT IT WAS SENSITIVE TO</h3>
-        <span className="rule" />
-      </div>
-      <p className="meta">
-        Integrated gradients over the input embeddings. A different question
-        from “Rank tokens” above — that one removes a token and measures what
-        breaks, this one asks what the output was sensitive to in the limit of
-        an infinitesimal nudge. They disagree, and both are real.
-      </p>
+      <Disclosure
+        dot="d-attn"
+        title="WHAT IT WAS SENSITIVE TO"
+        asks="What was the output sensitive to, in the limit of an infinitesimal nudge? A gradient, not a removal — a different claim from ranking."
+        hasResult={data !== null}
+      >
 
       <div className="row">
         <label className="meta" htmlFor="ig-steps">
@@ -310,6 +306,7 @@ export default function TokenGradients({
           position {position}.
         </div>
       )}
+    </Disclosure>
     </div>
   );
 }
