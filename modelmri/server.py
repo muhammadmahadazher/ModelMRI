@@ -2361,6 +2361,39 @@ def create_app(
     # an absence, because the next person to look will otherwise assume it was
     # forgotten.
 
+    @app.get("/api/vla/timeline")
+    async def vla_timeline_tracks(episode: int = 0, max_points: int = 600):
+        """One episode's series — actions, state, reward — on ONE time axis.
+
+        The panel had a frame and a scrubber, which answers "what did the
+        camera see at t" and nothing else. The questions people bring to a
+        recorded episode are about COINCIDENCE, and every one of those needs
+        two series on one axis: read off two panels with two x-ranges, a
+        coincidence gets asserted that is not there.
+
+        A column this dataset lacks is ABSENT with a reason rather than an
+        empty track — a reward line drawn at zero says the reward was zero,
+        which nobody measured — and a stride leaves gaps rather than a line
+        through timesteps nobody read.
+        """
+        from . import vla_timeline
+
+        def read() -> dict:
+            return vla_timeline.tracks(
+                _reader(), episode, max_points=max_points
+            ).to_dict()
+
+        try:
+            return await asyncio.to_thread(read)
+        except ImportError as err:
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/timeline")
+
     @app.get("/api/vla/ood")
     async def vla_ood_score(
         episode: int = 0,

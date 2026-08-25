@@ -181,7 +181,7 @@ head**, the way we already have it for an SAE feature.
 
 ### B4. Robotics, now that the sidecar exists
 
-**STATUS 2026-08-25 — built, with one honest gap.** `vla_ood.py` scores every
+**STATUS 2026-08-25 — built, with two gaps named below.** `vla_ood.py` scores every
 frame against a reference set the payload names, in Mahalanobis distance over
 the directions that reference actually varies in, with the episode's own rows
 held OUT of the reference, its mean, its covariance and its null. A distance
