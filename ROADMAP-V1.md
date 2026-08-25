@@ -243,6 +243,48 @@ instead.
 
 ## Theme C — The tool people actually want to open
 
+**STATUS 2026-08-25 — C1 and C2 shipped; C3 and C4 shipped in the form below.**
+
+A study of Google's motion and layout guidance against this codebase reached a
+conclusion worth keeping: the token layer — the OKLCH three-axis composition,
+the 11,136 measured contrast pairs, the tabular figures, the measurement-rule
+divider — was **already right**, and that is exactly why three previous UI
+passes were "barely noticeable". Every one of them edited inside a layer that
+was not the problem. What is visible is decided one level up.
+
+So this release changed that level:
+
+- **The stack is grouped.** `main` was fourteen identical peers exactly 24px
+  apart, so nothing said an image panel is a different modality from an
+  attention panel. Within-group air is 16px now, between-group 48, and the
+  panel that opens a group carries its name.
+- **The measurements got the width they need.** `main` was `max-width: 980px`
+  at every viewport while `.attn-scroll` existed BECAUSE a long token strip
+  does not fit. Panels whose content is a grid, a strip or a chart take 1280px
+  from 1660px up; prose keeps 980.
+- **The advanced panels fold.** The maintainer's words: "advanced tools look
+  way too complicated to use ... because it looks congested." Each sub-block
+  keeps its heading and gains a one-line statement of the question it answers,
+  with the dials behind a disclosure — and a result always forces its own
+  block open, because a panel hiding its own answer is worse than clutter.
+  MEASURED: the attention panel at rest went 702px to 542px.
+- **Motion that carries information.** The episode timeline's playhead is one
+  line through every lane at once, and `play` runs at the recording's own rate
+  off the dataset's published timestamps — 4.005s of wall clock advanced
+  11.20s to 15.20s of episode time. `--motion-scale` was documented as
+  "multiplied into every duration" and multiplied into nothing; it is real
+  now, and reduced motion no longer renders an in-progress download as a
+  completed one.
+- **A different typeface.** Geist, vendored as a 29 KB Latin subset. The mono
+  is deliberately unchanged — it is subset to carry the box-drawing glyphs the
+  panels draw with.
+
+Two bugs the pass found by measuring rather than looking: a range input showed
+NO focus ring at all (a thumb rule invalidated by combining two vendor
+pseudo-elements in one selector list, plus a second rule removing the track
+outline "because the thumb draws its own"), and the telemetry bar dragged the
+whole document sideways at 375px.
+
 **C1. Navigate by what you are inspecting**
 Today the page is one long column of panels in build order. It should be
 categories: text-to-text, text-to-image, robot policy, agents — and All —
@@ -267,6 +309,17 @@ rather than from taste.
 ---
 
 ## Theme D — Say it properly
+
+**STATUS 2026-08-25 — D1 done. D2 not started, and not to be started without
+the maintainer saying so: it is outward-facing publishing.**
+
+Every image in the README is captured from the current UI in BOTH themes, and
+`tests/test_readme_media.py` fails the build if a pair ever disagrees again.
+Three of them had been converted and four had not — which is worse than not
+starting, because a light reader saw two animations and then a run of dark
+screenshots that look like a different tool. The four had been left because a
+light capture run died on the patching step and took every later step with it:
+the wait was 180s against a trace that MEASURES 3m40s on this machine.
 
 **D1. A README somebody finishes reading**
 GIFs in BOTH themes — the current ones are dark only, which sells half the
