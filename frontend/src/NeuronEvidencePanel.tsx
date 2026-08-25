@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import { errorText, getSession, NeuronEvidence, neuronEvidence } from "./api";
 import { measured } from "./measured";
 
+/** A string as CODE POINTS, which is the unit the route counts offsets
+ *  in. `Array.from` is the one string split that respects surrogate
+ *  pairs. */
+const points = (t: string): string[] => Array.from(t);
+
 /** What one MLP neuron fires on, across text the reader supplies.
  *
  *  For the models with no published sparse autoencoder — which is most of
@@ -35,6 +40,12 @@ export default function NeuronEvidencePanel({
   const [nLayers, setNLayers] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
+    // The answer below is about the model that WAS loaded. Leaving it up
+    // after a swap puts the old model's spans, firing rate and — worst —
+    // its `layer_width` beside a neuron dial that now indexes a different
+    // network.
+    setData(null);
+    setErr("");
     void getSession()
       .then((s) => {
         if (!live || !s?.model?.n_layers) return;
@@ -53,6 +64,11 @@ export default function NeuronEvidencePanel({
   const [layer, setLayer] = useState(0);
   const [neuron, setNeuron] = useState(0);
   const [data, setData] = useState<NeuronEvidence | null>(null);
+  // WHICH LAYER THIS ANSWER IS OF. The route publishes no `layer`, so the
+  // panel has to remember what it asked for — reading the live dial instead
+  // relabelled the histogram, the spans and "this layer's median" the moment
+  // the dial moved, with no re-read.
+  const [readLayer, setReadLayer] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -66,7 +82,9 @@ export default function NeuronEvidencePanel({
     setBusy(true);
     setErr("");
     try {
-      setData(await neuronEvidence({ texts, layer, neuron, top_k: 8 }));
+      const got = await neuronEvidence({ texts, layer, neuron, top_k: 8 });
+      setReadLayer(layer);
+      setData(got);
     } catch (e) {
       setData(null);
       setErr(errorText(e));
@@ -156,7 +174,7 @@ export default function NeuronEvidencePanel({
 
           <div className="row ne-chips">
             <span className="pill">
-              neuron {data.neuron} · layer {layer}
+              neuron {data.neuron} · layer {readLayer}
             </span>
             <span className="pill">
               {/* Never one without the other. */}
@@ -222,10 +240,22 @@ export default function NeuronEvidencePanel({
                 <b>{measured(s.activation, 4)}</b>
                 {/* The offset, not a search. A window can hold the same token
                     twice and only one of them fired. */}
+                {/* CODE POINTS, not UTF-16 units. `neurons.py` computes the
+                    offset as `len("".join(tokens[:position]))` in Python,
+                    where an emoji is one character; `String.slice` counts it
+                    as two. One astral character earlier in the window shifted
+                    the highlight by one per character, so the mark landed on
+                    the wrong token — a wrong reading of which token fired. */}
                 <span className="ne-line">
-                  {s.text.slice(0, s.offset)}
-                  <mark>{s.text.slice(s.offset, s.offset + s.token.length)}</mark>
-                  {s.text.slice(s.offset + s.token.length)}
+                  {points(s.text).slice(0, s.offset).join("")}
+                  <mark>
+                    {points(s.text)
+                      .slice(s.offset, s.offset + points(s.token).length)
+                      .join("")}
+                  </mark>
+                  {points(s.text)
+                    .slice(s.offset + points(s.token).length)
+                    .join("")}
                 </span>
               </li>
             ))}

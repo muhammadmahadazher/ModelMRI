@@ -193,6 +193,34 @@ export default function EpisodeTimeline({
   const clock =
     data?.seconds && cursor !== null ? `${data.seconds[cursor].toFixed(2)} s` : null;
 
+  /** THE PLAYHEAD IS THE MEASUREMENT, so it cannot be pointer-only.
+   *
+   *  Every per-dimension value on this panel is gated on it — with no
+   *  playhead they all read "—" — and the SVGs are `aria-hidden` because the
+   *  text readout beside them is the accessible version. That is only true if
+   *  the readout can be reached, and it could not: a keyboard user saw em
+   *  dashes and nothing else, forever.
+   *
+   *  `role="slider"` with arrow keys is the right shape here: it IS a value
+   *  along one axis, and Home/End are the ends of the episode. */
+  function onKey(e: React.KeyboardEvent<HTMLDivElement>, n: number) {
+    if (n === 0) return;
+    const step = e.shiftKey ? Math.max(1, Math.round(n / 10)) : 1;
+    const from = at ?? 0;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = from + step;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = from - step;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = n - 1;
+    else if (e.key === "Escape") {
+      setAt(null);
+      return;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    setAt(Math.max(0, Math.min(n - 1, next)));
+  }
+
   /** The timestep under the pointer, or `null` off the ends. */
   function under(e: React.PointerEvent<HTMLDivElement>): number | null {
     if (!data || n === 0) return null;
@@ -298,6 +326,21 @@ export default function EpisodeTimeline({
             onPointerMove={moveHead}
             onPointerDown={commit}
             onPointerLeave={() => !playing && setAt(null)}
+            tabIndex={0}
+            role="slider"
+            aria-label={`playhead over ${n} timesteps of episode ${data.episode}`}
+            aria-valuemin={0}
+            aria-valuemax={Math.max(0, n - 1)}
+            aria-valuenow={cursor ?? undefined}
+            aria-valuetext={
+              cursor === null
+                ? "no timestep selected"
+                : `t ${data.timesteps[cursor]}${clock ? `, ${clock}` : ""}`
+            }
+            onKeyDown={(e) => {
+              setPlaying(false);
+              onKey(e, n);
+            }}
           >
             {lanes.map((lane) => (
               <div className="tl-lane" key={lane.track.column}>

@@ -864,8 +864,8 @@ export default function AttentionPanel({
           teaches a visitor the measurement is broken. */}
       {!replay && !DEMO && !VIEWER && (
         <>
-          <TokenAnchors position={pinned} disabled={ranking} />
-          <TokenGradients position={pinned} disabled={ranking} />
+          <TokenAnchors position={pinned} epoch={epoch} disabled={ranking} />
+          <TokenGradients position={pinned} epoch={epoch} disabled={ranking} />
         </>
       )}
 

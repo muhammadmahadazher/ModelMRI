@@ -34,6 +34,11 @@ import { measured, ordinal } from "./measured";
  *  why the choice is on screen and travels in the payload. */
 const SPACES = ["observation.state", "action"];
 
+/** Rows of the ranked list drawn. The route's own cap is 20 and both numbers
+ *  are on screen, because a list capped twice with one cap reported is a list
+ *  that lied about the other. */
+const RANKED_SHOWN = 8;
+
 const LANE_W = 720;
 const LANE_H = 96;
 const PAD_Y = 8;
@@ -51,6 +56,9 @@ export default function EpisodeOod({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [at, setAt] = useState<number | null>(null);
+  // The column this answer is OF, snapshotted with it. The dial above is live
+  // state and a distance in `observation.state` says nothing about `action`.
+  const [readSpace, setReadSpace] = useState(SPACES[0]);
 
   // Cost is cheap — it reads file metadata, not rows — so it leads, and the
   // score itself waits to be asked for. Two passes over 25,650 parquet rows
@@ -80,9 +88,21 @@ export default function EpisodeOod({
     if (busy) return;
     setBusy(true);
     setErr("");
+    // THIS ROUTE READS EVERY PARQUET ROW OF THE DATASET TWICE, so the window
+    // between asking and answering is seconds wide, not milliseconds. Without
+    // this, moving the episode dial mid-score repainted episode 3's distances
+    // under episode 5's label — and moving the SPACE dial was worse, because
+    // the "raw {space} units" line reads live state beside a payload measured
+    // in the other column.
+    const forEpisode = episode;
+    const forSpace = space;
     try {
-      setData(await getEpisodeOod(episode, space));
+      const got = await getEpisodeOod(forEpisode, forSpace);
+      if (forEpisode !== episode || forSpace !== space) return;
+      setData(got);
+      setReadSpace(forSpace);
     } catch (e) {
+      if (forEpisode !== episode || forSpace !== space) return;
       setData(null);
       setErr(errorText(e));
     } finally {
@@ -117,9 +137,40 @@ export default function EpisodeOod({
     };
   }, [data]);
 
+  /** THE PLAYHEAD IS THE MEASUREMENT, so it cannot be pointer-only.
+   *
+   *  Every per-dimension value on this panel is gated on it — with no
+   *  playhead they all read "—" — and the SVGs are `aria-hidden` because the
+   *  text readout beside them is the accessible version. That is only true if
+   *  the readout can be reached, and it could not: a keyboard user saw em
+   *  dashes and nothing else, forever.
+   *
+   *  `role="slider"` with arrow keys is the right shape here: it IS a value
+   *  along one axis, and Home/End are the ends of the episode. */
+  function onKey(e: React.KeyboardEvent<HTMLDivElement>, n: number) {
+    if (n === 0) return;
+    const step = e.shiftKey ? Math.max(1, Math.round(n / 10)) : 1;
+    const from = at ?? 0;
+    let next: number | null = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = from + step;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = from - step;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = n - 1;
+    else if (e.key === "Escape") {
+      setAt(null);
+      return;
+    }
+    if (next === null) return;
+    e.preventDefault();
+    setAt(Math.max(0, Math.min(n - 1, next)));
+  }
+
   if (!ready) return null;
 
-  const here = at !== null && data && at < data.frames.length ? data.frames[at] : null;
+  const here =
+    at !== null && data && at >= 0 && at < data.frames.length
+      ? (data.frames[at] ?? null)
+      : null;
 
   return (
     <div className="episode-ood">
@@ -217,6 +268,18 @@ export default function EpisodeOod({
 
           <div
             className="ood-chart"
+            tabIndex={0}
+            role="slider"
+            aria-label={`playhead over ${data.frames.length} scored frames of episode ${data.episode}`}
+            aria-valuemin={0}
+            aria-valuemax={Math.max(0, data.frames.length - 1)}
+            aria-valuenow={here ? at ?? undefined : undefined}
+            aria-valuetext={
+              here
+                ? `frame ${here.t}, distance ${measured(here.distance, 3)}, ${measured(here.percentile, 2)}th percentile`
+                : "no frame selected"
+            }
+            onKeyDown={(e) => onKey(e, data.frames.length)}
             onPointerMove={(e) => {
               const box = e.currentTarget.getBoundingClientRect();
               if (!(box.width > 0) || !data.frames.length) return;
@@ -345,7 +408,7 @@ export default function EpisodeOod({
                   <span className="meta">off the manifold</span>
                   <b>{measured(here.off_manifold, 4)}</b>
                   <span className="meta">
-                    raw {space} units — no spread to divide by there
+                    raw {readSpace} units — no spread to divide by there
                   </span>
                 </span>
               )}
@@ -354,16 +417,30 @@ export default function EpisodeOod({
 
           {data.ranked.length > 0 && (
             <div className="ood-ranked">
+              {/* TWO caps, and only one was reported. The route ranks the
+                  furthest 20; this list then sliced to 8 while the sentence
+                  printed `ranked.length` — so it read "furthest 20 of 159"
+                  above eight rows, which is exactly the silent truncation the
+                  sentence promises is not happening. */}
               <span className="meta">
-                furthest {data.ranked.length}
-                {data.n_ranked_total > data.ranked.length
-                  ? ` of ${data.n_ranked_total} scored — the cap is on this list only, every frame is in the chart`
-                  : ""}
+                furthest {Math.min(RANKED_SHOWN, data.ranked.length)} of{" "}
+                {data.n_ranked_total} scored — the cap is on this list only,
+                every frame is in the chart
               </span>
               <ol>
-                {data.ranked.slice(0, 8).map((f) => (
+                {data.ranked.slice(0, RANKED_SHOWN).map((f) => (
                   <li key={f.t}>
-                    <button className="ghost sm" onClick={() => setAt(data.frames.findIndex((g) => g.t === f.t))}>
+                    <button
+                      className="ghost sm"
+                      onClick={() => {
+                        // `findIndex` returns -1 for a miss, and -1 passes
+                        // `at < frames.length` — so `frames[-1]` is
+                        // `undefined`, and `here !== null` is TRUE for
+                        // undefined, which takes the panel down on `here.t`.
+                        const i = data.frames.findIndex((g) => g.t === f.t);
+                        if (i >= 0) setAt(i);
+                      }}
+                    >
                       t {f.t}
                     </button>
                     <span className="meta">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { errorText, TokenGradients as Grads, tokenGradients } from "./api";
 import { measured } from "./measured";
 
@@ -46,12 +46,15 @@ const VERDICT_SAYS: Record<string, string> = {
 
 export default function TokenGradients({
   position,
+  epoch,
   disabled,
 }: {
   /** The pinned token, or `-1` for the route's own default (the last prompt
    *  token). Passed rather than chosen here so this and "Rank tokens" are
    *  always answering about the same position. */
   position: number;
+  /** Bumped on every generation. The payload below is about ONE of them. */
+  epoch: number;
   disabled?: boolean;
 }) {
   const [steps, setSteps] = useState(32);
@@ -59,6 +62,24 @@ export default function TokenGradients({
   const [data, setData] = useState<Grads | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // A NEW GENERATION MUST NOT LEAVE THE OLD ONE'S ANSWER ON SCREEN.
+  //
+  // `ArcCanvas` calls `pin(-1)` whenever the token strip changes, so every
+  // generation resets the pin. The old guard was
+  //
+  //     data !== null && position >= 0 && data.position !== position
+  //
+  // whose `position >= 0` clause short-circuits at exactly that moment — so
+  // generating again left the PREVIOUS run's payload rendered under the new
+  // token strip, labelled with a position that now holds a different token.
+  // `epoch` changes with the generation and clearing on it is the fix; the
+  // position check stays for the ordinary case of moving the pin.
+  useEffect(() => {
+    setData(null);
+    setErr("");
+    setShowAll(false);
+  }, [epoch]);
   const [showAll, setShowAll] = useState(false);
 
   async function run() {
@@ -89,13 +110,22 @@ export default function TokenGradients({
 
   const stale = data !== null && position >= 0 && data.position !== position;
   const peak = data
-    ? Math.max(...data.tokens.map((t) => Math.abs(t.attribution)), 0)
+    ? Math.max(
+        ...data.tokens
+          .map((t) => t.attribution)
+          .filter((v): v is number => v !== null && Number.isFinite(v))
+          .map(Math.abs),
+        0,
+      )
     : 0;
   // The route already ranks by absolute attribution and caps the listing; this
   // caps the DRAWING, because a 248-row chart is not read, it is scrolled past.
   const shown = data ? data.tokens.slice(0, MAX_BARS) : [];
+  // `n_unreadable` is counted over ALL `n_tokens`, not over the listed rows,
+  // so comparing it against `tokens.length` would call a run "nothing to
+  // read" the moment the route started capping its own listing.
   const allUnreadable =
-    data !== null && data.tokens.length > 0 && data.n_unreadable >= data.tokens.length;
+    data !== null && data.n_tokens > 0 && data.n_unreadable >= data.n_tokens;
 
   return (
     <div className="token-gradients">
@@ -214,26 +244,37 @@ export default function TokenGradients({
           {(!allUnreadable || showAll) && (
           <ul className="ig-bars">
             {shown.map((t) => {
-              const share = peak > 0 ? Math.abs(t.attribution) / peak : 0;
+              // `null` is "the backward pass came back non-finite", not zero.
+              // `t.attribution < 0` is false for null, so the old code drew a
+              // zero-width POSITIVE bar — contradicting the chip above it,
+              // which promises non-finite values are "marked unreadable
+              // rather than drawn as zero".
+              const value = t.attribution;
+              const known = value !== null && Number.isFinite(value);
+              const share = known && peak > 0 ? Math.abs(value) / peak : 0;
               return (
                 <li
                   key={t.index}
                   className={t.unreadable ? "unreadable" : undefined}
                   title={
-                    t.unreadable
-                      ? "under the completeness gap — this bar cannot be told from the error in the approximation"
-                      : undefined
+                    !known
+                      ? "the backward pass came back non-finite here, so there is no attribution to draw"
+                      : t.unreadable
+                        ? "under the completeness gap — this bar cannot be told from the error in the approximation"
+                        : undefined
                   }
                 >
                   <span className="ig-index meta">{t.index}</span>
                   <code className="ig-token">{t.token}</code>
                   <span className="ig-track">
-                    <i
-                      className={t.attribution < 0 ? "neg" : "pos"}
-                      style={{ width: `${(share * 50).toFixed(2)}%` }}
-                    />
+                    {known && (
+                      <i
+                        className={value < 0 ? "neg" : "pos"}
+                        style={{ width: `${(share * 50).toFixed(2)}%` }}
+                      />
+                    )}
                   </span>
-                  <b>{measured(t.attribution, 4)}</b>
+                  <b>{known ? measured(value, 4) : "not a number"}</b>
                 </li>
               );
             })}
@@ -247,10 +288,18 @@ export default function TokenGradients({
             </p>
           )}
 
+          {/* `peak_bytes` is null on EVERY CPU run — `torch.cpu` publishes no
+              `max_memory_allocated`. `null / 1e6` is 0, so this printed
+              "0.0 MB held" immediately before a `peak_note` reading "there is
+              no allocator peak to read on cpu, so the memory this run needed
+              was not measured": the same line stating a figure and then
+              saying nobody took it. */}
           <div className="meta ig-cost">
             {data.forward_passes} forward · {data.backward_passes} backward
             passes · {measured(data.elapsed_s, 2)} s ·{" "}
-            {(data.peak_bytes / 1e6).toFixed(1)} MB held. {data.peak_note}
+            {data.peak_bytes === null
+              ? data.peak_note
+              : `${(data.peak_bytes / 1e6).toFixed(1)} MB held. ${data.peak_note}`}
           </div>
           <div className="hint">{data.means}</div>
         </>

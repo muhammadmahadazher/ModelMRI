@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Anchors, errorText, Proportion, tokenAnchors } from "./api";
 import { measured } from "./measured";
 
@@ -19,11 +19,19 @@ import { measured } from "./measured";
  */
 
 function Interval({ p, label, target }: { p: Proportion; label: string; target?: number }) {
-  if (!p.measured) {
+  // `measured: false` means EVERY number below is null. The route is explicit
+  // that it must never put a 0 or a 1 where a measured proportion goes, and
+  // `implied` is a separate key so arithmetic can be told from evidence.
+  if (!p.measured || p.point === null || p.low === null || p.high === null) {
     return (
       <li className="an-interval">
         <span className="meta">{label}</span>
-        <span className="meta warn">not measured — {p.reason}</span>
+        <span className="meta warn">
+          not measured — {p.reason}
+          {p.implied !== null && p.implied !== undefined && (
+            <> The arithmetic implies {measured(p.implied, 3)}, which nobody sampled.</>
+          )}
+        </span>
       </li>
     );
   }
@@ -62,9 +70,12 @@ function Interval({ p, label, target }: { p: Proportion; label: string; target?:
 
 export default function TokenAnchors({
   position,
+  epoch,
   disabled,
 }: {
   position: number;
+  /** Bumped on every generation. The payload below is about ONE of them. */
+  epoch: number;
   disabled?: boolean;
 }) {
   const [samples, setSamples] = useState(64);
@@ -72,6 +83,23 @@ export default function TokenAnchors({
   const [data, setData] = useState<Anchors | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  // A NEW GENERATION MUST NOT LEAVE THE OLD ONE'S ANSWER ON SCREEN.
+  //
+  // `ArcCanvas` calls `pin(-1)` whenever the token strip changes, so every
+  // generation resets the pin. The old guard was
+  //
+  //     data !== null && position >= 0 && data.position !== position
+  //
+  // whose `position >= 0` clause short-circuits at exactly that moment — so
+  // generating again left the PREVIOUS run's payload rendered under the new
+  // token strip, labelled with a position that now holds a different token.
+  // `epoch` changes with the generation and clearing on it is the fix; the
+  // position check stays for the ordinary case of moving the pin.
+  useEffect(() => {
+    setData(null);
+    setErr("");
+  }, [epoch]);
 
   async function run() {
     if (busy) return;
@@ -175,13 +203,28 @@ export default function TokenAnchors({
       {data && !stale && (
         <>
           <div className={`an-verdict ${data.found ? "found" : "none"}`}>
-            {data.found ? (
+            {/* `found` is true for BOTH "target-reached" and
+                "empty-anchor-sufficient", and the second is the opposite
+                reading: the anchor is EMPTY, nothing in the candidate window
+                holds the answer, and it is being held by the template, the
+                sink, the position or the prior. Rendered as a find, that said
+                "0 tokens hold it" in the success styling. */}
+            {data.found && data.stopped_because === "empty-anchor-sufficient" ? (
+              <>
+                <b>Nothing in your words was needed.</b> The prediction{" "}
+                <code>{data.target_token}</code> survived with the anchor
+                EMPTY, in {data.base_rate.held ?? 0} of {data.base_rate.samples}{" "}
+                draws — so it is being held by the chat template, the attention
+                sink, the position or the model's prior, none of which this
+                search can perturb.
+              </>
+            ) : data.found ? (
               <>
                 <b>
                   {data.size} token{data.size === 1 ? "" : "s"} hold it.
                 </b>{" "}
                 Perturbing everything else left <code>{data.target_token}</code>{" "}
-                as the prediction in {data.precision.held} of{" "}
+                as the prediction in {data.precision.held ?? 0} of{" "}
                 {data.precision.samples} draws.
               </>
             ) : (
@@ -192,7 +235,10 @@ export default function TokenAnchors({
                   <>
                     {" "}
                     The best any anchor could do here measured{" "}
-                    {measured(data.ceiling.point, 3)}, under the target of{" "}
+                    {data.ceiling.point === null
+                      ? "nothing — that ceiling was never sampled"
+                      : measured(data.ceiling.point, 3)}
+                    , under the target of{" "}
                     {measured(data.target, 3)}. That is a fact about this
                     prompt, not a failure of the search.
                   </>
@@ -228,17 +274,35 @@ export default function TokenAnchors({
             <Interval
               p={data.ceiling}
               label={
-                data.ceiling.n_perturbed
-                  ? `held every candidate, ${data.ceiling.n_perturbed} still perturbed — the ceiling`
-                  : "held every candidate — the ceiling"
+                // `undefined` and `0` are different answers and a falsy test
+                // conflates them: the route omits the key entirely on the
+                // path where the ceiling was never measured, and sends 0 when
+                // it WAS measured with nothing outside the candidate set.
+                data.ceiling.n_perturbed === undefined
+                  ? "the ceiling"
+                  : data.ceiling.n_perturbed > 0
+                    ? `held every candidate, ${data.ceiling.n_perturbed} still perturbed — the ceiling`
+                    : "held every candidate, nothing left to perturb — the ceiling"
               }
             />
           </ul>
           <p className="meta">
             A precision means nothing without the floor beside it: the marker is
-            the {measured(data.target, 2)} target, and the band is the{" "}
-            {measured(data.precision.confidence * 100, 0)}%{" "}
-            {data.precision.method}.
+            the {measured(data.target, 2)} target
+            {/* `confidence` and `method` are null on an unmeasured proportion,
+                and `null * 100` is 0 — so this read "the band is the 0% ."
+                with `method` rendering as nothing, a fabricated confidence
+                level under a row that correctly said "not measured". */}
+            {data.precision.measured && data.precision.confidence !== null ? (
+              <>
+                , and the band is the{" "}
+                {measured(data.precision.confidence * 100, 0)}%{" "}
+                {data.precision.method}
+              </>
+            ) : (
+              <>, and there is no band: nothing was sampled here</>
+            )}
+            .
             {data.target_ceiling < data.target && (
               <>
                 {" "}

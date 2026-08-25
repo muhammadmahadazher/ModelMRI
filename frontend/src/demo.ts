@@ -899,7 +899,17 @@ export async function demoFetch(
   // above learned that lesson already.
   if (p === "/api/vla/timeline") {
     const v = await bundle<any>("vla");
-    const want = Number(q.get("episode") ?? v.episode);
+    // `Number("x")` is NaN, and NaN !== v.episode, so a non-numeric query
+    // string used to produce a refusal reading "not episode NaN" — a sentence
+    // that names the reader's mistake without naming what was wrong with it.
+    const asked = q.get("episode");
+    const want = asked === null ? v.episode : Number(asked);
+    if (!Number.isFinite(want)) {
+      return refuse(
+        422,
+        `\`episode\` is a whole number and this was ${JSON.stringify(asked)}.`,
+      );
+    }
     if (want !== v.episode) {
       return refuse(
         422,
@@ -929,9 +939,19 @@ export async function demoFetch(
   if (p === "/api/vla/ood" || p === "/api/vla/ood/cost") {
     const v = await bundle<any>("vla");
     const cost = p.endsWith("/cost");
-    const wantEpisode = Number(q.get("episode") ?? v.episode);
+    const askedEpisode = q.get("episode");
+    const wantEpisode = askedEpisode === null ? v.episode : Number(askedEpisode);
     const wantSpace = q.get("space") ?? v.ood_space;
-    const wantStride = Number(q.get("frame_stride") ?? 1);
+    const askedStride = q.get("frame_stride");
+    const wantStride = askedStride === null ? 1 : Number(askedStride);
+    // Same NaN trap as the timeline above.
+    if (!Number.isFinite(wantEpisode) || !Number.isFinite(wantStride)) {
+      return refuse(
+        422,
+        `\`episode\` and \`frame_stride\` are whole numbers, and these were ` +
+          `${JSON.stringify(askedEpisode)} and ${JSON.stringify(askedStride)}.`,
+      );
+    }
     if (wantEpisode !== v.episode || wantSpace !== v.ood_space) {
       return refuse(
         422,

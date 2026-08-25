@@ -5494,16 +5494,27 @@ export const getEpisodeOodCost = (episode: number, space: string, frameStride = 
  *  `measured: false` means the denominator was zero — `reason` says which —
  *  and `point` is then meaningless rather than 0. */
 export interface Proportion {
+  /** False when nobody sampled it. EVERY field below except `samples` and
+   *  `reason` is then `null` — `anchors._unmeasured` is explicit that the one
+   *  thing it must never do is put a 0 or a 1 where a measured proportion
+   *  goes. Read `point` without checking this and a proportion nobody took
+   *  renders as 0.000. */
   measured: boolean;
-  held: number;
+  held: number | null;
   samples: number;
-  point: number;
-  low: number;
-  high: number;
-  confidence: number;
-  method: string;
+  point: number | null;
+  low: number | null;
+  high: number | null;
+  confidence: number | null;
+  method: string | null;
   reason: string;
-  /** Ceiling only: how many positions were perturbed to measure it. */
+  /** What the arithmetic implies when there was nothing to sample — a
+   *  SEPARATE key from `point` precisely so a reader and a chart can tell
+   *  arithmetic from evidence. */
+  implied?: number | null;
+  /** Ceiling only, and absent (not 0) on the paths that never measured one.
+   *  `undefined` means "not measured"; 0 means "measured, nothing outside the
+   *  candidate set was perturbed". */
   n_perturbed?: number;
 }
 
@@ -5522,8 +5533,24 @@ export interface Anchors {
   anchor_indices: number[];
   found: boolean;
   size: number;
-  /** Each step of the greedy search, in the order it took them. */
-  steps: { index: number; token: string; precision: Proportion; size: number }[];
+  /** Each step of the greedy search, in the order it took them.
+   *
+   *  These are the route's own field names. An earlier version of this
+   *  interface declared `{index, token, precision, size}` — four keys the
+   *  route has never sent — so `steps[i].precision` was `undefined` at every
+   *  call site that trusted it. */
+  steps: {
+    step: number;
+    added_index: number;
+    added_token: string;
+    /** The candidates screened at this step, CAPPED at five with the count
+     *  and the cap beside it. */
+    screened: ({ index: number; token: string } & Proportion)[];
+    n_screened: number;
+    screened_truncated: boolean;
+    screen_samples: number;
+    verified: Proportion;
+  }[];
   /** How often the prediction survived with only the anchor held. */
   precision: Proportion;
   /** How often it survived with NOTHING held — the floor any anchor has to
@@ -5544,7 +5571,18 @@ export interface Anchors {
     drop_one_checked: boolean;
     irreducible_under_single_removal: boolean | null;
     removed_by_elimination: number[];
-    drops: { index: number; precision: Proportion }[];
+    /** One backward-elimination attempt. The proportion is SPREAD into the
+     *  entry rather than nested, which is why this extends `Proportion`. */
+    drops: ({
+      dropped_index: number;
+      dropped_token: string;
+      anchor_at_the_time: number[];
+      still_sufficient: boolean;
+      removed: boolean;
+      /** Non-empty when this drop reused an existing measurement rather than
+       *  paying for a new one. */
+      reused: string;
+    } & Proportion)[];
     note: string;
   };
   /** What the replacements were drawn from, and whether that pool was varied
@@ -5567,11 +5605,16 @@ export interface Anchors {
     samples: number;
     screen_samples: number;
     control_ids_dropped: number;
-    paired: boolean;
+    /** A SENTENCE, not a flag. Declared `boolean` here once, which made
+     *  `if (p.paired)` unconditionally true and would have printed a
+     *  paragraph anywhere it was rendered as one. */
+    paired: string;
     weighting: string;
     seed: number;
     sentence: string;
-    sentences: string[];
+    /** How many distinct templates the corpus holds — a COUNT, not the
+     *  sentences themselves. `.map` over it would have thrown. */
+    sentences: number;
     quality: {
       distinct_ids: number;
       distinct_templates: number;
@@ -5598,7 +5641,9 @@ export interface Anchors {
     passes_with_another_position_ids: number;
     why: string;
   };
-  base_margin: number;
+  /** `null` when there is no second token to take a margin against — a
+   *  vocabulary of one. Never 0, which would say the top two tokens tied. */
+  base_margin: number | null;
   base_p_top: number;
   /** How far the unperturbed run drifts from itself, and how far the anchor
    *  run sits from it. The first is the floor under the second. */
@@ -5639,8 +5684,14 @@ export interface GradientToken {
   index: number;
   token: string;
   token_id: number;
-  attribution: number;
-  share: number;
+  /** `null` when the backward pass came back non-finite. NEVER 0 — the module
+   *  is explicit that a bar it could not compute must not be drawn as one it
+   *  computed to be zero, and `unreadable` is how a renderer tells them
+   *  apart. */
+  attribution: number | null;
+  /** `null` when there is nothing to take a share OF, and null for every
+   *  token when the total itself is not a number. */
+  share: number | null;
   /** True when this bar is under the completeness gap, i.e. its share cannot
    *  be told from the error in the approximation. */
   unreadable: boolean;
@@ -5653,9 +5704,12 @@ export interface GradientToken {
 export interface Completeness {
   steps: number;
   rule: string;
-  sum_of_attributions: number;
-  measured_delta: number;
-  gap: number;
+  /** `null` when non-finite. That is not a corner case here — it is exactly
+   *  the state the `undefined` verdict names, so any arithmetic on these
+   *  three has to check first. */
+  sum_of_attributions: number | null;
+  measured_delta: number | null;
+  gap: number | null;
   /** `null` when the move is under `endpoint_floor` — there is no share of a
    *  quantity that could not be resolved, and 0 would read as "no gap". */
   gap_share: number | null;
@@ -5681,11 +5735,15 @@ export interface TokenGradients {
   n_listed: number;
   n_unreadable: number;
   n_nonfinite: number;
-  sum_of_absolute_attributions: number;
+  sum_of_absolute_attributions: number | null;
   completeness: Completeness;
   forward_passes: number;
   backward_passes: number;
-  peak_bytes: number;
+  /** `null` on EVERY CPU run: `torch.cpu` publishes no
+   *  `max_memory_allocated`, so there is no allocator peak to read. Rendering
+   *  `null / 1e6` prints "0.0 MB held" beside a `peak_note` that says the
+   *  memory was not measured — the payload contradicting itself in one line. */
+  peak_bytes: number | null;
   peak_note: string;
   elapsed_s: number;
   means: string;
@@ -5754,8 +5812,12 @@ export interface PatchScreen {
   screen_grids: { resid: number[][]; attn: number[][]; mlp: number[][] };
   shortlist: ScreenSite[];
   shortlist_size: number;
+  /** What the caller asked for. */
   shortlist_requested: number;
-  shortlist_capped_from: number | null;
+  /** How many sites were SCORED — the pool the shortlist was taken from, not
+   *  the number requested. Reading it as the request produced "12 of 486
+   *  requested" on a dial set to 12. Never null. */
+  shortlist_capped_from: number;
   /** Sites the screen called near zero, verified anyway — a screen checked
    *  only where it already agrees has not been checked. */
   near_zero_probes: ScreenSite[];
@@ -5871,8 +5933,15 @@ export interface NeuronSpan {
 export interface NeuronEvidence {
   neuron: number;
   layer_width: number;
-  /** What the corpus was called. `null` when text was passed directly. */
-  label: string | null;
+  /** The corpus's own name, when it came from a file. Absent when text was
+   *  passed directly, which is why this is optional rather than `| null` —
+   *  the route omits the key, it does not send a null.
+   *
+   *  There is deliberately no `layer` here: the route does not publish one.
+   *  A panel that labels this answer with its own layer dial will relabel it
+   *  the moment the dial moves, so the requested layer has to be snapshotted
+   *  beside the payload instead. */
+  label?: string | null;
   n_sequences: number;
   n_tokens: number;
   n_fired: number;

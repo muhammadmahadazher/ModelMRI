@@ -2,6 +2,12 @@ import { useState } from "react";
 import { errorText, PatchScreen, patchScreen, ScreenSite } from "./api";
 import { measured } from "./measured";
 
+/** The route's own floor (`patch_screen.MIN_VERIFY`). One site verified
+ *  is not an agreement between two rankings, it is a coincidence, so the
+ *  route refuses below this — and a dial that offers it offers a control
+ *  that can only fail. */
+const MIN_VERIFY = 2;
+
 /** Rank the patching grid in two passes instead of hundreds — and measure the
  *  screen against the exact grid on the few it shortlists.
  *
@@ -46,7 +52,11 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
   const [clean, setClean] = useState("The Eiffel Tower is in the city of");
   const [corrupt, setCorrupt] = useState("The Colosseum is in the city of");
   const [shortlist, setShortlist] = useState(12);
-  const [verify, setVerify] = useState(6);
+  const [verifyWanted, setVerifyWanted] = useState(6);
+  // What will actually be sent. Dragging `shortlist` below `verify` used to
+  // leave the two disagreeing until the server said so.
+  const verify = Math.min(verifyWanted, Math.max(MIN_VERIFY, shortlist));
+  const setVerify = setVerifyWanted;
   const [data, setData] = useState<PatchScreen | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -119,19 +129,27 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
           disabled={disabled || busy}
         />
         <span className="meta">{shortlist}</span>
+        {/* MIN 2, NOT 0. The route refuses anything under two — one site
+            verified is not an agreement, it is a coincidence — so a dial
+            offering 0 and 1 offered two positions that can only fail.
+
+            And the clamp used to be on the DISPLAY only: the slider showed
+            `min(verify, shortlist)` while the request carried the raw value,
+            so dragging shortlist below verify produced a 422 naming a number
+            the control had never shown. It is clamped in state now. */}
         <label className="meta" htmlFor="ps-verify">
           verify
         </label>
         <input
           id="ps-verify"
           type="range"
-          min={0}
-          max={Math.max(2, shortlist)}
-          value={Math.min(verify, shortlist)}
+          min={MIN_VERIFY}
+          max={Math.max(MIN_VERIFY, shortlist)}
+          value={verify}
           onChange={(e) => setVerify(Number(e.target.value))}
           disabled={disabled || busy}
         />
-        <span className="meta">{Math.min(verify, shortlist)} patched for real</span>
+        <span className="meta">{verify} patched for real</span>
         <button
           className="ghost sm"
           onClick={() => void run()}
@@ -210,12 +228,19 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
               <Site key={s.name} s={s} />
             ))}
           </ul>
-          {data.shortlist_capped_from !== null && (
-            <p className="meta">
-              {data.shortlist_size} of {data.shortlist_capped_from} requested —
-              the cap is reported rather than silently applied.
-            </p>
-          )}
+          {/* `shortlist_capped_from` is how many sites were SCORED, not how
+              many were asked for — the route sets it to `len(rows)`. Read as
+              the request it said "12 of 486 requested" on a dial set to 12,
+              which is a cap reported as the opposite of what happened. Both
+              numbers now, each named. */}
+          <p className="meta">
+            {data.shortlist_size} shortlisted of{" "}
+            {data.shortlist_capped_from.toLocaleString()} sites scored
+            {data.shortlist_requested !== data.shortlist_size && (
+              <> · {data.shortlist_requested} requested</>
+            )}{" "}
+            — the cap is reported rather than silently applied.
+          </p>
 
           {/* The strongest NEGATIVE site, which a top-N list sorted by
               magnitude can drop entirely. A site that pushes the answer the
