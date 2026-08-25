@@ -118,6 +118,76 @@ def test_reliability_travels_with_the_rows(tiny):
     assert isinstance(out["reliability"]["usable"], bool)
 
 
+def _dtype_survives_on_this_cpu(name: str) -> bool:
+    """Whether a forward pass in this dtype survives here — MEASURED, in a
+    child process, because it cannot be measured any other way.
+
+    THE CRASH THIS EXISTS FOR. `tests (windows-latest, py3.10)` failed CI with
+
+        Windows fatal exception: code 0xc000001d
+        [gw1] node down: Not properly terminated
+        FAILED ...agrees_with_the_model_in_every_dtype[dtype1]
+        worker 'gw1' crashed
+
+    `0xc000001d` is STATUS_ILLEGAL_INSTRUCTION: a torch CPU kernel reaching
+    for an instruction set that runner's processor does not have. `dtype1` is
+    bfloat16. It is a fact about the machine rather than about this repo — the
+    same commit passed on macOS twice and on windows py3.13.
+
+    IT CANNOT BE A `try/except`. An illegal instruction is not a Python
+    exception; the interpreter is gone before any handler runs, which is why
+    the whole xdist worker died and took the run down with it. The only way to
+    ask "can this CPU do bfloat16" and survive the answer is to ask a process
+    that is allowed to die.
+
+    NOT a capability lookup either. `torch.backends.cpu.get_cpu_capability()`
+    reports AVX2 on the machine this was written on, where bfloat16 works
+    perfectly — so that string does not answer this question, and inferring
+    from it would be guessing at which kernels a given torch build routes
+    where.
+
+    Cached for the session: the probe costs one interpreter start plus a
+    transformers import.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import torch, transformers;"
+        f"d = torch.{name};"
+        "cfg = transformers.GPT2Config("
+        "n_layer=1, n_head=2, n_embd=32, vocab_size=64, n_positions=32);"
+        "m = transformers.AutoModelForCausalLM.from_config(cfg).eval().to(d);"
+        "m(torch.tensor([[1, 2]]))"
+    )
+    try:
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            timeout=300,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return done.returncode == 0
+
+
+_DTYPE_OK: dict[str, bool] = {}
+
+
+def require_dtype(dtype) -> None:
+    """Skip rather than crash the worker, and say which machine could not."""
+    name = str(dtype).removeprefix("torch.")
+    if name not in _DTYPE_OK:
+        _DTYPE_OK[name] = _dtype_survives_on_this_cpu(name)
+    if not _DTYPE_OK[name]:
+        pytest.skip(
+            f"this CPU cannot run a forward pass in {name} — a probe process "
+            f"died on it. The invariant below is dtype-free and still true; "
+            f"there is no machine here to check it on."
+        )
+
+
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16])
 def test_the_final_row_agrees_with_the_model_in_every_dtype(dtype):
     """Regression: the lens double-normed its final row on every bf16 load.
@@ -137,6 +207,9 @@ def test_the_final_row_agrees_with_the_model_in_every_dtype(dtype):
     token must be the model's top token.
     """
     transformers = pytest.importorskip("transformers")
+    # BEFORE the model is built, because the thing being guarded against is a
+    # hard crash rather than an exception — see `require_dtype`.
+    require_dtype(dtype)
     cfg = transformers.GPT2Config(
         n_layer=3, n_head=2, n_embd=32, vocab_size=64, n_positions=32
     )
