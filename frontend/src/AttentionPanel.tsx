@@ -24,6 +24,8 @@ import ArcCanvas from "./ArcCanvas";
 import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
 import HeadWiring from "./HeadWiring";
+import TokenAnchors from "./TokenAnchors";
+import TokenGradients from "./TokenGradients";
 import HeadEvidencePanel from "./HeadEvidence";
 import ReceiptLine from "./ReceiptLine";
 import { DEMO } from "./demo";
@@ -848,6 +850,25 @@ export default function AttentionPanel({
           but the sink — and they already say what would make the measurement
           work. Anything added in front of them is the client guessing. */}
       {attrErr && <div className="hint err">{attrErr}</div>}
+      {/* THE OTHER TWO WAYS TO ATTRIBUTE A PREDICTION TO ITS INPUTS, and
+          they are here together because reading one alone is the mistake.
+          "Rank tokens" above masks a token out and measures what breaks —
+          NECESSITY. Anchors keeps a few and perturbs the rest —
+          SUFFICIENCY. Gradients asks what the output was sensitive to in
+          the limit of an infinitesimal nudge, which is neither. All three
+          disagree, all three are real, and the disagreement is the
+          finding rather than a fault in one of them.
+
+          Gated exactly as "Rank tokens" is: no model behind a replay, a
+          demo or a viewer build, and a control that can only error
+          teaches a visitor the measurement is broken. */}
+      {!replay && !DEMO && !VIEWER && (
+        <>
+          <TokenAnchors position={pinned} disabled={ranking} />
+          <TokenGradients position={pinned} disabled={ranking} />
+        </>
+      )}
+
       {attr && <TokenRanking a={attr} />}
       {err ? (
         <div className="hint err">

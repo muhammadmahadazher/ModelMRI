@@ -5480,3 +5480,441 @@ export const getEpisodeOodCost = (episode: number, space: string, frameStride = 
     `/api/vla/ood/cost?episode=${episode}&space=${encodeURIComponent(space)}` +
       `&frame_stride=${frameStride}`,
   ).then((r) => json<EpisodeOodCost>(r));
+
+// ------------------------------------------------ anchors: what HOLDS it
+//
+// The other half of `/api/attention/attribute`, and the pair is the point:
+// that route masks a token out and measures what breaks (necessity), this one
+// keeps a few and perturbs the rest (sufficiency). A token can be necessary
+// and not sufficient. Both are real, they disagree, and a reader shown one of
+// them alone will read it as both.
+
+/** A proportion with the interval it was measured to, never a bare point.
+ *
+ *  `measured: false` means the denominator was zero — `reason` says which —
+ *  and `point` is then meaningless rather than 0. */
+export interface Proportion {
+  measured: boolean;
+  held: number;
+  samples: number;
+  point: number;
+  low: number;
+  high: number;
+  confidence: number;
+  method: string;
+  reason: string;
+  /** Ceiling only: how many positions were perturbed to measure it. */
+  n_perturbed?: number;
+}
+
+export interface AnchorToken {
+  index: number;
+  token: string;
+}
+
+export interface Anchors {
+  position: number;
+  target_token: string;
+  target_token_id: number;
+  /** The tokens kept fixed. EMPTY with `found: false` is a real answer rather
+   *  than a failure to report one, and `stopped_because` says which. */
+  anchor: AnchorToken[];
+  anchor_indices: number[];
+  found: boolean;
+  size: number;
+  /** Each step of the greedy search, in the order it took them. */
+  steps: { index: number; token: string; precision: Proportion; size: number }[];
+  /** How often the prediction survived with only the anchor held. */
+  precision: Proportion;
+  /** How often it survived with NOTHING held — the floor any anchor has to
+   *  beat, measured rather than assumed to be zero. */
+  base_rate: Proportion;
+  /** The best any anchor could do here. A target above this cannot be met at
+   *  any size, which is a fact about the prompt, not about the search. */
+  ceiling: Proportion;
+  target: number;
+  /** The highest target these draws could ever certify, from the Wilson bound
+   *  alone. A target above it is refused rather than searched for forever. */
+  target_ceiling: number;
+  target_ceiling_exact: number;
+  stopped_because: string;
+  minimality: {
+    search: string;
+    smaller_may_exist: boolean;
+    drop_one_checked: boolean;
+    irreducible_under_single_removal: boolean | null;
+    removed_by_elimination: number[];
+    drops: { index: number; precision: Proportion }[];
+    note: string;
+  };
+  /** What the replacements were drawn from, and whether that pool was varied
+   *  enough for the answer to mean anything. */
+  perturbation: {
+    replaces: string;
+    corpus: string;
+    vocabulary: {
+      source: string;
+      size: number;
+      declared: number | null;
+      measured: number;
+    };
+    pool_size: number;
+    pool_distinct_ids: number;
+    distinct_ids: number;
+    distinct_templates: number;
+    min_distinct_ids: number;
+    draws_in_pool: number;
+    samples: number;
+    screen_samples: number;
+    control_ids_dropped: number;
+    paired: boolean;
+    weighting: string;
+    seed: number;
+    sentence: string;
+    sentences: string[];
+    quality: {
+      distinct_ids: number;
+      distinct_templates: number;
+      below_min_distinct_ids: boolean;
+      templates_repeat: boolean;
+      note: string;
+    };
+  };
+  candidates: {
+    n_candidates: number;
+    n_tested: number;
+    truncated: boolean;
+    tested_span: number[];
+    max_candidates: number;
+    max_size: number;
+    coverage: string;
+  };
+  /** Positions that could never be part of an anchor, and why. */
+  held_fixed: { count: number; indices: number[]; listed: number; why: string };
+  accounting: {
+    free_evaluations: number;
+    covering_final_step: boolean;
+    passes_with_another_mask: number;
+    passes_with_another_position_ids: number;
+    why: string;
+  };
+  base_margin: number;
+  base_p_top: number;
+  /** How far the unperturbed run drifts from itself, and how far the anchor
+   *  run sits from it. The first is the floor under the second. */
+  noise_floor_kl: number;
+  agreement_kl: number;
+  passes: number;
+  seed: number;
+  elapsed_s: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const tokenAnchors = (body: {
+  position?: number;
+  max_candidates?: number;
+  max_size?: number;
+  n_samples?: number;
+  target?: number;
+  seed?: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Finding the smallest set of your prompt's tokens that holds the " +
+          "answer means perturbing the rest of them and re-running the model " +
+          "once per draw — 83 forward passes on the narrowest search this " +
+          "offers, and thousands on a wide one.",
+      )
+    : fetch("/api/attention/anchors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<Anchors>(r));
+
+// ------------------------------- integrated gradients, with the gap named
+
+/** One token's share of the move, with whether it can be read at all. */
+export interface GradientToken {
+  index: number;
+  token: string;
+  token_id: number;
+  attribution: number;
+  share: number;
+  /** True when this bar is under the completeness gap, i.e. its share cannot
+   *  be told from the error in the approximation. */
+  unreadable: boolean;
+}
+
+/** Do the attributions add up to what actually happened?
+ *
+ *  A bar chart with no gap beside it cannot be told from a converged one, so
+ *  all three numbers travel always. */
+export interface Completeness {
+  steps: number;
+  rule: string;
+  sum_of_attributions: number;
+  measured_delta: number;
+  gap: number;
+  /** `null` when the move is under `endpoint_floor` — there is no share of a
+   *  quantity that could not be resolved, and 0 would read as "no gap". */
+  gap_share: number | null;
+  /** How far two repeats of the same two forward passes moved on their own.
+   *  The resolution of `measured_delta`, and the floor under which a gap
+   *  cannot be told from running the same forward twice. */
+  endpoint_floor: number;
+  verdict: "converged" | "approximate" | "diverged" | "undefined";
+  sentence: string;
+}
+
+export interface TokenGradients {
+  position: number;
+  target_token: string;
+  target_token_id: number;
+  target_kind: string;
+  baseline: string;
+  /** What the baseline actually was, in words: "pad" is not the same sentence
+   *  on two tokenizers and the reader cannot see the id from here. */
+  baseline_note: string;
+  tokens: GradientToken[];
+  n_tokens: number;
+  n_listed: number;
+  n_unreadable: number;
+  n_nonfinite: number;
+  sum_of_absolute_attributions: number;
+  completeness: Completeness;
+  forward_passes: number;
+  backward_passes: number;
+  peak_bytes: number;
+  peak_note: string;
+  elapsed_s: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const tokenGradients = (body: {
+  position?: number;
+  baseline?: string;
+  target_kind?: string;
+  steps?: number;
+  on_gap?: string;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Integrated gradients runs a forward AND a backward pass at every " +
+          "step of the path from the baseline to your prompt, against a live " +
+          "model holding its own graph.",
+      )
+    : fetch("/api/attention/gradients", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<TokenGradients>(r));
+
+// -------------------------------------------- screening the patching grid
+
+/** One site the screen ranked, and — for the shortlisted few — what the exact
+ *  grid said about it. */
+export interface ScreenSite {
+  name: string;
+  component: string;
+  layer: number;
+  position: number;
+  /** The SCREEN's number. Deliberately not called `recovery`: it is a
+   *  first-order approximation, and the field names keep it structurally
+   *  distinguishable from `/api/patch`'s exact one. */
+  attribution: number;
+  grad_norm: number;
+  delta_norm: number;
+  /** `null` on a site the exact grid was never run on. Never 0, which would
+   *  say it was measured and recovered nothing. */
+  exact_recovery: number | null;
+  exact_error: number | null;
+}
+
+export interface ScreenPrompt {
+  prompt: string;
+  tokens: string[];
+  answer: { id: number; text: string; p: number };
+}
+
+export interface PatchScreen {
+  clean: ScreenPrompt;
+  corrupt: ScreenPrompt;
+  method: string;
+  /** In the payload rather than in a docstring: these numbers are not
+   *  `/api/patch`'s and must never be read as though they were. */
+  approximate: boolean;
+  n_layers: number;
+  n_positions: number;
+  n_sites_scored: number;
+  n_sites_nonfinite: number;
+  nonfinite_sites: string[];
+  /** Per-component grids for drawing. Screen values throughout. */
+  screen_grids: { resid: number[][]; attn: number[][]; mlp: number[][] };
+  shortlist: ScreenSite[];
+  shortlist_size: number;
+  shortlist_requested: number;
+  shortlist_capped_from: number | null;
+  /** Sites the screen called near zero, verified anyway — a screen checked
+   *  only where it already agrees has not been checked. */
+  near_zero_probes: ScreenSite[];
+  near_zero_requested: number;
+  near_zero_capped_from: number | null;
+  strongest_negative: ScreenSite | null;
+  strongest_negative_on_shortlist: boolean;
+  strongest_negative_reason: string;
+  /** How far the screen agreed with the exact grid where both ran. A screen
+   *  whose agreement was never measured is a guess with a leaderboard. */
+  agreement: {
+    verified: number;
+    spearman: number | null;
+    spearman_reason: string;
+    spearman_resolution: number | null;
+    sign_flips: number;
+    worst_rank_move: number | null;
+    largest_disagreement: number | null;
+    largest_disagreement_at: string | null;
+    largest_disagreement_screen: number | null;
+    largest_disagreement_exact: number | null;
+    largest_disagreement_scope: string;
+    largest_disagreement_measured_on: string;
+    largest_disagreement_verified_only: number | null;
+    largest_disagreement_verified_only_at: string | null;
+    exact_recovery_resolution: number | null;
+    near_zero_probed: number;
+    near_zero_sign_flips: number;
+    near_zero_largest_screen: number | null;
+    near_zero_largest_exact: number | null;
+    near_zero_largest_exact_at: string | null;
+    nonfinite_exact: number;
+    nonfinite_exact_at: string[];
+    means: string;
+  };
+  /** What it cost and what the exact grid WOULD have, so the saving is a
+   *  measurement rather than a claim. */
+  cost: {
+    screen_forward_passes: number;
+    screen_backward_passes: number;
+    verification_passes: number;
+    exact_grid_passes: number;
+    exact_trace_passes: number;
+    exact_passes_basis: string;
+    shortlist_remaining_passes: number;
+    passes_saved_against_exact_grid: number;
+    passes_saved_against_exact_trace: number;
+    seconds: number | null;
+    seconds_basis: string;
+    seconds_gradient_pass: number | null;
+    seconds_per_exact_pass: number | null;
+    seconds_exact_grid_projected: number | null;
+    seconds_saved_projected: number | null;
+    memory: {
+      peak_bytes: number | null;
+      free_bytes: number | null;
+      total_bytes: number | null;
+      source: string;
+      reason: string;
+    };
+    activation_bytes_held: {
+      clean_cache: number;
+      corrupt_values: number;
+      grads: number;
+      taps: number;
+      total: number;
+      patch_trace_equivalent: number | null;
+      ratio_vs_patch_trace: number | null;
+      means: string;
+    };
+    means: string;
+  };
+  gap: number;
+  dtype: string;
+  seeding: string;
+  skipped: string[];
+  notes: string[];
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const patchScreen = (body: {
+  clean: string;
+  corrupt: string;
+  shortlist?: number;
+  verify?: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Screening the patching grid runs one gradient pass over a live " +
+          "model and then re-runs it once per shortlisted site, to check the " +
+          "screen against the exact answer rather than assert it.",
+      )
+    : fetch("/api/patch/screen", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<PatchScreen>(r));
+
+// --------------------------------------- one MLP neuron, on your own text
+
+export interface NeuronSpan {
+  position: number;
+  token: string;
+  /** Character offset inside `text`. Not derivable by searching: a window can
+   *  hold the same token twice and only one of them fired. */
+  offset: number;
+  activation: number;
+  sequence: number;
+  text: string;
+}
+
+export interface NeuronEvidence {
+  neuron: number;
+  layer_width: number;
+  /** What the corpus was called. `null` when text was passed directly. */
+  label: string | null;
+  n_sequences: number;
+  n_tokens: number;
+  n_fired: number;
+  n_negative: number;
+  n_finite: number;
+  n_nonfinite: number;
+  /** `null` when nothing finite was read — never 0, which would say the
+   *  neuron was measured and sat still. */
+  max_activation: number | null;
+  min_activation: number | null;
+  mean_positive: number | null;
+  firing_rate: number | null;
+  /** This neuron's rate against its own layer's, which is the only scale a
+   *  firing rate means anything on. */
+  layer_median_firing_rate: number | null;
+  histogram: number[];
+  bin_edges: number[];
+  spans: NeuronSpan[];
+  n_spans_available: number;
+  n_spans_shown: number;
+  /** The caveat that is the whole reason sparse autoencoders exist, in the
+   *  payload rather than in a tooltip. */
+  polysemantic: string;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+export const neuronEvidence = (body: {
+  texts?: string[];
+  file?: string;
+  label?: string;
+  neuron?: number;
+  layer?: number;
+  top_k?: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Reading what one MLP neuron fires on means running YOUR text " +
+          "through a live model and tapping that layer, once per sequence.",
+      )
+    : fetch("/api/neurons/evidence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<NeuronEvidence>(r));

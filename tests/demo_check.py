@@ -106,6 +106,26 @@ EXEMPT = {
         "replaces each input with its episode mean and re-runs the policy, "
         "which needs the policy"
     ),
+    "/api/attention/anchors": (
+        "perturbs every token that is not being held and re-runs the model "
+        "once per draw, then again per candidate subset — 83 forward passes "
+        "MEASURED on the narrowest search this offers, thousands on a wide "
+        "one, and every one of them against a live model"
+    ),
+    "/api/attention/gradients": (
+        "a forward AND a backward pass at every step of the path from the "
+        "baseline to your prompt; a backward pass needs the graph a live "
+        "model builds, which a recording does not carry"
+    ),
+    "/api/patch/screen": (
+        "one gradient pass over a live model, then one re-run per shortlisted "
+        "site to check the screen against the exact answer — the checking is "
+        "the point, and it is the half a bundle could never bake"
+    ),
+    "/api/neurons/evidence": (
+        "runs YOUR text through a live model and taps one MLP layer, once per "
+        "sequence; the corpus is the reader's and so is the answer"
+    ),
     "/api/graph": "opens a circuit-tracer `.pt` from disk, which a page cannot see",
     "/api/gguf": "reads a GGUF from disk; the browser cannot see the filesystem",
     "/api/gguf/plan": "reads a GGUF header from disk to project its memory cost",

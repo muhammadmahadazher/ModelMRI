@@ -8118,3 +8118,322 @@ button:disabled,
   gap: 3px;
 }
 .ood-ranked li { display: flex; align-items: baseline; gap: 8px; }
+
+/* ------------------------------------------- integrated gradients, on screen
+   The verdict is a block rather than a chip because it GATES the bars under
+   it: a diverged run's chart is not a small version of a converged one, it is
+   a chart of something that does not decompose. */
+.token-gradients, .token-anchors { margin-top: 18px; }
+
+.ig-verdict {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+  font-size: var(--t-xs);
+}
+.ig-verdict.converged { border-left-color: var(--sem-vla); }
+.ig-verdict.approximate { border-left-color: var(--sem-agent); }
+.ig-verdict.diverged { border-left-color: var(--sem-error); }
+.ig-verdict.undefined { border-left-color: var(--ink-4); }
+.ig-verdict .meta { display: block; margin-top: 4px; }
+
+.ig-chips { align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ig-cost { display: block; margin-top: 8px; }
+
+.ig-bars {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+.ig-bars li {
+  display: grid;
+  grid-template-columns: 2.2em minmax(4em, 9em) 1fr 6.5em;
+  align-items: center;
+  gap: 8px;
+}
+.ig-index { font-variant-numeric: tabular-nums; text-align: right; }
+.ig-token {
+  font-size: var(--t-xs);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ig-bars b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: right;
+}
+
+/* Signed about a shared centre. A token that pushed the answer AWAY is not a
+   small positive one, and a common zero is the only rendering where the
+   difference reads at a glance. */
+.ig-track {
+  position: relative;
+  height: 10px;
+  border-left: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+}
+.ig-track::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line);
+}
+.ig-track i {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  border-radius: 1px;
+}
+.ig-track i.pos { left: 50%; background: var(--sem-vla); }
+.ig-track i.neg { right: 50%; background: var(--sem-error); }
+
+/* Under the completeness gap: this bar cannot be told from the error in the
+   approximation, so it is struck through rather than drawn small. A small bar
+   reads as a small measurement; this one is not a measurement. */
+.ig-bars li.unreadable .ig-token,
+.ig-bars li.unreadable b {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+.ig-bars li.unreadable .ig-track i { opacity: 0.3; }
+
+/* ------------------------------------------------------- anchors, on screen */
+
+.an-verdict {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+  font-size: var(--t-xs);
+}
+.an-verdict.found { border-left-color: var(--sem-vla); }
+.an-verdict.none { border-left-color: var(--ink-4); }
+
+.an-tokens { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.an-tokens code {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-1, 4px);
+  background: color-mix(in oklab, var(--color-attn) 10%, transparent);
+  white-space: pre;
+}
+
+/* All three proportions on ONE scale. A precision reads as a finding until
+   the base rate sits beside it on the same axis. */
+.an-scale { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.an-interval {
+  display: grid;
+  grid-template-columns: minmax(8em, 13em) 1fr 11em 4em;
+  align-items: center;
+  gap: 8px;
+}
+.an-interval b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.an-track {
+  position: relative;
+  height: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-1, 4px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+.an-band {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: color-mix(in oklab, var(--color-attn) 45%, transparent);
+  border-radius: 1px;
+}
+.an-point {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-attn);
+}
+/* The target, drawn where it falls. Whether the band clears it is the whole
+   reading, and it cannot be read from two numbers in different places. */
+.an-target {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 0;
+  border-left: 1px dashed var(--color-ink);
+}
+
+.an-notes { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+
+@media (max-width: 720px) {
+  .ig-bars li { grid-template-columns: 2.2em minmax(4em, 1fr) 6.5em; }
+  .ig-bars .ig-track { grid-column: 1 / -1; }
+  .an-interval { grid-template-columns: 1fr; }
+}
+
+/* Every bar under the gap. Not a chart — a sentence naming what would make it
+   one, with the crossed-out picture folded away behind it. */
+.ig-nothing {
+  margin-top: 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ig-nothing p { margin: 0; flex: 1 1 22em; }
+
+/* ------------------------------------------ screening the patching grid
+   The agreement block sits ABOVE the ranking it qualifies, and is styled as a
+   block rather than a chip for the same reason the gradients verdict is: an
+   approximate ranking whose agreement was never read is a guess with a
+   leaderboard, and the reader has to meet that before the leaderboard. */
+.patch-screen, .neuron-evidence { margin-top: 18px; }
+
+.ps-prompts {
+  display: grid;
+  grid-template-columns: minmax(4em, 6em) 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  margin-top: 8px;
+}
+.ps-chips { align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ps-cost { display: block; margin-top: 8px; }
+
+.ps-agreement {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--color-attn);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+.ps-agreement .row { gap: 8px; flex-wrap: wrap; align-items: baseline; }
+
+.ps-sites { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 3px; }
+.ps-site {
+  display: grid;
+  grid-template-columns: minmax(8em, 14em) minmax(6em, 9em) 7em 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 3px 6px;
+  border-left: 2px solid color-mix(in oklab, var(--color-attn) 40%, transparent);
+  background: color-mix(in oklab, var(--color-ink) 1.5%, transparent);
+}
+.ps-site b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: right;
+}
+/* A site pushing the answer the OTHER way is a finding, not a small positive
+   one — and a top-N sorted by magnitude can drop it entirely. */
+.ps-negative { margin-top: 10px; }
+.ps-negative .ps-site {
+  border-left-color: color-mix(in oklab, var(--sem-error) 55%, transparent);
+}
+
+/* ------------------------------------------------ one neuron, on your text */
+
+.corpus-box {
+  width: 100%;
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: var(--color-card);
+  color: var(--color-ink);
+  resize: vertical;
+}
+.ne-index { width: 7em; }
+.ne-chips { align-items: baseline; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+/* The caveat, at the TOP of the answer. A reader who scrolls off before
+   reaching it has been handed a monosemantic story about a unit that is not. */
+.ne-caveat {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--sem-agent);
+  border-radius: var(--r-2, 6px);
+  background: color-mix(in oklab, var(--sem-agent) 8%, transparent);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+}
+
+/* BOTH TAILS. A neuron's negative side is a real response, and a histogram
+   cropped at zero would say it has none. */
+.ne-hist {
+  margin-top: 10px;
+  height: 56px;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--line);
+}
+.ne-hist i { flex: 1; min-height: 1px; border-radius: 1px 1px 0 0; }
+.ne-hist i.neg { background: color-mix(in oklab, var(--sem-error) 70%, transparent); }
+.ne-hist i.pos { background: color-mix(in oklab, var(--sem-feat) 70%, transparent); }
+.ne-range { justify-content: space-between; margin-top: 2px; }
+
+.ne-spans { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
+.ne-spans li {
+  display: grid;
+  grid-template-columns: 4em 6em 1fr;
+  align-items: baseline;
+  gap: 10px;
+}
+.ne-spans b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: right;
+}
+.ne-bar {
+  position: relative;
+  height: 8px;
+  align-self: center;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-1, 4px);
+  overflow: hidden;
+}
+.ne-bar i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--sem-feat);
+}
+/* The window scrolls rather than wrapping: a span is a slice of real text and
+   its shape carries information that reflowing destroys. */
+.ne-line {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  white-space: pre;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.ne-line mark {
+  background: color-mix(in oklab, var(--sem-feat) 30%, transparent);
+  color: inherit;
+  border-radius: 2px;
+}
+
+@media (max-width: 720px) {
+  .ps-site { grid-template-columns: 1fr; gap: 2px; }
+  .ne-spans li { grid-template-columns: 4em 1fr; }
+  .ne-spans .ne-line { grid-column: 1 / -1; }
+}

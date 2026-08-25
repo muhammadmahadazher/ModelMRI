@@ -23,6 +23,7 @@ import {
 } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import FeatureEvidencePanel from "./FeatureEvidence";
+import NeuronEvidencePanel from "./NeuronEvidencePanel";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
@@ -356,6 +357,14 @@ export default function FeaturesPanel({
           a different network.
         </div>
         {err && <div className="hint err">{err}</div>}
+
+        {/* THIS BRANCH IS THE ONE IT EXISTS FOR. Everything above needs a
+            published sparse autoencoder in the registry, and this branch is
+            reached precisely because there is none — which is the state most
+            models are in. Reading the MLP neurons directly needs no registry
+            at all, so "no SAE for this model" stops being a dead end and
+            becomes a blunter answer that says it is blunter. */}
+        {!DEMO && !VIEWER && <NeuronEvidencePanel epoch={epoch} />}
 
         <LensPanel epoch={epoch} />
       </div>
@@ -750,6 +759,15 @@ export default function FeaturesPanel({
       {featSel >= 0 && !DEMO && !VIEWER && (
         <FeatureEvidencePanel feature={featSel} epoch={epoch} />
       )}
+
+      {/* AND THE ANSWER FOR EVERY MODEL WITHOUT ONE OF THOSE, which is most
+          of them. Everything above this line needs a published sparse
+          autoencoder in the registry; this reads the MLP neurons directly, so
+          it works on any model at all. It is blunter and it says so at the
+          top of its own answer — a neuron is polysemantic, which is the whole
+          reason the autoencoders above exist — and it sits below them rather
+          than above for exactly that reason. */}
+      {!DEMO && !VIEWER && <NeuronEvidencePanel epoch={epoch} />}
 
       {featSel >= 0 && (
         <div className="row" style={{ marginTop: 14 }}>

@@ -9,6 +9,9 @@ import {
   PatchTrace,
 } from "./api";
 import ReceiptLine from "./ReceiptLine";
+import PatchScreenPanel from "./PatchScreenPanel";
+import { DEMO } from "./demo";
+import { VIEWER } from "./viewer";
 import { useScanOnData } from "./useScanOnData";
 
 /** Activation patching — where in the model the answer is decided.
@@ -547,6 +550,17 @@ export default function PatchPanel({
           <ReceiptLine receipt={data.receipt} />
         </>
       )}
+
+      {/* THE SAME GRID, RANKED IN TWO PASSES INSTEAD OF HUNDREDS — and then
+          checked against this one on the few sites it shortlists. It lives
+          here, under the exact answer, because that is the order the claim
+          has to be read in: the screen is an approximation OF the measurement
+          above, and its numbers are deliberately named differently so a
+          reader cannot copy one out believing it is the other.
+
+          Gated as every live-model control here is: a static page has no
+          model to run a gradient pass against. */}
+      {!DEMO && !VIEWER && <PatchScreenPanel disabled={busy} />}
     </div>
   );
 }
