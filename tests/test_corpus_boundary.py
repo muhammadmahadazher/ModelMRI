@@ -175,3 +175,48 @@ def test_the_library_reader_has_no_boundary(tmp_path, monkeypatch):
     outside = tmp_path / "mine.txt"
     outside.write_text("a\nb\n", encoding="utf-8")
     assert sweep.load_prompts(outside) == ["a", "b"]
+
+
+def test_a_sibling_directory_that_merely_starts_the_same_is_refused(
+    tmp_path, monkeypatch
+):
+    """THE CLASSIC PREFIX BUG. A containment test written as a bare
+    `startswith` accepts `/home/anabel` for a root of `/home/ana` — a
+    different person's home directory, matched because one name is a prefix
+    of the other. The separator guard is what stops it.
+
+    This test exists because the guard was VACUOUS when it was written:
+    removing it left all twelve tests green, so the comment beside it was a
+    claim with nothing behind it.
+    """
+    import tempfile
+
+    root = tmp_path / "ana"
+    root.mkdir()
+    sibling = tmp_path / "anabel"
+    sibling.mkdir()
+    (sibling / "theirs.txt").write_text("not yours\n", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "_home", lambda: None)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "nowhere"))
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: root))
+    monkeypatch.delenv("MODELMRI_CORPUS_DIRS", raising=False)
+
+    with pytest.raises(BadRequest) as caught:
+        fc.load_corpus(sibling / "theirs.txt")
+    assert "resolves outside" in caught.value.sentence
+
+
+def test_the_root_itself_is_inside_the_root(tmp_path, monkeypatch):
+    """The other end of the same guard: `resolved == prefix` has to be
+    accepted, or a corpus named as the root directory itself is refused for
+    being exactly where it is allowed to be."""
+    import tempfile
+
+    monkeypatch.setattr(paths, "_home", lambda: None)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "nowhere"))
+    monkeypatch.setattr(Path, "cwd", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("MODELMRI_CORPUS_DIRS", raising=False)
+    # `resolve_corpus` answers about the path, not about what is at it, so a
+    # directory resolves fine here and the reader below is what refuses it.
+    assert fc.resolve_corpus(tmp_path) == tmp_path.resolve()

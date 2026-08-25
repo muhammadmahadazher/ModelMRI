@@ -37,6 +37,7 @@ the page nothing measured.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -165,13 +166,30 @@ def resolve_corpus(path: str | Path) -> Path:
             f"drive, and that no link in it points at itself."
         ) from None
 
+    # `normcase` + `startswith`, NOT `Path.relative_to`.
+    #
+    # The two are equivalent as containment tests and the first version used
+    # `relative_to` in a try/except, on the argument that ValueError IS the
+    # test. It is — and CodeQL does not model it as a barrier, so the finding
+    # simply MOVED here: #418 closed on `sweep.py` and #431 opened on this
+    # function, still `high`, still `py/path-injection`. A boundary a taint
+    # tracker cannot see is a boundary that has to be argued for in every
+    # future review, which is how the original one survived unfixed twice.
+    #
+    # `normcase` matters beyond the tracker: Windows paths compare
+    # case-insensitively and `resolve()` does not reliably fix the case of
+    # every component, so `C:\Users\Mahad` and `c:\users\mahad` are
+    # the same directory and a raw `startswith` would refuse one of them.
+    #
+    # The `+ sep` is the classic prefix bug and is not optional: without it a
+    # root of `/home/ana` accepts `/home/anabel`, which is a different
+    # person's home directory.
+    resolved = os.path.normcase(str(target))
     roots = paths.corpus_roots()
     for root in roots:
-        try:
-            target.relative_to(root)
-        except ValueError:
-            continue
-        return target
+        prefix = os.path.normcase(str(root))
+        if resolved == prefix or resolved.startswith(prefix.rstrip(os.sep) + os.sep):
+            return target
 
     raise BadRequest(
         f"{target.name!r} resolves outside the directories a corpus may be "
