@@ -1275,10 +1275,24 @@ def test_what_the_payload_publishes_is_what_the_object_measured(ids, tok):
     # is 2.6% off. That is fine for a displayed timing and would fail any
     # tolerance tight enough to catch a dropped field, which is what this is
     # actually for.
-    for field, places in (("forward_seconds", 4), ("step_seconds", 4), ("ratio", 2)):
+    # The seconds round by SIGNIFICANT FIGURES, not decimal places, and the
+    # reason is a CI failure: `round(x, 4)` publishes 0.0 for anything under
+    # 50 microseconds, and a toy forward pass on macos-latest/py3.12 is
+    # exactly that — it came back 0.0 where this machine measures 0.000308.
+    # "0.0 seconds" tells a reader the pass took no time, which is the same
+    # defect as a zero standing in for an unknown, and this module publishes
+    # a RATIO derived from these two.
+    for field in ("forward_seconds", "step_seconds"):
         value = getattr(priced, field)
         if value is None:
             assert said[field] is None, field
         else:
-            assert said[field] == round(value, places), field
+            assert said[field] == gradients._seconds(value), field
             assert said[field] > 0, f"{field} rounded away to nothing"
+            # Four significant figures survives a fast machine.
+            assert said[field] == pytest.approx(value, rel=1e-3), field
+    if priced.ratio is None:
+        assert said["ratio"] is None
+    else:
+        assert said["ratio"] == round(priced.ratio, 2)
+        assert said["ratio"] > 0

@@ -448,12 +448,8 @@ class Cost:
             "steps": self.steps,
             "backward_passes": self.backward_passes,
             "forward_passes": self.forward_passes,
-            "forward_seconds": (
-                None if self.forward_seconds is None else round(self.forward_seconds, 4)
-            ),
-            "step_seconds": (
-                None if self.step_seconds is None else round(self.step_seconds, 4)
-            ),
+            "forward_seconds": _seconds(self.forward_seconds),
+            "step_seconds": _seconds(self.step_seconds),
             "ratio": None if self.ratio is None else round(self.ratio, 2),
             "retained_bytes": self.retained_bytes,
             "basis": self.basis,
@@ -1219,6 +1215,32 @@ def _completeness(
         verdict=verdict,
         sentence=sentence,
     )
+
+
+def _seconds(value: float | None) -> float | None:
+    """A duration rounded so a real measurement cannot vanish into 0.0.
+
+    `round(x, 4)` publishes 0.0 for anything under 50 microseconds, and a
+    toy model's forward pass on a fast machine is exactly that — MEASURED,
+    `forward_seconds` came back 0.0 on macos-latest/py3.12 where it is
+    0.000308 here. "0.0 seconds" tells a reader the pass took no time, which
+    is the same defect as a zero standing in for an unknown, and this module
+    publishes a RATIO derived from these two numbers.
+
+    Four significant figures instead: 0.000308 stays 0.0003080, 3.17 ms stays
+    0.003170, and a 40-microsecond pass publishes 4.000e-05 rather than
+    nothing. `None` still means this machine would not report a duration at
+    all, which is a different answer and stays distinct.
+    """
+    if value is None:
+        return None
+    if not value:
+        # A true zero from a clock with no resolution, not a small number
+        # rounded away — passed through rather than dressed up.
+        return 0.0
+    from math import floor, log10
+
+    return round(value, -int(floor(log10(abs(value)))) + 3)
 
 
 def _decode(tokenizer, token_id: int) -> str:
