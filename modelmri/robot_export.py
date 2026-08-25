@@ -987,15 +987,28 @@ def omissions_for(*, sweep=None, frame: Frame | None = None) -> list[str]:
     the writer's: each entry says what they will not find and what it would
     be wrong to conclude from not finding it.
     """
+    # Each multi-line sentence is PARENTHESISED. Adjacent string literals in a
+    # list concatenate silently, and the overwhelmingly common cause of that
+    # is a forgotten comma — so `py/implicit-string-concatenation-in-list`
+    # reads this shape as a probable four-item list that lost one. Here the
+    # joining is deliberate, and parentheses are how you say so: they turn a
+    # pattern that is usually a bug into one that cannot be.
     out = [
-        "The per-layer attention grids are NOT in this file. ModelMRI "
-        "measured them; a timeline channel holds a number per instant, not a "
-        "32x32 map per layer. They are in the .mri.",
-        "The causal occlusion map and its control band are NOT in this file, "
-        "for the same reason. A scalar summary of a causal map is not the map.",
+        (
+            "The per-layer attention grids are NOT in this file. ModelMRI "
+            "measured them; a timeline channel holds a number per instant, "
+            "not a 32x32 map per layer. They are in the .mri."
+        ),
+        (
+            "The causal occlusion map and its control band are NOT in this "
+            "file, for the same reason. A scalar summary of a causal map is "
+            "not the map."
+        ),
         "The input-stream knockout bars are NOT in this file.",
-        "The model weights and the dataset are NOT in this file. It is a "
-        "record of what was measured, not a way to measure it again.",
+        (
+            "The model weights and the dataset are NOT in this file. It is a "
+            "record of what was measured, not a way to measure it again."
+        ),
     ]
     if frame is None:
         out.append(

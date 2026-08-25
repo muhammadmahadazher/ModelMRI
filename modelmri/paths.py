@@ -86,6 +86,74 @@ def _home() -> Path | None:
         return None
 
 
+def corpus_roots() -> list[Path]:
+    """Directories a TEXT CORPUS may be read from when the request came over
+    HTTP.
+
+    WIDER THAN `custom.allowed_roots`, ON PURPOSE. That boundary guards
+    IMPORT — a file under it gets executed — so it is the working directory
+    and the model directories and nothing else. This one guards READING a
+    `.txt` or a `.jsonl`, which IS the feature: pointing the tuned lens or a
+    neuron sweep at your own corpus is the thing people install this for.
+
+    So it is the working directory, your home directory, and the system
+    temporary directory, plus anything named in `MODELMRI_CORPUS_DIRS`
+    (`os.pathsep`-separated, the same convention `MODELMRI_MODELS_DIR` uses).
+
+    WHAT THIS IS AND IS NOT. It is a boundary against TRAVERSAL — `..` out to
+    `/etc/shadow`, to the Windows system directory, or into another account's
+    home — reached
+    from an HTTP route. It is NOT a sandbox around your own files, and it
+    cannot be one: reading the file you named is the whole feature, and a
+    corpus lives in Documents far more often than in the directory you
+    happened to launch from.
+
+    The CLI does not go through this at all. `modelmri sweep --prompts` is the
+    person at the keyboard naming their own file, and they can already read
+    anything that process can — a boundary there would refuse a file its own
+    user just typed while protecting nobody.
+
+    Temp is in the list because it is where a downloaded corpus lands, where
+    an editor writes a scratch file, and where every test fixture on a Linux
+    runner is created. It is user-writable and holds nothing the caller could
+    not already write themselves.
+    """
+    import tempfile
+
+    roots: list[Path] = [Path.cwd()]
+    home = _home()
+    if home is not None:
+        roots.append(home)
+    try:
+        roots.append(Path(tempfile.gettempdir()))
+    except (OSError, ValueError):
+        # No temp directory the OS will name. Narrows what may be read and
+        # never widens it, which is the safe direction for a boundary.
+        pass
+    # The same parsing `models_dirs` does, and for the same reason its
+    # docstring records: two modules once parsed that variable independently
+    # and neither expanded `~`, so `~/corpora` became a literal directory
+    # named `~` under the cwd and every file in it was refused.
+    raw = os.environ.get("MODELMRI_CORPUS_DIRS") or ""
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        extra = _expand(os.path.expandvars(part))
+        if extra is not None:
+            roots.append(extra)
+
+    out: list[Path] = []
+    for r in roots:
+        try:
+            resolved = r.resolve(strict=False)
+        except OSError:
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
 def override() -> Path | None:
     """One directory for everything, if the user asked for that."""
     return _env_path("MODELMRI_HOME")

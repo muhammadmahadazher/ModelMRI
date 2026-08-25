@@ -908,17 +908,27 @@ def screen(
     # cost what `patch.trace` costs, not what it costs plus a backward graph
     # nobody is reading any more.
     #
-    # REBOUND, not `del`ed. `gradient_pass` above closes over `metric`,
-    # `flat_taps` and `grads`, and deleting them leaves that closure reading
-    # names that a static reader — and ruff, which flagged exactly this —
-    # cannot see are bound. It has already run, so this is safe either way;
-    # rebinding drops the same references without leaving a landmine for the
-    # next person who moves the call.
-    taps = {}
-    grads = {}
-    corrupt_values = {}
-    flat_taps = []
-    metric = corrupt_logits_full = None
+    # EMPTIED, not `del`ed and not rebound. `gradient_pass` above closes over
+    # all four names, so deleting them leaves that closure reading names a
+    # static reader cannot see are bound — the landmine the previous version
+    # of this comment was right to avoid.
+    #
+    # But it avoided it by REBINDING (`taps = {}`), which is worse than it
+    # looks in two ways. It leaves four locals nothing ever reads again, which
+    # is what `py/unused-local-variable` correctly flagged; and it drops only
+    # THIS scope's reference, while the closure's cell still points at the
+    # original dict. `.clear()` empties the very object the closure sees, so
+    # the tensors go now rather than when the frame does.
+    taps.clear()
+    grads.clear()
+    corrupt_values.clear()
+    flat_taps.clear()
+    # `metric = corrupt_logits_full = None` used to sit here and released
+    # nothing. `metric` is assigned only INSIDE `gradient_pass`, so it is a
+    # local of that function and the name here had never been bound at all —
+    # dead on arrival. And `corrupt_logits` is `corrupt_logits_full.detach()`,
+    # which SHARES its storage, so dropping one name while the other lives
+    # frees a Python object header and not one byte of the tensor.
     resolution = patch.recovery_resolution(model, clean_logits, gap)
 
     # --------------------------------------------------------- the shortlist

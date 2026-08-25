@@ -134,16 +134,67 @@ class CorpusStats:
         )
 
 
+def resolve_corpus(path: str | Path) -> Path:
+    """The path, normalised, or a refusal — for a path that arrived over HTTP.
+
+    THE BOUNDARY IS HERE AND NOT IN `sweep.load_prompts`, and the difference
+    is who is asking. `modelmri sweep --prompts ~/corpus.txt` is the person at
+    the keyboard naming their own file; they can already read anything that
+    process can, and refusing a path its own user just typed protects nobody.
+    A path that arrived in a request body is a different thing, even on
+    loopback, and `..` in one is not a corpus.
+
+    So this normalises FIRST — `expanduser().resolve()`, which collapses every
+    `..` before anything looks at the result, so the file that gets read is
+    the file that gets named in the refusal — and then checks the result is
+    under one of `paths.corpus_roots()`. `relative_to` raising ValueError IS
+    the test, not an error being swallowed: it raises precisely when the
+    target is not under the root, which is the question being asked.
+
+    CodeQL raised `py/path-injection` (#418, and #409 before it) against the
+    flow that ends in `sweep.load_prompts`'s `read_text`. The routes that
+    reach it already carry `_not_from_this_machine`, which answers WHO may
+    ask; this answers WHERE they may point, which is a different question and
+    the one a taint tracker can see.
+    """
+    try:
+        target = Path(path).expanduser().resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise BadRequest(
+            f"{str(path)!r} is not a path this machine can resolve. Check the "
+            f"drive, and that no link in it points at itself."
+        ) from None
+
+    roots = paths.corpus_roots()
+    for root in roots:
+        try:
+            target.relative_to(root)
+        except ValueError:
+            continue
+        return target
+
+    raise BadRequest(
+        f"{target.name!r} resolves outside the directories a corpus may be "
+        f"read from over HTTP: {', '.join(str(r) for r in roots)}. Move the "
+        f"file under one of those, or name its directory in "
+        f"MODELMRI_CORPUS_DIRS and restart. (`modelmri sweep --prompts` has "
+        f"no such boundary — it is you naming your own file.)"
+    )
+
+
 def load_corpus(path: str | Path) -> tuple[list[str], str]:
     """(sequences, label) from a local `.txt` or `.jsonl`. Never a download.
 
     The same reader `modelmri sweep` and the tuned lens use, so a corpus file
     that works for one works for all three rather than being three
     nearly-identical formats.
+
+    Every caller of this is a ROUTE, so the path is checked against
+    `resolve_corpus` before it is opened.
     """
     from . import sweep as sweep_mod
 
-    target = Path(path)
+    target = resolve_corpus(path)
     return sweep_mod.load_prompts(target), target.name
 
 

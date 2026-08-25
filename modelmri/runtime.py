@@ -3230,7 +3230,7 @@ class ModelRuntime:
             out = head_corpus.evidence(
                 self.model,
                 self.tokenizer,
-                lambda i: self._block(i),
+                self._block,
                 [str(t) for t in texts],
                 layer=layer,
                 head=head,

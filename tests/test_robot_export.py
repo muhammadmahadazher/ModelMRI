@@ -1244,9 +1244,14 @@ def test_too_many_messages_is_refused_with_the_count_and_never_truncated(
 def test_write_routes_on_the_container_name(monkeypatch, tmp_path):
     """One entry point for a route that switches on a request body string."""
     _install_fake_mcap(monkeypatch)
-    assert (
-        rx.write(_timeline(), tmp_path / "a.mcap", container="mcap")["n_messages"] == 8
-    )
+    # The WRITE is hoisted out of the assert. `python -O` strips assert
+    # statements entirely, so with the call inside one the file was never
+    # written and this test passed by not running — which is the failure mode
+    # `py/side-effect-in-assert` exists to catch, and it is worse in a test
+    # than anywhere else: a test that vanishes under a flag is a test that
+    # reports success for work it did not do.
+    wrote = rx.write(_timeline(), tmp_path / "a.mcap", container="mcap")
+    assert wrote["n_messages"] == 8
     with pytest.raises(Refusal):
         rx.write(_timeline(), tmp_path / "a.rrd", container="rrd")
 
