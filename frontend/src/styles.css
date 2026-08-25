@@ -9265,3 +9265,38 @@ main > .panel[data-mri-group-label]::after {
   font-size: var(--t-xs);
   line-height: 1.7;
 }
+
+/* THE ROBOT FINDING SOMEBODY SENT. Sized like the denoising strip's frames
+   rather than like a live camera: this is one frame of one episode, and
+   blowing it up to fill the panel would suggest a video that is not here. */
+.vfr-frame-row {
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+.vfr-frame {
+  margin: 0;
+  flex: 0 0 auto;
+  max-width: 220px;
+}
+.vfr-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  /* A 96x96 policy frame smoothed into a soft wash is a picture of something
+     the policy never saw. Same rule as the denoising strip. */
+  image-rendering: pixelated;
+  background: var(--color-card);
+}
+.vfr-frame figcaption {
+  margin-top: 4px;
+  line-height: 1.4;
+}
+/* The block list can be long -- a 6x6 grid is 36 rows -- so it scrolls inside
+   the panel rather than pushing the agreement sentence below the fold, which
+   is the one line a reader most needs to see. */
+.vfr-blocks {
+  max-height: 18em;
+  overflow-y: auto;
+}

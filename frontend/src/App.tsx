@@ -21,6 +21,7 @@ import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
 import ImagePanel from "./ImagePanel";
 import ImageRunReplay from "./ImageRunReplay";
+import VlaFindingReplay from "./VlaFindingReplay";
 import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
@@ -421,6 +422,16 @@ export default function App() {
           renders the one you were sent. It renders nothing when the open
           session carries no image run, which is most of them. */}
       <ImageRunReplay
+        epoch={resetKey}
+        sessionKey={session.open ? (session.meta?.created_at ?? "open") : ""}
+      />
+      {/* And a robot finding somebody sent, on the same terms and for the
+          same reason. `/api/vla/share` wrote this section from the day the
+          robot work landed and nothing served it back, so the file opened as
+          an empty text session. Mounted here rather than beside `VLAPanel`,
+          which is behind `!VIEWER` because it drives a live dataset: this one
+          drives nothing, it reads what arrived. */}
+      <VlaFindingReplay
         epoch={resetKey}
         sessionKey={session.open ? (session.meta?.created_at ?? "open") : ""}
       />

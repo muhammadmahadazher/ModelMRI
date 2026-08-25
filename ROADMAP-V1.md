@@ -245,7 +245,38 @@ head**, the way we already have it for an SAE feature.
 ### B4. Robotics, now that the sidecar exists
 
 **STATUS 2026-08-25 — built; the MCAP gap below is closed and the `.rrd` one
-stands.** `vla_ood.py` scores every
+stands. A SHARED robot finding is now readable, which it was not.**
+
+`POST /api/vla/share` had written a validated robot section from the day this
+theme landed: `session._vla` guarded it to `_patch`'s standard, `mcp_server`
+advertised it in its `has` dict, and `VLACausal` put a Share button on it.
+Nothing served it back. Measured before the fix: the file opened in the viewer
+as an empty text session — "1 tokens · 0 attention maps" — with the words
+"robot", "occlusion" and "episode" appearing nowhere on the page, and
+`modelmri inspect` printing the same. So the one button on that panel produced
+a file its recipient could not open.
+
+Closed with `GET /api/vla/replay`, a `VlaFindingReplay` panel mounted in BOTH
+builds, the viewer and demo shims, and a `modelmri inspect` block. The panel
+keeps the distinction the measurement is about: a shift is not a finding until
+it beats a random occlusion of the same size, so `clears_control: null` reads
+as "not controlled, so this shift is not yet a finding" rather than as a
+failure — and the attention/cause agreement is printed WITH its sign, because
+a policy looking hardest where covering changes least is the finding, not a
+fault.
+
+That was the THIRD section in this project to carry a writer and no reader —
+the agent trace and the image run were the first two, and all three were found
+by opening a real file rather than by any test. So
+`tests/test_every_section_has_a_reader.py` now walks the `has_*` predicates
+the parser exposes and fails on any that nothing is recorded as reading. It
+found a fourth and a fifth on the day it was written: `head_types` and
+`model_diff` are written into every export by `runtime.py`, validated by
+`session.py`, and read by nothing at all. They are recorded there as known
+gaps rather than quietly tolerated, and the fix for them is a reader, not a
+smaller file.
+
+`vla_ood.py` scores every
 frame against a reference set the payload names, in Mahalanobis distance over
 the directions that reference actually varies in, with the episode's own rows
 held OUT of the reference, its mean, its covariance and its null. A distance

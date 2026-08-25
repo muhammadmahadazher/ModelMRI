@@ -6243,6 +6243,85 @@ export const getImageReplay = () =>
     json<{ available: boolean } & Partial<ImageRunSection>>(r),
   );
 
+/** One occlusion block: a patch of the frame, covered, and what the action
+ *  did about it.
+ *
+ *  `control_max` and `clears_control` are NULLABLE and the null is the whole
+ *  measurement. An uncontrolled block has no control maximum, and 0.0 there
+ *  would read as "a random occlusion moved the action not at all" — a claim
+ *  nobody made.
+ */
+export interface VlaBlock {
+  row?: number;
+  col?: number;
+  /** How far the action moved when this patch was covered. Never null: every
+   *  block was measured, so a missing shift is a broken row rather than an
+   *  honest unknown, and the server refuses one. */
+  shift: number;
+  /** The largest shift a RANDOM occlusion produced. `null` when this block
+   *  was not controlled. */
+  control_max?: number | null;
+  /** Whether the real occlusion beat its own control. `null` is "not
+   *  controlled", which is not "did not clear it". */
+  clears_control: boolean | null;
+  control_draws?: number;
+  /** The policy's attention on this patch, when the map was compared. */
+  attention?: number | null;
+}
+
+/** A robot finding carried inside a `.mri`.
+ *
+ *  `/api/vla/share` wrote this from the day the feature landed and nothing
+ *  served it back, so a shared robot finding opened as an empty text session.
+ *  The reader (`session._vla`) was there the whole time.
+ */
+export interface VlaFindingSection {
+  provenance: {
+    policy: string;
+    dataset: string;
+    camera: string;
+    revision: string;
+    episode: number;
+    timestep: number;
+  };
+  frame?: string;
+  frame_size?: [number, number];
+  /** Stated, never inferred. `false` is the positive claim "this is the
+   *  resolution the policy saw" — a causal map is drawn over this frame, so a
+   *  silently shrunk one puts every block in the wrong place. */
+  frame_downsampled?: boolean;
+  frame_note?: string;
+  attention?: number[][][];
+  occlusion?: {
+    blocks: VlaBlock[];
+    baseline: string;
+    means?: string;
+    grid?: number[];
+    stride?: number;
+    n_blocks?: number;
+    n_controlled?: number;
+    passes?: number;
+    /** Which attention map the agreement was measured against. `null` is
+     *  "not compared", which a reader must be able to tell from "layer 0". */
+    compared_layer: number | null;
+    compared_head: number | null;
+    scale?: number | null;
+    /** Correlation between the policy's attention and what actually moved the
+     *  action. Negative is a real and common finding, not an error. */
+    attention_agreement?: number | null;
+  };
+}
+
+/** The robot finding inside an opened `.mri`, or nothing.
+ *
+ *  `available: false` is a STATE and not an error: most sessions carry no
+ *  robot finding.
+ */
+export const getVlaReplay = () =>
+  fetch("/api/vla/replay").then((r) =>
+    json<{ available: boolean } & Partial<VlaFindingSection>>(r),
+  );
+
 /** What a share would carry, before it is asked for.
  *
  *  Priced before it is spent like every other measurement here — except the

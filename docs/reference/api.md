@@ -125,6 +125,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/vla/occlude/cost` | Vla Occlude Cost |
 | `GET` | `/api/vla/ood` | Vla Ood Score |
 | `GET` | `/api/vla/ood/cost` | Vla Ood Cost |
+| `GET` | `/api/vla/replay` | Vla Replay |
 | `GET` | `/api/vla/sweep/cost` | Vla Sweep Cost |
 | `GET` | `/api/vla/timeline` | Vla Timeline Tracks |
 | `POST` | `/api/vla/actions/compare` | Vla Actions Compare |

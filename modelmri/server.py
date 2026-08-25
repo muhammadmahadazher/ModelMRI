@@ -5138,6 +5138,38 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="robot-finding.mri"'},
         )
 
+    @app.get("/api/vla/replay")
+    def vla_replay():
+        """The robot finding inside an opened `.mri`, or nothing.
+
+        THE OTHER HALF OF `/api/vla/share`, which existed without it. That
+        route has written a validated robot section since the feature landed,
+        `session._vla` has guarded it to `_patch`'s standard, and
+        `mcp_server` has advertised it in its `has` dict -- and nothing served
+        it to anybody. So the Share button in `VLACausal` produced a file whose
+        recipient opened an empty text session: "1 tokens, 0 attention maps",
+        with no mention of the policy, the frame or the occlusion map.
+
+        That is the third time this project has carried a section the viewer
+        could not show. The agent trace was the first (`/api/session/trace`),
+        the image run the second (`/api/image/replay`), and both were found the
+        same way: by opening a real file instead of trusting that a writer
+        implies a reader.
+
+        `available: False` is a state and not an error -- most sessions carry
+        no robot finding, and a panel that got a 404 here would render "this
+        measurement is broken" for the ordinary case.
+
+        The section is served exactly as `session._vla` validated it. Nothing
+        is recomputed on the way out: every number in it was measured on
+        somebody else's machine, against a policy and a dataset this process
+        does not have, and this one has no standing to adjust any of it.
+        """
+        replay = runtime.replay
+        if replay is None or not replay.has_vla():
+            return {"available": False}
+        return {"available": True, **replay.vla}
+
     @app.post("/api/vla/occlude")
     async def vla_occlude_frame(request: Request):
         """What the policy's vision DEPENDED on, beside what it looked at.

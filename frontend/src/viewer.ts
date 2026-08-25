@@ -116,6 +116,22 @@ interface Doc {
     readout?: Record<string, unknown>;
     means?: string;
   };
+  /** A robot finding: one frame of one episode, the policy's attention over
+   *  it, and the occlusion map that says which patch actually MOVED the
+   *  action. Optional and additive like `graph`.
+   *
+   *  `/api/vla/share` has written this since the feature landed and nothing
+   *  ever served it back, so a shared robot finding opened as an empty text
+   *  session. */
+  vla?: {
+    provenance?: Record<string, unknown>;
+    frame?: string;
+    frame_size?: number[];
+    frame_downsampled?: boolean;
+    frame_note?: string;
+    attention?: number[][][];
+    occlusion?: Record<string, unknown>;
+  };
   /** The agent run this analysis belongs to, and which step failed. Optional
    *  and additive like `graph`.
    *
@@ -414,6 +430,39 @@ export async function viewerFetch(
       };
     }
     return ok({ available: true, ...img });
+  }
+
+  if (p === "/api/vla/replay") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const vla = open.vla;
+    // `available: false` is a STATE and not an error, exactly as for an image
+    // run: most sessions carry no robot finding.
+    if (!vla || !vla.provenance) return ok({ available: false });
+    // Refused here as well as in `session._vla`, because THIS copy runs in the
+    // recipient's browser on a file a stranger forwarded — and the claim it
+    // guards is the one that makes the heat map mean anything. A map without
+    // its policy, dataset, episode, timestep and camera is, in that
+    // validator's own words, a picture of nothing in particular.
+    const prov = vla.provenance as Record<string, unknown>;
+    const named = ["policy", "dataset", "camera", "revision"].every(
+      (k) => typeof prov[k] === "string" && (prov[k] as string).trim() !== "",
+    );
+    const placed = ["episode", "timestep"].every(
+      (k) => typeof prov[k] === "number" && Number.isInteger(prov[k]),
+    );
+    if (!named || !placed) {
+      return {
+        status: 422,
+        payload: {
+          error:
+            "this session carries a robot finding that does not say which " +
+            "policy, dataset, episode, timestep and camera produced it, so " +
+            "it is not rendered. A heat map without those is a picture of " +
+            "nothing in particular.",
+        },
+      };
+    }
+    return ok({ available: true, ...vla });
   }
 
   if (p === "/api/attention/meta") {

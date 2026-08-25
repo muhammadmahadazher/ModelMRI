@@ -538,6 +538,43 @@ def inspect_session(path, *, as_json: bool = False) -> int:
             if parsed.has_graph()
             else {"present": False}
         ),
+        # A ROBOT finding, for exactly the reason the image block below exists
+        # and found the same way: a file whose only content is an occlusion
+        # map has no tokens, no layers and no heads, so `inspect` printed
+        # "1 tokens, 0 attention maps" over a measured finding and the reader
+        # deleted it.
+        "vla": (
+            {
+                "present": True,
+                "policy": (parsed.vla.get("provenance") or {}).get("policy", ""),
+                "dataset": (parsed.vla.get("provenance") or {}).get("dataset", ""),
+                "episode": (parsed.vla.get("provenance") or {}).get("episode"),
+                "timestep": (parsed.vla.get("provenance") or {}).get("timestep"),
+                "camera": (parsed.vla.get("provenance") or {}).get("camera", ""),
+                "blocks": len((parsed.vla.get("occlusion") or {}).get("blocks") or []),
+                # Controlled and CLEARED are different counts and neither is
+                # the block total: a shift that never met a random occlusion
+                # of the same size is a number, not a finding.
+                "controlled": sum(
+                    1
+                    for b in (parsed.vla.get("occlusion") or {}).get("blocks") or []
+                    if b.get("clears_control") is not None
+                ),
+                "cleared": sum(
+                    1
+                    for b in (parsed.vla.get("occlusion") or {}).get("blocks") or []
+                    if b.get("clears_control") is True
+                ),
+                "baseline": (parsed.vla.get("occlusion") or {}).get("baseline", ""),
+                # `None` survives: "not compared" is not "agrees at 0.0".
+                "agreement": (parsed.vla.get("occlusion") or {}).get(
+                    "attention_agreement"
+                ),
+                "layers": len(parsed.vla.get("attention") or []),
+            }
+            if parsed.has_vla()
+            else {"present": False}
+        ),
         # An IMAGE run, for exactly the reason the graph block above exists:
         # `inspect` is triage, run before opening anything, and a file whose
         # only content is a denoising strip has no tokens, no layers and no
@@ -599,6 +636,42 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         line("graph", f"{g['n_nodes']:,} nodes, {g['edges']:,} edges carried")
         line("  computed by", f"{g['producer']} on {g['model'] or 'an unnamed model'}")
         line("", "NOT measured by ModelMRI")
+    if summary["vla"]["present"]:
+        v = summary["vla"]
+        line(
+            "robot finding",
+            f"{v['policy'] or 'an unnamed policy'} on "
+            f"{v['dataset'] or 'an unnamed dataset'}",
+        )
+        line(
+            "  frame",
+            f"episode {v['episode']}, timestep {v['timestep']}"
+            + (f", {v['camera']}" if v["camera"] else ""),
+        )
+        if v["blocks"]:
+            # THREE COUNTS, NOT ONE. Occlusion is out of distribution, so
+            # covering anything moves the action: a block that never met a
+            # random control is not evidence, and folding the three together
+            # would report a map of that as a finding.
+            line(
+                "  occlusion",
+                f"{v['blocks']:,} block(s), {v['controlled']:,} controlled, "
+                f"{v['cleared']:,} cleared their control"
+                + (f" — filled with {v['baseline']}" if v["baseline"] else ""),
+            )
+        if v["layers"]:
+            line("  attention", f"{v['layers']:,} layer(s)")
+        # Spelled out rather than printed bare: `None` reads as a missing
+        # field, and what it means -- nobody compared the two -- is a
+        # different statement from "they agree at 0.0".
+        line(
+            "  agreement",
+            (
+                "attention was not compared with what moved the action"
+                if v["agreement"] is None
+                else f"{v['agreement']:+.3f} between attention and cause"
+            ),
+        )
     if summary["image"]["present"]:
         img = summary["image"]
         line("image run", f"{img['kind']} — {img['repo'] or 'an unnamed checkpoint'}")

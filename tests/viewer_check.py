@@ -185,6 +185,120 @@ def build_image_fixture() -> bytes:
     return gzip.compress(json.dumps(doc, separators=(",", ":")).encode(), 6)
 
 
+def build_robot_fixture() -> bytes:
+    """A `.mri` carrying a robot finding, hostile in the ways a stranger's can
+    be — built legitimately and then EDITED, because the point is a file that
+    never passed through `session._vla`.
+
+    `/api/vla/share` wrote this section from the day the robot work landed and
+    nothing served it back, so the recipient opened an empty text session. The
+    reader was there the whole time; only the route and the panel were not.
+    """
+    import gzip
+    import json
+
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    blob = session.build(
+        model_id="smolvla",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a"],
+        prompt="a",
+        generation="",
+        attention={},
+        n_layers=1,
+        n_heads=1,
+        note="a robot finding from a stranger",
+        vla={
+            "provenance": {
+                "policy": "lerobot/smolvla_base",
+                "dataset": "lerobot/pusht",
+                "camera": "observation.images.top",
+                "revision": "abc123",
+                "episode": 5,
+                "timestep": 12,
+            },
+            "frame": "data:image/png;base64,AAAA",
+            "frame_size": [96, 96],
+            "occlusion": {
+                "baseline": "episode_mean",
+                "grid": [2, 2],
+                "attention_agreement": -0.12,
+                "blocks": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "shift": 0.4,
+                        "control_max": 0.1,
+                        "clears_control": True,
+                        "control_draws": 8,
+                    },
+                    {
+                        "row": 0,
+                        "col": 1,
+                        "shift": 0.1,
+                        "control_max": None,
+                        "clears_control": None,
+                        "control_draws": 0,
+                    },
+                ],
+            },
+        },
+    )
+
+    doc = json.loads(gzip.decompress(blob).decode("utf-8"))
+    vla = doc["vla"]
+    # A FRAME THAT IS A LINK. `session._vla` refuses one in as many words;
+    # the viewer shim serves the section raw, so only the panel stands between
+    # a hostile file and the recipient announcing that they opened it.
+    vla["frame"] = "https://beacon.invalid/frame.png"
+    return gzip.compress(json.dumps(doc, separators=(",", ":")).encode(), 6)
+
+
+async def robot_side(port: int) -> dict:
+    """Open that file in the real viewer and read what landed on screen."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        fetched: list[str] = []
+        page.on(
+            "request",
+            lambda r: fetched.append(r.url) if "beacon.invalid" in r.url else None,
+        )
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const blob = await (await fetch('./robot.mri')).blob();
+              const file = new File([blob], 'robot.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const served = await (await fetch('/api/vla/replay')).json();
+              const panel = [...document.querySelectorAll('.panel')]
+                .find(p => p.innerText.includes('ROBOT FINDING'));
+              return {
+                served: served.available === true,
+                mounted: !!panel,
+                text: panel ? panel.innerText : '',
+                linked: [...document.images]
+                  .map(i => i.src)
+                  .filter(s => !s.startsWith('data:')).length,
+              };
+            }"""
+        )
+        await browser.close()
+        got["requested"] = fetched
+        return got
+
+
 async def image_side(port: int) -> dict:
     """Open that file in the real viewer and read what it put on screen.
 
@@ -409,6 +523,7 @@ def main() -> int:
     FIXTURE.write_bytes(data)
     (VIEWER / "parity.mri").write_bytes(data)
     (VIEWER / "image.mri").write_bytes(build_image_fixture())
+    (VIEWER / "robot.mri").write_bytes(build_robot_fixture())
 
     expected = python_side(data)
     port = 5921
@@ -417,6 +532,7 @@ def main() -> int:
         got = asyncio.run(browser_side(port))
         hostile = asyncio.run(hostile_side(port))
         shared = asyncio.run(image_side(port))
+        robot = asyncio.run(robot_side(port))
     finally:
         httpd.shutdown()
 
@@ -507,6 +623,42 @@ def main() -> int:
     ok = ok and image_ok
 
     print()
+    # A SHARED ROBOT FINDING, in the build it was written for. `/api/vla/share`
+    # wrote this section for months with no route and no panel behind it.
+    robot_ok = True
+    for label, passed, detail in (
+        (
+            "mounted",
+            robot["served"] and robot["mounted"],
+            "the panel is on the page"
+            if robot["mounted"]
+            else "the panel is NOT mounted — a shared robot finding is unreadable"
+            if robot["served"]
+            else "the viewer did not serve the section at all",
+        ),
+        (
+            "no beacon",
+            not robot["requested"] and robot["linked"] == 0,
+            f"{robot['linked']} linked <img>, "
+            f"{len(robot['requested'])} request(s) off-origin",
+        ),
+        (
+            "control",
+            "not yet a finding" in robot["text"],
+            "an uncontrolled block is named as uncontrolled, not as a result",
+        ),
+        (
+            "agreement",
+            "-0.120" in robot["text"],
+            "a negative attention/cause agreement keeps its sign",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] robot     {label:10} — {detail}")
+        robot_ok = robot_ok and passed
+    ok = ok and robot_ok
+
+    print()
     # Two different failures, and the last line has to name the right one:
     # "THE VIEWER DISAGREES WITH THE TOOL" about a run where every cell
     # matched and the browser simply never started would send the next reader
@@ -517,6 +669,8 @@ def main() -> int:
         print("THE VIEWER DISAGREES WITH THE TOOL")
     elif not image_ok:
         print("THE VIEWER MISHANDLES A SHARED IMAGE RUN — see above")
+    elif not robot_ok:
+        print("THE VIEWER MISHANDLES A SHARED ROBOT FINDING — see above")
     else:
         print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1

@@ -1210,6 +1210,13 @@ export async function demoFetch(
         "writes the real thing.",
     );
   }
+  if (p === "/api/vla/replay") {
+    // NOT a refusal, for the reason the image one gives: `available: false` is
+    // the TRUE state of this page. The bundled session is a text generation
+    // and carries no robot finding, which is exactly what the panel needs to
+    // hear so it renders nothing rather than an error.
+    return ok({ available: false });
+  }
   if (p === "/api/image/replay") {
     // NOT a refusal. `available: false` is the TRUE state of this page: the
     // bundled session is a text generation and carries no image run, which is
