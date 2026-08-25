@@ -887,6 +887,35 @@ export async function demoFetch(
     return ok(block);
   }
 
+  // The one VLA readout this page can serve WHOLE. Everything else in this
+  // block is a strip: six frames of a 159-frame episode, five layers of
+  // twelve, because a decoded frame is base64 megabytes. A timeline is a few
+  // hundred floats per track, so the bundle carries every timestep of the
+  // episode the rest of the block was recorded from — the demo draws the real
+  // series rather than a sample of them.
+  //
+  // Which is also why it refuses another episode by NUMBER rather than
+  // serving this one under the wrong label. The scrubber and the layer dial
+  // above learned that lesson already.
+  if (p === "/api/vla/timeline") {
+    const v = await bundle<any>("vla");
+    const want = Number(q.get("episode") ?? v.episode);
+    if (want !== v.episode) {
+      return refuse(
+        422,
+        `this demo recorded episode ${v.episode} of ${v.dataset.repo_id}, not ` +
+          `episode ${want}. Installed, ModelMRI aligns the tracks of any ` +
+          `episode of any LeRobot dataset you have pulled.`,
+      );
+    }
+    // `max_points` is deliberately not honoured by re-striding the baked
+    // series. A stride the server applied is REPORTED in `stride`/`strided`
+    // and the panel says so; one applied here would be a second, invisible
+    // one under a payload claiming the first. The baked episode is 159
+    // timesteps, below every budget the panel offers.
+    return ok(v.timeline);
+  }
+
   // ---------------------------------------------------------- image models
   //
   // NOT-LOADED, not refused. `/api/image` describes what this process is

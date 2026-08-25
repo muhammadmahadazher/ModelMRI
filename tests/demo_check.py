@@ -528,6 +528,73 @@ def bundle_integrity() -> None:
     )
     for s in scenarios:
         scenario_integrity(s)
+    vla_integrity()
+
+
+def vla_integrity() -> None:
+    """The robot bundle, and the one readout it serves WHOLE.
+
+    Everything else in `vla.json` is a strip — six frames of 159, five layers
+    of twelve — because a decoded frame is base64 megabytes. The timeline is a
+    few hundred floats per track, so the demo carries every timestep and draws
+    the real series rather than a sample of them. Which makes it worth
+    checking as data rather than as a blob: the panel's whole claim is that
+    every track is indexed by the SAME `t`, and a bundle where one track came
+    out short would draw two series on two axes under one playhead.
+    """
+    path = BUNDLE / "vla.json"
+    if not path.is_file():
+        return
+    print("\n  [robot]")
+    vla = json.loads(path.read_text("utf-8"))
+    timeline = vla.get("timeline")
+    check(
+        "the episode's series are baked, not just its frames",
+        isinstance(timeline, dict) and bool(timeline.get("tracks")),
+        "vla.json has no `timeline`, so /api/vla/timeline answers nothing — "
+        "re-run scripts/bake_demo.py against a cached dataset",
+    )
+    if not isinstance(timeline, dict) or not timeline.get("tracks"):
+        return
+
+    # The handler refuses any episode but this one BY NUMBER, so a timeline
+    # baked from a different episode would be served under the frame strip's
+    # label — the exact substitution the scrubber and the layer dial were
+    # fixed for.
+    check(
+        "the timeline is of the episode the rest of this bundle recorded",
+        timeline.get("episode") == vla.get("episode"),
+        f"frames are episode {vla.get('episode')}, timeline is episode "
+        f"{timeline.get('episode')}",
+    )
+    steps = timeline.get("timesteps") or []
+    ragged = [
+        f"{t['column']}[{d}]"
+        for t in timeline["tracks"]
+        for d, series in enumerate(t["series"])
+        if len(series) != len(steps)
+    ]
+    check(
+        f"every track is indexed by the same {len(steps)} timesteps",
+        not ragged,
+        f"off the shared axis: {', '.join(ragged)}",
+        note=", ".join(t["column"] for t in timeline["tracks"]),
+    )
+    # A finite number can be drawn and a `null` is a hole. Anything else — a
+    # NaN that survived JSON as a bare token, a string — is a point the chart
+    # would place somewhere arbitrary.
+    unplottable = sum(
+        1
+        for t in timeline["tracks"]
+        for series in t["series"]
+        for v in series
+        if v is not None and not isinstance(v, (int, float))
+    )
+    check(
+        "every baked point is a number or an honest null",
+        unplottable == 0,
+        f"{unplottable} point(s) are neither",
+    )
 
 
 def scenario_integrity(scenario: dict) -> None:

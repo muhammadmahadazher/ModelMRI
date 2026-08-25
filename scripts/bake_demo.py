@@ -635,6 +635,13 @@ def main() -> int:
                 "layers": VLA_LAYERS,
                 "attention": heat,
                 "frames": frames,
+                # Every series of this episode on ONE axis. Cheap to bake —
+                # a few hundred floats per track against the frames' base64
+                # megabytes — and it is the one VLA readout that needs no
+                # video decode, so the demo can serve the real thing rather
+                # than refuse. The frames above are a strip of six; this is
+                # all 159 timesteps.
+                "timeline": get(f"/api/vla/timeline?episode={VLA_EPISODE}"),
             },
         )
     except urllib.error.HTTPError as err:

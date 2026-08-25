@@ -1197,6 +1197,62 @@ export const analyseVLA = (episode: number, t: number) =>
 export const getVLAAttention = (layer: number, head = -1) =>
   fetch(`/api/vla/attention?layer=${layer}&head=${head}`).then((r) => json<VLAHeat>(r));
 
+/** One series over the episode's timesteps, with what it is a series OF. */
+export interface TimelineTrack {
+  column: string;
+  /** Per-dimension series, each as long as `timesteps`. `null` at a timestep
+   *  is "not measured there" — a non-finite value in the recording, or a
+   *  point a stride dropped — and NEVER zero, which would be a reading. */
+  series: (number | null)[][];
+  /** The dataset's own names for each dimension, or `null`. Not "dim 0":
+   *  a generated label looks exactly like a published one on screen. */
+  names: string[] | null;
+  /** The dataset's own unit. Most LeRobot datasets publish none, and two
+   *  tracks with no units cannot be compared to each other. */
+  unit: string | null;
+  /** Bounds over what was actually read, per dimension — the axis to draw
+   *  against. `null` for a dimension with no finite value at all. */
+  low: (number | null)[];
+  high: (number | null)[];
+  /** Non-finite values found and left out, per dimension. Corruption in a
+   *  recording, reported rather than interpolated away. */
+  n_nonfinite: number[];
+}
+
+/** Several of an episode's series on ONE time axis.
+ *
+ *  The robot panel's frame and scrubber answer "what did the camera see at t"
+ *  and nothing else. The questions people bring to a recorded episode are
+ *  about COINCIDENCE — the gripper closed here, what was the state doing, did
+ *  the reward move — and every one of those needs two series on one axis.
+ *  Read off two panels with two x-ranges, a coincidence gets asserted that is
+ *  not there, so the sameness of `timesteps` is the product. */
+export interface EpisodeTimeline {
+  episode: number;
+  repo_id: string;
+  /** The timesteps every track is indexed by. One axis, shared. */
+  timesteps: number[];
+  /** Seconds from the start of THIS episode, when the dataset records them.
+   *  Not absolute: a LeRobot timestamp is seconds into the concatenated file,
+   *  so a reader shown those sees episode 40 start at 700 seconds. */
+  seconds: number[] | null;
+  length: number;
+  stride: number;
+  /** True when `stride > 1` — the timesteps between are absent from every
+   *  series rather than smoothed over. */
+  strided: boolean;
+  tracks: TimelineTrack[];
+  /** Columns this dataset does not publish, with the reason. Absent, never an
+   *  empty track: a reward line at zero says the reward WAS zero. */
+  absent: { column: string; why: string }[];
+  means: string;
+}
+
+export const getEpisodeTimeline = (episode: number, maxPoints = 600) =>
+  fetch(`/api/vla/timeline?episode=${episode}&max_points=${maxPoints}`).then((r) =>
+    json<EpisodeTimeline>(r),
+  );
+
 // ------------------------------------------------------------ image models
 //
 // Eight routes over one handle, and deliberately the same shape as the VLA

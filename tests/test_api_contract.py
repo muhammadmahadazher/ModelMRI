@@ -226,3 +226,70 @@ def test_a_nested_object_is_not_read_as_the_outer_interfaces_fields(api_text):
     assert required == {"open"}, required
     for inner in ("model", "device", "dtype", "n_params"):
         assert inner not in required and inner not in optional, inner
+
+
+# A route that cannot be reached AT REST is skipped by the test above — it
+# needs a dataset opened, which CI has none of. That is honest and it is also
+# a hole: `/api/vla/timeline` is a route with a declared interface and nothing
+# in CI compares the two.
+#
+# The demo bundle closes it. `frontend/public/demo/vla.json` carries a REAL
+# recorded answer from that route — baked by `scripts/bake_demo.py` off
+# lerobot/pusht, not written by hand — so its keys are the route's keys, and
+# checking them against `api.ts` is the same check by other means. It is also
+# the payload the hosted demo actually serves, so drift here breaks a page
+# people visit.
+RECORDED = {
+    "vla.json": [
+        # bundle key path, api.ts interface
+        (("timeline",), "EpisodeTimeline"),
+        (("timeline", "tracks", 0), "TimelineTrack"),
+    ],
+}
+
+
+def _dig(blob, path):
+    for step in path:
+        blob = blob[step]
+    return blob
+
+
+def test_a_recorded_payload_carries_the_keys_its_interface_declares(api_text):
+    """For the routes CI has no dataset to reach live."""
+    import json
+
+    bundle_dir = API_TS.resolve().parents[2] / "frontend" / "public" / "demo"
+    drift: list[str] = []
+    checked = 0
+    for name, entries in RECORDED.items():
+        path = bundle_dir / name
+        if not path.is_file():
+            continue
+        blob = json.loads(path.read_text(encoding="utf-8"))
+        for keys, interface in entries:
+            fields = _fields(interface, api_text)
+            assert fields is not None, f"{interface} is not declared in api.ts"
+            required, optional = fields
+            try:
+                body = _dig(blob, keys)
+            except (KeyError, IndexError):
+                drift.append(f"{name}:{'.'.join(map(str, keys))} is not in the bundle")
+                continue
+            checked += 1
+            sent = set(body)
+            missing = sorted(required - sent)
+            extra = sorted(sent - required - optional)
+            where = f"{name}:{'.'.join(map(str, keys))} -> {interface}"
+            if missing:
+                drift.append(f"{where}: declared, never sent {missing}")
+            if extra:
+                drift.append(f"{where}: sent, never declared {extra}")
+
+    assert not drift, "the client and a recorded payload disagree:\n  " + "\n  ".join(
+        drift
+    )
+    # Same floor argument as above: a bundle that stopped being written would
+    # otherwise turn this green by comparing nothing.
+    assert checked == sum(len(v) for v in RECORDED.values()), (
+        f"only {checked} recorded payload(s) were compared"
+    )

@@ -41,6 +41,7 @@ function vec(xs: number[]): string {
   return xs.map((v) => v.toFixed(dp)).join(", ");
 }
 
+import EpisodeTimeline from "./EpisodeTimeline";
 import VLACausal from "./VLACausal";
 import VLAAudit from "./VLAAudit";
 import VLAActions from "./VLAActions";
@@ -93,8 +94,14 @@ export default function VLAPanel() {
   }, []);
 
   // scrubbing: debounce the frame fetch (server-side decode is ~50ms)
+  //
+  // `frames_readable`, not just `ds`. A dataset whose video will not decode
+  // here answers every one of these 409, and the branch below already says so
+  // in words — asking anyway put a red console error under a panel that is
+  // reporting the situation correctly, and once that branch grew an episode
+  // picker it asked again on every change.
   useEffect(() => {
-    if (!ds) return;
+    if (!ds || !ds.frames_readable) return;
     let live = true;
     window.clearTimeout(debounce.current);
     debounce.current = window.setTimeout(() => {
@@ -206,6 +213,37 @@ export default function VLAPanel() {
             <div className="hint">
               <b>{ds.repo_id}</b> · {ds.n_episodes} episodes read from the
               metadata. {ds.frames_reason}
+            </div>
+          )}
+          {/* AND THEN EVERYTHING THAT IS STILL READABLE. "No video codec" is
+              not "no data": the actions, the state and the reward are parquet
+              columns and they arrive intact on a machine with no `av` at all.
+              Gating them behind a decoder would be the panel repeating, one
+              level up, the mistake this whole branch was written to fix —
+              answering a missing capability by hiding a measurement that does
+              not need it. */}
+          {noPictures && ds.episodes.length > 0 && (
+            <div className="vla-still-readable">
+              <div className="row">
+                <label className="meta" htmlFor="vla-ep-noframes">
+                  episode
+                </label>
+                <select
+                  id="vla-ep-noframes"
+                  className="combo"
+                  value={episode}
+                  onChange={(e) => setEpisode(Number(e.target.value))}
+                >
+                  {ds.episodes.map((e) => (
+                    <option key={e.index} value={e.index}>
+                      {e.index} · {e.length} frames
+                      {e.task ? ` · ${e.task}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {/* No `onSeek`: there is no frame here for a click to move. */}
+              <EpisodeTimeline episode={episode} ready />
             </div>
           )}
           <div className="row">
@@ -407,6 +445,14 @@ export default function VLAPanel() {
           )}
         </div>
       </div>
+
+      {/* Straight under the frame and the scrubber, because it is the same
+          question one axis wider: that picture answers what the camera saw at
+          `t`, and these answer what everything else was doing at the same `t`.
+          Gated on the DATASET rather than on a loaded vision tower — the
+          series are the recording's own parquet columns, so this reads with
+          no model in the process at all. */}
+      <EpisodeTimeline episode={episode} ready={Boolean(ds)} onSeek={setT} />
 
       {/* Directly under the attention map, on purpose: the causal map is
           meant to be read against it, and the number that matters most is how
