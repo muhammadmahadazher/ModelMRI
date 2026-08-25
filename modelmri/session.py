@@ -2434,6 +2434,12 @@ def build(
     clean_trace, prompt, generation, _leaving = bundle_mod.prepare(
         trace, prompt=prompt, generation=generation, step_ref=step_ref
     )
+    # AND THE STRIP. `prepare` scans the prompt and the generation, which are
+    # the joined text -- but the token strip is that same text cut into
+    # pieces, and no piece of a split credential matches any pattern. Left
+    # alone it ships a file whose prompt reads "[redacted:api-key]" and whose
+    # tokens "".join() back to the key.
+    tokens = bundle_mod.redact_token_strip(tokens, _leaving)
 
     blocks: dict[str, dict] = {}
     for (layer, head), matrix in attention.items():

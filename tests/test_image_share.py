@@ -104,6 +104,87 @@ def _reads(payload: dict) -> dict:
 # ------------------------------------------------- the writer feeds the reader
 
 
+API_KEY = "sk-ant-api03-" + "A" * 88
+
+#: What CLIP's tokenizer does to that key: no piece matches any credential
+#: pattern on its own, and `"".join` puts it back together exactly.
+SPLIT = ["a", " key", ":", " sk", "-ant", "-api", "03", "-" + "A" * 88]
+
+
+@dataclass
+class KeyAttention:
+    """A cross-attention run whose prompt was a credential."""
+
+    seed: int | None = 7
+
+    def to_dict(self) -> dict:
+        return {
+            "tokens": list(SPLIT),
+            "steps": [
+                {
+                    "step": 0,
+                    "timestep": 999.0,
+                    "per_token": [1.0 / len(SPLIT)] * len(SPLIT),
+                    "blocks": 28,
+                }
+            ],
+            "padding_from": len(SPLIT),
+            "conditioning_width": 120,
+            "columns_unlabelled": 0,
+            "steps_requested": 20,
+            "steps_measured": 1,
+            "resolutions": [16, 32],
+            "means": "one step of twenty",
+        }
+
+
+def test_a_credential_in_an_image_prompt_does_not_reach_the_file():
+    """`session.build` sends a text run's prompt through the recorder's
+    patterns before a byte is written. A prompt is a prompt whether it
+    conditions a language model or a denoiser."""
+    got = _reads(
+        image_share.from_filmstrip(FakeStatus(), FakeStrip(prompt=f"a key: {API_KEY}"))
+    )
+    assert API_KEY not in got["prompt"]
+    assert "[redacted:api-key]" in got["prompt"]
+
+
+def test_the_cross_attention_strip_is_where_the_image_prompt_actually_lives():
+    """THE TRAP. `from_attention` writes `"prompt": ""` -- it never captured
+    one -- so scanning the prompt field and stopping there looks like
+    redaction and does nothing. The words are in the token strip, cut into
+    pieces by the tokenizer, and `"".join` spells the key."""
+    got = _reads(image_share.from_attention(FakeStatus(), KeyAttention()))
+    assert got["prompt"] == ""
+    assert API_KEY not in "".join(got["attention"]["tokens"])
+
+
+def test_the_image_strip_keeps_one_entry_per_column():
+    """Each token labels a cross-attention column and has one `per_token`
+    weight beside it. A shorter strip after redacting would put every weight
+    under somebody else's word."""
+    got = _reads(image_share.from_attention(FakeStatus(), KeyAttention()))
+    tokens = got["attention"]["tokens"]
+    assert len(tokens) == len(SPLIT)
+    assert len(got["attention"]["steps"][0]["per_token"]) == len(tokens)
+
+
+def test_the_file_says_a_credential_was_replaced():
+    """Applied and REPORTED. A file that quietly says something other than
+    what was typed is one whose reader cannot tell a redaction from a
+    measurement."""
+    got = _reads(image_share.from_attention(FakeStatus(), KeyAttention()))
+    assert "1 credential-shaped value(s) were replaced" in got["means"]
+    assert "1x api-key" in got["means"]
+
+
+def test_an_image_share_with_no_credential_says_nothing_about_one():
+    """The common case must not acquire a sentence about secrets."""
+    got = _reads(image_share.from_filmstrip(FakeStatus(), FakeStrip()))
+    assert got["prompt"] == "an astronaut riding a horse"
+    assert "credential-shaped" not in got["means"]
+
+
 def test_a_filmstrip_share_is_readable():
     got = _reads(image_share.from_filmstrip(FakeStatus(), FakeStrip()))
     assert got["provenance"]["family"] == "diffusion"

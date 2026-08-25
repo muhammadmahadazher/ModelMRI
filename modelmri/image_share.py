@@ -140,6 +140,51 @@ def _no_local_path(text: str, repo: str) -> str:
     return text.replace(repo, shared or "this checkpoint")
 
 
+def _scrub(out: dict) -> dict:
+    """Redact the prompt and its token strip, and say in `means` that it
+    happened.
+
+    THE IMAGE HALF OF A GUARANTEE THE TEXT HALF ALREADY MADE. `session.build`
+    sends a run's prompt, generation and token strip through the recorder's
+    patterns before a byte is written; nothing on this side did. A prompt is a
+    prompt whether it conditions a language model or a denoiser, and a
+    credential pasted into one arrives at the recipient intact.
+
+    THE STRIP MATTERS MORE HERE, NOT LESS. `from_attention` writes
+    `"prompt": ""` -- it never captured one -- so the only place the words
+    appear is the cross-attention token strip, and that strip is the prompt
+    cut into pieces by CLIP's tokenizer. Scanning the empty prompt field and
+    stopping there would look like redaction and do nothing.
+
+    Reported, not just applied: a file that quietly says something different
+    from what was typed is one whose reader cannot tell a redaction from a
+    measurement.
+    """
+    from . import bundle as bundle_mod
+
+    prompt = out.get("prompt")
+    _, clean, _, preview = bundle_mod.prepare(
+        None, prompt=prompt if isinstance(prompt, str) else ""
+    )
+    if isinstance(prompt, str):
+        out["prompt"] = clean
+
+    attention = out.get("attention")
+    if isinstance(attention, dict) and isinstance(attention.get("tokens"), list):
+        attention["tokens"] = bundle_mod.redact_token_strip(
+            attention["tokens"], preview
+        )
+
+    if preview.redactions:
+        kinds = ", ".join(f"{r.count}x {r.label}" for r in preview.redactions)
+        said = str(out.get("means") or "").rstrip()
+        out["means"] = (
+            f"{said} {preview.n_redactions} credential-shaped value(s) were "
+            f"replaced before writing: {kinds}."
+        ).strip()
+    return out
+
+
 def _shared_name(repo: str) -> str:
     """The name, never the path.
 
@@ -237,7 +282,7 @@ def from_filmstrip(status, strip, *, attention=None) -> dict:
         out["attention"] = _attention(attention, getattr(status, "repo", "") or "")
     out["means"] = _means(out, strip, oversized)
     out["_env"] = _env(status)
-    return out
+    return _scrub(out)
 
 
 def _attention(run, repo: str = "") -> dict:
@@ -324,7 +369,7 @@ def from_attention(status, run) -> dict:
         f"nobody rendered.{padded} " + _seed_sentence(out["seed"])
     )
     out["_env"] = _env(status)
-    return out
+    return _scrub(out)
 
 
 def from_readout(
@@ -525,7 +570,7 @@ def from_readout(
         )
     out["means"] = said
     out["_env"] = _env(status)
-    return out
+    return _scrub(out)
 
 
 def refusal(run: dict) -> str:

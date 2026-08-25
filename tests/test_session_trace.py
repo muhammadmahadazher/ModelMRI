@@ -121,6 +121,89 @@ def test_a_credential_in_the_prompt_never_reaches_the_file():
     assert "[redacted:api-key]" in session.parse(blob).prompt
 
 
+# --------------------------------------------- redaction, across the strip
+
+#: What a real tokenizer does to the key above: no single piece matches any
+#: credential pattern, and `"".join` puts it back together exactly.
+SPLIT = ["My", " key", " is", " sk", "-ant", "-api", "03", "-" + "A" * 88]
+
+
+def _with_strip(strip, **over) -> bytes:
+    """A file whose attention is square against `strip`.
+
+    The matrix is indexed by position, so a strip and a grid of different
+    sizes is a different bug from the one under test.
+    """
+    n = len(strip)
+    args = dict(
+        tokens=strip,
+        n_prompt=n,
+        attention={
+            (0, 0): [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+        },
+    )
+    args.update(over)
+    return _build(**args)
+
+
+def test_a_credential_split_across_tokens_never_reaches_the_file():
+    """THE DEFECT. `prepare` scans the prompt and the generation -- the joined
+    text -- and the strip is that same text cut into pieces. Left alone, the
+    file's prompt field reads "[redacted:api-key]" while its tokens spell the
+    key."""
+    blob = _with_strip(SPLIT, prompt=f"My key is {API_KEY}")
+    parsed = session.parse(blob)
+    assert parsed.prompt == "My key is [redacted:api-key]"
+    assert API_KEY not in "".join(parsed.tokens)
+
+
+def test_searching_the_written_bytes_for_the_key_cannot_see_this():
+    """WHY THE OBVIOUS ASSERTION MISSED IT, pinned so it is not written again.
+
+    Every other redaction test here asserts `API_KEY.encode() not in blob`.
+    Against a split strip that passes whether or not the bug is present: the
+    tokenizer put the key in eight separate JSON strings, so the contiguous
+    byte run is absent from a file that still carries the value. The claim
+    with teeth is about what the strip SPELLS.
+    """
+    contiguous = API_KEY.encode() in _build(
+        tokens=list(SPLIT),
+        n_prompt=len(SPLIT),
+        attention={
+            (0, 0): [
+                [1.0 if i == j else 0.0 for j in range(len(SPLIT))]
+                for i in range(len(SPLIT))
+            ]
+        },
+    )
+    assert contiguous is False
+
+
+def test_the_strip_keeps_one_entry_per_position():
+    """Redacting must not drop or merge tokens. The attention matrix is
+    indexed by position: a shorter strip would slide every label one column
+    off the numbers it names."""
+    parsed = session.parse(_with_strip(SPLIT, prompt=f"My key is {API_KEY}"))
+    assert len(parsed.tokens) == len(SPLIT)
+
+
+def test_one_credential_across_five_tokens_reads_as_one():
+    """Five `[redacted:api-key]` labels in a row would say five keys were
+    found. The first piece names the value and the rest continue it."""
+    parsed = session.parse(_with_strip(SPLIT, prompt=f"My key is {API_KEY}"))
+    named = [t for t in parsed.tokens if "[redacted:" in t]
+    assert len(named) == 1, parsed.tokens
+    assert parsed.tokens.count("…") == 4
+
+
+def test_a_strip_with_nothing_in_it_is_left_exactly_alone():
+    """The common case must not acquire markers, and must not be rebuilt into
+    equal-but-different strings."""
+    plain = ["Hello", ",", " world"]
+    parsed = session.parse(_with_strip(plain))
+    assert parsed.tokens == plain
+
+
 # ------------------------------------------------------------- the bounds
 
 

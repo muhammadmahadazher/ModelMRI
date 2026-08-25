@@ -54,6 +54,20 @@ def test_one_capture_at_a_time():
     assert "mix one run's steps into the other's" in said
 
 
+def _a_capture_that_fails() -> None:
+    """What a refusing capture looks like from `measuring`'s point of view.
+
+    A CALL, not a bare `raise`. The real failures come from inside
+    `image_steps.filmstrip` -- a prompt the pipeline will not take, a model
+    with no cross-attention to read -- so raising through a call is the
+    faithful shape. It also keeps the statement after the `with` reachable in
+    a way an analyser can see: a `with` body whose last statement is `raise`
+    reads as "this block always raises", and `pytest.raises` swallowing it
+    again is not something reachability analysis models.
+    """
+    raise ValueError("the capture itself failed")
+
+
 def test_the_slot_is_released_when_the_capture_finishes():
     """A slot that leaked would turn one bad run into a dead pipeline."""
     h = _handle()
@@ -70,7 +84,7 @@ def test_the_slot_is_released_when_the_capture_raises():
     h = _handle()
     with pytest.raises(ValueError):
         with h.measuring("film this run"):
-            raise ValueError("the capture itself failed")
+            _a_capture_that_fails()
     with h.measuring("capture cross-attention"):
         pass
 

@@ -172,6 +172,141 @@ def _scan_and_redact(text: str, tally: dict) -> str:
     return text
 
 
+#: What a token carries when it is the MIDDLE of a redacted value rather than
+#: the start of one. The strip keeps one entry per position because the
+#: attention matrix is indexed by position, so a credential spanning five
+#: tokens occupies five of them either way -- this is what stops those five
+#: from reading as five separate credentials.
+CONTINUED = "…"
+
+
+def _redact_with_spans(text: str, tally: dict) -> tuple[str, dict]:
+    """(redacted text, {offset in the ORIGINAL text: which pattern took it}).
+
+    `_scan_and_redact` answers "what should be written instead". This also
+    answers "and where was it", which is what a token strip needs: the strip
+    is this same text cut into pieces, and a credential is routinely cut
+    across several of them.
+
+    The offsets are into the text as it came in, not as it comes out. Each
+    pattern rewrites the string, so a parallel `origin` list is spliced
+    alongside it -- inserted placeholder characters map to -1, because they
+    correspond to nothing the caller sent.
+    """
+    origin = list(range(len(text)))
+    covered: dict = {}
+    redact = _patterns()
+    for name, pattern in redact._PATTERNS:
+        placeholder = f"[redacted:{name}]"
+        pieces: list = []
+        moved: list = []
+        last = 0
+        hits = 0
+        for m in pattern.finditer(text):
+            hits += 1
+            pieces.append(text[last : m.start()])
+            moved.extend(origin[last : m.start()])
+            pieces.append(placeholder)
+            moved.extend([-1] * len(placeholder))
+            for o in origin[m.start() : m.end()]:
+                if o >= 0:
+                    # FIRST pattern wins, matching the sequential order the
+                    # substitution itself runs in -- `bearer` and `api-key`
+                    # overlap, and the strip should name the same one the
+                    # prompt field names.
+                    covered.setdefault(o, name)
+            last = m.end()
+        if hits:
+            pieces.append(text[last:])
+            moved.extend(origin[last:])
+            text = "".join(pieces)
+            origin = moved
+            tally[name] = tally.get(name, 0) + hits
+    return text, covered
+
+
+def redact_token_strip(tokens, preview: Preview) -> list:
+    """Redact a token strip by scanning the TEXT IT SPELLS.
+
+    THE STRIP IS NOT COVERED BY `prepare`, and scanning each token on its own
+    would not cover it either. A tokenizer cuts `sk-ant-api03-ABC...` into
+    `sk`, `-ant`, `-api`, `03`, `-ABC...`, and not one of those pieces matches
+    any pattern -- while `"".join(strip)` hands the recipient the key exactly.
+    The prompt field of that same file reads `[redacted:api-key]`, so the
+    document affirmatively claims the secret was removed while carrying it.
+
+    That is also why the obvious test passes over the bug: a search for the
+    key's contiguous bytes in the written file finds nothing, because the
+    tokenizer split them across separate JSON strings. The claim to assert is
+    that the strip does not SPELL the credential, not that the bytes are
+    absent.
+
+    THE COUNT IS PRESERVED. Every token keeps its place, because the attention
+    matrix is indexed by position: dropping or merging entries here would
+    slide every row's label one column off its own numbers.
+    """
+    if not tokens:
+        return list(tokens)
+    strip = [t if isinstance(t, str) else str(t) for t in tokens]
+    tally: dict = {}
+    _, covered = _redact_with_spans("".join(strip), tally)
+    if not covered:
+        return strip
+
+    # WHICH SECRET, not just "a covered character". One credential cut across
+    # five tokens must not come back as five `[redacted:api-key]` labels --
+    # that reads as five separate keys. Numbering the runs lets the first
+    # piece name the value and the rest say "still that one".
+    run_at: dict = {}
+    run_no = 0
+    previous = None
+    for offset in sorted(covered):
+        name = covered[offset]
+        if previous is None or offset != previous[0] + 1 or name != previous[1]:
+            run_no += 1
+        run_at[offset] = run_no
+        previous = (offset, name)
+
+    out: list = []
+    at = 0
+    for token in strip:
+        start, at = at, at + len(token)
+        if not any(o in covered for o in range(start, at)):
+            out.append(token)
+            continue
+        rebuilt: list = []
+        # Per TOKEN, so a run continuing from the previous token emits its
+        # continuation mark once here rather than once per character.
+        emitted = None
+        for i, ch in enumerate(token):
+            name = covered.get(start + i)
+            if name is None:
+                rebuilt.append(ch)
+                emitted = None
+                continue
+            run = run_at[start + i]
+            if run == emitted:
+                continue
+            first = run_at.get(start + i - 1) != run
+            rebuilt.append(f"[redacted:{name}]" if first else CONTINUED)
+            emitted = run
+        out.append("".join(rebuilt))
+
+    # MAX, NOT SUM. The strip spells the same text as the prompt and
+    # generation fields, which were scanned already, so adding its hits would
+    # report two secrets where the user pasted one. A strip carrying MORE of
+    # some label than those fields did is the case where there genuinely is
+    # something extra to count.
+    merged = {r.label: r.count for r in preview.redactions}
+    for label, count in tally.items():
+        merged[label] = max(merged.get(label, 0), count)
+    preview.redactions = [
+        Redaction(label=k, count=v) for k, v in sorted(merged.items())
+    ]
+    preview.fields_scanned += 1
+    return out
+
+
 def _clip(text: str, preview: Preview) -> str:
     """Cut a payload to budget, MARKING the cut rather than hiding it."""
     if not isinstance(text, str) or len(text) <= MAX_STEP_TEXT:
