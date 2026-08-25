@@ -79,14 +79,59 @@ def test_a_relative_path_is_taken_against_the_working_directory(only_root):
 
 
 def test_the_returned_path_is_the_one_scandir_found(only_root):
-    """THE POINT OF THE WHOLE MODULE. The value that reaches the reader must
-    come from a directory read, not from the request — so it is the real
-    entry on disk, byte for byte, whatever the caller's spelling was."""
+    """The value that reaches the reader is the real entry on disk.
+
+    Asked for by its exact name, so this runs the same everywhere. What it
+    pins is that the object handed back is the directory's own entry rather
+    than a `Path` assembled from the request; the mechanism test at the bottom
+    of this file is what watches the `scandir` calls that make that true.
+    """
     f = only_root / "Corpus.TXT"
-    f.write_text("x\n", encoding="utf-8")
-    got = ci.resolve_typed(str(only_root / "corpus.txt"))
-    # Matched case-insensitively, and what came back is the file's own name.
+    f.write_text("one\n", encoding="utf-8")
+    got = ci.resolve_typed(str(only_root / "Corpus.TXT"))
     assert got.name == "Corpus.TXT"
+    assert got == Path(os.path.realpath(f))
+
+
+def test_a_name_differing_only_in_case_follows_this_platforms_rule(only_root):
+    """AND THIS IS WHY THERE IS A CI MATRIX.
+
+    The first version of this test asserted the Windows answer
+    unconditionally. It passed on the machine it was written on and failed on
+    Linux and on both macOS runners, which is the whole argument for not
+    reporting a green local run as a green build.
+
+    The descent compares names through `os.path.normcase`, which is the
+    standard library's own statement of whether a platform folds case in
+    paths: real folding on Windows, identity on POSIX. The rule is therefore
+    not invented here, and this test asks `normcase` what to expect rather
+    than asking `sys.platform` -- which would be a second opinion about the
+    same question, free to disagree with the code.
+
+    HONEST LIMIT, stated rather than papered over. `normcase` is a fact about
+    the PLATFORM, not about the VOLUME. macOS's default APFS is
+    case-insensitive, so a reader there who types `corpus.txt` for a file
+    named `Corpus.TXT` is refused here even though every other tool on their
+    machine opens it. Closing that would mean retrying case-insensitively and
+    confirming with `os.path.samefile` on a path built from the request --
+    which is exactly the tainted filesystem access this module was rewritten
+    over six attempts to remove. A refusal naming the file it could not find
+    is the cheaper wrong answer than reintroducing that.
+    """
+    (only_root / "Corpus.TXT").write_text("one\n", encoding="utf-8")
+    asked = str(only_root / "corpus.txt")
+    folds = os.path.normcase("A") == os.path.normcase("a")
+    if folds:
+        # The file's OWN spelling comes back, never the caller's.
+        assert ci.resolve_typed(asked).name == "Corpus.TXT"
+    else:
+        # Refused, and NOT quietly resolved to the neighbour. On a
+        # case-sensitive filesystem `corpus.txt` and `Corpus.TXT` are two
+        # different files, and handing back the one nobody asked for is how a
+        # reader ends up measuring the wrong text and never knowing.
+        with pytest.raises(BadRequest) as caught:
+            ci.resolve_typed(asked)
+        assert "corpus.txt" in caught.value.sentence
 
 
 # ------------------------------------------------------- and what does not
