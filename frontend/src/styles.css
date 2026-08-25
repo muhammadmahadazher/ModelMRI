@@ -117,15 +117,42 @@
   --violet-600: oklch(0.570 0.249 296);
   --violet-700: oklch(0.503 0.224 296);
 
-  /* ── motion ───────────────────────────────────────────────────────── */
+  /* ── motion ───────────────────────────────────────────────────────────
+     THE SCALE IS NOW ACTUALLY MULTIPLIED IN.
+
+     The comment under `--motion-scale` used to say it was "multiplied into
+     every duration". It was not. Grep found the token in exactly two places
+     in 8,400 lines — its own definition here, and the `0.01` in the
+     reduced-motion block — so it was multiplied into NOTHING, and the
+     reduced-motion block had to reach for a blanket
+     `animation-name: none !important` on `*, *::before, *::after` to have
+     any effect at all. That is the anti-pattern web.dev names by name:
+     "reduce, don't eliminate"
+     (https://web.dev/articles/prefers-reduced-motion). It also silently made
+     the ~20 per-component `@media (prefers-reduced-motion: reduce)` blocks
+     further down this file dead code — every one of them was killing an
+     animation the star selector had already killed.
+
+     Writing the multiplication out makes scaling the mechanism and killing
+     the exception: under reduce these all collapse to ~1-4ms, which is
+     imperceptible but still FIRES, so `transitionend`/`animationend` keep
+     arriving and a state change stays attributable to the thing that caused
+     it. */
   --dur-0: 0ms;
-  --dur-micro: 110ms;
-  --dur-small: 170ms;
-  --dur-medium: 240ms;
-  --dur-large: 380ms;
-  --dur-micro-out: 80ms;
-  --dur-small-out: 120ms;
-  --dur-medium-out: 170ms;
+  --dur-micro: calc(110ms * var(--motion-scale));
+  --dur-small: calc(170ms * var(--motion-scale));
+  --dur-medium: calc(240ms * var(--motion-scale));
+  --dur-large: calc(380ms * var(--motion-scale));
+  --dur-micro-out: calc(80ms * var(--motion-scale));
+  --dur-small-out: calc(120ms * var(--motion-scale));
+  --dur-medium-out: calc(170ms * var(--motion-scale));
+  /* DISTANCE, NOT KIND. Material's duration rule is that a longer journey
+     takes longer (https://m1.material.io/motion/duration-easing.html), and
+     `--dur-medium` was covering both a 6px panel settle and a 600px
+     measurement bar filling from zero. Same number, two different speeds on
+     screen: the bar looked flung, the panel looked leisurely. This is the
+     one for anything that travels the width of its container. */
+  --dur-travel: calc(320ms * var(--motion-scale));
 
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-out-soft: cubic-bezier(0.215, 0.61, 0.355, 1);
@@ -133,9 +160,8 @@
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-hover: cubic-bezier(0.4, 0, 0.2, 1);
 
-  /* Multiplied into every duration. Reduced motion sets it to 0.01 rather
-     than nuking animation with !important, which would break transitionend
-     and make state changes unattributable. */
+  /* Reduced motion sets this to 0.01 (see the block near `.stagger`), which
+     is why every duration above reads it. */
   --motion-scale: 1;
 
   /* ── spacing + radii ──────────────────────────────────────────────── */
@@ -969,7 +995,15 @@ main > * {
      declaration at computed-value time, so this bar painted nothing but its
      own glow. The palette name is --color-cobalt. */
   background: linear-gradient(90deg, var(--color-cobalt), var(--sem-feat));
-  transition: width 0.6s var(--glass-ease);
+  /* `--glass-ease` is `--ease-out`, which is ease-out-EXPO: ~90% of the
+     distance in the first third and a crawl after. On a bar whose LENGTH IS
+     THE MEASUREMENT the eye reads the snap as the value and the crawl as
+     noise, so a 40% chunk of a download briefly showed as most of one. The
+     standard curve is the one Material specifies for a property changing
+     value (https://m1.material.io/motion/duration-easing.html); deceleration
+     curves are for elements ENTERING, which is not what a percentage does.
+     See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
   box-shadow: 0 0 12px color-mix(in oklab, var(--acc) 45%, transparent);
 }
 .loadbar-track.indeterminate .loadbar-fill {
@@ -1369,17 +1403,31 @@ button.model-btn:hover:not(:disabled) {
   position: relative;
   overflow: hidden;
   animation: panelIn var(--dur-medium) var(--ease-out) both;
-  transition:
-    box-shadow var(--dur-medium) var(--ease-hover),
-    transform var(--dur-medium) var(--ease-hover);
+  transition: box-shadow var(--dur-medium) var(--ease-hover);
 }
-/* Answering to the cursor. A panel that never responds is furniture; one that
-   lifts a single pixel is an instrument you are holding. */
+/* Answering to the cursor — but NOT by moving the type.
+   This used to be `transform: translateY(-1px)`, on the argument that a panel
+   which lifts a pixel is "an instrument you are holding". The cost was not a
+   pixel of chrome: a transform moves the whole layer, so every readout inside
+   the panel — the token counts, the probe accuracies, the logit deltas —
+   stepped one pixel up and back down as the pointer crossed the edge. That is
+   precisely the shimmer the `font-variant-numeric: tabular-nums slashed-zero`
+   rule below exists to eliminate, reintroduced at panel scale: a number that
+   shivers reads as instability in the MEASUREMENT.
+
+   It was also a false affordance. A panel is not clickable. A lift is the
+   universal signal that something will respond to a press, and nothing here
+   will.
+
+   So the response moves off the layer holding the type and onto the accent
+   band, which is chrome and carries no digits: it brightens and thickens by a
+   pixel. The band is absolutely positioned inside the panel's radius, so
+   growing it moves nothing — the panel's own `padding-top` is unchanged and
+   not one glyph shifts. */
 .panel:hover {
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.6),
     var(--e2);
-  transform: translateY(-1px);
 }
 :root[data-theme="dark"] .panel,
 html[data-theme="dark"] .panel {
@@ -1475,10 +1523,15 @@ html[data-theme="dark"] .panel {
   mask-image: linear-gradient(to right, transparent 0, #000 20px,
     #000 calc(100% - 20px), transparent 100%);
 }
-/* the active panel's rule picks up its own accent */
-.panel:has(.tok.pin) .sect .rule,
-.panel:has(.patch-grid td.clears) .sect .rule,
-.panel:has(.feat-row.sel) .sect .rule {
+/* The active panel's rule picks up its own accent.
+   `:not(.sub)` because these selectors carry a `:has()` and therefore outrank
+   `.sect.sub .rule` further down: without it, pinning a token silently
+   promoted every SUB-section divider in that panel back to a full section
+   rule — major ticks and all — which is the one thing the sub rule exists not
+   to be. The subordinate rule stays subordinate whatever is selected. */
+.panel:has(.tok.pin) .sect:not(.sub) .rule,
+.panel:has(.patch-grid td.clears) .sect:not(.sub) .rule,
+.panel:has(.feat-row.sel) .sect:not(.sub) .rule {
   background-image:
     repeating-linear-gradient(90deg, var(--acc-strong) 0 1px, transparent 1px 40px),
     repeating-linear-gradient(90deg,
@@ -2331,18 +2384,87 @@ footer a {
 footer a:hover { color: var(--color-cobalt); }
 footer .spacer { flex: 1; }
 
+/* ── REDUCE, DON'T ELIMINATE ─────────────────────────────────────────────
+   This block used to open with `animation-name: none !important` on
+   `*, *::before, *::after`. It is the single most quoted mistake in the
+   reduced-motion literature: web.dev's guidance is "reduce, don't eliminate"
+   (https://web.dev/articles/prefers-reduced-motion), and a blanket kill takes
+   out every `animationend` listener in the app along with the motion —
+   anything that waits for an animation to finish before doing its next thing
+   simply never gets told. It also made the ~20 per-component reduce blocks in
+   this file into decoration: they were all killing something already dead.
+
+   What the preference is actually about is narrower than "no movement". MDN
+   is explicit that the vestibular triggers are SCALING and PANNING of large
+   objects (https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion);
+   a cross-fade is the safe channel. So:
+
+     1. `--motion-scale: 0.01` shrinks every token-driven duration to ~1-4ms.
+        Imperceptible, but the animation still runs and still ENDS, so events
+        keep firing and a state change is still attributable.
+     2. Transitions are narrowed to the channels that carry meaning without
+        travelling — colour, shadow, opacity, outline.
+     3. Only the animations that translate, scale or loop are named and
+        killed, one list, below. Opacity-only keyframes (`scrimIn`, `featIn`,
+        `skelIn`, `blink`) keep running at the scaled duration.
+   ──────────────────────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-scale: 0.01; }
-  /* Kill travel and loops; keep colour and opacity so state is still
-     legible. "Reduce motion" is not "remove feedback". */
+  /* Keep colour and opacity so state is still legible: "reduce motion" is
+     not "remove feedback". `animation-iteration-count: 1` is what stops the
+     loops that survive the kill list — it ends them instead of erasing them,
+     so they finish and fire `animationend` rather than never starting. */
   *, *::before, *::after {
     animation-iteration-count: 1 !important;
-    animation-name: none !important;
     transition-property: color, background-color, border-color, box-shadow,
       opacity, outline-color !important;
     transition-duration: 120ms !important;
   }
-  .loadbar-track.indeterminate .loadbar-fill { width: 100%; transform: none; }
+
+  /* THE KILL LIST. Everything here translates, scales, blurs or sweeps.
+     `!important` because these selectors are scattered across 8,000 lines
+     and half of them are defined AFTER this block; the alternative is
+     tracking source order for twenty unrelated components. It is scoped
+     rather than universal, which is the entire difference from what was
+     here before. */
+  .sheet,                                     /* sheetIn: translate + scale */
+  .signin,                                    /* sheetIn                    */
+  .panel,                                     /* panelIn: translateY(6px)   */
+  .loadbar,                                   /* rise: translateY(10px)     */
+  .compare .card,                             /* rise                       */
+  .inspector,                                 /* rise                       */
+  .storage,                                   /* rise                       */
+  .feat-bar,                                  /* grow: scaleX(0)            */
+  .theme-panel,                               /* theme-panel-in: translateY */
+  .loadbar-track.indeterminate .loadbar-fill, /* sweep: infinite pan        */
+  .pill.accel.gpu .accel-dot {                /* livepulse: infinite ring   */
+    animation-name: none !important;
+  }
+
+  /* AN UNFINISHED LOAD MUST NOT LOOK LIKE A FINISHED ONE.
+     This rule used to be `width: 100%; transform: none;` and nothing else,
+     which drew an indeterminate — "we do not know the total yet" — bar as a
+     FULL bar: pixel-identical to a completed download, on the one control
+     whose whole job is to say whether the nine-gigabyte pull is still going.
+     That is information loss, not motion reduction. WCAG 2.3.3 exempts
+     motion that is essential to function and MDN names progress indicators
+     as the example.
+
+     The sibling `.pull-fill` already got the opacity half of this right. The
+     hatch is the other half: dimmer alone is a difference you can only see
+     by comparison, and there is nothing to compare it to. Cut into the
+     bar's own gradient with a mask so the colour identity survives — a
+     striped bar reads as "working" the way a striped road barrier does,
+     against a solid bar that reads as "done". */
+  .loadbar-track.indeterminate .loadbar-fill {
+    width: 100%;
+    transform: none;
+    opacity: 0.5;
+    /* the glow is what sells "complete"; an unknown total has not earned it */
+    box-shadow: none;
+    mask-image: repeating-linear-gradient(115deg,
+      #000 0 5px, transparent 5px 10px);
+  }
 }
 
 /* ---------- theme toggle ----------
@@ -2391,10 +2513,28 @@ footer .spacer { flex: 1; }
 /* ---------- stagger ----------
    Enters only; exits dismiss together, because nobody waits to watch a list
    leave. Capped at 7 items: item 8 and item 400 start at the same moment, so
-   a long list never becomes a queue. */
+   a long list never becomes a queue.
+
+   THE OFFSET HAS TO EXCEED THE DURATION OR THERE IS NO SEQUENCE.
+   This was a 24ms step against a 170ms per-item animation, which means item 7
+   started while item 1 was 168ms into 170ms — all seven were in flight at
+   once for essentially the whole run, and what the eye got was one soft smear
+   arriving as a block. LensPanel's comment claims "rows settle in order, so
+   the eye reads the stack the way the model runs it", and that claim was
+   simply not true of what rendered: nothing settled in order because nothing
+   finished before the next one started.
+
+   45ms against a 110ms item is the fix, and it is the ratio that matters
+   rather than either number: the step is now longer than a third of the
+   animation, so at any instant at most two or three rows are moving and the
+   ORDER is the readable thing. Shortening the item is half of it — a fast
+   item inside a slow sequence is what makes a sequence legible; a slow item
+   inside a fast sequence is what made this a smear. Total run is 315 + 110 =
+   425ms, still under the half second past which a list stops feeling
+   instantaneous. */
 .stagger > * {
-  animation: staggerIn var(--dur-small) var(--ease-out) both;
-  animation-delay: calc(min(var(--i, 0) * 24, 168) * 1ms);
+  animation: staggerIn var(--dur-micro) var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0) * 45, 315) * 1ms);
 }
 @keyframes staggerIn {
   from { opacity: 0; transform: translateY(4px); }
@@ -3505,7 +3645,10 @@ input[type="range"]:focus-visible { outline: none; }
   width: 0;
   border-radius: inherit;
   background: var(--acc);
-  transition: width var(--dur-medium) var(--ease-out-soft);
+  /* Standard curve and the travel duration, for the reason spelled out at
+     `.loadbar-fill`: this bar's length is a byte count, and an easing that
+     front-loads the distance misreports it. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 /* No total yet — the daemon reports the manifest before it reports bytes.
    A bar that sits at zero reads as stalled; one that moves reads as working,
@@ -3519,7 +3662,18 @@ input[type="range"]:focus-visible { outline: none; }
   to   { transform: translateX(330%); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .pull-track.indeterminate .pull-fill { animation: none; width: 100%; opacity: 0.35; }
+  /* Full width with the opacity dropped was already the right instinct — it
+     is the half `.loadbar` had wrong — but "dimmer" is a difference you can
+     only see against a bar that is not dimmer, and there is never one on
+     screen beside it. The hatch makes "still working, total unknown" a mark
+     rather than a shade, matching `.loadbar-fill` under the same query. */
+  .pull-track.indeterminate .pull-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+    mask-image: repeating-linear-gradient(115deg,
+      #000 0 5px, transparent 5px 10px);
+  }
   .pull-progress { animation: none; }
 }
 
@@ -3555,7 +3709,7 @@ input[type="range"]:focus-visible { outline: none; }
 
    Lengths fix it because the only geometry they depend on is where the
    subject's TOP edge crosses the viewport, and a panel growing downward does
-   not move its own top edge. 260px of scroll, whatever the panel is, and it
+   not move its own top edge. 200px of scroll, whatever the panel is, and it
    cannot rewind because nothing a click does can change the number.
 
    Percentages would still be wrong even at a value tuned to look fine today;
@@ -3569,23 +3723,36 @@ input[type="range"]:focus-visible { outline: none; }
       animation-timeline: view();
       /* Finishes well before the panel is centred, so a reader is never
          reading text that is still moving -- and finishes at the same place
-         for a 350px panel and a 5,500px one. */
-      animation-range: entry 0px entry 260px;
+         for a 350px panel and a 5,500px one. 260px was longer than the
+         travel needed now that the blur is gone; 200px puts the panel fully
+         legible sooner without losing the cue. */
+      animation-range: entry 0px entry 200px;
     }
-    /* Travel with something in it: 30px and a 1.2% scale was a polite nudge.
-       The blur is what makes it read as arriving rather than sliding, and it
-       is the reason the range above has to be correct -- a stuck progress
-       value shows as an unreadable panel, not as a slightly low one. */
+    /* TRANSLATE ONLY, AND THAT IS THE WHOLE CUE.
+       This used to also `scale(0.965)` and `filter: blur(3px)`. Both were
+       defended as making the panel read as "arriving rather than sliding".
+       What they actually did was make the panel a reader is scrolling
+       TOWARD unreadable for the entire range -- the one thing a reader does
+       with a panel on this page is read a number off it, and for 260px of
+       their own scroll the numbers were smeared. A reveal is allowed to
+       announce a panel; it is not allowed to withhold it.
+
+       The blur was also the expensive half: `filter: blur()` forces the
+       whole panel into an offscreen buffer and re-renders it every frame of
+       a scroll-driven timeline, on an element that can be 5,500px tall.
+       Translation is a compositor transform and costs nothing.
+
+       The translate stays because it is the only part that carries real
+       information: it says "this is new to your viewport", which is true and
+       is the entire point of tying the reveal to the reader's scroll. */
     @keyframes panelRise {
       from {
         opacity: 0;
-        transform: translateY(64px) scale(0.965);
-        filter: blur(3px);
+        transform: translateY(64px);
       }
       to {
         opacity: 1;
         transform: none;
-        filter: none;
       }
     }
 
@@ -3702,6 +3869,21 @@ footer {
   );
   opacity: 0.95;
   pointer-events: none;
+  transition:
+    height var(--dur-micro) var(--ease-hover),
+    opacity var(--dur-micro) var(--ease-hover);
+}
+/* THE HOVER RESPONSE LIVES HERE NOW.
+   `.panel:hover` used to translate the whole panel up a pixel, which moved
+   every number inside it (the argument is written out at `.panel:hover`).
+   The band is the right layer for it: it is chrome, it holds no type, and it
+   is already the thing that says which instrument this is. Full opacity and
+   one more pixel of edge — the instrument brightening under the hand, with
+   nothing below it moving. Absolutely positioned, so the extra pixel eats
+   into the padding above the header rather than displacing it; the
+   `padding-top` below is unchanged and stays correct at either height. */
+@media (hover: hover) and (pointer: fine) {
+  .panel:hover::before { height: 5px; opacity: 1; }
 }
 /* The panel body starts below the band rather than under it. */
 .panel { padding-top: calc(var(--sp-5) + 4px); }
@@ -3752,12 +3934,13 @@ body {
 /* A white plate on cream needs the cream to be cream. */
 .panel { border-color: color-mix(in oklab, var(--panel-accent, var(--hair)) 22%, var(--hair)); }
 
-/* MOTION WITH TRAVEL IN IT. 30px and a 1.2% scale was a polite nudge.
+/* MOTION WITH TRAVEL IN IT. 30px was a polite nudge; 64px is a cue.
    `panelRise` is defined ONCE, above, where the rule that uses it lives.
    There were two `@keyframes panelRise` blocks for a while and the later one
-   silently won, so editing the first changed nothing -- and the travel and
-   the blur that a reader actually saw were three hundred lines away from the
-   only `animation-range` that controlled them. */
+   silently won, so editing the first changed nothing -- and the travel a
+   reader actually saw was three hundred lines away from the only
+   `animation-range` that controlled it. (The scale and the blur that used to
+   ride along with the translate are gone; the argument is at `panelRise`.) */
 @supports (animation-timeline: view()) {
   @media (prefers-reduced-motion: no-preference) {
     /* The band wipes in after its panel has landed -- the instrument
@@ -4740,7 +4923,9 @@ main > [id^="sec-"] {
   border-radius: 0 3px 3px 0;
   background: var(--color-probe);
   box-shadow: 1px 0 0 0 var(--color-card);
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 .probe-acc { text-align: right; opacity: 0.9; }
 .probe-verd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -4862,7 +5047,9 @@ main > [id^="sec-"] {
 .path-bar {
   position: absolute; left: 0; top: 1px; bottom: 1px;
   border-radius: 0 3px 3px 0;
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 .path-val { text-align: right; font-size: var(--t-xs); }
 .path-verd { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -5037,7 +5224,9 @@ main > [id^="sec-"] {
 .ground-bar {
   height: 11px; border-radius: 0 3px 3px 0; min-width: 1px; flex: none;
   max-width: 62%;
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 .ground-bar.dep { background: var(--color-ground); }
 /* Outlined, not filled. Attention is a DESCRIPTION of where the model looked
@@ -5160,7 +5349,9 @@ main > [id^="sec-"] {
   position: absolute; left: 0; top: 1px; bottom: 1px;
   border-radius: 0 3px 3px 0; min-width: 1px;
   background: var(--color-custom);
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 /* Full height and 2px wide, above the bar: a threshold, not a quantity. */
 .ab-ctl {
@@ -5274,8 +5465,13 @@ main > [id^="sec-"] {
 .mdiff-band {
   position: absolute; top: 2px; bottom: 2px; border-radius: 3px;
   background: color-mix(in oklab, var(--color-probe) 28%, transparent);
-  transition: width var(--dur-medium) var(--ease-out),
-              left var(--dur-medium) var(--ease-out);
+  /* Both edges are measurements — `left` is the 25th percentile and the
+     width is the interquartile spread — so both take the standard curve.
+     Under the expo ease-out the band snapped to nearly its final extent and
+     then crept, which on a band whose whole claim is "the middle half lives
+     HERE" read as a wider spread than the data had. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard),
+              left var(--dur-travel) var(--ease-standard);
 }
 .mdiff-median {
   position: absolute; top: -1px; bottom: -1px; width: 2px;
@@ -5397,7 +5593,9 @@ main > [id^="sec-"] {
 .vla-bar {
   position: absolute; left: 0; top: 1px; bottom: 1px; min-width: 1px;
   border-radius: 0 3px 3px 0; background: var(--color-vla);
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 /* A threshold, not a quantity — full height, above the bar, 2px wide. */
 .vla-ctl {
@@ -6042,29 +6240,11 @@ main > [id^="sec-"] {
 }
 
 .image-subhead { display: flex; align-items: center; gap: 10px; margin: 20px 0 10px; }
-.image-subhead h3 {
-  font-family: var(--font-sans);
-  font-size: var(--t-xs);
-  margin: 0;
-  letter-spacing: 0.16em;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-/* The same measurement rule the section headers carry, at one level down: a
-   second kind of divider would say this is a different sort of thing, and it
-   is not — it is the other half of the same panel. */
-.image-subhead .rule {
-  flex: 1; height: 9px; align-self: center;
-  background-image:
-    repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 40px),
-    repeating-linear-gradient(90deg,
-      color-mix(in oklab, var(--line) 55%, transparent) 0 1px, transparent 1px 8px);
-  background-size: 100% 100%, 100% 40%;
-  background-position: 0 0, 0 bottom;
-  background-repeat: no-repeat;
-  mask-image: linear-gradient(to right, transparent 0, #000 20px,
-    #000 calc(100% - 20px), transparent 100%);
-}
+/* The type and the rule for this header are defined ONCE, with `.sect.sub`,
+   near the bottom of this file. They used to be duplicated here — a second
+   copy of the measurement rule and a third sub-header size — and the copies
+   had already drifted apart from each other. There is one sub-header in this
+   design, not one per panel that happened to need one. */
 
 /* The interventional half, set apart from the map without being a card of its
    own: the two are meant to be read against each other, and a boxed panel
@@ -6100,7 +6280,9 @@ main > [id^="sec-"] {
 .image-arm-bar {
   display: block; height: 100%;
   background: color-mix(in oklab, var(--color-image) 55%, transparent);
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 .image-arm-val { text-align: right; }
 
@@ -7237,7 +7419,9 @@ button:disabled,
   display: block;
   height: 100%;
   background: var(--sem-base);
-  transition: width var(--dur-small) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 @media (prefers-reduced-motion: reduce) {
   /* The bar is a measurement, not an animation. Said here as well as in the
@@ -7471,7 +7655,9 @@ button:disabled,
   min-width: 1px;
   border-radius: 0 3px 3px 0;
   background: var(--color-agent);
-  transition: width var(--dur-medium) var(--ease-out);
+  /* The bar's length IS the number, so it gets the standard curve and the
+     travel duration rather than the expo ease-out. See `--dur-travel`. */
+  transition: width var(--dur-travel) var(--ease-standard);
 }
 /* A phrasing the model did not answer. The bar goes HOLLOW rather than short:
    its p(yes) is a ratio between two rounding errors, and drawing that at the
@@ -7782,24 +7968,64 @@ button:disabled,
    the head itself. They are not the same kind of claim, so they must not read
    as one continuous list — but this is also not a second panel, because in its
    own panel either number would read as the whole story. Hence a heading one
-   step quieter than `.sect h2`, and a rule that is a hairline rather than the
-   measurement grid: the same family, deliberately subordinate. */
+   step quieter than `.sect h2`: the same family, deliberately subordinate.
+
+   THE ONE SUB-HEADER. `.sect.sub` started as a HeadWiring detail and is now
+   what all eight of the newest panels use — EpisodeTimeline, EpisodeOod,
+   HeadEvidence, HeadWiring, NeuronEvidencePanel, PatchScreenPanel,
+   TokenAnchors, TokenGradients — while `.image-subhead` was a private second
+   copy of the same idea with a different size and a different divider. They
+   are the same thing and now they are one rule. */
 .sect.sub { margin-top: 18px; margin-bottom: 8px; }
-.sect.sub h3 {
+/* THE SUBORDINATE HEADING WAS SMALLER THAN THE BODY UNDER IT.
+   Three rules competed for this job: `.sect h2` at --t-md (13.5px),
+   `.sect.sub h3` at --t-2xs (10.5px) and `.image-subhead h3` at --t-xs
+   (11.5px). The 10.5px one INVERTED the hierarchy — a heading three points
+   smaller than the 13.5px prose it introduces does not read as one level
+   down, it reads as a caption that has floated to the top of the block.
+   --t-xs is the workhorse step and it is the right one: quieter than the
+   13.5px h2 above it, and clearly a label rather than a line of the body.
+   The tracking goes up as the size comes down, which is what keeps an
+   uppercase run at this size legible as a label. */
+.sect.sub h3,
+.image-subhead h3 {
   font-family: var(--font-sans);
-  font-size: var(--t-2xs, var(--t-xs));
+  font-size: var(--t-xs);
   margin: 0;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.18em;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--color-mute);
 }
-.sect.sub .rule {
+/* ONE LEVEL DOWN ON THE SAME RULER, NOT A DIFFERENT KIND OF LINE.
+   This was `height: 1px; background: var(--line); background-image: none` — a
+   plain hairline, which threw away the signature of the whole design. The
+   argument is already written at `.image-subhead`: "a second kind of divider
+   would say this is a different sort of thing, and it is not". A sub-section
+   is a subdivision of the SAME measurement, so it gets the same ruler:
+   shorter, and carrying only the minor 8px pitch. Dropping the major 40px
+   ticks is what makes it subordinate — the reader sees the same graduations
+   at a finer grain, the way the sub-divisions between two labelled marks on a
+   real rule are unnumbered. It takes the panel's accent for the same reason
+   `.sect .rule` does: a grey ruler next to a coloured title reads as
+   borrowed. */
+.sect.sub .rule,
+.image-subhead .rule {
   flex: 1;
-  height: 1px;
+  height: 5px;
   align-self: center;
-  background: var(--line);
-  background-image: none;
+  background: none;
+  background-image:
+    repeating-linear-gradient(90deg,
+      color-mix(in oklab, var(--panel-accent, var(--line)) 40%, transparent) 0 1px,
+      transparent 1px 8px);
+  background-size: 100% 100%;
+  background-position: 0 bottom;
+  background-repeat: no-repeat;
+  /* fade both ends so the rule reads as an axis, not a fence — same as the
+     section rule it is a subdivision of */
+  mask-image: linear-gradient(to right, transparent 0, #000 20px,
+    #000 calc(100% - 20px), transparent 100%);
 }
 
 .head-wiring { margin-top: 4px; }
@@ -8436,4 +8662,13 @@ button:disabled,
   .ps-site { grid-template-columns: 1fr; gap: 2px; }
   .ne-spans li { grid-template-columns: 4em 1fr; }
   .ne-spans .ne-line { grid-column: 1 / -1; }
+}
+
+/* The playhead is the measurement, so both charts take focus. A visible ring
+   is not decoration here: without it a keyboard user cannot tell which of the
+   two charts their arrow keys are driving. */
+.tl-lanes:focus-visible,
+.ood-chart:focus-visible {
+  outline: 2px solid var(--color-attn);
+  outline-offset: 2px;
 }
