@@ -71,6 +71,171 @@ def build_fixture() -> bytes:
     )
 
 
+def build_image_fixture() -> bytes:
+    """A `.mri` carrying an image run, hostile in the four ways a stranger's
+    can be — none of which this writer can produce.
+
+    `session.build` validates through `session._image`, so the file is built
+    legitimately and then EDITED: the point is a file that never went through
+    this reader at all, which is what the viewer build is handed. It gets the
+    raw section straight out of the gzip with only the provenance checked.
+    """
+    import base64
+    import gzip
+    import json
+
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    png = (
+        "data:image/png;base64,"
+        + base64.b64encode(
+            bytes.fromhex(
+                "89504e470d0a1a0a0000000d494844520000000100000001080600000"
+                "01f15c4890000000a49444154789c6360000002000100ffff0300000600"
+                "0557bfabd40000000049454e44ae426082"
+            )
+        ).decode()
+    )
+
+    blob = session.build(
+        model_id="stabilityai/sd-turbo",
+        device="cpu",
+        dtype="float32",
+        n_params=None,
+        tokens=[],
+        prompt="",
+        generation="",
+        attention={},
+        n_layers=0,
+        n_heads=0,
+        note="a file from a stranger",
+        scope="one denoising run",
+        image={
+            "provenance": {
+                "repo": "stabilityai/sd-turbo",
+                "family": "diffusion",
+                "architecture": "UNet2DConditionModel",
+                "revision": "",
+                "kind": "denoising",
+            },
+            "prompt": "an astronaut riding a horse",
+            "seed": None,
+            "scheduler": "Euler",
+            "frames": [
+                {
+                    "step": 0,
+                    "timestep": 999.0,
+                    "png": png,
+                    "size": [64, 64],
+                    "downsampled": False,
+                    "latent_rms": 1.25,
+                }
+            ],
+            "steps_requested": 20,
+            "steps_run": 20,
+            "decoded_steps": [0],
+            "skipped_steps": [],
+            "steps_never_reached": [],
+            "attention": {
+                "tokens": ["an", "astronaut", "<pad>", "<pad>"],
+                "steps": [
+                    {
+                        "step": 0,
+                        "timestep": 999.0,
+                        "per_token": [0.4, 0.3, 0.2, 0.1],
+                        "blocks": 16,
+                    }
+                ],
+                "padding_from": 2,
+                "conditioning_width": 77,
+                "columns_unlabelled": 0,
+                "steps_requested": 20,
+                "steps_measured": 1,
+                "resolutions": [16],
+                "means": "one step of twenty",
+            },
+            "means": "1 decoded frame of a 20-step run.",
+        },
+    )
+
+    doc = json.loads(gzip.decompress(blob).decode("utf-8"))
+    img = doc["image"]
+    # 1. the boundary nobody measured -- absent, which is not 0
+    img["attention"].pop("padding_from", None)
+    # 2. the run length nobody stated -- absent, which is not a 0-step run
+    img.pop("steps_requested", None)
+    img.pop("steps_run", None)
+    # 3. a frame that is a LINK. Opening the file must not tell whoever wrote
+    #    it that you did.
+    img["frames"].append(
+        {
+            "step": 1,
+            "timestep": 500.0,
+            "png": "https://beacon.invalid/1x1.png",
+            "size": [64, 64],
+            "downsampled": False,
+            "latent_rms": None,
+        }
+    )
+    # 4. arrays that are not there at all -- a TypeError with no error
+    #    boundary above it is a white page where the recording used to be.
+    for gone in ("skipped_steps", "steps_never_reached", "decoded_steps"):
+        img.pop(gone, None)
+    return gzip.compress(json.dumps(doc, separators=(",", ":")).encode(), 6)
+
+
+async def image_side(port: int) -> dict:
+    """Open that file in the real viewer and read what it put on screen.
+
+    THIS EXISTS BECAUSE THE PANEL WAS NOT MOUNTED HERE AT ALL. `ImageRunReplay`
+    sat inside App's `!VIEWER` gate under a comment explaining that it sits
+    OUTSIDE it -- so the build A6 exists for, the recipient's, was the one
+    build that never rendered a shared image run, while `/api/image/replay`
+    answered `available: true` to nobody. No unit test could see that: the
+    component was correct and nothing rendered it.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        fetched: list[str] = []
+        page.on(
+            "request",
+            lambda r: fetched.append(r.url) if "beacon.invalid" in r.url else None,
+        )
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const blob = await (await fetch('./image.mri')).blob();
+              const file = new File([blob], 'image.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const served = await (await fetch('/api/image/replay')).json();
+              const panel = [...document.querySelectorAll('.panel')]
+                .find(p => p.innerText.includes('IMAGE RUN'));
+              return {
+                served: served.available === true,
+                mounted: !!panel,
+                text: panel ? panel.innerText : '',
+                cells: document.querySelectorAll('.irr-cell').length,
+                dimmed: document.querySelectorAll('.irr-cell.pad').length,
+                linked: [...document.images]
+                  .map(i => i.src)
+                  .filter(s => !s.startsWith('data:')).length,
+              };
+            }"""
+        )
+        await browser.close()
+        got["requested"] = fetched
+        return got
+
+
 def python_side(data: bytes) -> dict:
     sys.path.insert(0, str(ROOT))
     from modelmri import session
@@ -243,6 +408,7 @@ def main() -> int:
     FIXTURE.parent.mkdir(parents=True, exist_ok=True)
     FIXTURE.write_bytes(data)
     (VIEWER / "parity.mri").write_bytes(data)
+    (VIEWER / "image.mri").write_bytes(build_image_fixture())
 
     expected = python_side(data)
     port = 5921
@@ -250,6 +416,7 @@ def main() -> int:
     try:
         got = asyncio.run(browser_side(port))
         hostile = asyncio.run(hostile_side(port))
+        shared = asyncio.run(image_side(port))
     finally:
         httpd.shutdown()
 
@@ -297,6 +464,49 @@ def main() -> int:
         )
 
     print()
+    # A SHARED IMAGE RUN, IN THE BUILD IT WAS WRITTEN FOR. Each line is one
+    # thing a file from a stranger could have made this page do.
+    image_ok = True
+    for label, passed, detail in (
+        (
+            "mounted",
+            shared["served"] and shared["mounted"],
+            "the panel is on the page"
+            if shared["mounted"]
+            else "the panel is NOT mounted in the viewer build"
+            if shared["served"]
+            else "the viewer did not serve the section at all",
+        ),
+        (
+            "no beacon",
+            not shared["requested"] and shared["linked"] == 0,
+            f"{shared['linked']} linked <img>, "
+            f"{len(shared['requested'])} request(s) off-origin",
+        ),
+        (
+            "reported",
+            "never fetches" in shared["text"],
+            "the dropped frame is named, not silently missing",
+        ),
+        (
+            "no padding",
+            shared["cells"] > 0 and shared["dimmed"] == 0,
+            f"{shared['dimmed']} of {shared['cells']} cells dimmed with no "
+            f"measured boundary",
+        ),
+        (
+            "unstated",
+            "does not say how many steps" in shared["text"]
+            and "of 0 step" not in shared["text"],
+            "an unstated run length is SAID to be unstated, not printed as 0",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] image     {label:10} — {detail}")
+        image_ok = image_ok and passed
+    ok = ok and image_ok
+
+    print()
     # Two different failures, and the last line has to name the right one:
     # "THE VIEWER DISAGREES WITH THE TOOL" about a run where every cell
     # matched and the browser simply never started would send the next reader
@@ -305,6 +515,8 @@ def main() -> int:
         print("the viewer and the tool agree on every cell")
     elif not cells_ok:
         print("THE VIEWER DISAGREES WITH THE TOOL")
+    elif not image_ok:
+        print("THE VIEWER MISHANDLES A SHARED IMAGE RUN — see above")
     else:
         print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1

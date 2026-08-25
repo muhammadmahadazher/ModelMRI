@@ -376,18 +376,6 @@ export default function App() {
               controls only when the resident model is one of its families. */}
           <ImagePanel kind="diffusion" />
           <ImagePanel kind="vision" />
-          {/* An image run somebody SENT, rather than one this machine made.
-              Outside the `!VIEWER` gate the two panels above sit behind, and
-              deliberately: the viewer is the build most likely to be holding
-              one, because a `.mri` with a denoising strip in it is exactly
-              what gets forwarded. It renders nothing when the open session
-              carries no image run, which is most of them. */}
-          <ImageRunReplay
-            epoch={resetKey}
-            sessionKey={
-              session.open ? (session.meta?.created_at ?? "open") : ""
-            }
-          />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to
@@ -417,6 +405,25 @@ export default function App() {
           out rather than mounted and refusing. `runs` is 0 because there is no
           playground here to record one, and adopting is impossible for a
           reason the step inspector states. */}
+      {/* An image run somebody SENT, rather than one this machine made, and
+          OUTSIDE the `!VIEWER` gate the two `ImagePanel`s sit behind.
+
+          This comment described the mount for a day while the element itself
+          sat inside that gate, one line above `VLAPanel`. So the build A6
+          exists for -- the recipient's, with nothing installed -- was the one
+          build that never rendered a shared image run, and `/api/image/replay`
+          answered `available: true` to nobody. The same failure the agents
+          panel below had, for the same reason, found the same way: by opening
+          a real file in the real viewer instead of trusting the comment.
+
+          It belongs here rather than behind `VIEWER &&` because both builds
+          can hold one: the tool renders a `.mri` you opened, the viewer
+          renders the one you were sent. It renders nothing when the open
+          session carries no image run, which is most of them. */}
+      <ImageRunReplay
+        epoch={resetKey}
+        sessionKey={session.open ? (session.meta?.created_at ?? "open") : ""}
+      />
       {VIEWER && <AgentsPanel runs={0} />}
       <footer>
         {/* Read from /api/session. It was the literal "MRI-0.3" and had been
