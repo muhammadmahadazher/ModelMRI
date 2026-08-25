@@ -3780,6 +3780,63 @@ export const shareVlaFinding = (body: {
     return r.blob();
   });
 
+/** Write a stored sweep into a container Foxglove already opens.
+ *
+ *  Bytes and a Content-Disposition, like `exportSession`, so it does not go
+ *  through the demo shim's patched fetch and is not a plain `<a download>`
+ *  either: the server answers a refusal as JSON with a 409 or a 422 — no sweep
+ *  stored under those three keys, the `mcap` package absent, `.rrd` declined —
+ *  and a link would cheerfully save that sentence to disk as an `.mcap` file
+ *  the reader then opens in Foxglove and sees nothing in.
+ *
+ *  `dataset`, `metric` and `policy` are the three columns a sweep is STORED
+ *  against, so they are sent from the `VLASweep` that ran rather than inferred
+ *  from whatever is loaded now — the same reason that payload carries them.
+ *  `policy: ""` is not a missing value; it is how the server records that no
+ *  policy was resident. Omitting `camera` asks the server to resolve it, which
+ *  it does only when one camera is stored and refuses when two are.
+ */
+export async function exportVlaSweep(body: {
+  dataset: string;
+  metric: string;
+  policy?: string;
+  camera?: string;
+  /** "mcap" today; "rrd" is answered with the reasons it is declined. */
+  container?: string;
+  /** The download's filename stem. The server rebuilds it from an allowlist. */
+  name?: string;
+  /** What the numbers are numbers of, when the caller knows — an entropy in
+   *  nats over a 16-patch grid is bounded by ln(16), and a reader who knows
+   *  the ceiling reads the number differently. Left out, the file carries the
+   *  server's sentence saying no resolution was published, which is written
+   *  INTO the file rather than omitted from it. */
+  resolution?: string;
+}): Promise<{ blob: Blob; filename: string }> {
+  if (DEMO || VIEWER) {
+    return refusedHere(
+      "Exporting a sweep to MCAP reads a run this machine measured and " +
+        "stored: the rows, the unit they are in, and the two strides that say " +
+        "which frames were never opened. A static page has no trace database " +
+        "and never ran a sweep, so there is nothing here to write out — and a " +
+        "baked file would be somebody else's dataset arriving in your " +
+        "Foxglove under our provenance. Install ModelMRI (`pip install " +
+        "modelmri`), run a sweep on your own data, and this writes the file.",
+    );
+  }
+  const r = await fetch("/api/vla/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new ApiError(r.status, await r.text());
+  const disposition = r.headers.get("Content-Disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  // The server's own filename when it sent one. The fallback names the
+  // container rather than the sweep, because a stem invented here would claim
+  // a dataset and a metric this response did not carry back.
+  return { blob: await r.blob(), filename: match?.[1] || "sweep.mcap" };
+}
+
 /** #20 — one prompt of a finetune comparison. Never reported on its own. */
 export interface DiffPromptResult {
   prompt: string;
@@ -5933,15 +5990,17 @@ export interface NeuronSpan {
 export interface NeuronEvidence {
   neuron: number;
   layer_width: number;
-  /** The corpus's own name, when it came from a file. Absent when text was
-   *  passed directly, which is why this is optional rather than `| null` —
-   *  the route omits the key, it does not send a null.
+  /** ALWAYS `null`, deliberately. Not the corpus's name — this is what the
+   *  neuron REPRESENTS, and `neurons.py` is explicit that it stays null
+   *  because "a generated label would be the one thing on the page that
+   *  nothing measured". It is in the payload rather than absent so that a
+   *  reader can see the field exists and is empty on purpose.
    *
-   *  There is deliberately no `layer` here: the route does not publish one.
-   *  A panel that labels this answer with its own layer dial will relabel it
+   *  There is deliberately no `layer` here either: the route does not publish
+   *  one. A panel that labels this answer with its own layer dial relabels it
    *  the moment the dial moves, so the requested layer has to be snapshotted
    *  beside the payload instead. */
-  label?: string | null;
+  label: string | null;
   n_sequences: number;
   n_tokens: number;
   n_fired: number;

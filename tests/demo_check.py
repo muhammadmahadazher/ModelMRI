@@ -175,6 +175,16 @@ EXEMPT = {
         "behind a static page. Reached only from the same gated panel as "
         "/api/sweeps above"
     ),
+    "/api/vla/export": (
+        "writes a sweep this machine measured into an MCAP file, reading the "
+        "rows AND the run record beside them — the unit, the two strides and "
+        "the frame total — out of the trace database. A static page has no "
+        "database and never ran a sweep, so there is nothing to export; baking "
+        "one would put somebody else's dataset in the visitor's Foxglove under "
+        "our provenance, which is the one thing robot_export.py exists to stop. "
+        "api.ts refuses it here through `refusedHere` rather than "
+        "`noModelHere`, because what is missing is the run, not a checkpoint"
+    ),
     "/api/patterns/across": (
         "counts one structural finding over every run recorded on a machine. "
         "This page carries a single recording, so any answer would be a "

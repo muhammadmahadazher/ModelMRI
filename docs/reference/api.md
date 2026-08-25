@@ -132,6 +132,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/vla/actions/swap` | Vla Actions Swap |
 | `POST` | `/api/vla/analyse` | Vla Analyse |
 | `POST` | `/api/vla/dataset` | Vla Set Dataset |
+| `POST` | `/api/vla/export` | Vla Export |
 | `POST` | `/api/vla/load` | Vla Load |
 | `POST` | `/api/vla/occlude` | Vla Occlude Frame |
 | `POST` | `/api/vla/share` | Vla Share |

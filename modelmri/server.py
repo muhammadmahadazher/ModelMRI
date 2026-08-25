@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 from dataclasses import asdict
@@ -387,15 +388,22 @@ class VLADatasetRequest(Body):
 
 
 class RobotExportRequest(Body):
-    """Write a robot finding into a container Foxglove already opens.
+    """Write a stored sweep into a container Foxglove already opens.
 
-    NO PATH. The caller names a FILE STEM and the server decides where it
-    lands, under its own exports directory. Every other file route here reads
-    a path and is guarded by who may ask or by which roots it may touch;
-    neither guard fits a WRITE — `resolve_under_roots` refuses a path that
-    does not exist yet, which is every new file — so the path is not a
-    parameter at all. `serve_viewer` sanitises a stem the same way and for the
-    same reason.
+    NO PATH, IN EITHER DIRECTION. The caller names a FILE STEM and gets bytes
+    back; nothing here reads or returns a filesystem location. Every other file
+    route in this module is guarded by who may ask or by which roots it may
+    touch, and neither guard fits a WRITE — `resolve_under_roots` refuses a
+    path that does not exist yet, which is every new file — so the route writes
+    into a temporary directory it owns, reads the file once and hands it over.
+    The stem only decides what the browser saves it as, and it is rebuilt
+    character by character before it reaches a header.
+
+    WHICH SWEEP, NAMED. `dataset`, `policy` and `metric` are the three columns
+    a sweep is stored against, and they are parameters rather than "whatever is
+    loaded now" on purpose: a sweep outlives the process that ran it, so
+    exporting the current selection would export a ranking of whichever dataset
+    happened to be open when the button was pressed.
     """
 
     #: Rebuilt character by character rather than escaped: anything outside
@@ -406,6 +414,20 @@ class RobotExportRequest(Body):
     #: What the sweep's numbers are numbers OF. A measurement written into
     #: another tool's timeline with no unit is a line on a chart.
     resolution: str = Field(default="", max_length=400)
+    #: The dataset the sweep ranked. Required, and `vla_data` validates it
+    #: again before any snapshot directory is touched.
+    dataset: str = Field(min_length=1, max_length=200)
+    #: Which measurement. `vla_sweep.retrieve` refuses a name it never stored,
+    #: naming the ones it knows.
+    metric: str = Field(min_length=1, max_length=64)
+    #: `""` is not a missing value here — it is exactly how `vla_sweep.save`
+    #: writes "no policy was resident", because the column is half the lookup
+    #: key and a NULL would not match the `""` a caller sends.
+    policy: str = Field(default="", max_length=200)
+    #: `""` means "the caller did not name one". With one stored camera that
+    #: resolves; with two the retrieval refuses rather than picking, because
+    #: two cameras watched the same episodes through different lenses.
+    camera: str = Field(default="", max_length=200)
 
 
 class AnchorRequest(Body):
@@ -2347,19 +2369,131 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/attention/types")
 
-    # NO `/api/vla/export` ROUTE YET, and the reason is a gap rather than a
-    # decision. `robot_export.write` takes a `Sweep` — rows plus the metric,
-    # unit, dataset, policy, camera and strides that say what the rows ARE —
-    # and nothing here can hand it one after the fact: `vla_sweep.run` returns
-    # a Sweep and `vla_sweep.stored` returns bare rows, so a route would have
-    # to rebuild the rest by guessing at a unit and a frame total. Writing a
-    # measurement into somebody else's timeline with an invented unit is the
-    # exact failure `robot_export`'s own docstring is about.
-    #
-    # So the export is a library and CLI feature until `vla_sweep` grows a
-    # retrieval that returns what it stored. Stated here rather than left as
-    # an absence, because the next person to look will otherwise assume it was
-    # forgotten.
+    @app.post("/api/vla/export")
+    async def vla_export(req: RobotExportRequest):
+        """A stored sweep, written into a container Foxglove already opens.
+
+        THIS FILE CARRIED A NOTE INSTEAD OF A ROUTE FOR A REAL REASON.
+        `robot_export.write` takes a `Sweep` — rows plus the metric, unit,
+        dataset, policy, camera and strides that say what the rows ARE — and
+        `vla_sweep.stored` returns bare rows, so the only route that could have
+        been written here would have rebuilt the rest by guessing at a unit and
+        a frame total. That is the exact failure `robot_export`'s own docstring
+        is about. `vla_sweep.retrieve` is the missing half: it reads the run
+        record `save` now writes beside the rows, and it REFUSES rather than
+        defaulting when there is none — so a database of rows written before
+        that record existed produces a sentence naming the migration, not a
+        file in nats-because-we-assumed-so.
+
+        THE DATASET IS OPENED, and the export refuses when it cannot be. The
+        clock is why: `robot_export.clock_for(None)` writes "this dataset
+        published no frame rate" into the file, which is a claim ABOUT THE
+        DATASET, and writing it because nobody looked would be the same
+        fabrication one level down from the unit. So `info.json` is asked, and
+        a dataset that is not readable here is a 409 rather than a file with a
+        made-up time axis.
+
+        Refusals follow the neighbours: 409 for a `Refusal` — the `mcap`
+        package absent, `.rrd` declined on its own reasoning, a timeline with
+        nothing in it — and 422 for a `BadRequest`, which is what
+        `vla_sweep.SweepError` is, so "no sweep is stored for those three keys"
+        arrives as a malformed request rather than as a conflict.
+        """
+        from . import robot_export, vla_sweep
+
+        # `""` is a stored camera value in its own right (a reader that
+        # publishes no camera name), so it cannot mean "any" at the SQL layer.
+        # `None` is the word for "the caller did not name one", and the
+        # retrieval resolves it only when exactly one camera is stored.
+        camera = req.camera.strip() or None
+        # Rebuilt from an allowlist, never escaped: this reaches a
+        # Content-Disposition header and a filename inside the scratch
+        # directory, and `session_export` learned the hard way that a repo id
+        # can be an absolute path with backslashes in it — which are
+        # quoted-string escapes in that header — and that Starlette encodes
+        # headers as latin-1, so a non-Latin character raised
+        # UnicodeEncodeError into a bare 500.
+        stem = re.sub(
+            r"[^A-Za-z0-9._-]",
+            "-",
+            Path(req.name or f"{req.dataset}-{req.metric}").name,
+        ).strip("-._")
+        # The extension is rebuilt too. `write` refuses an unknown container
+        # before it opens anything, so this never names a file that gets
+        # created — but interpolating a request string into a path at all is
+        # the habit worth not having.
+        suffix = re.sub(r"[^a-z0-9]", "", req.container.lower())[:8]
+
+        def run() -> bytes:
+            from .vla_data import LeRobotV3Reader
+
+            sweep = vla_sweep.retrieve(
+                req.dataset, req.policy, req.metric, camera=camera
+            )
+            # The sweep's OWN dataset, not whatever is selected: `app.state`
+            # holds one reader and the export names its dataset explicitly.
+            reader = getattr(app.state, "vla_reader", None)
+            if reader is None or reader.repo_id != sweep.dataset:
+                reader = LeRobotV3Reader.discover(repo_id=sweep.dataset)
+            with tempfile.TemporaryDirectory(prefix="modelmri-export-") as scratch:
+                target = Path(scratch) / f"{stem or 'sweep'}.{suffix or 'bin'}"
+                receipt = robot_export.write(
+                    robot_export.timeline_from_sweep(
+                        sweep,
+                        # `reader.info.get("fps")`, NOT `reader.fps`:
+                        # `vla_data` defaults that attribute to 10 so its own
+                        # timestamp arithmetic has a number, and a default of
+                        # 10 exported as a measured rate draws a seconds axis
+                        # nobody timed. `None` here is what makes the file say
+                        # its axis is a frame index.
+                        fps=reader.info.get("fps"),
+                        tool_version=__version__,
+                        resolution=(
+                            req.resolution.strip() or robot_export.RESOLUTION_UNSTATED
+                        ),
+                        episode_lengths={
+                            e.index: int(e.length) for e in reader.episodes()
+                        },
+                    ),
+                    target,
+                    container=req.container,
+                )
+                # The receipt is the estimate checked against what happened —
+                # `estimate_over_actual` is the only way that estimate ever
+                # improves — and the bytes go to the caller, so it goes to the
+                # log rather than being dropped on the floor.
+                log.info("/api/vla/export wrote %s", receipt["means"])
+                return target.read_bytes()
+
+        try:
+            blob = await asyncio.to_thread(run)
+        except ImportError as err:
+            # The reader's dependencies, the same arm `/api/vla/sweep` carries.
+            # A missing `mcap` never lands here: `robot_export.writer_available`
+            # catches its own ImportError and turns it into the Refusal that
+            # names `pip install mcap`.
+            return _missing_reader_dep(err)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/vla/export")
+        return Response(
+            content=blob,
+            # NOT `application/mcap`. MCAP has no media type registered with
+            # IANA, and inventing one tells the reader's tooling a convention
+            # exists that it can look up. The container is named by the
+            # extension in the filename below and by the file's own magic
+            # bytes, both of which are real.
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{stem or "sweep"}.{suffix or "bin"}"'
+                ),
+                "Content-Length": str(len(blob)),
+            },
+        )
 
     @app.get("/api/vla/timeline")
     async def vla_timeline_tracks(episode: int = 0, max_points: int = 600):
@@ -2545,8 +2679,19 @@ def create_app(
         directly. Blunter, and it says so: neurons are polysemantic, which is
         the entire reason sparse autoencoders exist.
         """
-        texts = req.texts
-        label = req.label
+        # Assigned in BOTH branches rather than defaulted and overwritten: on
+        # the `file` path the default was dead before it was read, which is a
+        # reader having to hold two possible values for one name to know which
+        # one a later line means.
+        # The corpus NAME is deliberately dropped, and `_` says so out loud.
+        # `neurons.evidence` reports counts over whatever text it was handed
+        # and takes no corpus label — the `label` field in its payload is a
+        # different thing entirely (what the neuron REPRESENTS), and that one
+        # is always `None` on purpose: the module's own docstring says a
+        # generated label would be the one thing on the page nothing measured.
+        # This used to be `label = req.label` followed by a rebind on the file
+        # path, which read as though the name travelled with the answer.
+        texts: list[str] | None
         try:
             if req.file:
                 refusal = _not_from_this_machine(
@@ -2556,7 +2701,9 @@ def create_app(
                     return refusal
                 from . import feature_corpus as fc
 
-                texts, label = fc.load_corpus(req.file)
+                texts, _ = fc.load_corpus(req.file)
+            else:
+                texts = req.texts
             if not texts:
                 return JSONResponse(
                     {
@@ -2763,13 +2910,18 @@ def create_app(
 
         try:
             if source:
-                from . import sweep as sweep_mod
+                from . import feature_corpus as fc
 
                 # The same reader `modelmri sweep` uses, so a corpus file that
                 # works for one works for the other rather than being two
-                # nearly-identical formats.
-                texts = sweep_mod.load_prompts(source)
-                label = label or Path(str(source)).name
+                # nearly-identical formats — but reached through
+                # `feature_corpus`, which puts the WHERE boundary in front of
+                # it. The `_not_from_this_machine` check above answers who may
+                # ask; this answers where they may point, and a path that
+                # arrived in a request body is not the same thing as one a
+                # person typed at their own keyboard.
+                texts, name = fc.load_corpus(source)
+                label = label or name
             if not isinstance(texts, list) or not texts:
                 return JSONResponse(
                     {

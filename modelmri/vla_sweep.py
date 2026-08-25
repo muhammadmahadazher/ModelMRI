@@ -30,6 +30,7 @@ Every row and every summary carries the stride.
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import time
@@ -55,6 +56,25 @@ MAX_FAILED_LISTED = 20
 DEFAULT_EPISODE_STRIDE = 1
 DEFAULT_FRAME_STRIDE = 25
 
+# TWO TABLES, BECAUSE A ROW IS NOT A SWEEP. `vla_sweep` holds the
+# measurements; `vla_sweep_run` holds what they ARE — the unit they were
+# measured in, the two strides that say which frames were never looked at, and
+# the totals every coverage sentence is computed against. None of that is
+# derivable from the rows: a column of floats does not know it is nats over the
+# patch grid, and `robot_export.Timeline` refuses a track with no unit for
+# exactly the reason nobody may supply one from memory.
+#
+# The run table is keyed by the same four columns the row key starts with, so
+# one run record describes one set of rows, and `save()` writes both together.
+#
+# MIGRATING A LIVE DATABASE. Every statement here is `IF NOT EXISTS` and the
+# whole script runs on every `_db()`, against the same file this project has
+# been writing rows into since the sweep shipped. An install that already holds
+# rows gains an EMPTY `vla_sweep_run` and keeps working — `stored()` reads the
+# row table alone and did not change. What those older rows do not gain is a
+# run record, and `retrieve()` refuses them by name rather than reconstructing
+# one; see the refusal there for why a defaulted unit is the single thing this
+# table must never hand out.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS vla_sweep (
     dataset   TEXT NOT NULL,
@@ -70,6 +90,23 @@ CREATE TABLE IF NOT EXISTS vla_sweep (
 );
 CREATE INDEX IF NOT EXISTS vla_sweep_rank
     ON vla_sweep (dataset, policy, metric, value DESC);
+CREATE TABLE IF NOT EXISTS vla_sweep_run (
+    dataset        TEXT NOT NULL,
+    policy         TEXT NOT NULL,
+    metric         TEXT NOT NULL,
+    camera         TEXT NOT NULL,
+    unit           TEXT NOT NULL,
+    episode_stride INTEGER NOT NULL,
+    frame_stride   INTEGER NOT NULL,
+    n_frames       INTEGER NOT NULL,
+    n_episodes     INTEGER NOT NULL,
+    frames_total   INTEGER NOT NULL,
+    seconds        REAL NOT NULL,
+    n_failed       INTEGER NOT NULL,
+    failed         TEXT NOT NULL,
+    taken_at       TEXT NOT NULL,
+    PRIMARY KEY (dataset, policy, metric, camera)
+);
 """
 
 
@@ -464,12 +501,51 @@ def save(sweep: Sweep) -> int:
     The stride is stored PER ROW rather than once for the sweep: two runs at
     different strides land in the same table, and a row that did not carry its
     own stride would be indistinguishable from one taken at a finer step.
+
+    The RUN-LEVEL facts — the unit, the episode stride, the counts, the
+    duration and the failure sample — go to `vla_sweep_run` in the same
+    transaction, because rows with no run record beside them are the state
+    `retrieve()` has to refuse. Written together or not at all: a commit that
+    stored four thousand rows and lost the unit would produce a ranking nobody
+    can export and nobody can label, which is a worse outcome than storing
+    nothing.
     """
     from datetime import datetime, timezone
 
     taken = datetime.now(timezone.utc).isoformat()
     db = _db()
     try:
+        db.execute(
+            "INSERT OR REPLACE INTO vla_sweep_run "
+            "(dataset, policy, metric, camera, unit, episode_stride, "
+            " frame_stride, n_frames, n_episodes, frames_total, seconds, "
+            " n_failed, failed, taken_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                sweep.dataset,
+                # `""` in the COLUMN for the same reason as the rows below: it
+                # is half the lookup key, and a NULL there would not match the
+                # `""` a caller sends. `retrieve()` turns it back into `None`,
+                # which is lossless because `Sweep.policy` is documented as
+                # never being `""`.
+                sweep.policy or "",
+                sweep.metric,
+                sweep.camera,
+                sweep.unit,
+                sweep.episode_stride,
+                sweep.frame_stride,
+                sweep.n_frames,
+                sweep.n_episodes,
+                sweep.frames_total,
+                sweep.seconds,
+                sweep.n_failed,
+                # The SAMPLE, stored as the cap left it, with `n_failed` beside
+                # it as the real count. The two are separate columns for the
+                # same reason the dataclass keeps them separate: a report that
+                # counted the truncated list published 600 failures as 20.
+                json.dumps(sweep.failed),
+                taken,
+            ),
+        )
         db.executemany(
             "INSERT OR REPLACE INTO vla_sweep "
             "(dataset, policy, metric, camera, episode, timestep, value, "
@@ -522,6 +598,295 @@ def stored(dataset: str, policy: str, metric: str, *, limit: int = 200) -> list[
         ]
     finally:
         db.close()
+
+
+def _listed(values: list[str]) -> str:
+    """`a, b and c` for a sentence, rather than a Python list repr."""
+    if len(values) == 1:
+        return values[0]
+    return ", ".join(values[:-1]) + f" and {values[-1]}"
+
+
+def retrieve(
+    dataset: str, policy: str, metric: str, *, camera: str | None = None
+) -> Sweep:
+    """The stored sweep, whole — or a refusal naming what is missing.
+
+    `stored()` answers "which rows are strongest"; this answers "what was the
+    sweep", and they are not the same question. A `Sweep` carries the unit its
+    numbers are in, the two strides that say which frames were never opened,
+    and the totals a coverage claim is computed against — facts that live in
+    `vla_sweep_run` and are NOT recoverable from a column of floats. Every one
+    of them is required by `robot_export.timeline_from_sweep`, which is why
+    this function exists: without it a route exporting a stored sweep would
+    have to invent a unit, and a number in Foxglove under an invented unit is
+    indistinguishable from one that was measured in it.
+
+    NOTHING IS DEFAULTED HERE. Rows saved before this database grew a run
+    table are refused by name — they are not a sweep in nats with a frame
+    total of zero — and so is a row set that two runs have superimposed. The
+    refusals are the deliverable as much as the return value is.
+
+    `camera=None` means the caller did not name one. With a single stored
+    camera that is unambiguous and it is resolved; with two it is refused
+    rather than picked, because a `Sweep` names ONE camera and two cameras
+    watched the same episodes through different lenses.
+    """
+    if metric not in METRICS:
+        raise SweepError(
+            f"unknown metric {metric!r} — expected one of {sorted(METRICS)}. "
+            f"Nothing was ever measured under that name, so there is no stored "
+            f"sweep to read back."
+        )
+    key = (dataset, policy or "", metric)
+    columns = (
+        "camera, unit, episode_stride, frame_stride, n_frames, n_episodes, "
+        "frames_total, seconds, n_failed, failed, taken_at"
+    )
+    db = _db()
+    try:
+        if camera is None:
+            runs = db.execute(
+                f"SELECT {columns} FROM vla_sweep_run "
+                "WHERE dataset=? AND policy=? AND metric=? ORDER BY camera",
+                key,
+            ).fetchall()
+        else:
+            runs = db.execute(
+                f"SELECT {columns} FROM vla_sweep_run "
+                "WHERE dataset=? AND policy=? AND metric=? AND camera=?",
+                (*key, camera),
+            ).fetchall()
+
+        if len(runs) > 1:
+            names = _listed([repr(r[0]) for r in runs])
+            raise SweepError(
+                f"{len(runs)} sweeps of {metric} are stored for {dataset}, one "
+                f"per camera ({names}), and a sweep names ONE camera. Taking "
+                f"the first would rank frames through a lens the reader did "
+                f"not ask for, and nothing downstream would say which. Name "
+                f"the camera."
+            )
+
+        if not runs:
+            raise _nothing_stored(db, key, metric, dataset, camera)
+
+        (
+            camera_name,
+            unit,
+            episode_stride,
+            frame_stride,
+            n_frames,
+            n_episodes,
+            frames_total,
+            seconds,
+            n_failed,
+            failed_json,
+            _taken_at,
+        ) = runs[0]
+
+        # Filtered by CAMERA as well, which `stored()` is not: that function
+        # answers a ranking query and carries each row's own stride out so a
+        # reader can see a mixture, while this one is building a single object
+        # that states one camera and one stride for all of its rows.
+        rows = db.execute(
+            "SELECT episode, timestep, value, stride FROM vla_sweep "
+            "WHERE dataset=? AND policy=? AND metric=? AND camera=? "
+            "ORDER BY value DESC",
+            (*key, camera_name),
+        ).fetchall()
+    finally:
+        db.close()
+
+    n_frames = int(n_frames)
+    n_failed = int(n_failed)
+    if not rows:
+        why = (
+            f"every one of its {n_failed:,} sampled frame(s) failed to measure"
+            if n_failed
+            else "it measured no frames at all"
+        )
+        raise SweepError(
+            f"the stored sweep of {metric} on {dataset} has no rows: {why}. "
+            f"There is nothing to rank and nothing to export — a timeline with "
+            f"no samples in it reads as a policy that produced no "
+            f"measurements, which is a different claim from one nobody could "
+            f"take. Fix what stopped the frames decoding (`pip install "
+            f"modelmri[vla]` installs the reader's `av` and `pyarrow`) and run "
+            f"the sweep again."
+        )
+
+    strides = sorted({int(r[3]) for r in rows})
+    if strides != [int(frame_stride)]:
+        found = _listed([f"{s}" for s in strides])
+        raise SweepError(
+            f"the stored rows of {metric} on {dataset} were taken at "
+            f"{len(strides)} different frame stride(s) ({found}), and the run "
+            f"record beside them says {frame_stride}. Rows are keyed by "
+            f"(episode, timestep), so a second run at a coarser step REPLACES "
+            f"the frames it re-measured and leaves the finer run's extra "
+            f"frames sitting under the same keys — the two samplings are "
+            f"superimposed in the table, and handing them back as one Sweep "
+            f"would publish points from two runs under a single stated stride. "
+            f"`stored()` shows you every row with the stride it was taken at; "
+            f"`forget({dataset!r}, {policy!r}, {metric!r}, "
+            f"camera={camera_name!r})` drops this key so the next run is the "
+            f"only one in it."
+        )
+
+    if len(rows) != n_frames:
+        raise SweepError(
+            f"the run record for {metric} on {dataset} counted {n_frames:,} "
+            f"measured frame(s) and the table holds {len(rows):,} row(s) under "
+            f"the same dataset, policy, metric and camera. At one stride that "
+            f"is an earlier run at a different EPISODE stride still sitting in "
+            f"the table, and its frames would be counted into this sweep's "
+            f"coverage as though this run had opened them. Nothing here will "
+            f"decide which rows belong to which run: "
+            f"`forget({dataset!r}, {policy!r}, {metric!r}, "
+            f"camera={camera_name!r})` drops the key, and the next sweep is "
+            f"the only one under it."
+        )
+
+    try:
+        failed = json.loads(failed_json)
+        if not isinstance(failed, list):
+            raise ValueError("the failure sample is not a list")
+    except ValueError as err:
+        raise SweepError(
+            f"the run record for {metric} on {dataset} carries a failure "
+            f"sample that is not readable, so nothing here can say which "
+            f"frames were absent from the ranking rather than scored low. An "
+            f"empty list in its place would claim every frame measured "
+            f"cleanly. Re-run the sweep to rewrite the record."
+        ) from err
+
+    return Sweep(
+        metric=metric,
+        unit=unit,
+        dataset=dataset,
+        # `""` back to `None` — the encoding `save()` writes, reversed. The
+        # dataclass documents this field as never `""`, and
+        # `robot_export.Provenance` writes "no policy was resident for this
+        # measurement" for the `None`; an empty string there would print as a
+        # blank a reader takes for an oversight.
+        policy=(policy or "") or None,
+        camera=camera_name,
+        episode_stride=int(episode_stride),
+        frame_stride=int(frame_stride),
+        rows=[Row(episode=r[0], timestep=r[1], value=r[2]) for r in rows],
+        n_frames=n_frames,
+        n_episodes=int(n_episodes),
+        frames_total=int(frames_total),
+        seconds=float(seconds),
+        failed=failed,
+        n_failed=n_failed,
+    )
+
+
+def _nothing_stored(
+    db: sqlite3.Connection,
+    key: tuple[str, str, str],
+    metric: str,
+    dataset: str,
+    camera: str | None,
+) -> SweepError:
+    """Two different absences, told apart, because the fix differs.
+
+    "You have not run this sweep" is a different sentence from "you ran it
+    before this database recorded what a sweep IS", and only the second one is
+    a migration. Collapsing them would tell somebody with four thousand
+    measured rows on disk that they had never measured anything.
+    """
+    if camera is None:
+        orphans = db.execute(
+            "SELECT COUNT(*), MIN(stride), MAX(stride), MIN(taken_at), "
+            "MAX(taken_at) FROM vla_sweep "
+            "WHERE dataset=? AND policy=? AND metric=?",
+            key,
+        ).fetchone()
+        which = ""
+    else:
+        orphans = db.execute(
+            "SELECT COUNT(*), MIN(stride), MAX(stride), MIN(taken_at), "
+            "MAX(taken_at) FROM vla_sweep "
+            "WHERE dataset=? AND policy=? AND metric=? AND camera=?",
+            (*key, camera),
+        ).fetchone()
+        which = f" through {camera}"
+
+    count = int(orphans[0] or 0)
+    if not count:
+        return SweepError(
+            f"no sweep of {metric} is stored for {dataset}{which} under policy "
+            f"{key[1] or '(none resident)'}. Run one — `POST /api/vla/sweep` "
+            f"measures it and saves it — or check the three keys: a sweep is "
+            f"stored against the dataset, the policy that was resident and the "
+            f"metric, and all three have to match what was run."
+        )
+
+    when = (
+        f"taken {orphans[3]}"
+        if orphans[3] == orphans[4]
+        else f"taken between {orphans[3]} and {orphans[4]}"
+    )
+    return SweepError(
+        f"{count:,} measured row(s) of {metric} on {dataset}{which} are stored "
+        f"({when}), and nothing says what they ARE: they were saved before "
+        f"this database kept a run record beside the rows, so the unit they "
+        f"are in, the episode stride and the frame total their coverage is "
+        f"measured against are not in it. The rows are intact and `stored()` "
+        f"still returns them with their own per-row stride. What cannot happen "
+        f"is a Sweep built from them: the unit would have to come from this "
+        f"code rather than from the run, and a number exported into another "
+        f"tool's timeline under a unit ModelMRI supplied from memory is "
+        f"indistinguishable from one that was measured in it. Re-run the "
+        f"sweep — the rows are replaced in place and the run record is written "
+        f"beside them."
+    )
+
+
+def forget(
+    dataset: str, policy: str, metric: str, *, camera: str | None = None
+) -> dict:
+    """Drop one stored sweep — its rows and its run record — and say how much.
+
+    The remedy `retrieve()` names when two runs are superimposed under one set
+    of keys. It is never automatic: `save()` has always been INSERT OR REPLACE
+    and leaves behind whatever it did not overwrite, and this module does not
+    delete a reader's measurements to make its own invariant hold. The counts
+    come back so the caller can report what actually went rather than assuming
+    something did.
+    """
+    key = (dataset, policy or "", metric)
+    db = _db()
+    try:
+        if camera is None:
+            rows = db.execute(
+                "DELETE FROM vla_sweep WHERE dataset=? AND policy=? AND metric=?",
+                key,
+            ).rowcount
+            runs = db.execute(
+                "DELETE FROM vla_sweep_run WHERE dataset=? AND policy=? AND metric=?",
+                key,
+            ).rowcount
+        else:
+            rows = db.execute(
+                "DELETE FROM vla_sweep "
+                "WHERE dataset=? AND policy=? AND metric=? AND camera=?",
+                (*key, camera),
+            ).rowcount
+            runs = db.execute(
+                "DELETE FROM vla_sweep_run "
+                "WHERE dataset=? AND policy=? AND metric=? AND camera=?",
+                (*key, camera),
+            ).rowcount
+        db.commit()
+    finally:
+        db.close()
+    # `max(0, ...)`: sqlite3 reports -1 for a statement whose row count it did
+    # not track, and a -1 rendered as "removed -1 rows" is worse than useless.
+    return {"rows": max(0, rows), "runs": max(0, runs)}
 
 
 def heat_strip(sweep: Sweep) -> dict:

@@ -181,7 +181,8 @@ head**, the way we already have it for an SAE feature.
 
 ### B4. Robotics, now that the sidecar exists
 
-**STATUS 2026-08-25 — built, with two gaps named below.** `vla_ood.py` scores every
+**STATUS 2026-08-25 — built; the MCAP gap below is closed and the `.rrd` one
+stands.** `vla_ood.py` scores every
 frame against a reference set the payload names, in Mahalanobis distance over
 the directions that reference actually varies in, with the episode's own rows
 held OUT of the reference, its mean, its covariance and its null. A distance
@@ -193,16 +194,33 @@ disagreement between them is visible. ACT policies open in the perception half,
 and `analyse()` refuses to draw attention a ResNet does not have while naming
 the occlusion sweep that genuinely works on it.
 
-`robot_export.py` writes MCAP. THE GAP: there is no HTTP route for it, because
-`write` needs a `Sweep` — rows plus the metric, unit, dataset, policy, camera
-and strides that say what the rows ARE — and `vla_sweep.stored` returns bare
-rows. A route would have to rebuild the rest by guessing at a unit, which is
-what that module exists to prevent. It is a library and CLI feature until
-`vla_sweep` grows a retrieval that returns what it stored. The `.rrd` half
-refuses on its own reasoning: Rerun's logging API moves between releases, an
-`.rrd` is read by the SDK version that wrote it, and nothing here has been run
-against an installed rerun-sdk — so emitting one would publish a file whose
-correctness is a guess.
+`robot_export.py` writes MCAP, and `POST /api/vla/export` now reaches it. THE
+GAP WAS the retrieval: `write` needs a `Sweep` — rows plus the metric, unit,
+dataset, policy, camera and strides that say what the rows ARE — and
+`vla_sweep.stored` returns bare rows, so a route would have had to rebuild the
+rest by guessing at a unit, which is what that module exists to prevent. It is
+closed by storing the missing half rather than by inferring it: `vla_sweep`
+grew a second table, `vla_sweep_run`, holding the unit, both strides, the
+counts, the duration and the failure sample, written by `save()` in the same
+transaction as the rows; and `retrieve()` reads a whole `Sweep` back out of it.
+
+The refusals are the load-bearing part. Rows saved before that table existed
+have no run record, and `retrieve()` names the migration and the fix rather
+than reading the unit out of `METRICS` — a number arriving in Foxglove under a
+unit ModelMRI supplied from memory is indistinguishable from one that was
+measured in it. Two runs superimposed under one set of keys (rows are keyed by
+episode and timestep, so a coarser second run leaves the finer run's extra
+frames behind) are refused with both strides named, because a `Sweep` states
+one stride for all of its rows. The route opens the sweep's own dataset for the
+clock and refuses when it cannot, since `reader.fps` defaults to 10 for the
+decoder's arithmetic and exporting that default would draw a seconds axis
+nobody timed. `mcap` is still not a dependency: absent, the route answers 409
+with the install command.
+
+The `.rrd` half refuses on its own reasoning: Rerun's logging API moves between
+releases, an `.rrd` is read by the SDK version that wrote it, and nothing here
+has been run against an installed rerun-sdk — so emitting one would publish a
+file whose correctness is a guess.
 
 OOD scoring per frame, a synchronised multi-track episode timeline, export to
 MCAP and `.rrd` so findings open in Foxglove and Rerun, dataset-level action
