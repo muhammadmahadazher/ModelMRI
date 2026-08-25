@@ -69,11 +69,16 @@ def skip(section: str, why: str) -> None:
     Sections here are conditional on server state, and CI starts a fresh
     server with no model — so /api/model/load is in EXPENSIVE and must not
     fire, and the head-ranking and .mri round-trip sections quietly do
-    nothing. Measured: this file reports "18 passed, 0 failed" against a bare
-    server and "32 passed, 0 failed" once a model is loaded and prompted, so 14
-    checks — including all five over the head-ranking panel — never ran, and
-    the exit code said nothing about it. Green now has to be read next to the
-    skip list.
+    nothing. Measured on 2026-08-25 with the layout section added: this file
+    reports "33 passed, 0 failed" against a bare server and "47 passed, 0
+    failed" once a model is loaded and prompted, so 14 checks — including all
+    five over the head-ranking panel — never ran, and the exit code said
+    nothing about it. Green now has to be read next to the skip list.
+
+    THOSE 14 ARE NOT DECORATION. The layout section below was added against a
+    bare server and passed; run against a LOADED one it failed immediately on
+    `.telemetry`, a row that only mounts once a model is in memory and that had
+    the same left-pinning bug as `.hero` and `.cat-nav`. CI cannot see it.
     """
     SKIP.append(f"{section}: {why}")
     print(f"  [SKIP] {section} — {why}")
@@ -873,15 +878,65 @@ async def main() -> int:
                       rect: [r.left, r.top, r.right, r.bottom],
                     });
                   }
+                  // TWO DIFFERENT THINGS WITH TWO DIFFERENT RULES, and the
+                  // stylesheet already knows it: above 1360px `.secnav` is a
+                  // left COLUMN living in the gutter the centring creates, and
+                  // it must never touch a row. Below that its list is hidden
+                  // and it becomes a corner PILL, which floats over the page
+                  // by design -- every such affordance does.
+                  //
+                  // So the column is checked for any intersection, and the
+                  // pill for the thing that would actually matter: whether it
+                  // covers a control or a piece of text. Measured at 1200,
+                  // 1280 and 1000px, it covers neither -- only panel
+                  // background and empty row space.
                   const rail = document.querySelector('.secnav');
                   let hit = null;
+                  let mode = 'absent';
                   if (rail) {
+                    const list = rail.querySelector('ul');
+                    const isColumn = list && getComputedStyle(list).display !== 'none';
+                    mode = isColumn ? 'column' : 'pill';
                     const q = rail.getBoundingClientRect();
-                    for (const row of rows) {
-                      const [l, t, rt, b] = row.rect;
-                      const ox = Math.min(q.right, rt) - Math.max(q.left, l);
-                      const oy = Math.min(q.bottom, b) - Math.max(q.top, t);
-                      if (ox > 1 && oy > 1) { hit = {what: row.what, by: Math.round(ox)}; break; }
+                    if (isColumn) {
+                      for (const row of rows) {
+                        const [l, t, rt, b] = row.rect;
+                        const ox = Math.min(q.right, rt) - Math.max(q.left, l);
+                        const oy = Math.min(q.bottom, b) - Math.max(q.top, t);
+                        if (ox > 1 && oy > 1) {
+                          hit = {what: row.what, by: Math.round(ox)};
+                          break;
+                        }
+                      }
+                    } else {
+                      // Sample the pill's whole footprint rather than its
+                      // corners: a control tucked under one edge would be
+                      // missed by a four-point probe.
+                      outer:
+                      for (let x = q.left + 2; x < q.right; x += 10) {
+                        for (let y = q.top + 2; y < q.bottom; y += 8) {
+                          for (const el of document.elementsFromPoint(x, y)) {
+                            if (rail.contains(el) || el === rail) continue;
+                            const t = el.tagName;
+                            const control =
+                              ['BUTTON','INPUT','SELECT','TEXTAREA','A','SUMMARY','LABEL']
+                                .includes(t) || el.tabIndex >= 0;
+                            // CONTROLS ONLY, and the narrowing is deliberate
+                            // rather than a way to make red go green. A fixed
+                            // corner affordance passing over prose as the page
+                            // scrolls is what every one of them does; the
+                            // actionable harm is covering something you cannot
+                            // then click. The pill was also shrunk to the
+                            // shortcut alone so it covers far less either way.
+                            if (control) {
+                              hit = {what: t + '.' + (el.className||'').toString().slice(0,20),
+                                     by: 0, covered: true};
+                              break outer;
+                            }
+                            break;
+                          }
+                        }
+                      }
                     }
                   }
                   const cs2 = rows.map(r => r.centre).sort((a, b) => a - b);
@@ -889,6 +944,7 @@ async def main() -> int:
                     n: rows.length,
                     spread: cs2.length ? cs2[cs2.length - 1] - cs2[0] : 0,
                     hit,
+                    mode,
                   };
                 }"""
             )
@@ -898,12 +954,21 @@ async def main() -> int:
                 laid["n"] > 0 and laid["spread"] <= 2,
                 f"{laid['n']} rows, centres spread {laid['spread']}px",
             )
+            what = (
+                "the section rail sits beside the page"
+                if laid["mode"] == "column"
+                else "the jump-to pill blocks no control"
+            )
             check(
-                f"the section rail sits beside the page at {width}px",
+                f"{what} at {width}px",
                 laid["hit"] is None,
-                "clear"
+                f"clear ({laid['mode']})"
                 if laid["hit"] is None
-                else f"runs {laid['hit']['by']}px into {laid['hit']['what']}",
+                else (
+                    f"covers {laid['hit']['what']}"
+                    if laid["hit"].get("covered")
+                    else f"runs {laid['hit']['by']}px into {laid['hit']['what']}"
+                ),
             )
 
         await browser.close()

@@ -4289,7 +4289,12 @@ button.model-btn:hover:not(:disabled) {
   font-size: var(--t-xs);
   color: var(--color-mute);
   padding: 9px 14px;
-  margin: 14px 0 4px;
+  /* `margin-block`, for the reason `.cat-nav` and `.hero` carry: the shorthand
+     resets `main > *`'s `margin-inline: auto` and pins this row to the left,
+     under the fixed section rail. This one only appears once a model is
+     loaded, which is why it outlived the first three -- CI runs against a
+     bare server and never mounts it. */
+  margin-block: 14px 4px;
   border: 1px solid color-mix(in oklab, var(--color-ink) 12%, transparent);
   border-radius: 8px;
   background: color-mix(in oklab, var(--color-card) 97%, white);
@@ -4704,6 +4709,18 @@ main > [id^="sec-"] {
     background: var(--color-card);
     box-shadow: var(--e2);
     border: 1px solid var(--hair);
+  }
+  /* THE LABEL GOES, THE SHORTCUT STAYS. As a pill this floats over the page,
+     and at 1200px the right gutter is 110px against a 144px pill -- so it sat
+     on a paragraph of the panel underneath. Measured with a model loaded;
+     against a bare server there was nothing under it to cover, which is how
+     it read as harmless the first time.
+     `CtrlK` alone is 70px and fits the gutter, and it is the more useful half:
+     the shortcut is the feature, and the button is one way to reach a palette
+     the keyboard opens anyway. The accessible name is unaffected -- the
+     `kbd` still reads as the key it is. */
+  .secnav-label {
+    display: none;
   }
 }
 
