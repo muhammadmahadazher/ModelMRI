@@ -56,6 +56,42 @@ def measured(value: float, decimals: int = 4) -> str:
     return f"{value:,.{decimals}f}"
 
 
+def measured_value(value: float, decimals: int = 4) -> float:
+    """The number `measured()` would print, as a number.
+
+    For the JSON field beside the sentence. `round(x, decimals)` is the
+    obvious thing to put there and it has the same defect the string form was
+    written to fix, one layer down: a measured gap of 4.8e-07 stores as
+    `-0.0`, which reads as "these add up exactly" — a claim the arithmetic did
+    not make — and carries a negative zero into the payload for good measure.
+
+    Kept beside `measured` on purpose. A field and the sentence naming it must
+    be the same quantity to the same precision, and this module exists because
+    they once were not.
+
+    >>> measured_value(0.0)
+    0.0
+    >>> measured_value(4.768372e-07, 6)
+    4.8e-07
+    >>> measured_value(-4.768372e-07, 6)
+    -4.8e-07
+    >>> measured_value(0.12580681, 6)
+    0.125807
+    """
+    if not math.isfinite(value):
+        return value
+    if value == 0:
+        # `0.0`, never `-0.0`. An exact zero IS the measurement, and its sign
+        # is an artefact of which subtraction produced it.
+        return 0.0
+    if abs(value) < 0.5 * 10**-decimals:
+        # The same one significant figure `measured` escapes to, parsed back.
+        # At this magnitude that is all the precision there is: the quantity
+        # is a difference of two floats and is at its own last bit.
+        return float(f"{value:.1e}")
+    return round(value, decimals)
+
+
 def bytes_si(n: float) -> str:
     """A byte count in the unit that keeps its significant digits.
 

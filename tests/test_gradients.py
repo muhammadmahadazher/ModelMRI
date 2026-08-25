@@ -302,31 +302,130 @@ def test_the_midpoint_rule_is_exact_for_a_quadratic_at_one_step(ids, tok):
     assert abs(got.completeness.gap) < 1e-4
 
 
+#: Where the completeness gap stops being a measurement of the approximation
+#: and becomes a measurement of float32.
+#:
+#: MEASURED on the tanh fixture below, as multiples of one ULP of the move the
+#: gap is a residue of (`measured_delta` 5.084706, so 1 ULP = 6.061e-07):
+#:
+#:      steps      gap        ULP of the move
+#:          2   1.883601e+00      3,107,512
+#:          4   1.258068e-01        207,553
+#:          8   3.237724e-04            534
+#:         16   5.722046e-06           9.44
+#:         32   1.907349e-06           3.15
+#:         64   4.768372e-07           0.79
+#:        128   1.430511e-06           2.36
+#:        256   4.768372e-07           0.79
+#:        512   9.536743e-07           1.57
+#:
+#: Four orders of magnitude of clean descent, and then it WANDERS between 0.79
+#: and 3.15 ULP forever — because at that size the gap is the last bit of the
+#: subtraction and nothing else. `endpoint_floor` does not catch this: it is
+#: the disagreement between two repeats of the same forward pass, which on a
+#: deterministic fixture is exactly 0.
+#:
+#: 16 is above the whole wander with room and below the last clean rung.
+GAP_FLOOR_ULP = 16
+
+
 def test_the_gap_shrinks_as_the_step_count_rises(ids, tok):
     """The step count IS the approximation's resolution, which is why it is
-    reported beside the gap it produced rather than left in the request. On a
-    genuinely nonlinear model the gap must fall monotonically as steps rise; a
-    gap that did not would mean the step count buys nothing and the number is
-    decorative."""
+    reported beside the gap it produced rather than left in the request. The
+    gap must fall monotonically as steps rise while there is anything left to
+    resolve; a gap that did not would mean the step count buys nothing and the
+    number is decorative.
+
+    WHILE THERE IS ANYTHING LEFT TO RESOLVE is the whole of the fix here. This
+    asserted a bare `sorted(reverse=True)` over four rungs and failed CI on a
+    Linux runner with `[3.689976, 0.017981, 0.0, 1e-06]` — the last two are
+    zero and one ULP of a quantity whose ULP is one, so their ORDER is a
+    property of that machine's BLAS and of nothing this repo controls. It
+    passed on Windows and macOS by luck of which four rungs it sampled.
+
+    So the claim is split in two, and both halves are real:
+
+      above the floor   the gap falls, rung after rung
+      at or below it    it never climbs back out
+
+    The second half is the one that would catch a genuine regression late in
+    the ladder — a gap that grew from 3 ULP to 300 is the approximation coming
+    apart, and it is still caught.
+    """
+    import torch
+
     from modelmri import gradients
 
     model = ToyLM("tanh")
-    gaps = [
-        abs(
-            gradients.integrated_gradients(
-                model,
-                tok,
-                ids,
-                baseline="zero",
-                target_kind="logit",
-                steps=n,
-                on_gap="report",
-            ).completeness.gap
-        )
-        for n in (2, 8, 32, 128)
+    ladder = (2, 8, 32, 128)
+    runs = [
+        gradients.integrated_gradients(
+            model,
+            tok,
+            ids,
+            baseline="zero",
+            target_kind="logit",
+            steps=n,
+            on_gap="report",
+        ).completeness
+        for n in ladder
     ]
-    assert gaps == sorted(gaps, reverse=True), gaps
+    gaps = [abs(c.gap) for c in runs]
+
+    # The endpoints do not depend on the step count, so one move underlies the
+    # whole ladder — and if that stopped being true the ULP below would be
+    # measured against the wrong quantity.
+    moves = {c.measured_delta for c in runs}
+    assert len(moves) == 1, f"the ladder is not one move: {moves}"
+    floor = abs(moves.pop()) * torch.finfo(torch.float32).eps * GAP_FLOOR_ULP
+    assert floor > 0, "a move of zero has no ULP to measure a gap against"
+
+    resolving = [g for g in gaps if g > floor]
+    assert len(resolving) >= 2, (
+        f"nothing above the {floor:.3e} floor to test descent on: {gaps}"
+    )
+    assert resolving == sorted(resolving, reverse=True), (gaps, floor)
+    # Everything after the first rung that reached the floor stays there.
+    assert all(g <= floor for g in gaps[len(resolving) :]), (gaps, floor)
     assert gaps[0] > 10 * gaps[-1], gaps
+
+
+def test_a_gap_at_its_own_last_bit_is_published_as_a_gap_and_not_as_zero():
+    """`round(gap, 6)` stored a measured 4.8e-07 as `-0.0`.
+
+    Which is this project's central prohibition arriving through a rounding
+    call, and here it is worse than usual: `gap` is the number that says
+    whether the attributions are a decomposition of what happened, so a
+    fabricated zero reads as "they add up exactly" — the strongest claim the
+    field can make — under a run that never measured it. The negative zero
+    came free with it, and renders as `-0` in the browser.
+
+    The ladder in `test_the_gap_shrinks_as_the_step_count_rises` reaches this
+    size at 64 steps on a real fixture. Pinned here against `_completeness`
+    directly so it does not depend on which rung a given machine's arithmetic
+    lands on.
+    """
+    from modelmri import gradients
+
+    tiny = -4.768372e-07
+    move = 5.084706
+    got = gradients._completeness(
+        steps=64,
+        sum_of_attributions=move - tiny,
+        measured_delta=move,
+        gap=tiny,
+        endpoint_floor=0.0,
+    )
+    assert got.gap != 0.0, "a measured gap was published as no gap at all"
+    # And with its sign intact rather than as a negative zero.
+    assert got.gap < 0, got.gap
+    assert abs(got.gap - tiny) < 1e-8, got.gap
+
+    # THE FIELD AND THE SENTENCE ARE ONE QUANTITY. `fmt.py` exists because
+    # they were once two, and a payload that says 4.8e-07 beside a sentence
+    # saying -0.000000 is that bug again.
+    assert f"a gap of {got.gap}" in got.sentence, got.sentence
+    assert "0.000000" not in got.sentence, got.sentence
 
 
 def test_a_gap_that_is_a_large_share_of_the_delta_is_refused(ids, tok):

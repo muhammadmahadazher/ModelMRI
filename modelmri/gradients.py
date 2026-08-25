@@ -148,6 +148,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .errors import BadRequest, Refusal
+from .fmt import measured as _measured
+from .fmt import measured_value as _measured_value
 
 # The three points the path may start from. Named, never inferred: see the
 # module docstring. "zero" is the literature's default and is the only one that
@@ -1198,10 +1200,17 @@ def _completeness(
                 f"or {share:.2%} of the move. The attributions do not add up "
                 f"to what happened, so they are not a decomposition of it."
             )
+        # `_measured` on the gap and not on the other two. The gap is the one
+        # of the three that can legitimately be at its own last bit — MEASURED
+        # on the tanh fixture, it falls to 0.79 ULP of the move by 64 steps —
+        # and `{:.6f}` printed those runs as "a gap of -0.000000", which says
+        # the attributions add up exactly. The sum and the move are O(1) or
+        # larger by construction; a run where they are not is `undefined`
+        # above and never reaches this line.
         sentence = (
             f"Completeness: the attributions sum to {sum_of_attributions:.6f} "
             f"against a measured move of {measured_delta:.6f} from baseline to "
-            f"input, a gap of {gap:.6f} — {tail}"
+            f"input, a gap of {_measured(gap, 6)} — {tail}"
         )
 
     return Completeness(
@@ -1209,7 +1218,7 @@ def _completeness(
         rule=RULE,
         sum_of_attributions=round(sum_of_attributions, 6),
         measured_delta=round(measured_delta, 6),
-        gap=round(gap, 6),
+        gap=_measured_value(gap, 6),
         gap_share=None if share is None else round(share, 6),
         endpoint_floor=round(endpoint_floor, 9),
         verdict=verdict,
