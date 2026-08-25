@@ -151,6 +151,36 @@ SCAN_WITH_A_TRAP = {
 
 EMPTY_SCAN = {"models": [], "roots": ["/cache"], "truncated": False}
 
+# A server holding no model, stubbed for the same reason the scan is stubbed:
+# the assertion has to be DECIDABLE. Every check below asks what the button
+# does with a SUGGESTION, and a suggestion is only ever consulted when nothing
+# is loaded -- a server that already holds a model outranks it, correctly, and
+# the case at the bottom of this section is the one that pins that.
+#
+# This is here because it cost a real detour. Run against a maintainer's own
+# server with a model loaded, two checks here went red reading `took
+# ['Qwen/Qwen2.5-0.5B-Instruct', 'Qwen/Qwen3-1.7B']` -- which is the box
+# working exactly as designed, reported as the box being broken. A gate whose
+# failure names neither the cause nor a next step sends its reader looking for
+# a bug in the wrong file. Stubbing the premise means these checks answer the
+# same way on a laptop mid-session as on a cold CI runner.
+NO_MODEL_YET = {
+    "app": "modelmri",
+    "version": "test",
+    "model": {
+        "loaded": False,
+        "hf_id": None,
+        "device": "cpu",
+        "dtype": None,
+        "n_params": None,
+        "instruct": None,
+        "gguf": None,
+        "n_layers": None,
+    },
+    "image": {"loaded": False, "repo": "", "device": "", "family": ""},
+    "vla": {"loaded": False, "repo": None, "device": None},
+}
+
 
 async def model_box_section(browser, base: str) -> None:
     """The model button names something this machine actually holds.
@@ -184,6 +214,10 @@ async def model_box_section(browser, base: str) -> None:
         """
         page = await browser.new_page(viewport={"width": 1280, "height": 900})
         await page.add_init_script(WATCH_MODEL_BOX)
+        # Registered FIRST so a caller can override it: Playwright matches the
+        # most recently registered handler, so the loaded-model case below
+        # supplies its own `/api/session` and gets it.
+        await page.route("**/api/session", answers(NO_MODEL_YET))
         for pattern, handler in routes.items():
             await page.route(pattern, handler)
         await page.goto(base, wait_until="domcontentloaded")
@@ -632,7 +666,16 @@ async def main() -> int:
         # this feature can lie are about interpretation rather than arithmetic.
         rank_btn = page.locator("button", has_text="Rank heads")
         if await rank_btn.count() == 0:
-            skip("head ranking", "no model loaded on this server")
+            # NOT "no model loaded", which is what this used to say and is a
+            # different fact: `Playground` mounts the attention section on
+            # `epoch > 0 || replay`, and `epoch` only moves when something has
+            # been generated. On a server holding a model but nothing else,
+            # the old wording sent its reader to check the model.
+            skip(
+                "head ranking",
+                "no generation on this server — the attention section mounts "
+                "on `epoch > 0`; generate once, or open a .mri, then re-run",
+            )
         else:
             await rank_btn.first.click()
             try:

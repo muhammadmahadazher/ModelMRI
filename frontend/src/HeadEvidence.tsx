@@ -7,6 +7,7 @@ import {
 } from "./api";
 import { measured } from "./measured";
 import Disclosure from "./Disclosure";
+import CorpusPicker from "./CorpusPicker";
 
 /** What this head does on YOUR text — beside what it did on one prompt.
  *
@@ -38,6 +39,12 @@ export default function HeadEvidencePanel({
   disabled?: boolean;
 }) {
   const [text, setText] = useState("");
+  // An id from `GET /api/corpus/available`, or a path. The route takes either
+  // one under the same `file` field, and it takes precedence over the pasted
+  // box on the SERVER — `head_evidence` overwrites `texts` when `file` is set
+  // — so the box has to be visibly out of play here rather than quietly
+  // ignored, or a reader watches their pasted lines not be read.
+  const [corpusFile, setCorpusFile] = useState("");
   const [readAttention, setReadAttention] = useState(true);
   const [out, setOut] = useState<Evidence | null>(null);
   const [price, setPrice] = useState<string>("");
@@ -48,6 +55,8 @@ export default function HeadEvidencePanel({
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
+  const file = corpusFile.trim();
+  const readable = file !== "" || lines.length > 0;
 
   async function quote() {
     if (!lines.length) return;
@@ -61,14 +70,16 @@ export default function HeadEvidencePanel({
   }
 
   async function run() {
-    if (!lines.length || busy) return;
+    if (!readable || busy) return;
     setBusy(true);
     setErr("");
     try {
       setOut(
         await headEvidence({
-          texts: lines,
-          label: "pasted text",
+          // No `label` on the file arm: `load_corpus` names the corpus from
+          // the file it opened, and passing "pasted text" alongside would put
+          // our word for it on somebody else's measurement.
+          ...(file ? { file } : { texts: lines, label: "pasted text" }),
           layer,
           head,
           read_attention: readAttention,
@@ -105,8 +116,18 @@ export default function HeadEvidencePanel({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => void quote()}
-        disabled={disabled}
+        /* Disabled, not merely overridden. The server reads the file and
+           discards `texts` when both arrive, so leaving this typeable would
+           let a reader edit lines that were never going to be read. */
+        disabled={disabled || file !== ""}
         spellCheck={false}
+      />
+
+      <CorpusPicker
+        id="he-corpus"
+        value={corpusFile}
+        onChange={setCorpusFile}
+        disabled={disabled || busy}
       />
 
       <div className="row">
@@ -125,27 +146,58 @@ export default function HeadEvidencePanel({
         <button
           className="ghost sm"
           onClick={() => void run()}
-          disabled={disabled || busy || !lines.length}
+          disabled={disabled || busy || !readable}
         >
-          {busy ? "reading…" : `Read ${lines.length || "…"} line(s)`}
+          {busy
+            ? "reading…"
+            : file
+              ? "Read that corpus"
+              : `Read ${lines.length || "…"} line(s)`}
         </button>
-        {/* Priced before it is spent, like every other sweep here. */}
-        {price && <span className="meta">{price.split(".")[0]}.</span>}
+        {/* Priced before it is spent, like every other sweep here. A FILE
+            cannot be priced from here: `/cost` prices `n_sequences`, and how
+            many sequences a file holds is not known until it is opened. That
+            is said rather than left blank — a missing price beside a control
+            that quotes one everywhere else reads as free. */}
+        {file ? (
+          <span className="meta">
+            {readAttention ? "two forward passes" : "one forward pass"} per
+            sequence — but how many sequences that file holds is not known
+            until it is opened, so there is no total here.
+          </span>
+        ) : (
+          price && <span className="meta">{price.split(".")[0]}.</span>
+        )}
       </div>
 
       {err && <div className="hint err">{err}</div>}
 
       {corpus && !stale && (
         <div className="ov-readout">
+          {/* THE ANSWER, at answer size. This count used to sit in an 11.5px
+              pill among four others, which on a page where nothing is larger
+              than the 15px body means the one figure the sweep exists to
+              produce looked exactly like the caveats beside it.
+
+              THE COUNT AND NOT THE SHARE. `n_wrote` alone says nothing — 200
+              writes is a busy head over 300 positions and a silent one over
+              20,000 — so the denominator travels in `.answer-of`, at meta
+              size but never dropped. A share would have hidden both numbers
+              behind a percentage the reader cannot check. */}
+          <p className={`answer${corpus.n_wrote === 0 ? " unmeasured" : ""}`}>
+            <span className="answer-n">
+              {corpus.n_wrote === 0
+                ? "wrote nowhere"
+                : corpus.n_wrote.toLocaleString()}
+            </span>
+            <span className="answer-of">
+              {corpus.n_wrote === 0
+                ? `not one of the ${corpus.n_positions.toLocaleString()} positions in this corpus carried a write from this head — which is a measurement, not a failed run`
+                : `of ${corpus.n_positions.toLocaleString()} positions carried a write · largest ${measured(corpus.write_norm_max, 3)} · median ${measured(corpus.write_norm_median, 3)}`}
+            </span>
+          </p>
+
           <div className="row">
-            <span className="pill">
-              {corpus.n_wrote.toLocaleString()} of{" "}
-              {corpus.n_positions.toLocaleString()} positions carried a write
-            </span>
-            <span className="meta">
-              largest {measured(corpus.write_norm_max, 3)} · median{" "}
-              {measured(corpus.write_norm_median, 3)}
-            </span>
             {corpus.truncated && (
               <span className="meta warn">
                 the corpus was cut — a larger write further in is not ruled out

@@ -2691,6 +2691,75 @@ export interface Discovery {
 export const getDiscovered = () =>
   fetch("/api/models/discovered").then((r) => json<Discovery>(r));
 
+// ------------------------------------- the corpora this machine can read
+
+/** One .txt or .jsonl the server walked to, named by an id the SERVER minted.
+ *
+ *  `root` and `relative` rather than one absolute path, and that split is
+ *  deliberate on the server's side: an absolute path is a fact about the
+ *  machine and this list is rendered in a browser, while two files sharing a
+ *  name still have to be told apart. The pair does both.
+ */
+export interface AvailableCorpus {
+  id: string;
+  name: string;
+  /** Which corpus root it was found under. */
+  root: string;
+  /** Where it sits below that root. */
+  relative: string;
+  bytes: number;
+}
+
+/** What `GET /api/corpus/available` found, and every bound it stopped on.
+ *
+ *  NOTHING HERE IS NULLABLE, and that is a property of the route rather than
+ *  an omission: `corpus_index.Listing.to_dict` computes every one of these
+ *  fields on every call, including the two `truncated_*` flags, which are
+ *  `False` when the walk finished rather than absent. So there is no field on
+ *  this payload where "unknown" and 0 could be confused — the one place that
+ *  distinction has to be defended is the RENDER, where a listing that failed
+ *  to arrive must not read as a machine with no corpora on it.
+ */
+export interface AvailableCorpora {
+  corpora: AvailableCorpus[];
+  /** The directories the walk started from — the answer to "why is my file
+   *  not in this list", so it is shown rather than kept for the sentence. */
+  roots: string[];
+  n_found: number;
+  n_dirs_read: number;
+  /** True when the listing stopped on its file cap. `n_found` is then the cap
+   *  and NOT how many corpora this disk holds; a file missing from the list is
+   *  not a file missing from the machine, and the panel has to say so or a
+   *  reader concludes their corpus is gone. */
+  truncated_files: boolean;
+  /** True when the walk stopped after reading `n_dirs_read` directories, so
+   *  part of the tree was never looked at at all. */
+  truncated_dirs: boolean;
+  max_depth: number;
+  /** The suffixes that are listed — `.txt` and `.jsonl`, the two
+   *  `load_prompts` reads. A `.csv` on disk is absent for a reason. */
+  suffixes: string[];
+  means: string;
+}
+
+/** List the corpora on this machine, so one can be picked instead of typed.
+ *
+ *  Refused in the static builds like every other route that reads this
+ *  machine's disk: there is no filesystem behind a page on GitHub Pages, and
+ *  a 404 inside the picker would read as "the corpus list is broken" rather
+ *  than "there is nothing here to list". The typed field beside the picker is
+ *  untouched by this — the sweep routes take either an id from this listing or
+ *  a path, and each says for itself what it cannot do.
+ */
+export const getAvailableCorpora = () =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Listing the corpora on this machine means reading its directories — " +
+          "up to four levels below each corpus root — and a browser cannot " +
+          "see a filesystem.",
+      )
+    : fetch("/api/corpus/available").then((r) => json<AvailableCorpora>(r));
+
 export const getOllama = () => fetch("/api/ollama").then((r) => json<OllamaState>(r));
 
 export interface TraceSummary {

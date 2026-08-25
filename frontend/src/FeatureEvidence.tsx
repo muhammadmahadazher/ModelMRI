@@ -2,6 +2,7 @@ import { CSSProperties, useEffect, useState } from "react";
 import { percent } from "./measured";
 import { errorText, FeatureEvidence, featureEvidence } from "./api";
 import ReceiptLine from "./ReceiptLine";
+import CorpusPicker from "./CorpusPicker";
 
 /**
  * What one feature fires on — IN YOUR TEXT — and what it promotes.
@@ -101,19 +102,21 @@ export default function FeatureEvidencePanel({
             }
           />
         </label>
-        <label>
-          <span className="meta">…or a local .txt / .jsonl</span>
-          {/* A RELATIVE example. An absolute one names somebody's machine —
-              the drive letter that was here was mine, and the leak test that
-              guards every shipped file caught it rather than review. */}
-          <input
-            value={file}
-            onChange={(e) => setFile(e.target.value)}
-            spellCheck={false}
-            placeholder="notes.txt — or a path to one"
-          />
-        </label>
       </div>
+
+      {/* The same control the two attention/neuron sweeps carry, and BELOW the
+          textarea rather than beside it: this used to be a bare path field in
+          the second cell of a two-column grid, and a picker is a stack of its
+          own. The field ALREADY took an id — `load_corpus` resolves through
+          `corpus_index.resolve_any`, which accepts either — but there was no
+          way to find one out from the page, which left the id half of the
+          route unreachable to anyone who had not read the source. */}
+      <CorpusPicker
+        id="fe-corpus"
+        value={file}
+        onChange={setFile}
+        disabled={busy}
+      />
 
       <div className="row" style={{ margin: "8px 0" }}>
         <button

@@ -5241,8 +5241,12 @@ main > [id^="sec-"] {
   border: 1px solid color-mix(in oklab, var(--color-feat) 30%, transparent);
   background: color-mix(in oklab, var(--color-feat) 5%, transparent);
 }
-.fe-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
-@media (max-width: 720px) { .fe-inputs { grid-template-columns: 1fr; } }
+/* One column, not two. The second cell used to hold a bare path field; that
+   control is now `CorpusPicker`, which is a stack of its own (a button, a
+   select, the box, and whatever caps the walk hit) and reads as a squeezed
+   half-panel beside a textarea. It sits BELOW instead — the same order the
+   head and neuron sweeps put it in — so the textarea gets the full measure. */
+.fe-inputs { display: grid; grid-template-columns: 1fr; gap: 10px; margin-top: 8px; }
 .fe-inputs label { display: grid; gap: 3px; align-content: start; min-width: 0; }
 .fe-inputs textarea, .fe-inputs input {
   width: 100%; padding: 7px 9px; border-radius: 7px;
@@ -9024,4 +9028,134 @@ main > .panel[data-mri-group-label]::after {
    rules elsewhere in the file, which otherwise override it. */
 .fold-body[hidden] {
   display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   CorpusPicker — the list of corpora this machine has, beside the box you can
+   still type a path into.
+
+   Laid out as a column rather than a row on purpose: the two controls are
+   ALTERNATIVES to the pasted-text box above them, and side by side they read
+   as two fields that both want filling in. Stacked, the select sits directly
+   over the box it fills, which is the relationship. */
+.corpus-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin: var(--sp-2) 0;
+}
+.corpus-picker .cp-head {
+  /* The label wraps, the button does not — a "list what's here" that has
+     collapsed to two characters on a narrow panel is not a control. */
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+.corpus-picker .cp-head label {
+  flex: 1 1 12em;
+  min-width: 0;
+}
+.cp-select,
+.cp-path {
+  width: 100%;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  background: var(--color-card);
+  color: var(--color-ink);
+}
+.cp-select:disabled,
+.cp-path:disabled {
+  color: var(--color-mute);
+}
+/* 500 files is a normal answer here — the walk's own cap — so the dropdown has
+   to stay usable at that length rather than assume a handful. */
+.cp-select {
+  max-width: 100%;
+}
+.cp-select optgroup {
+  font-family: var(--font-sans);
+  color: var(--color-mute);
+}
+/* An id is a hash and a path can be long; both wrap rather than being clipped,
+   because a truncated path is a reader checking the wrong file. */
+.cp-chosen,
+.cp-means {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cp-chosen code {
+  font-size: var(--t-xs);
+}
+/* The route's paragraph, set apart from the caps above it — those are the
+   short sentences a reader acts on, this is the background they sit in. */
+.cp-means {
+  border-left: 2px solid var(--line-soft);
+  padding-left: var(--sp-2);
+}
+
+/* ---------------------------------------------------------------------------
+   .answer — the one number a panel exists to produce.
+
+   MEASURED, on the live page, before writing a line of this: every panel title
+   renders at 13.5px and the largest text inside any panel is the 15px body.
+   Nothing is bigger than anything else. A reader arriving at a finished
+   measurement has to READ the panel to find its result, because the result is
+   set at the same size as the prose explaining it, the controls that produced
+   it and the caveats beside it.
+
+   So this is a landing point, and it is deliberately NOT a "hero number":
+
+     the caveat does not shrink   `.answer-of` sits on the same baseline and
+                                  carries the denominator, the comparison and
+                                  whatever the number does not mean. Making
+                                  the scalar large while dropping its context
+                                  is how a dashboard lies, and it is the exact
+                                  thing every panel here already refuses.
+     one per panel                a second `.answer` means the panel answers
+                                  with two things, which means it should be
+                                  two panels or a table.
+     never a big zero             `.answer.unmeasured` sets the slot in SANS
+                                  at body size for the sentence that says why
+                                  there is no number. An unmeasured quantity
+                                  rendered at 20px as `0` is the loudest thing
+                                  on the page being false.
+
+   Mono and `--num` because these are digits that get compared between runs;
+   a proportional face makes 1.1 and 8.8 different widths and the eye reads a
+   change that is not there. */
+.answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 10px 0 6px;
+}
+.answer-n {
+  font-family: var(--font-mono);
+  font-size: var(--t-xl);
+  font-feature-settings: var(--num);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  color: var(--color-ink);
+}
+/* `flex: 1 1 12em` rather than a fixed width: on a narrow panel it drops to
+   its own line under the number instead of forcing the row wider, which is
+   what the 375px overflow check is there to catch. */
+.answer-of {
+  flex: 1 1 12em;
+  min-width: 0;
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  color: var(--color-mute);
+  overflow-wrap: anywhere;
+}
+.answer.unmeasured .answer-n {
+  font-family: var(--font-sans);
+  font-size: var(--t-md);
+  letter-spacing: 0;
+  color: var(--color-mute);
 }

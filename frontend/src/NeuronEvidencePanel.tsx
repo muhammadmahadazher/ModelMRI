@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { errorText, getSession, NeuronEvidence, neuronEvidence } from "./api";
 import { measured } from "./measured";
 import Disclosure from "./Disclosure";
+import CorpusPicker from "./CorpusPicker";
 
 /** A string as CODE POINTS, which is the unit the route counts offsets
  *  in. `Array.from` is the one string split that respects surrogate
@@ -62,6 +63,11 @@ export default function NeuronEvidencePanel({
   const [text, setText] = useState(
     "The Eiffel Tower is in Paris.\nThe Colosseum is in Rome.\nBerlin is the capital of Germany.",
   );
+  // An id from `GET /api/corpus/available`, or a path — `resolve_any` takes
+  // either under the one `file` field. It BEATS the box above on the server
+  // (`neuron_evidence` reads the file and never looks at `texts`), so the box
+  // is disabled while this holds something rather than silently ignored.
+  const [corpus, setCorpus] = useState("");
   const [layer, setLayer] = useState(0);
   const [neuron, setNeuron] = useState(0);
   const [data, setData] = useState<NeuronEvidence | null>(null);
@@ -77,13 +83,20 @@ export default function NeuronEvidencePanel({
     .split("\n")
     .map((t) => t.trim())
     .filter(Boolean);
+  const file = corpus.trim();
+  const readable = file !== "" || texts.length > 0;
 
   async function run() {
-    if (busy || texts.length === 0) return;
+    if (busy || !readable) return;
     setBusy(true);
     setErr("");
     try {
-      const got = await neuronEvidence({ texts, layer, neuron, top_k: 8 });
+      const got = await neuronEvidence({
+        ...(file ? { file } : { texts }),
+        layer,
+        neuron,
+        top_k: 8,
+      });
       setReadLayer(layer);
       setData(got);
     } catch (e) {
@@ -114,8 +127,18 @@ export default function NeuronEvidencePanel({
         value={text}
         onChange={(e) => setText(e.target.value)}
         spellCheck={false}
-        disabled={disabled || busy}
+        /* Out of play, not overridden. The route reads the file and never
+           looks at `texts` when both are sent, so a typeable box beside a
+           chosen corpus would invite edits that are never read. */
+        disabled={disabled || busy || file !== ""}
         aria-label="corpus, one sequence per line"
+      />
+
+      <CorpusPicker
+        id="ne-corpus"
+        value={corpus}
+        onChange={setCorpus}
+        disabled={disabled || busy}
       />
 
       <div className="row">
@@ -155,9 +178,18 @@ export default function NeuronEvidencePanel({
         <button
           className="ghost sm"
           onClick={() => void run()}
-          disabled={disabled || busy || texts.length === 0}
+          disabled={disabled || busy || !readable}
         >
-          {busy ? "reading…" : data ? "read again" : `read ${texts.length} sequence${texts.length === 1 ? "" : "s"}`}
+          {busy
+            ? "reading…"
+            : data
+              ? "read again"
+              : file
+                ? /* Not a sequence count: how many sequences a file holds is
+                     not known until it is opened, and a number invented here
+                     would be the one figure on the panel nothing measured. */
+                  "read that corpus"
+                : `read ${texts.length} sequence${texts.length === 1 ? "" : "s"}`}
         </button>
       </div>
 
@@ -169,22 +201,58 @@ export default function NeuronEvidencePanel({
               been handed a monosemantic story about a polysemantic unit. */}
           <div className="ne-caveat">{data.polysemantic}</div>
 
+          {/* THE ANSWER, at answer size. MEASURED before this was written:
+              every panel title on this page renders at 13.5px and the largest
+              text inside any panel is the 15px body, so a finished measurement
+              had to be READ FOR rather than seen. This is the one scalar the
+              panel exists to produce, and it is the only thing here set larger
+              than its own prose — the caveat beside it is not shrunk to make
+              room, because a big number with its context dropped is the exact
+              move every other panel here refuses.
+
+              AND THE DENOMINATOR IS `n_finite`, NOT `n_tokens`. `neurons.py`
+              carries `n_finite` specifically so no reader assumes the corpus
+              size: a neuron whose column overflowed on some tokens fired on
+              some fraction of the tokens where it produced A NUMBER. This line
+              used to read "of {n_tokens} tokens" while the rate had been
+              divided by `n_finite` — a different figure whenever anything was
+              non-finite, and the panel printed the non-finite count two lines
+              below, so one screen said both things. */}
+          <p
+            className={`answer${data.firing_rate === null ? " unmeasured" : ""}`}
+          >
+            {data.firing_rate === null ? (
+              <>
+                <span className="answer-n">no firing rate</span>
+                <span className="answer-of">
+                  nothing this neuron produced over these {data.n_tokens}{" "}
+                  tokens was finite, so there is nothing to divide. That is a
+                  different statement from a rate of zero, which is why this is
+                  not one.
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="answer-n">
+                  {measured(data.firing_rate * 100, 1)}%
+                </span>
+                <span className="answer-of">
+                  of the {data.n_finite.toLocaleString()} token
+                  {data.n_finite === 1 ? "" : "s"} where this neuron produced a
+                  readable number
+                  {data.layer_median_firing_rate !== null &&
+                    ` · this layer's median is ${measured(
+                      data.layer_median_firing_rate * 100,
+                      1,
+                    )}%`}
+                </span>
+              </>
+            )}
+          </p>
+
           <div className="row ne-chips">
             <span className="pill">
               neuron {data.neuron} · layer {readLayer}
-            </span>
-            <span className="pill">
-              {/* Never one without the other. */}
-              {data.firing_rate === null
-                ? "firing rate not measured"
-                : `fires on ${measured(data.firing_rate * 100, 1)}% of ${data.n_tokens} tokens`}
-              {data.layer_median_firing_rate !== null && (
-                <span className="meta">
-                  {" "}
-                  · this layer's median is{" "}
-                  {measured(data.layer_median_firing_rate * 100, 1)}%
-                </span>
-              )}
             </span>
             {data.n_nonfinite > 0 && (
               <span className="meta warn">

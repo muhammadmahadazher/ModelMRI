@@ -126,6 +126,11 @@ EXEMPT = {
         "runs YOUR text through a live model and taps one MLP layer, once per "
         "sequence; the corpus is the reader's and so is the answer"
     ),
+    "/api/corpus/available": (
+        "walks this machine's corpus roots and lists the .txt and .jsonl "
+        "under them; a browser cannot see a filesystem, and a baked list "
+        "would be a claim about somebody else's disk"
+    ),
     "/api/graph": "opens a circuit-tracer `.pt` from disk, which a page cannot see",
     "/api/gguf": "reads a GGUF from disk; the browser cannot see the filesystem",
     "/api/gguf/plan": "reads a GGUF header from disk to project its memory cost",

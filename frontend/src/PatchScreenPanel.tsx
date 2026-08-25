@@ -186,16 +186,33 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
           {/* THE AGREEMENT, ABOVE THE RANKING IT QUALIFIES. */}
           {agree && (
             <div className="ps-agreement">
-              <div className="row">
-                <span className="pill">
-                  {agree.verified} site
-                  {agree.verified === 1 ? "" : "s"} patched for real
-                </span>
-                <span className="pill">
+              {/* THE ANSWER, at answer size. The whole panel asks one
+                  question — does the cheap screen rank the sites the way the
+                  exact grid does — and this coefficient is the reply. It sat
+                  in an 11.5px pill between two others, on a page where the
+                  largest text in any panel is the 15px body, so the reply
+                  looked exactly like the caveats qualifying it.
+
+                  The null arm is `.unmeasured` and carries the route's own
+                  `spearman_reason`: an unmeasurable correlation printed as a
+                  number would be the loudest thing here and false. */}
+              <p
+                className={`answer${agree.spearman === null ? " unmeasured" : ""}`}
+              >
+                <span className="answer-n">
                   {agree.spearman === null
                     ? "no rank correlation"
-                    : `Spearman ${measured(agree.spearman, 3)}`}
+                    : measured(agree.spearman, 3)}
                 </span>
+                <span className="answer-of">
+                  {agree.spearman === null
+                    ? (agree.spearman_reason ??
+                      `over the ${agree.verified} site${agree.verified === 1 ? "" : "s"} patched for real`)
+                    : `Spearman, screen against exact grid, over the ${agree.verified} site${agree.verified === 1 ? "" : "s"} patched for real`}
+                </span>
+              </p>
+
+              <div className="row">
                 {agree.sign_flips > 0 && (
                   <span className="meta warn">
                     {agree.sign_flips} sign flip
@@ -212,9 +229,6 @@ export default function PatchScreenPanel({ disabled }: { disabled?: boolean }) {
                   </span>
                 )}
               </div>
-              {agree.spearman === null && agree.spearman_reason && (
-                <div className="meta">{agree.spearman_reason}</div>
-              )}
               <div className="hint">{agree.means}</div>
             </div>
           )}
