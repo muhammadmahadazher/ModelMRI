@@ -833,6 +833,79 @@ async def main() -> int:
                 f"no horizontal overflow at {width}px", overflow <= 0, f"{overflow}px"
             )
 
+        # ------------------------------------------------------------------
+        # EVERY ROW ON ONE CENTRE LINE, AND THE RAIL BESIDE THEM
+        #
+        # `main > *` centres each child with `margin-inline: auto`. Any rule
+        # that later sets the `margin` SHORTHAND on one of those children
+        # resets that to 0 and pins the row to the left. Nothing errors and no
+        # existing check notices: there is no overflow, because the row is
+        # narrower than the viewport -- it is just in the wrong place.
+        #
+        # Three rules had done it (`.hero`, `.cat-nav`, `.session-open-row`),
+        # and the consequence was not cosmetic. The section rail is `position:
+        # fixed` in the gutter that centring creates, so the pinned rows slid
+        # underneath it: at 1920px the rail printed straight through the
+        # category bar and the "open a shared analysis" button. Reported from a
+        # screenshot, not by any gate.
+        #
+        # Both halves are measured here because either alone would have missed
+        # it: the widths BELOW 1440 were fine, and the overflow was zero
+        # throughout.
+        print("\nthe page lines up")
+        for width in (1200, 1440, 1700, 1920):
+            await page.set_viewport_size({"width": width, "height": 900})
+            await page.wait_for_timeout(300)
+            laid = await page.evaluate(
+                """() => {
+                  const rows = [];
+                  for (const el of document.querySelectorAll('main > *')) {
+                    const cs = getComputedStyle(el);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+                    // Screen-reader helpers are 1px boxes parked off-layout.
+                    if (cs.position === 'absolute' || cs.position === 'fixed') continue;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 8 || r.height < 8) continue;
+                    rows.push({
+                      what: (el.className || el.tagName).toString()
+                              .split(' ').slice(0, 2).join('.').slice(0, 28),
+                      centre: Math.round(r.left + r.width / 2),
+                      rect: [r.left, r.top, r.right, r.bottom],
+                    });
+                  }
+                  const rail = document.querySelector('.secnav');
+                  let hit = null;
+                  if (rail) {
+                    const q = rail.getBoundingClientRect();
+                    for (const row of rows) {
+                      const [l, t, rt, b] = row.rect;
+                      const ox = Math.min(q.right, rt) - Math.max(q.left, l);
+                      const oy = Math.min(q.bottom, b) - Math.max(q.top, t);
+                      if (ox > 1 && oy > 1) { hit = {what: row.what, by: Math.round(ox)}; break; }
+                    }
+                  }
+                  const cs2 = rows.map(r => r.centre).sort((a, b) => a - b);
+                  return {
+                    n: rows.length,
+                    spread: cs2.length ? cs2[cs2.length - 1] - cs2[0] : 0,
+                    hit,
+                  };
+                }"""
+            )
+            # 2px covers sub-pixel rounding on a fractional column width.
+            check(
+                f"every row shares one centre line at {width}px",
+                laid["n"] > 0 and laid["spread"] <= 2,
+                f"{laid['n']} rows, centres spread {laid['spread']}px",
+            )
+            check(
+                f"the section rail sits beside the page at {width}px",
+                laid["hit"] is None,
+                "clear"
+                if laid["hit"] is None
+                else f"runs {laid['hit']['by']}px into {laid['hit']['what']}",
+            )
+
         await browser.close()
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed, {len(SKIP)} sections skipped")

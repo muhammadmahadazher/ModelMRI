@@ -5138,6 +5138,35 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="robot-finding.mri"'},
         )
 
+    @app.get("/api/diff/replay")
+    def diff_replay():
+        """The model comparison inside an opened `.mri`, or nothing.
+
+        `runtime._model_diff_for_export` has written this section into every
+        export that had a comparison behind it, and `session._model_diff` has
+        validated it -- with two rules of its own about what a diff may claim.
+        Nothing read it back. Unlike the head labels, which
+        `/api/attention/types` serves from a recording, this section had no
+        reader at all on any surface.
+
+        A SEPARATE ROUTE FROM `/api/diff/models`, which is a POST that RUNS a
+        comparison against two checkpoints on this disk. A recording has
+        neither, and a recipient with no weights is exactly who this is for.
+
+        AND IT NAMES ITS OWN TWO MODELS. `session._model_diff` requires
+        `model_a` and `model_b` precisely because a diff can ride in a file
+        about a third model -- so this is served on its own rather than folded
+        into `/api/session`, where it would sit beside the file's `model_id`
+        and be read as being about it.
+
+        `available: False` is a state and not an error: most sessions carry no
+        comparison.
+        """
+        replay = runtime.replay
+        if replay is None or not replay.has_model_diff():
+            return {"available": False}
+        return {"available": True, **replay.model_diff}
+
     @app.get("/api/vla/replay")
     def vla_replay():
         """The robot finding inside an opened `.mri`, or nothing.

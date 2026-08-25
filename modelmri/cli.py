@@ -516,6 +516,43 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         "layers_present": sorted({li for li, _ in slices}),
         "heads_present": sorted({hi for _, hi in slices}),
         "lens_rows": len(parsed.lens),
+        # A comparison of two models, which need NOT be this file's model.
+        # `session._model_diff` requires both names for that reason, so both
+        # are printed: a diff read as being about the model named at the top
+        # of this output is the one confusion this section can cause.
+        "model_diff": (
+            {
+                "present": True,
+                "a": parsed.model_diff.get("model_a", ""),
+                "b": parsed.model_diff.get("model_b", ""),
+                "n_prompts": parsed.model_diff.get("n_prompts"),
+                # The spread, never the median alone -- that is the whole
+                # content of this section.
+                "kl": parsed.model_diff.get("kl") or {},
+                # `None` is a RESULT: the cosine never fell, so these two
+                # checkpoints do not part company anywhere in particular.
+                "consensus_layer": parsed.model_diff.get("consensus_layer"),
+                "consensus_share": parsed.model_diff.get("consensus_share"),
+                "n_heads_moved": len(parsed.model_diff.get("heads") or []),
+            }
+            if parsed.has_model_diff()
+            else {"present": False}
+        ),
+        # Head labels. `/api/attention/types` already serves these from a
+        # recording -- it is `inspect` that said nothing, so a file carrying a
+        # day of labelling work triaged as though it carried none.
+        "head_types": (
+            {
+                "present": True,
+                "labelled": sum(
+                    1 for r in parsed.head_types.get("labels") or [] if r.get("label")
+                ),
+                "rows": len(parsed.head_types.get("labels") or []),
+                "counts": parsed.head_types.get("counts") or {},
+            }
+            if parsed.head_types.get("labels")
+            else {"present": False}
+        ),
         "patch": {
             "present": parsed.has_patch(),
             "components": sorted(parsed.patch.get("grids", {})),
@@ -627,6 +664,45 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         line("", summary["scope"])
     if summary["lens_rows"]:
         line("logit lens", f"{summary['lens_rows']} rows")
+    if summary["head_types"]["present"]:
+        ht = summary["head_types"]
+        # LABELLED of ROWS, never the labelled count alone: "no type detected"
+        # is the finding for most heads, and a bare count reads as coverage.
+        kinds = ", ".join(f"{k} {v}" for k, v in sorted(ht["counts"].items()) if v)
+        line(
+            "head labels",
+            f"{ht['labelled']:,} of {ht['rows']:,} heads labelled"
+            + (f" — {kinds}" if kinds else ""),
+        )
+    if summary["model_diff"]["present"]:
+        md = summary["model_diff"]
+        line("model diff", f"{md['a'] or '?'} -> {md['b'] or '?'}")
+        kl = md["kl"]
+        if kl:
+            # The middle half travels with the median. A median alone is the
+            # single number this whole section exists to avoid printing.
+            line(
+                "  distance",
+                f"median {kl.get('median', 0):.5f} nats, middle half "
+                f"{kl.get('low', 0):.5f}-{kl.get('high', 0):.5f} over "
+                f"{kl.get('n', 0)} prompt(s)",
+            )
+        line(
+            "  diverges",
+            (
+                "nowhere in particular — the cosine never falls on a majority "
+                "of prompts"
+                if md["consensus_layer"] is None
+                else f"at layer {md['consensus_layer']}"
+                + (
+                    f" on {md['consensus_share']:.0%} of prompts"
+                    if isinstance(md["consensus_share"], (int, float))
+                    else ""
+                )
+            ),
+        )
+        if md["n_heads_moved"]:
+            line("  heads", f"{md['n_heads_moved']:,} recorded as moved")
     if summary["patch"]["present"]:
         line("patching", ", ".join(summary["patch"]["components"]))
         line("  clean", summary["patch"]["clean"])

@@ -22,6 +22,7 @@ import GraphPanel from "./GraphPanel";
 import ImagePanel from "./ImagePanel";
 import ImageRunReplay from "./ImageRunReplay";
 import VlaFindingReplay from "./VlaFindingReplay";
+import ModelDiffReplay from "./ModelDiffReplay";
 import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
@@ -432,6 +433,16 @@ export default function App() {
           which is behind `!VIEWER` because it drives a live dataset: this one
           drives nothing, it reads what arrived. */}
       <VlaFindingReplay
+        epoch={resetKey}
+        sessionKey={session.open ? (session.meta?.created_at ?? "open") : ""}
+      />
+      {/* And a comparison of two models somebody ran, on the same terms.
+          `ModelDiffPanel` above is behind `!VIEWER` because it RUNS one
+          against two checkpoints on this disk; this reads a recorded one, so
+          it belongs in both builds. The section can describe two models that
+          are neither of them this file's, which is why it is its own panel
+          rather than a block inside that one. */}
+      <ModelDiffReplay
         epoch={resetKey}
         sessionKey={session.open ? (session.meta?.created_at ?? "open") : ""}
       />

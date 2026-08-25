@@ -258,6 +258,108 @@ def build_robot_fixture() -> bytes:
     return gzip.compress(json.dumps(doc, separators=(",", ":")).encode(), 6)
 
 
+def build_diff_fixture() -> bytes:
+    """A `.mri` carrying a comparison of two models and head labels.
+
+    Neither needs editing to be hostile: the point here is the MOUNT. A route
+    test cannot see a panel that is never rendered, which is how the image run
+    and the robot finding both stayed invisible in the build they were written
+    for.
+    """
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    return session.build(
+        model_id="qwen",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a"],
+        prompt="a",
+        generation="",
+        attention={},
+        n_layers=1,
+        n_heads=1,
+        note="a comparison somebody ran",
+        model_diff={
+            "model_a": "Qwen/Qwen3-1.7B",
+            "model_b": "Qwen/Qwen3-1.7B-finetuned",
+            "prompts": [
+                {
+                    "prompt": "the capital of France is",
+                    "n_tokens": 6,
+                    "mean_kl": 0.031,
+                    "max_kl": 0.24,
+                    "flips": 1,
+                    "first_divergent_layer": 14,
+                    "drop": 0.02,
+                }
+            ],
+            "layers": [],
+            "heads": [],
+            "tokens": [],
+            # A TIGHT spread, so the panel must print the amount rather than
+            # refuse to: low/high within half the median.
+            "kl": {"n": 8, "name": "KL", "median": 0.030, "low": 0.028, "high": 0.032},
+            "n_prompts": 8,
+            # `null` is a RESULT -- the cosine never fell -- and the panel has
+            # to say so rather than print a layer.
+            "consensus_layer": None,
+        },
+        head_types={
+            "labels": [
+                {
+                    "layer": 0,
+                    "head": 0,
+                    "label": "previous-token",
+                    "margin": 4.2,
+                    "null_kind": "repeat",
+                }
+            ],
+            "counts": {"previous-token": 1},
+            "n_layers": 1,
+            "n_heads": 1,
+            "seq_len": 24,
+            "n_sequences": 6,
+            "margin_sigma": 3.0,
+        },
+    )
+
+
+async def diff_side(port: int) -> dict:
+    """Open it in the real viewer and read what landed on screen."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const blob = await (await fetch('./diff.mri')).blob();
+              const file = new File([blob], 'diff.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const served = await (await fetch('/api/diff/replay')).json();
+              const types = await (await fetch('/api/attention/types')).json();
+              const panel = [...document.querySelectorAll('.panel')]
+                .find(p => p.innerText.includes('TWO MODELS COMPARED'));
+              return {
+                served: served.available === true,
+                mounted: !!panel,
+                text: panel ? panel.innerText : '',
+                labelled: types.recorded === true,
+              };
+            }"""
+        )
+        await browser.close()
+        return got
+
+
 async def robot_side(port: int) -> dict:
     """Open that file in the real viewer and read what landed on screen."""
     from playwright.async_api import async_playwright
@@ -524,6 +626,7 @@ def main() -> int:
     (VIEWER / "parity.mri").write_bytes(data)
     (VIEWER / "image.mri").write_bytes(build_image_fixture())
     (VIEWER / "robot.mri").write_bytes(build_robot_fixture())
+    (VIEWER / "diff.mri").write_bytes(build_diff_fixture())
 
     expected = python_side(data)
     port = 5921
@@ -533,6 +636,7 @@ def main() -> int:
         hostile = asyncio.run(hostile_side(port))
         shared = asyncio.run(image_side(port))
         robot = asyncio.run(robot_side(port))
+        diff = asyncio.run(diff_side(port))
     finally:
         httpd.shutdown()
 
@@ -659,6 +763,44 @@ def main() -> int:
     ok = ok and robot_ok
 
     print()
+    # A SHARED MODEL COMPARISON, and the head labels beside it. `model_diff`
+    # had no reader on any surface; `head_types` had one in the app and none
+    # in THIS build, where the route fell through to "install ModelMRI" over a
+    # file that carries the labels.
+    diff_ok = True
+    for label, passed, detail in (
+        (
+            "mounted",
+            diff["served"] and diff["mounted"],
+            "the panel is on the page"
+            if diff["mounted"]
+            else "the panel is NOT mounted — a shared comparison is unreadable"
+            if diff["served"]
+            else "the viewer did not serve the section at all",
+        ),
+        (
+            "both names",
+            "Qwen/Qwen3-1.7B" in diff["text"]
+            and "Qwen3-1.7B-finetuned" in diff["text"],
+            "a diff can ride in a file about a third model, so it names its own",
+        ),
+        (
+            "no divergence",
+            "anywhere in particular" in diff["text"],
+            "`consensus_layer: null` reads as a result, not a missing field",
+        ),
+        (
+            "labels",
+            diff["labelled"],
+            "head labels are served from the file, not refused with 'install ModelMRI'",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] diff      {label:13} — {detail}")
+        diff_ok = diff_ok and passed
+    ok = ok and diff_ok
+
+    print()
     # Two different failures, and the last line has to name the right one:
     # "THE VIEWER DISAGREES WITH THE TOOL" about a run where every cell
     # matched and the browser simply never started would send the next reader
@@ -671,6 +813,8 @@ def main() -> int:
         print("THE VIEWER MISHANDLES A SHARED IMAGE RUN — see above")
     elif not robot_ok:
         print("THE VIEWER MISHANDLES A SHARED ROBOT FINDING — see above")
+    elif not diff_ok:
+        print("THE VIEWER MISHANDLES A SHARED MODEL COMPARISON — see above")
     else:
         print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1

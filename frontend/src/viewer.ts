@@ -116,6 +116,28 @@ interface Doc {
     readout?: Record<string, unknown>;
     means?: string;
   };
+  /** Behavioural labels for every head, each gated on a measured null.
+   *
+   *  `/api/attention/types` serves these from a recording in the APP -- and
+   *  this shim did not handle the route at all, so in the recipient's build it
+   *  fell through to "install ModelMRI to point these instruments at your own
+   *  models", which is false when the labels are sitting in the file they
+   *  just opened. */
+  head_types?: {
+    labels?: Record<string, unknown>[];
+    counts?: Record<string, number>;
+    n_layers?: number;
+    n_heads?: number;
+    seq_len?: number;
+    n_sequences?: number;
+    margin_sigma?: number;
+    means?: string;
+  };
+  /** A comparison of two OTHER models, which need not be this file's model.
+   *  `session._model_diff` requires `model_a` and `model_b` for exactly that
+   *  reason: a diff read as being about the file's own model is the one
+   *  confusion this section can cause. */
+  model_diff?: Record<string, unknown>;
   /** A robot finding: one frame of one episode, the policy's attention over
    *  it, and the occlusion map that says which patch actually MOVED the
    *  action. Optional and additive like `graph`.
@@ -430,6 +452,60 @@ export async function viewerFetch(
       };
     }
     return ok({ available: true, ...img });
+  }
+
+  if (p === "/api/attention/types") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const types = open.head_types;
+    // `recorded: true` is the same flag `runtime.head_types` sets when it
+    // answers from a replay, and the panel reads it to say these were
+    // measured elsewhere rather than here.
+    if (types && Array.isArray(types.labels) && types.labels.length > 0) {
+      return ok({ ...types, recorded: true });
+    }
+    // The APP's exact refusal for a recording with no labels, rather than the
+    // generic "install ModelMRI": the reader is not missing the tool, the file
+    // is missing the measurement, and only one of those is worth acting on.
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry head type labels. " +
+          "Labelling heads means running the model on new random sequences, " +
+          "and a `.mri` holds activations rather than weights. Whoever " +
+          "exported it can label the heads and share it again.",
+      },
+    };
+  }
+
+  if (p === "/api/diff/replay") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const diff = open.model_diff as Record<string, unknown> | undefined;
+    // `available: false` is a STATE: most sessions carry no comparison.
+    if (!diff || !Array.isArray(diff.prompts) || diff.prompts.length === 0) {
+      return ok({ available: false });
+    }
+    // Refused here as well as in `session._model_diff`, because THIS copy runs
+    // in the recipient's browser on a file a stranger forwarded — and a diff
+    // that does not name its own two sides is read as being about the model
+    // the rest of the file describes, which is the single confusion this
+    // section can cause.
+    const named = ["model_a", "model_b"].every(
+      (k) => typeof diff[k] === "string" && (diff[k] as string).trim() !== "",
+    );
+    if (!named) {
+      return {
+        status: 422,
+        payload: {
+          error:
+            "this session carries a model comparison that does not say which " +
+            "two models it compared, so it is not rendered. A diff can ride " +
+            "in a file about a third model, and one that does not name its " +
+            "own sides would be read as being about this file's.",
+        },
+      };
+    }
+    return ok({ available: true, ...diff });
   }
 
   if (p === "/api/vla/replay") {

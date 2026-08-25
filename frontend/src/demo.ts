@@ -1210,6 +1210,12 @@ export async function demoFetch(
         "writes the real thing.",
     );
   }
+  if (p === "/api/diff/replay") {
+    // The bundled session is one model's generation and carries no
+    // comparison. `available: false` is the true state, which is what the
+    // panel needs so it renders nothing rather than an error.
+    return ok({ available: false });
+  }
   if (p === "/api/vla/replay") {
     // NOT a refusal, for the reason the image one gives: `available: false` is
     // the TRUE state of this page. The bundled session is a text generation

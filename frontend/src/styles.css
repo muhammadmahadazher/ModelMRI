@@ -972,7 +972,20 @@ main > * {
 
 .hero {
   position: relative;
-  margin: 6px -22px 0;
+  /* `margin-block`, NOT the `margin` shorthand. `main > *` centres every
+     child with `margin-inline: auto`, and a shorthand here resets that to 0 --
+     which left-aligned the hero while every panel below it stayed centred.
+     At a wide viewport that put the hero straight under the fixed section
+     rail, which is positioned in the gutter the centring creates.
+
+     The bleed is NOT kept at every width. It exists so the hero reaches the
+     viewport edges on a narrow screen, where `main`'s 22px padding would
+     otherwise inset it -- and on a wide one there is no edge to reach, only
+     the rail's gutter, which it would reach 6px into. So it bleeds exactly
+     where the rail is a bottom-right pill and nowhere else; see the
+     `max-width: 1360px` block further down, which is the same breakpoint the
+     rail collapses at. */
+  margin-block: 6px 0;
   padding: 26px 22px 14px;
   overflow: hidden;
   text-align: center;
@@ -3551,7 +3564,9 @@ button.ghost.sm.stop:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 0 4px;
+  /* See `.cat-nav`: a `margin` shorthand on a `main` child silently cancels
+     the centring and drops the row into the rail's gutter. */
+  margin-block: 0 4px;
 }
 
 /* Ollama's name box. Wide, because a model reference is `user/model:tag`
@@ -4665,6 +4680,13 @@ main > [id^="sec-"] {
    keyboard shortcut and by the button, which is why the button is not part
    of the rail's own layout. */
 @media (max-width: 1360px) {
+  /* THE HERO BLEEDS ONLY HERE. Below this width the rail is the pill in the
+     corner, so the left gutter is not spoken for and the hero can reach the
+     viewport edges the way it was drawn to. Above it, bleeding puts the hero
+     6px under the rail -- measured, not guessed. */
+  .hero {
+    max-width: calc(var(--measure) + 44px);
+  }
   .secnav ul { display: none; }
   .secnav {
     top: auto;
@@ -6120,7 +6142,10 @@ main > [id^="sec-"] {
    would silently cancel a forward pass somebody is waiting on. */
 /* The two rows are one control, so the space below them belongs to the pair
    and not to the top row — which used to own it, back when it was alone. */
-.cat-nav { margin: 0 0 var(--sp-5); }
+/* `margin-block`, so `main > *`'s `margin-inline: auto` survives. The
+   shorthand reset it to 0 and pinned the whole category bar to the left edge,
+   under the section rail, while the panels it indexes were centred. */
+.cat-nav { margin-block: 0 var(--sp-5); }
 
 .cat-bar {
   display: flex;

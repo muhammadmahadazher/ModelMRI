@@ -268,13 +268,27 @@ fault.
 That was the THIRD section in this project to carry a writer and no reader —
 the agent trace and the image run were the first two, and all three were found
 by opening a real file rather than by any test. So
-`tests/test_every_section_has_a_reader.py` now walks the `has_*` predicates
-the parser exposes and fails on any that nothing is recorded as reading. It
-found a fourth and a fifth on the day it was written: `head_types` and
-`model_diff` are written into every export by `runtime.py`, validated by
-`session.py`, and read by nothing at all. They are recorded there as known
-gaps rather than quietly tolerated, and the fix for them is a reader, not a
-smaller file.
+`tests/test_every_section_has_a_reader.py` walks the `has_*` predicates the
+parser exposes and, for each, OPENS a `.mri` carrying that section and asks
+the surface that should show it.
+
+**CORRECTION.** The first version of that test recorded a hand-written claim
+instead of exercising anything, and one of its claims was wrong: it said
+`head_types` had no reader. It has had one all along —
+`runtime.head_types` checks `getattr(self.replay, "head_types", None)` and
+serves it with `recorded: True` through `/api/attention/types`. A grep for
+`replay.head_types` does not find that form, and the note written from that
+grep passed its own test because the test only checked that the WRITER still
+existed. Exercising the reader is the whole point, and the rewritten version
+does that for all ten sections.
+
+What the rewrite then found was real, and two things rather than one:
+`model_diff` had no reader on any surface, and `head_types` had one in the APP
+and none in the VIEWER — `viewer.ts` did not handle `/api/attention/types`, so
+in the recipient's build it fell through to "install ModelMRI to point these
+instruments at your own models", said over a file that carries the labels.
+Both are closed: `GET /api/diff/replay`, a `ModelDiffReplay` panel in both
+builds, the head-types shim, and `modelmri inspect` blocks for each.
 
 `vla_ood.py` scores every
 frame against a reference set the payload names, in Mahalanobis distance over

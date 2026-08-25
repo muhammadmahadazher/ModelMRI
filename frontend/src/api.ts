@@ -6243,6 +6243,95 @@ export const getImageReplay = () =>
     json<{ available: boolean } & Partial<ImageRunSection>>(r),
   );
 
+/** A spread as it arrives inside a `.mri`.
+ *
+ *  NOT `DiffSpread`, which is the LIVE shape and requires every field. This
+ *  one comes out of a file a stranger wrote: `session._model_diff` refuses a
+ *  median with no `n` behind it -- the whole content of this section is that
+ *  its numbers are distributions over a prompt set rather than single
+ *  measurements -- but `n_nonzero` is genuinely optional there, so it is
+ *  optional here. Declaring a second `DiffSpread` merged with the first and
+ *  produced a type that lied about both.
+ */
+export interface RecordedSpread {
+  n: number;
+  name: string;
+  median: number;
+  low: number;
+  high: number;
+  /** How many of the `n` prompts moved at all. A median of 0 with most
+   *  prompts nonzero is a different finding from one where nothing moved. */
+  n_nonzero?: number;
+}
+
+/** A comparison of two models, carried inside a `.mri`.
+ *
+ *  `runtime` wrote this into every export that had a comparison behind it and
+ *  nothing read it back on any surface -- the one section in the format with
+ *  no reader anywhere.
+ */
+export interface ModelDiffSection {
+  /** REQUIRED, both of them. A diff can ride in a file about a third model,
+   *  so one that does not name its own two sides is read as being about the
+   *  file's own -- the single confusion this section can cause. */
+  model_a: string;
+  model_b: string;
+  prompts: {
+    prompt?: string;
+    n_tokens?: number;
+    mean_kl?: number;
+    max_kl?: number;
+    flips?: number;
+    /** `null` when the cosine never falls -- a result, not a gap. */
+    first_divergent_layer?: number | null;
+    drop?: number | null;
+  }[];
+  layers: {
+    layer?: number;
+    median?: number;
+    low?: number;
+    high?: number;
+    n?: number;
+    n_first?: number;
+  }[];
+  heads: {
+    layer?: number;
+    head?: number;
+    median_a?: number;
+    median_b?: number;
+    shift?: number;
+    n?: number;
+    top_a?: string | null;
+    top_b?: string | null;
+  }[];
+  tokens: {
+    prompt_index?: number;
+    index?: number;
+    token?: string;
+    kl_a?: number;
+    kl_b?: number;
+    shift?: number;
+    newly_used?: boolean;
+    newly_ignored?: boolean;
+  }[];
+  kl?: RecordedSpread;
+  flips?: RecordedSpread;
+  n_prompts?: number | null;
+  n_layers?: number | null;
+  /** `null` when nothing diverged. A result. */
+  consensus_layer?: number | null;
+  consensus_share?: number;
+  head_passes?: number | null;
+  seconds?: number;
+  means?: string;
+}
+
+/** The model comparison inside an opened `.mri`, or nothing. */
+export const getDiffReplay = () =>
+  fetch("/api/diff/replay").then((r) =>
+    json<{ available: boolean } & Partial<ModelDiffSection>>(r),
+  );
+
 /** One occlusion block: a patch of the frame, covered, and what the action
  *  did about it.
  *
