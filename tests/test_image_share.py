@@ -377,3 +377,70 @@ def test_a_status_with_no_family_is_refused_by_the_reader_rather_than_shipped():
     with pytest.raises(BadRequest) as caught:
         _reads(image_share.from_filmstrip(NoFamily(), FakeStrip()))
     assert "family" in caught.value.sentence
+
+
+# --------------------------------- the writer never emits what the reader refuses
+
+
+def test_a_frame_too_large_for_a_mri_is_dropped_and_the_remedy_given():
+    """`image_input` accepts a 32 MB upload and a `.mri` frame is capped at
+    4 MB, so a high-resolution run produced a payload the reader refuses and
+    the share button answered 422 on the very run somebody wanted to send.
+
+    Dropped and REPORTED, with a remedy that is actually actionable: the frame
+    is still on the machine that made it."""
+    big = PNG + "A" * session.MAX_IMAGE_FRAME_BYTES
+    strip = FakeStrip(frames=[FakeFrame(), FakeFrame(step=4, png=big)])
+    got = _reads(image_share.from_filmstrip(FakeStatus(), strip))
+    assert len(got["frames"]) == 1
+    assert "larger than a `.mri` carries" in got["means"]
+    assert "decode fewer steps" in got["means"]
+
+
+def test_the_two_reasons_a_frame_is_missing_are_counted_apart():
+    """ "There was nothing to carry" and "it did not fit" send a reader to two
+    different places, so they never share a number."""
+    big = PNG + "A" * session.MAX_IMAGE_FRAME_BYTES
+    strip = FakeStrip(
+        frames=[FakeFrame(), FakeFrame(step=2, png=None), FakeFrame(step=4, png=big)]
+    )
+    got = _reads(image_share.from_filmstrip(FakeStatus(), strip))
+    assert "1 frame(s) were left out of this file because they" in got["means"]
+    assert "1 frame(s) were left out because they are larger" in got["means"]
+
+
+def test_the_total_byte_budget_stops_a_strip_before_the_reader_does():
+    """The per-frame cap is not the only one. Enough medium frames add up past
+    what the reader will accept in total, and the writer has to stop first."""
+    each = PNG + "A" * (session.MAX_IMAGE_FRAME_BYTES - 1_000)
+    n = (session.MAX_IMAGE_BYTES_TOTAL // len(each)) + 3
+    strip = FakeStrip(frames=[FakeFrame(step=i, png=each) for i in range(n)])
+    got = _reads(image_share.from_filmstrip(FakeStatus(), strip))
+    total = sum(len(f["png"]) for f in got["frames"])
+    assert total <= session.MAX_IMAGE_BYTES_TOTAL
+    assert "larger than a `.mri` carries" in got["means"]
+
+
+def test_an_oversized_readout_picture_is_dropped_and_the_readout_survives():
+    """The rows are the measurement; the picture is what the boxes sit on. A
+    photograph too big to travel must not take the readout down with it."""
+    big = PNG + "A" * session.MAX_IMAGE_FRAME_BYTES
+    pred = FakePrediction(boxes=[{"index": 1, "label": "cat", "score": 0.5}])
+    got = _reads(image_share.from_readout(FakeStatus(), pred, picture=big))
+    assert "frames" not in got
+    assert len(got["readout"]["rows"]) == 1
+    assert "above the" in got["means"] and "a `.mri` frame holds" in got["means"]
+
+
+def test_the_writer_reads_the_reader_s_caps_rather_than_restating_them(
+    monkeypatch,
+):
+    """THE DRIFT THIS GUARDS. Two constants with the same value in two files
+    stay equal until somebody tunes one. Lowering the READER's cap has to
+    change what the WRITER emits, or the next tuning ships a share button that
+    makes files nobody can open."""
+    monkeypatch.setattr(session, "MAX_IMAGE_FRAME_BYTES", len(PNG) + 10)
+    strip = FakeStrip(frames=[FakeFrame(png=PNG + "A" * 500)])
+    got = image_share.from_filmstrip(FakeStatus(), strip)
+    assert got["frames"] == []
+    assert "larger than a `.mri` carries" in got["means"]

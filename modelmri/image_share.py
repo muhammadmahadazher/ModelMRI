@@ -42,6 +42,20 @@ CLASSIFICATION = "classification"
 DETECTION = "detection"
 
 
+def _reader():
+    """The reader module, for its caps.
+
+    Imported lazily and by REFERENCE rather than copied as numbers: the whole
+    hazard this guards is the writer and the reader drifting apart, and two
+    constants with the same value in two files drift the moment one is tuned.
+    Lazy because `session` imports are not free and this module is imported at
+    server start.
+    """
+    from . import session
+
+    return session
+
+
 def _size(width: Any, height: Any) -> list[int] | None:
     if (
         isinstance(width, int)
@@ -103,6 +117,8 @@ def from_filmstrip(status, strip, *, attention=None) -> dict:
     heat field with nothing under it.
     """
     frames = []
+    budget = 0
+    oversized = 0
     for frame in getattr(strip, "frames", []) or []:
         row = frame.to_dict()
         png = row.get("png")
@@ -117,6 +133,17 @@ def from_filmstrip(status, strip, *, attention=None) -> dict:
             # The reader refuses a frame with no stated resolution, so a frame
             # that cannot state one is left out here rather than made up.
             continue
+        # THE READER'S OWN CAPS, imported rather than restated, so the two
+        # cannot drift into a writer that emits files its reader refuses.
+        # Without this a high-resolution strip produced a payload over the
+        # bound and the share button answered 422 — a button that fails on
+        # exactly the run somebody most wanted to send.
+        if len(png) > _reader().MAX_IMAGE_FRAME_BYTES or (
+            budget + len(png) > _reader().MAX_IMAGE_BYTES_TOTAL
+        ):
+            oversized += 1
+            continue
+        budget += len(png)
         keep: dict = {
             "step": row.get("step"),
             "timestep": row.get("timestep"),
@@ -154,7 +181,7 @@ def from_filmstrip(status, strip, *, attention=None) -> dict:
     }
     if attention is not None:
         out["attention"] = _attention(attention)
-    out["means"] = _means(out, strip)
+    out["means"] = _means(out, strip, oversized)
     return out
 
 
@@ -288,9 +315,16 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
             "means": str(payload.get("means") or ""),
         },
     }
+    too_big = False
     if picture:
         size = _size(payload.get("width"), payload.get("height"))
-        if size is not None:
+        # `image_input` accepts a 32 MB upload and a `.mri` frame is capped at
+        # 4 MB, so a large photograph produced a payload the reader refuses
+        # and the share button answered 422 on a readout it had just made.
+        # Dropped and REPORTED here instead — the file is still worth having
+        # without the picture, and the sentence says which half is missing.
+        too_big = len(picture) > _reader().MAX_IMAGE_FRAME_BYTES
+        if size is not None and not too_big:
             # The picture the reader supplied, carried so the boxes have
             # something to be drawn on -- at the size the MODEL was shown,
             # which is what the box coordinates are in.
@@ -331,10 +365,20 @@ def from_readout(status, prediction, *, picture: str = "") -> dict:
             f"no finite score."
         )
     if "frames" not in out and picture:
+        # TWO REASONS, TWO SENTENCES, because they have two remedies: one is
+        # "this checkpoint did not publish the geometry" and the other is
+        # "your photograph is bigger than a shareable file", which the reader
+        # can act on by sending a smaller one.
         said += (
-            " The picture is not carried: it did not state the resolution the "
-            "model was shown it at, and boxes drawn over the wrong one land "
-            "nowhere."
+            f" The picture is not carried: it is "
+            f"{len(picture):,} bytes, above the "
+            f"{_reader().MAX_IMAGE_FRAME_BYTES:,} a `.mri` frame holds — the "
+            f"readout above is unaffected, and a smaller image would travel "
+            f"with it."
+            if too_big
+            else " The picture is not carried: it did not state the resolution "
+            "the model was shown it at, and boxes drawn over the wrong one "
+            "land nowhere."
         )
     out["means"] = said
     return out
@@ -350,11 +394,15 @@ def _seed_sentence(seed) -> str:
     return f"Seed {seed}, so the run repeats."
 
 
-def _means(out: dict, strip) -> str:
+def _means(out: dict, strip, oversized: int = 0) -> str:
     frames = out.get("frames") or []
     requested = out.get("steps_requested") or 0
     run = out.get("steps_run") or 0
-    dropped = len(getattr(strip, "frames", []) or []) - len(frames)
+    # `oversized` is counted separately and subtracted here, so the two
+    # reasons a frame can be missing never get folded into one number: one is
+    # "there was nothing to carry", the other is "it did not fit", and they
+    # send a reader to two different places.
+    dropped = len(getattr(strip, "frames", []) or []) - len(frames) - oversized
     parts = [
         f"{len(frames)} decoded frame(s) of a {run or requested}-step run",
     ]
@@ -373,6 +421,15 @@ def _means(out: dict, strip) -> str:
         parts.append(
             f"{dropped} frame(s) were left out of this file because they "
             f"carried no bytes or no stated resolution"
+        )
+    if oversized > 0:
+        # A DIFFERENT SENTENCE from the one above, with a different remedy: a
+        # frame that did not fit is still on the machine that made it, and
+        # decoding fewer or smaller frames gets it into the file.
+        parts.append(
+            f"{oversized} frame(s) were left out because they are larger than "
+            f"a `.mri` carries — decode fewer steps, or a smaller "
+            f"`frame_pixels`, to fit them in"
         )
     if any(f.get("downsampled") for f in frames):
         parts.append(
