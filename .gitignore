@@ -83,3 +83,8 @@ tests/fixtures/parity.mri
 # Claude Code session tooling: a local launch config and worktree state.
 # Machine-specific, not project code.
 .claude/
+
+# Playwright's intermediate recordings. `capture_media.py` deletes these on a
+# clean exit and five of them were committed by a run that did not have one —
+# 40 MB of webm nobody reads, in a repo whose media directory is already 19 MB.
+docs/media/**/_raw/

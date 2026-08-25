@@ -79,7 +79,7 @@ Python 3.10+ · Windows, macOS, Linux · MIT.
 
 <p align="center">
   <img src="docs/media/picker.gif#gh-dark-mode-only" alt="The model picker listing models already on disk" width="820">
-  <img src="docs/media/light/hero.png#gh-light-mode-only" alt="ModelMRI in light mode, with an accelerator and model loaded" width="820">
+  <img src="docs/media/light/picker.gif#gh-light-mode-only" alt="The model picker listing models already on disk" width="820">
 </p>
 <p align="center"><em>It finds the models you already have — HF cache, plain folders, GGUF — before asking you to type anything.</em></p>
 
@@ -144,7 +144,8 @@ It reports what it measured and nothing more. These are **not** each head's shar
 Ablation says *what mattered*. It cannot say *where the thing is*. **Patching** takes two prompts that differ in one fact, moves an activation from the run that knows the answer into the run that does not, at every (layer, position), and reports how much of the difference comes back.
 
 <p align="center">
-  <img src="docs/media/patching.gif" alt="The patching grid filling in row by row, then three tabs — residual stream, attention, MLP — each showing a different map of the same prompt" width="800">
+  <img src="docs/media/patching.gif#gh-dark-mode-only" alt="The patching grid filling in row by row, then three tabs — residual stream, attention, MLP — each showing a different map of the same prompt" width="800">
+  <img src="docs/media/light/patching.gif#gh-light-mode-only" alt="The patching grid filling in row by row, then three tabs — residual stream, attention, MLP — each showing a different map of the same prompt" width="800">
 </p>
 
 <p align="center"><em>Blue recovered the clean answer, red pushed it further away. Ringed cells were tested against chance.</em></p>
@@ -266,13 +267,15 @@ A `state_dict` alone is refused, with the reason: it's weights without an archit
 You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
 
 <p align="center">
-  <img src="docs/media/share.png" alt="The attention panel's share control, with a note reading 'L8 H3 copies the subject token'" width="800">
+  <img src="docs/media/share.png#gh-dark-mode-only" alt="The attention panel's share control, with a note reading 'L8 H3 copies the subject token'" width="800">
+  <img src="docs/media/light/share.png#gh-light-mode-only" alt="The attention panel's share control, with a note reading 'L8 H3 copies the subject token'" width="800">
 </p>
 
 That writes **one 54 KB file** holding the tokens, the attention, the generation and your note. No weights — it's an observation, not a checkpoint.
 
 <p align="center">
-  <img src="docs/media/viewer.png" alt="The same analysis open in the browser viewer: replay banner, attention arcs from 'Amsterdam' back through the prompt" width="800">
+  <img src="docs/media/viewer.png#gh-dark-mode-only" alt="The same analysis open in the browser viewer: replay banner, attention arcs from 'Amsterdam' back through the prompt" width="800">
+  <img src="docs/media/light/viewer.png#gh-light-mode-only" alt="The same analysis open in the browser viewer: replay banner, attention arcs from 'Amsterdam' back through the prompt" width="800">
 </p>
 
 <p align="center"><em>The recipient opens it at <a href="https://muhammadmahadazher.github.io/ModelMRI/viewer/">the viewer</a> — nothing installed, nothing uploaded, the file is read in their browser.</em></p>
