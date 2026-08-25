@@ -786,12 +786,73 @@ samp,
 }
 ::selection { background: color-mix(in oklab, var(--acc) 18%, transparent); }
 
+/* ONE MEASURE FOR PROSE, A WIDER ONE FOR THE MEASUREMENTS.
+   This was `max-width: 980px` at every viewport width, which is the right
+   measure for a paragraph and the wrong one for a grid. The evidence that it
+   was wrong is three rules down: `.attn-scroll` has `overflow-x: auto`
+   BECAUSE a long token strip does not fit, and the comment under `main > *`
+   records a panel growing to 7800px. So on a 1920px display roughly half the
+   screen was empty margin while the measurements sat behind a horizontal
+   scrollbar — data hidden by layout, which is the one thing a measurement
+   tool cannot afford.
+
+   Material's window size classes are exactly this idea: "the window size at
+   which a layout needs to change to match available space"
+   (https://m3.material.io/foundations/layout/applying-layout/window-size-classes).
+   Panels whose content is a grid, a strip or a chart declare `data-wide` and
+   get the wider measure once there is room for it; prose panels keep 980px,
+   because a 1280px line of body text is harder to read, not easier.
+
+   `--measure` was already REFERENCED at the image-panel rule below and never
+   defined anywhere in this file — the indirection was half-built and dead.
+   It has a value now. */
 main {
-  max-width: 980px;
+  --measure: 980px;
+  --measure-wide: 1280px;
+  max-width: none;
   margin: 0 auto;
   padding: 0 22px 90px;
   display: grid;
   gap: var(--sp-6);
+}
+main > * {
+  width: 100%;
+  max-width: var(--measure);
+  margin-inline: auto;
+}
+/* Only where the extra width is actually there. Below this the wide panels
+   are already using every pixel, so widening them would do nothing but move
+   the scrollbar. */
+@media (min-width: 1660px) {
+  /* The panels whose content is a GRID, A STRIP OR A CHART — the ones that
+     were being clipped. Selected by the classes and ids they already carry
+     rather than a new attribute, because the panels are direct children of
+     `main` and those hooks are already the stable ones the section nav uses.
+
+     Everything not listed keeps the prose measure on purpose: a 1280px line
+     of body text is harder to read, not easier, and widening a panel that is
+     mostly sentences would be the change looking bigger while reading worse. */
+  main > .panel.attn,     /* a 275-token strip behind `overflow-x: auto`   */
+  main > .panel.patch,    /* layers x positions, three tabs of it          */
+  main > .panel.pgraph,   /* the same grid walked backwards               */
+  main > .panel.sweeps,   /* one row per prompt                           */
+  main > .panel.agents,   /* every step, nested, on one timeline          */
+  /* NOT `#sec-image` / `#sec-vision` / `#sec-vla`. Those ids look stable and
+     are not: `SectionNav` assigns them from an effect, and only to a panel
+     that already has client rects — so on a reload where the survey has not
+     run yet, or where a panel was laid out later, every one of them is
+     absent and an id-keyed rule silently matches nothing. MEASURED: the same
+     page reported all fifteen ids on one load and none on the next.
+     `.h-vision` and `.panel.vla` are in the components' own markup. */
+  main > .panel:has(> .sect > .h-image),
+  main > .panel:has(> .sect > .h-vision),
+  /* BOTH robot branches. `.panel.vla` is only the loaded one; the resting
+     branch is a bare `.panel`, and on a machine with no video codec that is
+     the branch that carries the timeline — the widest chart in the app. */
+  main > .panel:has(> .sect > .h-vla),
+  main > .panel.vla {     /* five lanes on one shared axis                */
+    max-width: var(--measure-wide);
+  }
 }
 /* Grid items default to min-width:auto, i.e. min-content -- so one panel
    holding a 167-token attention strip grew to 7800px and dragged the whole
@@ -1324,7 +1385,22 @@ button.model-btn:hover:not(:disabled) {
 .model-btn-caret { color: var(--color-mute); font-size: var(--t-sm); }
 
 /* accelerator badge: green + pulsing when a GPU is actually in use */
-.pill.accel { display: inline-flex; align-items: center; gap: 7px; }
+/* The accelerator pill carries a name nobody here chose — "NVIDIA GeForce
+   RTX 4060 Laptop GPU · 8.6 GB" is 356px of it — so it is the one pill whose
+   width is a fact about the reader's machine. MEASURED at a 375px viewport:
+   it reached 378 and scrolled the document by 3px. It shrinks and ellipsises
+   now rather than pushing the page sideways; the full text is in the title
+   attribute the pill already carries. */
+.pill.accel {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .accel-dot {
   width: 7px;
   height: 7px;
@@ -1884,12 +1960,45 @@ input[type="range"]::-moz-range-thumb {
   input[type="range"]::-moz-range-thumb:hover { transform: scale(1.2); }
 }
 /* The thumb is the only part that moves; it needs its own focus ring,
-   because the input's ring sits around the whole 200px track. */
-input[type="range"]:focus-visible::-webkit-slider-thumb,
+   because the input's ring sits around the whole 200px track.
+ 
+   ONE VENDOR PSEUDO-ELEMENT PER RULE. These two used to share a selector
+   list, and that meant NEITHER of them applied anywhere: an unknown selector
+   in a comma-separated list invalidates the WHOLE rule, so Chromium threw out
+   its own `::-webkit-slider-thumb` half because it does not recognise
+   `::-moz-range-thumb`, and Firefox did the mirror image. Every rule above
+   this one is already split for exactly that reason; this one was not, and
+   the result was a range input that took keyboard focus and showed nothing —
+   with the `outline: none` below still very much in effect.
+ 
+   MEASURED in Chromium before the split, on a slider that really was
+   `:focus-visible`: element outline `none`, element box-shadow `none`, thumb
+   box-shadow `none`. No ring at all. `tests/ui_check.py` caught it the day a
+   range control first became reachable inside its 45-tab sweep. */
+input[type="range"]:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--sf-ground), 0 0 0 6px var(--acc);
+}
 input[type="range"]:focus-visible::-moz-range-thumb {
   box-shadow: 0 0 0 3px var(--sf-ground), 0 0 0 6px var(--acc);
 }
-input[type="range"]:focus-visible { outline: none; }
+/* AND A REAL RING ON THE CONTROL ITSELF, not only on the thumb.
+ 
+   The first attempt at this was `outline: 2px solid transparent`, which
+   satisfies a checker reading `outlineStyle !== 'none'` and shows the reader
+   nothing. That is worse than the bug it replaced: a keyboard user still has
+   no idea where they are, and the check that would have said so has been
+   taught to keep quiet. A focus indicator that cannot be seen is not one.
+ 
+   So the track takes the same visible ring every other control on the page
+   uses. It is 200px wide and the ring goes round all of it, which is exactly
+   what the previous comment worried about — but a wide ring a reader can see
+   beats a precise one that never painted. The thumb ring above rides on top
+   of it and says WHERE in the range focus sits. */
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--acc);
+  outline-offset: 3px;
+  border-radius: var(--r-1, 4px);
+}
 /* A range control takes the colour of the panel it steers. The global accent
    is violet, which is the features panel's colour, so the robot panel's frame
    scrubber was the one violet thing in a green card. */
@@ -3503,9 +3612,16 @@ button.ghost.sm.stop:hover:not(:disabled) {
 /* Two deliberate exceptions, both re-stated here so they survive the move. */
 .combo:focus:not(:focus-visible),
 textarea:focus:not(:focus-visible) { outline: none; }
-/* The range thumb draws its own ring; a box ring around the whole track
-   points at the wrong thing. */
-input[type="range"]:focus-visible { outline: none; }
+/* THE RANGE RING IS SET ABOVE AND MUST NOT BE UNSET HERE.
+   This line used to read `input[type="range"]:focus-visible { outline: none }`
+   on the argument that "the range thumb draws its own ring". The thumb rule
+   it deferred to had both vendor pseudo-elements in ONE selector list, which
+   makes the whole rule invalid in every browser — so the thumb drew nothing,
+   this removed the only remaining ring, and a range control took keyboard
+   focus completely silently. Two rules, each individually reasonable,
+   cancelling to zero.
+   MEASURED in Chromium on a slider that really was `:focus-visible`: element
+   outline `none`, element box-shadow `none`, thumb box-shadow `none`. */
 
 /* ── Patching ───────────────────────────────────────────────────────────
    The grid is a DIVERGING scale, unlike every other heatmap in here, because
@@ -4128,7 +4244,25 @@ button.model-btn:hover:not(:disabled) {
   color: var(--color-ink);
   font-weight: 600;
 }
-.telemetry .tl-item { white-space: nowrap; }
+/* `nowrap` keeps a figure and its unit on one line, which is right — a
+   measurement broken across a line break reads as two. But an item wider than
+   the viewport then drags the whole PAGE sideways: MEASURED at 375px, the
+   cost item is 377px wide and the document scrolls to 414. `tests/ui_check.py`
+   fails on exactly that, and it only shows once a generation has produced a
+   cost, which is why it survived so long.
+ 
+   So the item keeps its line and the BAR scrolls, which is the pattern
+   `.attn-scroll` and `.span-line` already use here: the overflow is contained
+   by the thing that owns it instead of being handed to the document. */
+.telemetry {
+  overflow-x: auto;
+}
+.telemetry .tl-item {
+  white-space: nowrap;
+  /* A flex item's default `min-width: auto` refuses to shrink below its
+     content, which is what pushes the overflow outward in the first place. */
+  min-width: 0;
+}
 .telemetry .tl-cost {
   border-left: 3px solid var(--color-attn);
   padding-left: 10px;
@@ -4367,8 +4501,14 @@ button.model-btn:hover:not(:disabled) {
   position: fixed;
   top: 50%;
   transform: translateY(-50%);
-  /* Centre the 980px column, then sit in what is left on the left side.
-     max() keeps it off the very edge on a viewport only just wide enough. */
+  /* Centre the column, then sit in what is left on the left side. max() keeps
+     it off the very edge on a viewport only just wide enough.
+     MEASURED: the rail is 170px and sits 186px left of the column edge, so it
+     needs 186px of clear space. Against the wide 1280px measure that is
+     1280 + 372 = 1652px of viewport before both fit — which is why the wide
+     measure below starts at 1660px and not at Material's 1440px class. Left
+     at 1440, a 1280px panel began at x=80 while the rail still ran 12..182
+     and printed straight through it. */
   left: max(12px, calc((100vw - 980px) / 2 - 186px));
   width: 170px;
   z-index: 40;
@@ -4376,6 +4516,16 @@ button.model-btn:hover:not(:disabled) {
   font-size: var(--t-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+/* The rail follows the widest column that exists at this width, or it is
+   printed straight through it. MEASURED at 1800px with the override placed
+   3,600 lines earlier in the file: it lost on SOURCE ORDER at equal
+   specificity and the rail ran to x=394 across a panel starting at x=252.
+   Same breakpoint as the wide measure, and it has to stay that way. */
+@media (min-width: 1660px) {
+  .secnav {
+    left: max(12px, calc((100vw - 1280px) / 2 - 186px));
+  }
 }
 .secnav ul {
   list-style: none;
@@ -8671,4 +8821,123 @@ button:disabled,
 .ood-chart:focus-visible {
   outline: 2px solid var(--color-attn);
   outline-offset: 2px;
+}
+
+/* ---------------------------------------------------- grouping the stack
+   `main` was fourteen identical peers exactly 24px apart, so the layout said
+   nothing about which panels belong together — an image-model panel sat the
+   same distance from an attention panel as two attention panels sat from
+   each other. The category chips at the top of the page carried that
+   information and then scrolled away.
+
+   Proximity is the cheapest grouping signal there is and it was carrying
+   zero bits:
+   https://m3.material.io/foundations/layout/understanding-layout/spacing
+
+   `CategoryBar` stamps `data-mri-group-start` on the first VISIBLE panel of
+   each run — recomputed with the filter, because filtering to one category
+   makes its first panel the first panel. */
+main {
+  /* WITHIN a group. The between-group air is the margin below, so the two
+     read as a rhythm rather than as one uniform gutter. */
+  gap: var(--sp-4);
+}
+main > .panel[data-mri-group-start="1"] {
+  margin-top: var(--sp-8);
+}
+
+/* The label rides ON the panel rather than being a sibling element, so it
+   cannot be left behind when the panel it names is filtered away — and it is
+   INSIDE the box because `.panel` is `overflow: hidden`, which clips anything
+   positioned above its own top edge. So the group-start panel carries a
+   little extra headroom and the name sits in it, above the section heading:
+   the panel that opens a group says which group it opens. */
+main > .panel[data-mri-group-label] {
+  padding-top: calc(var(--sp-5) + 16px);
+}
+main > .panel[data-mri-group-label]::after {
+  content: attr(data-mri-group-label);
+  position: absolute;
+  top: var(--sp-3);
+  left: var(--sp-5);
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+  pointer-events: none;
+}
+
+/* ── the vision panel's resting sketch ──────────────────────────────────────
+   WHY IT NEEDED ITS OWN. The vision section and the text-to-image section
+   were drawing the same one: `StepsByWord`, a run of denoising steps against
+   words. That is the shape of a diffusion panel's output and not of this
+   one's — it promises an axis over time, and a classifier, detector or
+   segmenter has none. `Regions` in RestingSketch.tsx draws where in the
+   PICTURE instead, and the rules below are the parts of it that are paint.
+
+   Colour is tokens only, and specifically `--sem-base`: that is the hue
+   `.h-vision` and `.d-vision` already give this section, so the sketch reads
+   as belonging to the panel it sits in rather than borrowing the magenta the
+   text-to-image section wears. Nothing here is a literal — an undefined or
+   cyclic custom property voids its whole declaration silently, which is the
+   bug `tests/test_css_vars.py` exists to catch and this repo has shipped
+   three times. */
+.sk-vision { --sk-ink: var(--sem-base); }
+
+/* A region that was PROPOSED, not chosen. Dashed and quiet, so the one with
+   corner marks on it is unmistakably the one being read.
+
+   `5 3` at 1.25, not `2 3` at 1. The finer rhythm was the first thing drawn
+   here and it disappeared: over a lattice of tiles, a 2-unit dash reads as
+   scattered specks rather than as the edge of a rectangle, so the two
+   candidates looked like grain in the picture instead of like candidates. */
+.sk-region {
+  fill: none;
+  stroke: var(--sk-ink, var(--color-mute));
+  stroke-width: 1.25;
+  stroke-dasharray: 5 3;
+  animation: skFade var(--dur-large) var(--ease-out-soft) both;
+}
+
+/* The one that gets read, drawn as four corner marks rather than a closed
+   box: a closed rectangle over a lattice of squares reads as one more,
+   larger square. Each path is two arms of `V_ARM` in RestingSketch.tsx, so
+   twice that is its entire length — which makes the dash below one dash
+   covering the whole mark, and an equal offset the state where none of it is
+   drawn yet. The animation draws it on; with motion off, the dash is simply
+   the finished mark. The two numbers are the same number on purpose: raise
+   `V_ARM` without raising these and the corner marks render half drawn. */
+.sk-bracket {
+  fill: none;
+  stroke: var(--sk-ink, var(--color-mute));
+  stroke-width: 1.75;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-dasharray: 24;
+  animation: skDraw 420ms var(--ease-out) both;
+}
+@keyframes skDraw { from { stroke-dashoffset: 24; opacity: 0; } }
+
+/* One pass, then still — and no pass at all for a reader who asked for that.
+   The cells use `.sk-cell`, which the rule further up already covers. */
+@media (prefers-reduced-motion: reduce) {
+  .sk-region, .sk-bracket { animation: none; }
+}
+
+/* WHERE IT SITS. `.icv` renders as soon as a checkpoint that can be asked
+   something is resident, which is before anything has been asked — two
+   bordered wells with a button in each and no idea what either returns. The
+   sketch heads them, centred over the pair, and `ImageCV` drops it the moment
+   a real measurement lands. */
+.icv-rest {
+  display: grid;
+  justify-items: center;
+  padding: 6px 0 2px;
+}
+.icv-rest > .sketch { width: 100%; max-width: 340px; }
+/* The wordless part goes first when the column narrows, which is the same
+   call `.resting > .sketch` makes at its own breakpoint. */
+@media (max-width: 640px) {
+  .icv-rest { display: none; }
 }

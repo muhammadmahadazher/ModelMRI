@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { percent } from "./measured";
+import RestingSketch from "./RestingSketch";
 import {
   errorText,
   imageCvAttribute,
@@ -143,8 +144,37 @@ export default function ImageCV({
     ? grid.values.reduce((m, row) => row.reduce((n, v) => (v > n ? v : n), m), 0) || 1
     : 1;
 
+  /** Nothing has been asked of this checkpoint yet.
+   *
+   *  `.icv` renders the moment a model that CAN be asked is resident, which
+   *  is well before anybody has asked — so the two asks below sat as two
+   *  empty wells with a button in each. The sketch is the shape of what they
+   *  will hand back, and it is gone the instant a real measurement exists:
+   *  an invented decoration beside a measured answer is a decoration
+   *  competing with it, and this project loses that argument every time.
+   *
+   *  `attr` counts. A map for a class the reader clicked is an answer even
+   *  when the prediction list that raised it has been cleared. */
+  const resting = !pred && !readout && !attr;
+
   return (
     <div className="icv">
+      {/* WHY THIS IS NOT THE TEXT-TO-IMAGE SKETCH.
+          Both image sections drew `kind="image"` — words across, denoising
+          steps down. That picture is right for a diffusion panel and wrong
+          for this one in the specific way that matters: it advertises an axis
+          over TIME, and there is no time here. Pixels go in and a label, a
+          box or a mask comes out, and the only axis this panel has is the
+          picture itself. `kind="vision"` draws that instead — a frame, the
+          patch lattice the model actually sees, several candidate regions
+          and one of them read. Both are invented and unlabelled, for the
+          reason `RestingSketch.tsx` opens with. */}
+      {resting && (
+        <div className="icv-rest">
+          <RestingSketch kind="vision" />
+        </div>
+      )}
+
       {/* --- ask one: what it says --------------------------------------
           A question, its controls, and its answer directly beneath it.
 

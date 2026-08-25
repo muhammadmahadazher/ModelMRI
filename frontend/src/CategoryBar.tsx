@@ -276,8 +276,22 @@ export default function CategoryBar() {
     return () => observer.disconnect();
   }, [survey]);
 
-  /** Apply the filter by attribute, not by unmounting. */
+  /** Apply the filter by attribute, not by unmounting.
+   *
+   *  AND MARK WHERE EACH GROUP STARTS. The page was fourteen identical peers
+   *  the same 24px apart, so nothing on it said the image panels are a
+   *  different modality from the attention panels — only these chips did, and
+   *  they scroll away. Proximity is the cheapest grouping signal there is
+   *  (https://m3.material.io/foundations/layout/understanding-layout/spacing)
+   *  and it was carrying zero bits.
+   *
+   *  Computed over the VISIBLE panels, in the same pass that decides which
+   *  those are: filter to Robot and the first robot panel becomes the first
+   *  panel, so a marker stamped on the unfiltered order would leave a group
+   *  heading floating above nothing.
+   */
   useEffect(() => {
+    let run = "";
     for (const panel of document.querySelectorAll<HTMLElement>(".panel")) {
       const category = panel.dataset.mriCategory ?? "other";
       const sub = panel.dataset.mriSub ?? "rest";
@@ -285,6 +299,21 @@ export default function CategoryBar() {
         (active !== "all" && category !== active) ||
         (activeSub !== "all" && sub !== activeSub);
       panel.dataset.mriHidden = hidden ? "1" : "";
+      if (hidden) continue;
+      if (category === run) {
+        panel.dataset.mriGroupStart = "";
+        delete panel.dataset.mriGroupLabel;
+        continue;
+      }
+      run = category;
+      // The FIRST group needs no extra air above it — there is nothing above
+      // it to be separated from — but it still gets its label.
+      panel.dataset.mriGroupStart = panel.previousElementSibling?.classList.contains(
+        "panel",
+      )
+        ? "1"
+        : "first";
+      panel.dataset.mriGroupLabel = LABELS[category] ?? category;
     }
   }, [active, activeSub, groups, subs]);
 

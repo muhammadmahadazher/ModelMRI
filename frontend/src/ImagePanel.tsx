@@ -707,7 +707,14 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
           <span className="rule" />
         </div>
         <div className="resting">
-          <RestingSketch kind="image" />
+          {/* THE SKETCH FOLLOWS THE KIND, like the heading and the dot above
+              it. This component is instantiated twice — once for diffusion,
+              once for vision — and every other thing on the page that says
+              which one you are looking at switched on `kind` while the
+              picture did not. So a reader arriving at the vision section was
+              shown a grid of words across denoising steps: a time axis this
+              panel does not have, for a model that does not denoise. */}
+          <RestingSketch kind={kind === "vision" ? "vision" : "image"} />
           {/* Each section says what IT is for. The other one's sentence is
               not a smaller version of this one — pixels-to-a-label and
               words-to-pixels are opposite directions, and one paragraph
