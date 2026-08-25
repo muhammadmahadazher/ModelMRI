@@ -255,8 +255,18 @@ def test_the_three_completeness_numbers_are_always_in_the_payload(ids, tok):
     c = got["completeness"]
     assert set(("sum_of_attributions", "measured_delta", "gap")) <= set(c)
     assert c["rule"] == gradients.RULE and c["steps"] == 8
+    # 2e-6, and the number comes from the payload rather than from taste. All
+    # THREE of these are rounded to 6 places INDEPENDENTLY, so
+    # `round(a, 6) - round(b, 6)` can differ from `round(a - b, 6)` by up to
+    # 1e-6 from the two operands plus 5e-7 from the result. A tolerance of
+    # 1e-6 therefore sits exactly on the boundary and passes or fails on which
+    # way the floats land — it failed on macos-latest/py3.12 with
+    # `0.073919 == 0.07391799999999993`, having passed on three other
+    # platforms in the same run. The identity being checked is that the
+    # published gap is the published difference; the rounding is the
+    # resolution that check has.
     assert c["gap"] == pytest.approx(
-        c["measured_delta"] - c["sum_of_attributions"], abs=1e-6
+        c["measured_delta"] - c["sum_of_attributions"], abs=2e-6
     )
 
 

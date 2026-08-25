@@ -605,7 +605,26 @@ def test_the_covariance_survives_an_offset_that_breaks_the_textbook_form(tmp_pat
     truth = float(torch.linalg.eigvalsh(accumulated(block(0.0))).min())
     assert truth == pytest.approx(4.9960e-05, rel=1e-3)
 
-    broken = block(1e6)
+    # 1e7, and the offset is chosen from a measurement rather than by taste.
+    # Both forms have a working range and this test needs an offset inside
+    # ours and well outside theirs. Relative error against the true smallest
+    # eigenvalue (4.995959e-05), measured on this machine:
+    #
+    #     offset    textbook       accumulated
+    #     1e6       3.46           2.78e-13     <- textbook off by 3x: MARGINAL
+    #     1e7       4.89e+02       3.13e-13     <- this one
+    #     1e8       1.35e+05       1.12e-06     <- accumulated now over tolerance
+    #
+    # It started at 1e6 and failed CI on macos-latest/py3.12 with "the textbook
+    # form has stopped being the failing one", while passing on windows py3.10,
+    # py3.13 and macos py3.11 in the same run: at that offset the textbook
+    # form's error is only three times the quantity being measured, so which
+    # side of zero it lands on depends on the BLAS and the summation order.
+    # Moving to 1e8 fixed that and broke the other end — the accumulated form's
+    # own error passes 1e-6 there. 1e7 is inside both margins by orders of
+    # magnitude, which is what makes the assertions below claims about the
+    # ARITHMETIC rather than about a particular machine's.
+    broken = block(1e7)
     naive_min = float(torch.linalg.eigvalsh(naive(broken)).min())
     ours_min = float(torch.linalg.eigvalsh(accumulated(broken)).min())
     assert naive_min < 0.0, "the textbook form has stopped being the failing one"
