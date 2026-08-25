@@ -152,6 +152,24 @@ torch-free extension of `modelmri diff` so it runs in CI in milliseconds.
 
 ### B3. Interpretability the field has and we do not
 
+**STATUS 2026-08-25 — every item below is built.** `gradients.py` (integrated
+gradients, refusing when the completeness gap is a large share of the move it
+claims to explain), `anchors.py` (minimal sufficient token sets, precision as a
+Wilson interval with the sample size beside it), `patch_screen.py` (attribution
+patching as a screen, measuring its own agreement with the exact grid on the
+sites it shortlists), `ov_circuits.py` (QK/OV as factored matrices, never
+forming the 92 TB vocabulary square), `neurons.py` (raw neurons with NMF, for
+the models that have no SAE — which is most of them), `saes.py`'s
+`ce_recovered` (SAE fidelity in output space, with the ablation floor named
+because it moves the answer 22 points), and `head_corpus.py` — the one this
+file called "embarrassing to lack".
+
+Each was built, then handed to an independent skeptic paid to refute it. All
+six of the modules in that pass came back with defects — 66 of them, 9
+blockers — and every blocker is now verified fixed by MUTATION rather than by
+a passing suite: break the claim, run the tests, confirm they go red. Two were
+still vacuous when re-checked and are recorded in the commits that fixed them.
+
 Gradient attribution with the completeness check, anchors (minimal
 *sufficient* token sets with measured precision), counterfactual generation,
 attribution patching as a first-order screen before the exact grid, QK/OV
@@ -162,6 +180,29 @@ Plus the one that is embarrassing to lack: **corpus evidence for an attention
 head**, the way we already have it for an SAE feature.
 
 ### B4. Robotics, now that the sidecar exists
+
+**STATUS 2026-08-25 — built, with one honest gap.** `vla_ood.py` scores every
+frame against a reference set the payload names, in Mahalanobis distance over
+the directions that reference actually varies in, with the episode's own rows
+held OUT of the reference, its mean, its covariance and its null. A distance
+and a percentile, never a boolean — "OOD" as a verdict would be a threshold
+somebody chose. `vla_data.dataset_action_stats` summarises a whole dataset's
+recorded actions in bounded memory (3.2 MB at 20,000 rows and at 80,000), and
+carries the publisher's own statistics beside the measured ones so a
+disagreement between them is visible. ACT policies open in the perception half,
+and `analyse()` refuses to draw attention a ResNet does not have while naming
+the occlusion sweep that genuinely works on it.
+
+`robot_export.py` writes MCAP. THE GAP: there is no HTTP route for it, because
+`write` needs a `Sweep` — rows plus the metric, unit, dataset, policy, camera
+and strides that say what the rows ARE — and `vla_sweep.stored` returns bare
+rows. A route would have to rebuild the rest by guessing at a unit, which is
+what that module exists to prevent. It is a library and CLI feature until
+`vla_sweep` grows a retrieval that returns what it stored. The `.rrd` half
+refuses on its own reasoning: Rerun's logging API moves between releases, an
+`.rrd` is read by the SDK version that wrote it, and nothing here has been run
+against an installed rerun-sdk — so emitting one would publish a file whose
+correctness is a guess.
 
 OOD scoring per frame, a synchronised multi-track episode timeline, export to
 MCAP and `.rrd` so findings open in Foxglove and Rerun, dataset-level action

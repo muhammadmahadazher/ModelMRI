@@ -8,6 +8,54 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **Seven interpretability features the roadmap owed, and the adversarial pass
+  that rejected the first cut of six of them.** ROADMAP-V1 Theme B3/B4 in full:
+  integrated gradients with its completeness gap, minimal *sufficient* token
+  sets with a measured precision interval, attribution patching as a screen
+  before the exact grid, QK/OV circuits as factored matrices, a raw-neuron
+  browser with NMF for the models that have no SAE, per-frame OOD scoring, and
+  corpus evidence for an attention head — the item the roadmap itself called
+  "the one that is embarrassing to lack".
+
+  The half worth reading is how they got here. Each module was built and then
+  handed to an independent agent paid to REFUTE it. Six came back
+  `DEFECTS_FOUND` — 66 proven defects, 9 blockers — and the shapes recur:
+
+  - **Vacuous tests.** "Replacing the sort with the identity passes all 22
+    tests." "Hardcoding `sign_flips` to 0 passes all 22." "The 37 tests do not
+    assert a single exported number."
+  - **Unknown collapsing into zero**, the rule this project is built on.
+    `getattr(row, "value", 0.0)` on an unreadable row. NaN sailing past
+    `if x < LIMIT` — which is False for NaN — and being published as a
+    readable bar.
+  - **Memory claims wrong by 5x, 48x and 800x** — docstrings asserting a bound
+    nobody had measured.
+  - **Sentences describing a different quantity from the one computed**, which
+    is worse than no sentence, because that string is the part people quote.
+
+  Every blocker is now verified fixed by MUTATION rather than by a green
+  suite: break the claim in the module, run the tests, confirm they go red,
+  restore. Two were still vacuous when re-checked and are fixed here — the
+  anchors module shipped a precision target of 0.90 against 64 draws, and
+  raising it to the customary 0.95 left all 39 tests green while being
+  UNREACHABLE, since Wilson's lower bound for a perfect run is 0.9434 there;
+  and the gradients module pinned its memory figure as an attribute but never
+  as a payload, so `to_dict` could publish 0 with the suite green.
+
+### Fixed
+
+- **A CPU that cannot run bfloat16 no longer costs the whole test run.**
+  `tests (windows-latest, py3.10)` had been dying on
+  `STATUS_ILLEGAL_INSTRUCTION` inside a torch kernel — for at least three runs
+  before anyone could see it, because xdist waited on the dead worker until
+  the 30-minute ceiling cancelled the job, and a cancelled job prints no
+  summary. `--max-worker-restart=0` turns that into a 10-minute failure that
+  NAMES the test, and the test now probes the dtype in a child process that is
+  allowed to die. An illegal instruction is not a Python exception, so no
+  `try/except` could have caught it.
+
+### Added
+
 - **Four of the roadmap's remaining feature gaps, after checking which were
   actually gaps.** A six-agent audit re-verified all thirteen unbuilt Theme B
   items against the repo rather than against the roadmap's own memory of
