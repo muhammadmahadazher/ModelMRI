@@ -91,6 +91,31 @@ interface Doc {
     summary?: Record<string, unknown>;
     notes?: string[];
   };
+  /** An image run: a denoising strip, the cross-attention over the prompt
+   *  that produced it, or a detector's readout. Optional and additive like
+   *  `graph`.
+   *
+   *  A6, and the last unbuilt item in Theme A. Every other result this tool
+   *  produces could be sent to somebody; the one that is a PICTURE could not,
+   *  so an image finding was the only kind that had to be screenshot to be
+   *  shared -- and a screenshot carries no provenance, no seed and no
+   *  statement of what was shrunk. */
+  image?: {
+    provenance?: Record<string, unknown>;
+    prompt?: string;
+    /** `null` is NO SEED WAS FIXED, which is not seed 0. */
+    seed?: number | null;
+    scheduler?: string;
+    frames?: Record<string, unknown>[];
+    steps_requested?: number;
+    steps_run?: number;
+    decoded_steps?: number[];
+    skipped_steps?: number[];
+    steps_never_reached?: number[];
+    attention?: Record<string, unknown>;
+    readout?: Record<string, unknown>;
+    means?: string;
+  };
   /** The agent run this analysis belongs to, and which step failed. Optional
    *  and additive like `graph`.
    *
@@ -352,6 +377,33 @@ export async function viewerFetch(
       summary: g.summary ?? {},
       notes: g.notes ?? [],
     });
+  }
+
+  if (p === "/api/image/replay") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const img = open.image;
+    // `available: false` is a STATE and not an error: most sessions carry no
+    // image run, and a 409 for the ordinary case would render as "this
+    // measurement is broken".
+    if (!img || !img.provenance) return ok({ available: false });
+    // Refused here as well as in `session._image`, because THIS copy runs in
+    // the recipient's browser on a file a stranger forwarded, and the claim
+    // it guards is the one that makes the picture worth anything: which
+    // checkpoint drew it. A strip rendered under ModelMRI's chrome with no
+    // model behind it is the confusion the section exists to prevent.
+    const repo = (img.provenance as Record<string, unknown>).repo;
+    if (typeof repo !== "string" || !repo.trim()) {
+      return {
+        status: 422,
+        payload: {
+          error:
+            "this session carries an image run that does not say which " +
+            "checkpoint drew it, so it is not rendered. A picture without " +
+            "its model is not a measurement anybody can repeat.",
+        },
+      };
+    }
+    return ok({ available: true, ...img });
   }
 
   if (p === "/api/attention/meta") {

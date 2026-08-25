@@ -1192,6 +1192,32 @@ export async function demoFetch(
         "the file you picked — and there is no checkpoint here to ask.",
     );
   }
+  // ---- sharing an image run (A6) -------------------------------------------
+  //
+  // `getImageSharePlan` already refuses in DEMO through `noModelHere`, so
+  // neither of these is reached from the UI. They are here for the reason the
+  // CV group above says out loud: an endpoint whose only protection is a UI
+  // gate is one refactor away from being reachable, and this check exists to
+  // catch exactly that.
+  if (p === "/api/image/share" || p === "/api/image/share/plan") {
+    return refuse(
+      409,
+      "A `.mri` carries a run somebody's machine MADE — the frames it " +
+        "decoded, the seed it used and what it shrank on the way out. There " +
+        "is no image model behind this page to have made one, and a baked " +
+        "file would be somebody else's picture with your name on it. Install " +
+        "ModelMRI (`pip install modelmri`), run a filmstrip, and the button " +
+        "writes the real thing.",
+    );
+  }
+  if (p === "/api/image/replay") {
+    // NOT a refusal. `available: false` is the TRUE state of this page: the
+    // bundled session is a text generation and carries no image run, which is
+    // exactly what the panel needs to hear so it renders nothing rather than
+    // an error. The `.mri` VIEWER answers this from the opened file instead —
+    // see `viewer.ts`, where a real image run does arrive.
+    return ok({ available: false });
+  }
   // ---- the step trace and the filmstrip ------------------------------------
   if (p === "/api/image/steps" || p === "/api/image/filmstrip") {
     return refuse(

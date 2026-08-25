@@ -309,6 +309,52 @@ def test_inspect_mri_reads_a_real_file(tmp_path):
     assert doc["has"]["vla"] is False
 
 
+def test_inspect_mri_reports_an_image_run(tmp_path):
+    """An image-only `.mri` has no tokens, no layers and no heads, so without
+    its own line in `has` it inspects as an empty file and gets deleted. Same
+    argument as the `graph` block in `cli.py`, one surface over."""
+    from modelmri import session
+
+    blob = session.build(
+        model_id="sd-turbo",
+        device="cpu",
+        dtype="float16",
+        n_params=None,
+        tokens=[],
+        prompt="",
+        generation="",
+        attention={},
+        n_layers=0,
+        n_heads=0,
+        image={
+            "provenance": {
+                "repo": "stabilityai/sd-turbo",
+                "family": "diffusion",
+                "architecture": "UNet2DConditionModel",
+                "revision": "",
+                "kind": "denoising",
+            },
+            "prompt": "a horse",
+            "seed": None,
+            "frames": [
+                {
+                    "step": 0,
+                    "png": "data:image/png;base64,AAAA",
+                    "size": [64, 64],
+                    "downsampled": False,
+                }
+            ],
+        },
+    )
+    path = tmp_path / "img.mri"
+    path.write_bytes(blob)
+    out = _call("inspect_mri", {"path": str(path)})
+    doc = json.loads(out["result"]["content"][0]["text"])
+    assert doc["has"]["image"] is True
+    # And a text session is not quietly reported as carrying one.
+    assert doc["has"]["vla"] is False
+
+
 def test_inspect_mri_needs_a_path():
     out = _call("inspect_mri", {})
     assert out["result"]["isError"] is True

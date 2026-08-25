@@ -638,3 +638,186 @@ def test_the_knockout_marking_bound_is_published_not_only_enforced(client):
     )
     assert over.status_code == 422
     assert "words" in over.text
+
+
+# ------------------------------------------------- sharing an image run (A6)
+
+
+def _shareable() -> dict:
+    """What `image_share` produces, in the shape the handle stores it."""
+    return {
+        "provenance": {
+            "repo": "PixArt-alpha/PixArt-XL-2-512x512",
+            "family": "diffusion",
+            "architecture": "PixArtTransformer2DModel",
+            "revision": "",
+            "kind": "denoising",
+        },
+        "prompt": "an astronaut riding a horse",
+        "seed": None,
+        "scheduler": "DPMSolverMultistepScheduler",
+        "frames": [
+            {
+                "step": 0,
+                "timestep": 999.0,
+                "png": "data:image/png;base64,AAAA",
+                "size": [64, 64],
+                "downsampled": False,
+                "latent_rms": 1.5,
+            }
+        ],
+        "steps_requested": 20,
+        "steps_run": 20,
+        "decoded_steps": [0],
+        "skipped_steps": [],
+        "steps_never_reached": [],
+        "means": "one decoded frame of a 20-step run.",
+    }
+
+
+def test_the_share_plan_says_there_is_nothing_yet_and_what_to_do(client):
+    """`available: false` is a STATE, not an error. Most of the time nothing
+    has been run, and a 404 here would read as "sharing is broken"."""
+    d = client.get("/api/image/share/plan").json()
+    assert d["available"] is False
+    assert "Capture a filmstrip" in d["means"]
+
+
+def test_sharing_nothing_is_a_refusal_naming_the_next_step(client):
+    r = client.post("/api/image/share", json={})
+    assert r.status_code == 409
+    assert "Capture a filmstrip" in r.json()["error"]
+
+
+def test_the_plan_prices_a_share_in_bytes_before_it_is_asked_for(client):
+    """Priced before it is spent like every other measurement here -- except
+    the currency is bytes, because the run already happened and the only
+    remaining cost is the size of the file somebody attaches to an issue."""
+    client.app.state.image.last_run = _shareable()
+    d = client.get("/api/image/share/plan").json()
+    assert d["available"] is True
+    assert d["kind"] == "denoising"
+    assert d["n_frames"] == 1
+    assert d["png_bytes"] > 0
+    # `None` survives all the way to the plan: an unseeded run cannot be
+    # reproduced, and a 0 here would promise that it can.
+    assert d["seed"] is None
+
+
+def test_a_shared_run_comes_back_as_a_readable_mri(client):
+    from modelmri import session
+
+    client.app.state.image.last_run = _shareable()
+    r = client.post("/api/image/share", json={"note": "a6"})
+    assert r.status_code == 200
+    assert r.headers["content-disposition"].endswith('.mri"')
+    parsed = session.parse(r.content)
+    assert parsed.has_image()
+    assert parsed.image["prompt"] == "an astronaut riding a horse"
+    assert parsed.image["seed"] is None
+    assert parsed.meta["note"] == "a6"
+
+
+def test_an_image_mri_carries_no_invented_language_model_run(client):
+    """The section carries the picture. Filling the rest of the format's
+    language-model shape with placeholders would render as a text run nobody
+    made."""
+    from modelmri import session
+
+    client.app.state.image.last_run = _shareable()
+    parsed = session.parse(client.post("/api/image/share", json={}).content)
+    assert parsed.tokens == []
+    assert parsed.generation == ""
+    assert parsed.attention == {}
+    assert "no language model was loaded" in parsed.meta["scope"]
+
+
+def test_nothing_in_the_request_body_becomes_a_claim_in_the_file(client):
+    """The body carries a caption and NOTHING ELSE, and the route refuses the
+    rest by name rather than dropping it.
+
+    This test used to assert the weaker thing: that extra keys were ignored.
+    They were — by a hand-written `body.get("note")` over a raw `Request`,
+    which is the exact shape `Body` exists to refuse. `{"notes": ...}` went in
+    and a file came back with no caption and no complaint. Two of this repo's
+    own guardrails caught it (`test_no_new_route_takes_a_raw_body_without_
+    saying_why` and the array-body check), and the fix was a typed model — so
+    a caller who tries to name the model is TOLD they cannot, instead of being
+    quietly overruled."""
+    client.app.state.image.last_run = _shareable()
+    r = client.post(
+        "/api/image/share",
+        json={
+            "note": "n",
+            "provenance": {"repo": "somebody/else"},
+            "prompt": "not what was run",
+            "seed": 12345,
+        },
+    )
+    assert r.status_code == 422
+    # The offending keys, named. A 422 that does not say which field is a wall.
+    body = r.text
+    assert "provenance" in body and "prompt" in body and "seed" in body
+
+
+def test_a_misspelled_caption_is_refused_rather_than_dropped(client):
+    """The single-typo failure this whole guardrail exists for: a caption the
+    caller believes they attached, silently absent from the file they send."""
+    client.app.state.image.last_run = _shareable()
+    r = client.post("/api/image/share", json={"notes": "the one that matters"})
+    assert r.status_code == 422
+    assert "notes" in r.text
+
+
+def test_an_empty_object_is_a_share_with_no_note(client):
+    """`{}` is the bodyless case in JSON, and it works: every field has a
+    default, so a caller with nothing to say sends nothing and still gets the
+    file."""
+    from modelmri import session
+
+    client.app.state.image.last_run = _shareable()
+    r = client.post("/api/image/share", json={})
+    assert r.status_code == 200
+    assert session.parse(r.content).meta["note"] == ""
+
+
+def test_no_body_at_all_answers_the_way_every_other_typed_route_does(client):
+    """MEASURED against its neighbours rather than asserted: `/api/model/load`,
+    `/api/image/filmstrip` and `/api/image/attention` all answer a bodyless
+    POST with the same 422. One route inventing its own answer to that is a
+    seam somebody trips on; `{}` is the two characters that make it work."""
+    client.app.state.image.last_run = _shareable()
+    ours = client.post("/api/image/share")
+    theirs = client.post("/api/image/filmstrip")
+    assert ours.status_code == theirs.status_code == 422
+    assert ours.json()["detail"][0]["type"] == theirs.json()["detail"][0]["type"]
+
+
+def test_a_local_folder_is_never_named_by_path_in_the_headers(client, tmp_path):
+    """`Content-Disposition` gets the basename. `runtime.export_session`
+    learned this twice: a repo id can be an absolute path, backslashes are
+    quoted-string escapes in that header, and Starlette encodes headers as
+    latin-1 -- so a non-Latin username raised UnicodeEncodeError into a bare
+    500 and export was simply dead for those users."""
+    run = _shareable()
+    run["provenance"]["repo"] = str(tmp_path / "secret" / "sd-turbo")
+    client.app.state.image.last_run = run
+    r = client.post("/api/image/share", json={})
+    assert r.status_code == 200
+    assert str(tmp_path) not in r.headers["content-disposition"]
+    assert "sd-turbo.mri" in r.headers["content-disposition"]
+
+
+def test_a_run_is_dropped_when_the_model_it_belongs_to_is(client):
+    """A run left behind would be shareable as though the NEXT checkpoint had
+    produced it, and the file would name the wrong weights."""
+    client.app.state.image.last_run = _shareable()
+    client.post("/api/image/unload")
+    assert client.get("/api/image/share/plan").json()["available"] is False
+
+
+def test_the_replay_route_says_not_available_rather_than_404(client):
+    """Most sessions carry no image run. A 404 would render as "this
+    measurement is broken" for the ordinary case."""
+    d = client.get("/api/image/replay").json()
+    assert d["available"] is False

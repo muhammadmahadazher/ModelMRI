@@ -350,6 +350,21 @@ class ImageHandle:
             reason="Nothing has been loaded yet. Point it at a cached "
             "diffusers pipeline, or pull one."
         )
+        # The last run this handle produced, kept so it can be shared.
+        #
+        # REMEMBERED RATHER THAN RECOMPUTED, and that is a correctness point
+        # before it is a cost one. `/api/vla/share` rebuilds its payload by
+        # re-measuring, which is safe there because the frame it reads is
+        # already on disk. A diffusion run is not: with `seed=None` the
+        # trajectory is unrepeatable, so re-running to build the share would
+        # produce a DIFFERENT picture and file it under the same prompt. The
+        # only honest copy of an unseeded run is the one that was made.
+        #
+        # One run at a time, replaced rather than accumulated -- a strip of
+        # PNGs is megabytes and a history of them is a leak with a plausible
+        # excuse. Dropped by `unload`, because a run belongs to the checkpoint
+        # that produced it.
+        self.last_run: dict = {}
 
     # ------------------------------------------------------------- reading
 
@@ -603,6 +618,10 @@ class ImageHandle:
             # door and looking like a working measurement.
             self.processor = None
             self.processor_reason = ""
+            # Dropped with the model, for the same reason the processor is: a
+            # run left behind would be shareable as though the next checkpoint
+            # had produced it, and the file would name the wrong weights.
+            self.last_run = {}
             _free()
             self.status_ = ImageStatus(
                 reason=(

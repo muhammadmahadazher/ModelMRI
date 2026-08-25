@@ -26,7 +26,16 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__, behavdiff, custom, gguf_read, image_attention, otel, paths
+from . import (
+    __version__,
+    behavdiff,
+    custom,
+    gguf_read,
+    image_attention,
+    image_share,
+    otel,
+    paths,
+)
 from . import image_steps as _steps_defaults
 from . import openai_api as openai_api_mod
 from .custom import AdapterError, CustomHandle
@@ -558,6 +567,26 @@ class ImageLoadRequest(Body):
     device: str = Field(default="", max_length=32)
     dtype: str = Field(default="", max_length=32)
     confirm: bool = False
+
+
+class ImageShareRequest(Body):
+    """A caption, and NOTHING ELSE — which is the whole point of the type.
+
+    The first version of this route read a raw `Request` and picked `note` out
+    of the dict by hand. That shape is exactly what `Body` exists to refuse:
+    `{"notes": "..."}` would have been dropped in silence, and a `.mri` written
+    with the caption the caller thought they had attached missing from it. Two
+    of this repo's own tests caught it — `test_no_new_route_takes_a_raw_body`
+    and the array-body check, which found `[1,2,3]` sailing through as "no
+    note" instead of being refused.
+
+    There is deliberately no field here for the model, the prompt or the seed.
+    The section is built from what the SERVER measured, so nothing a caller
+    sends can become a claim in the file — and the way to guarantee that is
+    for there to be no field to send it in.
+    """
+
+    note: str = Field(default="", max_length=2000)
 
 
 class ImageRunRequest(Body):
@@ -3591,6 +3620,158 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=409)
         return status.to_dict()
 
+    @app.get("/api/image/share/plan")
+    def image_share_plan():
+        """What a share would carry, before it is asked for.
+
+        Priced before it is spent, like every other measurement here — except
+        the currency is BYTES rather than forward passes, because the run has
+        already happened and the only remaining cost is the size of the file
+        somebody is about to attach to an issue. `available: False` is a state
+        rather than an error: most of the time nothing has been run yet.
+        """
+        run = getattr(app.state.image, "last_run", None) or {}
+        if not run.get("provenance"):
+            return {
+                "available": False,
+                "means": (
+                    "Nothing has been run through this image model yet, so "
+                    "there is nothing to share. Capture a filmstrip or a "
+                    "cross-attention run first — a `.mri` carries a "
+                    "measurement, not a model."
+                ),
+            }
+        frames = run.get("frames") or []
+        attention = run.get("attention") or {}
+        readout = run.get("readout") or {}
+        return {
+            "available": True,
+            "kind": run["provenance"].get("kind", ""),
+            "repo": run["provenance"].get("repo", ""),
+            "n_frames": len(frames),
+            "png_bytes": sum(len(f.get("png") or "") for f in frames),
+            "n_attention_steps": len(attention.get("steps") or []),
+            "n_readout_rows": len(readout.get("rows") or []),
+            # `None` and 0 are different answers, and an unseeded run is the
+            # one where that matters most: it cannot be reproduced at all.
+            "seed": run.get("seed"),
+            "means": run.get("means", ""),
+        }
+
+    @app.post("/api/image/share")
+    # NOT `image_share`: the module of that name is imported at the top of this
+    # file and used by the capture routes above. A route function shares this
+    # scope, so naming it `image_share` would shadow the module for every line
+    # in `create_app` -- including `image_share.from_filmstrip`, which would
+    # then be an attribute lookup on a coroutine function. Ruff's F811 caught
+    # it; nothing at runtime would have, until a filmstrip was captured.
+    #
+    # `share_image_run` rather than `image_share_write` because FastAPI derives
+    # the OpenAPI summary from this name and `docs/reference/api.md` prints it:
+    # the first spelling published a row reading "Image Share Write".
+    async def share_image_run(req: ImageShareRequest):
+        """The last image run, written into a `.mri` somebody can open with nothing installed.
+
+        A6, and the last unbuilt item in Theme A: every other result this tool
+        produces could be sent to somebody, and the one that is a PICTURE could
+        not — so an image finding was the only kind that had to be screenshot
+        to be shared. A screenshot carries no provenance, no seed, no scheduler
+        and no statement of what was shrunk.
+
+        WHAT IS WRITTEN IS WHAT WAS MEASURED, and nothing in the request body
+        becomes a claim in the file. The section is built from
+        `ImageHandle.last_run`, which the capture routes set from their own
+        results; the body carries a note and nothing else. This is the same
+        rule `/api/vla/share` follows for a different reason — that one can
+        re-measure from a frame on disk, and this one cannot, because a run
+        with no fixed seed does not repeat.
+
+        A `.mri` about an image run is DELIBERATELY EMPTY on the language-model
+        side. No tokens, no generation, no attention cube: the section carries
+        the picture, and filling the rest with placeholders would render as a
+        text run nobody made.
+        """
+        from . import session as session_mod
+
+        run = dict(getattr(app.state.image, "last_run", None) or {})
+        if not run.get("provenance"):
+            return JSONResponse(
+                {
+                    "error": (
+                        "there is no image run to share. Capture a filmstrip "
+                        "or a cross-attention run first — a `.mri` carries a "
+                        "measurement, and this one would carry nothing."
+                    )
+                },
+                status_code=409,
+            )
+
+        status = app.state.image.status()
+
+        def build() -> bytes:
+            return session_mod.build(
+                model_id=run["provenance"].get("repo", ""),
+                device=status.device,
+                dtype=status.dtype or None,
+                n_params=None,
+                # See the docstring: an image run has no token strip and no
+                # generation, and inventing them would render as a text run
+                # nobody made.
+                tokens=[],
+                prompt="",
+                generation="",
+                attention={},
+                n_layers=0,
+                n_heads=0,
+                note=req.note,
+                scope=(
+                    f"one {run['provenance'].get('kind', 'image')} run of "
+                    f"{run['provenance'].get('repo', 'this checkpoint')} — no "
+                    f"language model was loaded for it"
+                ),
+                image=run,
+            )
+
+        try:
+            blob = await asyncio.to_thread(build)
+        except BadRequest as err:
+            # `session._image` refusing its own writer is a bug in this file,
+            # not in the caller's request — but it reaches them as a sentence
+            # naming what was wrong rather than as a 500 with a traceback.
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/image/share")
+
+        name = re.sub(
+            r"[^A-Za-z0-9._-]", "-", Path(run["provenance"].get("repo") or "image").name
+        )
+        name = name.strip("-") or "image"
+        return Response(
+            content=blob,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{name}.mri"',
+                "Content-Length": str(len(blob)),
+            },
+        )
+
+    @app.get("/api/image/replay")
+    def image_replay():
+        """The image run inside an opened `.mri`, or nothing.
+
+        `available: False` is a state and not an error — most sessions carry no
+        image run, and a panel that got a 404 here would render "this
+        measurement is broken" for the ordinary case.
+
+        The section is served exactly as `session._image` validated it. Nothing
+        is recomputed on the way out: every number in it was measured on
+        somebody else's machine, and this process has no standing to adjust one.
+        """
+        replay = runtime.replay
+        if replay is None or not replay.has_image():
+            return {"available": False}
+        return {"available": True, **replay.image}
+
     def _image_can(what: str):
         """The handle, or a refusal naming what this family cannot do.
 
@@ -3652,6 +3833,11 @@ def create_app(
                 steps=req.steps,
                 seed=req.seed,
             )
+            # A capture with no strip beside it is a legitimate share on its
+            # own: capturing the maps never decodes a frame, which is most of
+            # the cost. `from_attention` says so in the file rather than
+            # letting a reader assume the frames were lost.
+            handle.last_run = image_share.from_attention(handle.status(), run)
             return run.to_dict()
         except (image_attention.NotSupported, Refusal) as err:
             return JSONResponse({"error": err.sentence}, status_code=409)
@@ -3807,6 +3993,14 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/image/cv/predict")
 
+        # Kept so `/api/image/share` can write it, like the diffusion arm
+        # above. The PICTURE goes with it: boxes and masks are coordinates in
+        # somebody's image, and a readout shared without the thing it read is
+        # a list of numbers over nothing. `req.image` is what was decoded, so
+        # what travels is what the model was actually shown.
+        handle.last_run = image_share.from_readout(
+            handle.status(), found, picture=req.image
+        )
         return found.to_dict()
 
     @app.post("/api/image/cv/readout")
@@ -3979,6 +4173,12 @@ def create_app(
         except Exception as err:
             return _internal(err, "/api/image/filmstrip")
 
+        # Kept so `/api/image/share` can write it into a `.mri` without
+        # re-running the pipeline. Re-running is not an option here rather
+        # than merely a slow one: with `seed=None` the trajectory does not
+        # repeat, so a second run would produce a DIFFERENT picture and file
+        # it under the same prompt. See `ImageHandle.last_run`.
+        handle.last_run = image_share.from_filmstrip(handle.status(), found)
         return found.to_dict()
 
     @app.post("/api/image/attribution")

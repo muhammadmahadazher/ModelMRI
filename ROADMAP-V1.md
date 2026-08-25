@@ -32,6 +32,30 @@ anything a reader might quote.
 
 ## Theme A — Image models
 
+**STATUS 2026-08-25 — every item is built. A6 was the last one, and it landed
+today.** A1–A5 are the `/api/image/*` surface: discovery and family detection
+(`image_catalog`, `image_runtime`), cross-attention per denoising step, token
+knockout, the step trace and filmstrip, and the CV readout with its
+interventional occlusion sweep.
+
+**A6** carried the roadmap's own argument and was simply missing: the format
+carried a text generation and a robot episode, so the one result this tool
+produces that is a PICTURE was the one you could not send anybody — an image
+finding had to be screenshot to be shared, and a screenshot carries no
+provenance, no seed, no scheduler and no statement of what was shrunk on the
+way out. `session._image` is the reader, `image_share` the writer,
+`POST /api/image/share` and `/share/plan` and `GET /api/image/replay` the
+routes, `ImageRunReplay.tsx` the panel, and `modelmri inspect` reports it —
+without which an image-only `.mri` printed as an empty session, the exact
+failure the `graph` block in `cli.py` already warned about.
+
+VERIFIED LIVE, not asserted: a real filmstrip through
+`hf-internal-testing/tiny-stable-diffusion-torch` → shared → opened →
+replayed, and the same for a cross-attention-only run. The strip reports 4 of
+7 steps decoded, 3 that ran and were not decoded (a CHOICE) apart from any
+that never arrived (a GAP), and the pipeline running 7 for a request of 6 as a
+fact about the scheduler rather than a rounding.
+
 The single largest expansion of what the tool can open. Everything here obeys
 the same discovery contract the text side already has: pull from HuggingFace,
 read from Ollama, or find what is already on this disk — and refuse by name

@@ -481,6 +481,7 @@ class Server:
                     "ground": parsed.has_ground(),
                     "model_diff": parsed.has_model_diff(),
                     "vla": parsed.has_vla(),
+                    "image": parsed.has_image(),
                     "trace": parsed.has_trace(),
                     "graph": parsed.has_graph(),
                 },

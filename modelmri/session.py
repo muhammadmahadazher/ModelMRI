@@ -185,6 +185,28 @@ MAX_VLA_GRID = 256
 # downsampled, and the reader refuses a payload past this.
 MAX_VLA_FRAME_BYTES = 4_000_000
 
+# An image run is a STRIP of pictures rather than one, so it gets its own
+# bounds. The per-frame cap is the robot frame's, for the same reason -- one
+# decoded picture is one decoded picture -- and the total is what stops a
+# fifty-step strip at full resolution from being a half-gigabyte file
+# somebody attaches to an issue.
+MAX_IMAGE_FRAMES = 64
+MAX_IMAGE_FRAME_BYTES = 4_000_000
+MAX_IMAGE_BYTES_TOTAL = 48_000_000
+
+# Denoising steps in a cross-attention run. `image_attention.MAX_STEPS` is 50
+# and this is deliberately looser: it bounds what this READER will accept from
+# a stranger's file, not what this tool will run.
+MAX_IMAGE_STEPS = 200
+
+# Columns in a cross-attention map. CLIP is 77 and PixArt-Sigma is 300; a
+# thousand is past every conditioning width that exists and well short of
+# anything that would hurt to hold.
+MAX_IMAGE_TOKENS = 1_024
+
+# Rows in a detection or classification readout.
+MAX_IMAGE_LABELS = 1_000
+
 
 def _graph(doc: dict) -> dict:
     """The attribution-graph section of an untrusted file, or nothing.
@@ -881,6 +903,435 @@ def _vla(doc: dict) -> dict:
             )
         out["occlusion"] = kept
 
+    return out
+
+
+def _image(doc: dict) -> dict:
+    """The image-run section of an untrusted file, or nothing.
+
+    A6 on the roadmap, and the last thing in Theme A that was not built: the
+    recording format carried a text generation and a robot episode, so the one
+    kind of result this tool produces that is a PICTURE was the one you could
+    not send anybody. A diffusion run, a detection run and a classification
+    readout all land here.
+
+    Held to `_vla`'s standard, because this section reaches a browser as an
+    <img> src and a set of nested loops, and a `.mri` is designed to arrive
+    from a stranger.
+
+    THREE RULES SPECIFIC TO THIS SECTION.
+
+    EVERY FRAME SAYS ITS OWN SIZE, AND WHETHER IT WAS SHRUNK TO GET HERE.
+    Exactly the robot frame's rule and for exactly the robot frame's reason: a
+    cross-attention map is drawn over the picture, and a picture silently
+    resized puts every cell in the wrong place -- wrong in the way that looks
+    like a finding rather than like a bug. `image_steps.Frame` already carries
+    `decoded_width`/`decoded_height` beside the emitted pair for this, so the
+    writer has nothing to invent and the reader refuses a frame that does not.
+
+    THE PROVENANCE IS NOT OPTIONAL, and `revision` is not optional either --
+    but an EMPTY revision is allowed where a missing one is refused. "" is a
+    claim, and a true one for a checkpoint loaded out of a local folder that
+    published no revision; a missing field is silence. The difference matters
+    because the whole value of this section is that somebody else can rerun it,
+    and "no revision was published" and "nobody wrote one down" are different
+    answers to the only question that makes that possible.
+
+    A SECTION WITH NO MEASUREMENT IS REFUSED. Provenance and a prompt describe
+    a run; they are not one. At least one of `frames`, `attention` or `readout`
+    has to be here, or the file claims an image run nobody can look at.
+
+    And `seed` keeps its `None`. A run with no fixed seed is not a run with
+    seed 0 -- rerun it and you get another trajectory, and nothing downstream
+    compares. `image_attention` and `image_steps` both carry the distinction
+    and it survives the round trip.
+    """
+    raw = doc.get("image")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise SessionError("this session's image section is not a set of fields")
+
+    provenance = raw.get("provenance")
+    if not isinstance(provenance, dict):
+        raise SessionError(
+            "this session's image section carries no provenance. A picture "
+            "without the checkpoint, family, architecture and revision that "
+            "drew it cannot be rerun by the person you sent it to, which is "
+            "the only reason to send it."
+        )
+    keep_prov: dict = {}
+    for name in ("repo", "family", "architecture", "kind"):
+        value = provenance.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise SessionError(
+                f"this session's image section does not say which {name} produced it."
+            )
+        keep_prov[name] = value[:MAX_RANKING_TEXT]
+    revision = provenance.get("revision")
+    if not isinstance(revision, str):
+        # See the docstring: "" is accepted and means "this checkpoint
+        # published none". Absence is refused because it cannot be told apart
+        # from nobody having looked.
+        raise SessionError(
+            "this session's image section does not state a revision. An empty "
+            "one is accepted and means the checkpoint published none; a "
+            "missing one cannot be told apart from nobody having looked."
+        )
+    keep_prov["revision"] = revision[:MAX_RANKING_TEXT]
+
+    out: dict = {"provenance": keep_prov}
+
+    prompt = raw.get("prompt")
+    out["prompt"] = prompt[:MAX_GRAPH_TEXT] if isinstance(prompt, str) else ""
+
+    scheduler = raw.get("scheduler")
+    out["scheduler"] = (
+        scheduler[:MAX_RANKING_TEXT] if isinstance(scheduler, str) else ""
+    )
+
+    seed = raw.get("seed")
+    # `None` survives; `0` is a real seed and a real answer.
+    out["seed"] = (
+        int(seed) if isinstance(seed, int) and not isinstance(seed, bool) else None
+    )
+
+    for name in ("steps_requested", "steps_run"):
+        value = raw.get(name)
+        out[name] = (
+            int(value)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else 0
+        )
+
+    def _steps(value, what: str) -> list[int]:
+        if not isinstance(value, list):
+            return []
+        if len(value) > MAX_IMAGE_STEPS:
+            raise SessionError(
+                f"this session's image section claims {len(value):,} {what}, "
+                f"above the {MAX_IMAGE_STEPS:,} this reads."
+            )
+        return [int(v) for v in value if isinstance(v, int) and not isinstance(v, bool)]
+
+    # `skipped` is a choice and `never_reached` is a gap. Folding them together
+    # would hide a pipeline whose callback does not fire on every step, which
+    # is the distinction `image_steps` keeps them apart for.
+    for name in ("decoded_steps", "skipped_steps", "steps_never_reached"):
+        out[name] = _steps(raw.get(name), name.replace("_", " "))
+
+    # ------------------------------------------------------------- frames
+    frames = raw.get("frames")
+    if frames is not None:
+        if not isinstance(frames, list):
+            raise SessionError("this session's image frames are not a list")
+        if len(frames) > MAX_IMAGE_FRAMES:
+            raise SessionError(
+                f"this session's image section carries {len(frames):,} frames, "
+                f"above the {MAX_IMAGE_FRAMES:,} this reads."
+            )
+        total = 0
+        clean_frames: list[dict] = []
+        for i, frame in enumerate(frames):
+            if not isinstance(frame, dict):
+                raise SessionError(f"image frame {i} is not a set of fields")
+            keep: dict = {}
+
+            step = frame.get("step")
+            if not isinstance(step, int) or isinstance(step, bool) or step < 0:
+                raise SessionError(
+                    f"image frame {i} does not say which denoising step it is. "
+                    f"A strip whose frames have no steps reads as consecutive, "
+                    f"and these are usually a sample of a longer run."
+                )
+            keep["step"] = step
+
+            timestep = frame.get("timestep")
+            keep["timestep"] = (
+                float(timestep)
+                if isinstance(timestep, (int, float))
+                and not isinstance(timestep, bool)
+                and math.isfinite(timestep)
+                else None
+            )
+
+            png = frame.get("png")
+            if not isinstance(png, str) or not png.startswith("data:image/"):
+                # `image_steps.Frame.to_dict` writes `None` rather than "" for
+                # a frame with no bytes, precisely so this can tell a decode
+                # that produced nothing from one that never ran.
+                raise SessionError(
+                    f"image frame {i} is not an image data URL. A `.mri` never "
+                    f"carries a path or a link -- the picture travels inside it "
+                    f"or the frame does not travel at all."
+                )
+            if len(png) > MAX_IMAGE_FRAME_BYTES:
+                raise SessionError(
+                    f"image frame {i} is {len(png):,} bytes, above the "
+                    f"{MAX_IMAGE_FRAME_BYTES:,} this reads."
+                )
+            total += len(png)
+            if total > MAX_IMAGE_BYTES_TOTAL:
+                raise SessionError(
+                    f"this session's image frames total more than "
+                    f"{MAX_IMAGE_BYTES_TOTAL:,} bytes."
+                )
+            keep["png"] = png
+
+            size = frame.get("size")
+            if (
+                not isinstance(size, list)
+                or len(size) != 2
+                or not all(
+                    isinstance(v, int) and not isinstance(v, bool) and v > 0
+                    for v in size
+                )
+            ):
+                raise SessionError(
+                    f"image frame {i} does not state its own resolution. A "
+                    f"cross-attention map is drawn over the picture, so a "
+                    f"frame that has been shrunk without saying so puts every "
+                    f"cell in the wrong place -- and the picture is wrong in a "
+                    f"way that looks exactly like a finding."
+                )
+            keep["size"] = [int(size[0]), int(size[1])]
+
+            # Stated, never inferred, exactly as for a robot frame: `False` is
+            # the positive claim "this is the resolution the VAE produced", and
+            # a missing key would let a shrunk frame pass as an original.
+            keep["downsampled"] = bool(frame.get("downsampled", False))
+            decoded = frame.get("decoded_size")
+            if keep["downsampled"]:
+                if (
+                    not isinstance(decoded, list)
+                    or len(decoded) != 2
+                    or not all(
+                        isinstance(v, int) and not isinstance(v, bool) and v > 0
+                        for v in decoded
+                    )
+                ):
+                    raise SessionError(
+                        f"image frame {i} says it was downsampled but does not "
+                        f"say from what. 'Shrunk from an unknown size' is not a "
+                        f"resolution anybody can put a map back onto."
+                    )
+                keep["decoded_size"] = [int(decoded[0]), int(decoded[1])]
+
+            rms = frame.get("latent_rms")
+            keep["latent_rms"] = (
+                float(rms)
+                if isinstance(rms, (int, float))
+                and not isinstance(rms, bool)
+                and math.isfinite(rms)
+                else None
+            )
+            clean_frames.append(keep)
+        out["frames"] = clean_frames
+        out["png_bytes_total"] = total
+
+    # ---------------------------------------------------------- attention
+    attention = raw.get("attention")
+    if attention is not None:
+        if not isinstance(attention, dict):
+            raise SessionError("this session's image attention is not a set of fields")
+
+        tokens = attention.get("tokens")
+        if not isinstance(tokens, list):
+            raise SessionError("this session's image attention carries no tokens")
+        if len(tokens) > MAX_IMAGE_TOKENS:
+            raise SessionError(
+                f"this session's image attention claims {len(tokens):,} "
+                f"tokens, above the {MAX_IMAGE_TOKENS:,} this reads."
+            )
+        keep_attn: dict = {
+            "tokens": [str(t)[:MAX_RANKING_TEXT] for t in tokens],
+        }
+
+        steps = attention.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise SessionError(
+                "this session's image attention carries no steps. Early steps "
+                "decide layout and late ones decide texture, so a run with no "
+                "steps is not a smaller answer -- it is no answer."
+            )
+        if len(steps) > MAX_IMAGE_STEPS:
+            raise SessionError(
+                f"this session's image attention claims {len(steps):,} steps, "
+                f"above the {MAX_IMAGE_STEPS:,} this reads."
+            )
+        clean_steps: list[dict] = []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict):
+                raise SessionError(f"image attention step {i} is not a set of fields")
+            index = step.get("step")
+            if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                raise SessionError(
+                    f"image attention step {i} does not say which step it is."
+                )
+            per_token = step.get("per_token")
+            if not isinstance(per_token, list):
+                raise SessionError(
+                    f"image attention step {i} carries no per-token mass."
+                )
+            if len(per_token) > MAX_IMAGE_TOKENS:
+                raise SessionError(
+                    f"image attention step {i} claims {len(per_token):,} "
+                    f"columns, above the {MAX_IMAGE_TOKENS:,} this reads."
+                )
+            clean_mass = []
+            for cell in per_token:
+                if (
+                    not isinstance(cell, (int, float))
+                    or isinstance(cell, bool)
+                    or not math.isfinite(cell)
+                ):
+                    # A NaN in a map quantises the whole thing to a smooth,
+                    # plausible, entirely blank picture. `_vla` records the
+                    # same lesson about the same failure.
+                    raise SessionError(
+                        f"image attention step {i} has a value that is not a "
+                        f"finite number, which renders as a blank column in a "
+                        f"map of measured ones."
+                    )
+                clean_mass.append(float(cell))
+            timestep = step.get("timestep")
+            clean_steps.append(
+                {
+                    "step": index,
+                    "timestep": (
+                        float(timestep)
+                        if isinstance(timestep, (int, float))
+                        and not isinstance(timestep, bool)
+                        and math.isfinite(timestep)
+                        else None
+                    ),
+                    "per_token": clean_mass,
+                    "blocks": (
+                        int(step["blocks"])
+                        if isinstance(step.get("blocks"), int)
+                        and not isinstance(step.get("blocks"), bool)
+                        else 0
+                    ),
+                }
+            )
+        keep_attn["steps"] = clean_steps
+
+        # `padding_from` is why a reader is not told the model is fascinated
+        # by `<pad>`; `columns_unlabelled` is a cap on what can be SHOWN, not
+        # on what was measured. Both are carried rather than recomputed,
+        # because both are claims the writer made and this reader cannot check.
+        for name in (
+            "padding_from",
+            "conditioning_width",
+            "columns_unlabelled",
+            "steps_requested",
+            "steps_measured",
+        ):
+            value = attention.get(name)
+            keep_attn[name] = (
+                int(value)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                else 0
+            )
+        resolutions = attention.get("resolutions")
+        keep_attn["resolutions"] = (
+            [
+                int(v)
+                for v in resolutions
+                if isinstance(v, int) and not isinstance(v, bool) and v > 0
+            ][:MAX_IMAGE_STEPS]
+            if isinstance(resolutions, list)
+            else []
+        )
+        means = attention.get("means")
+        keep_attn["means"] = means[:MAX_GRAPH_TEXT] if isinstance(means, str) else ""
+        out["attention"] = keep_attn
+
+    # ------------------------------------------------------------ readout
+    readout = raw.get("readout")
+    if readout is not None:
+        if not isinstance(readout, dict):
+            raise SessionError("this session's image readout is not a set of fields")
+        kind = readout.get("kind")
+        if not isinstance(kind, str) or not kind.strip():
+            # A probability and a detector score are different quantities that
+            # both render as a number between 0 and 1. A readout that does not
+            # say which one it is invites the reader to compare two things that
+            # do not compare.
+            raise SessionError(
+                "this session's image readout does not say what kind it is. A "
+                "classifier's probability and a detector's score are different "
+                "quantities and both render as a number between 0 and 1."
+            )
+        rows = readout.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise SessionError("this session's image readout carries no rows")
+        if len(rows) > MAX_IMAGE_LABELS:
+            raise SessionError(
+                f"this session's image readout claims {len(rows):,} rows, "
+                f"above the {MAX_IMAGE_LABELS:,} this reads."
+            )
+        clean_rows: list[dict] = []
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise SessionError(f"image readout row {i} is not a set of fields")
+            label = row.get("label")
+            if not isinstance(label, str) or not label.strip():
+                raise SessionError(f"image readout row {i} carries no label")
+            score = row.get("score")
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not math.isfinite(score)
+            ):
+                raise SessionError(
+                    f"image readout row {i} carries no finite score, so it "
+                    f"would render as a blank bar in a chart of measured ones."
+                )
+            keep_row: dict = {
+                "label": label[:MAX_RANKING_TEXT],
+                "score": float(score),
+            }
+            for name in ("index", "query"):
+                value = row.get(name)
+                keep_row[name] = (
+                    int(value)
+                    if isinstance(value, int) and not isinstance(value, bool)
+                    else None
+                )
+            box = row.get("box_xyxy")
+            if (
+                isinstance(box, list)
+                and len(box) == 4
+                and all(
+                    isinstance(v, (int, float))
+                    and not isinstance(v, bool)
+                    and math.isfinite(v)
+                    for v in box
+                )
+            ):
+                keep_row["box_xyxy"] = [float(v) for v in box]
+            else:
+                # `None`, not a zero box. A box at the origin with no width is
+                # a drawable rectangle and would be drawn.
+                keep_row["box_xyxy"] = None
+            clean_rows.append(keep_row)
+        kept_readout: dict = {"kind": kind[:MAX_RANKING_TEXT], "rows": clean_rows}
+        means = readout.get("means")
+        kept_readout["means"] = means[:MAX_GRAPH_TEXT] if isinstance(means, str) else ""
+        out["readout"] = kept_readout
+
+    if not any(key in out for key in ("frames", "attention", "readout")):
+        # See the docstring: provenance and a prompt describe a run, they are
+        # not one.
+        raise SessionError(
+            "this session's image section carries no measurement -- no frames, "
+            "no cross-attention and no readout. Provenance and a prompt "
+            "describe an image run; they are not one."
+        )
+
+    means = raw.get("means")
+    out["means"] = means[:MAX_GRAPH_TEXT] if isinstance(means, str) else ""
     return out
 
 
@@ -1784,6 +2235,19 @@ class Session:
     # and HF Spaces need an upload and an account.
     vla: dict = field(default_factory=dict)
 
+    # An image run: a denoising strip, the cross-attention over the prompt
+    # that produced it, or a detector's readout of a picture. Optional and
+    # additive like `patch`, so a file written before this has no `image` key
+    # and an older reader ignores it rather than failing -- which is why the
+    # format version does not move.
+    #
+    # A6, and the last unbuilt item in Theme A. Every other result this tool
+    # produces could be sent to somebody; the one that is a PICTURE could not,
+    # which meant an image finding was the only kind that had to be screenshot
+    # to be shared -- and a screenshot carries no provenance, no seed and no
+    # statement of what was shrunk.
+    image: dict = field(default_factory=dict)
+
     # The agent run this analysis belongs to: the timeline, and which step
     # failed. Optional and additive like `patch`.
     #
@@ -1835,6 +2299,9 @@ class Session:
 
     def has_vla(self) -> bool:
         return bool(self.vla.get("provenance"))
+
+    def has_image(self) -> bool:
+        return bool(self.image.get("provenance"))
 
     def has_trace(self) -> bool:
         return bool(self.trace.get("steps"))
@@ -1905,6 +2372,7 @@ def build(
     ground: dict | None = None,
     model_diff: dict | None = None,
     vla: dict | None = None,
+    image: dict | None = None,
     trace: dict | None = None,
     step_ref: str = "",
     receipts: list | None = None,
@@ -2022,6 +2490,8 @@ def build(
     # than reaching somebody else's viewer.
     if vla and vla.get("provenance"):
         doc["vla"] = _vla({"vla": vla})
+    if image and image.get("provenance"):
+        doc["image"] = _image({"image": image})
     # Through the reader's validator like every additive section above it, so
     # a bundle whose step_ref names a step it does not carry is refused at
     # WRITE time rather than opening as a dead link in somebody's viewer.
@@ -2210,6 +2680,7 @@ def parse(data: bytes) -> Session:
         ground=_ground(doc),
         model_diff=_model_diff(doc),
         vla=_vla(doc),
+        image=_image(doc),
         # Validated in `receipts.parse` rather than here: the rules belong
         # beside the writer that produces them, and this module already has
         # more section validators than is comfortable.

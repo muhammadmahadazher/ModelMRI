@@ -175,7 +175,9 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/image/filmstrip/cost` | Image Filmstrip Cost |
 | `GET` | `/api/image/local` | Image Local |
 | `GET` | `/api/image/progress` | Image Progress |
+| `GET` | `/api/image/replay` | Image Replay |
 | `GET` | `/api/image/search` | Image Search |
+| `GET` | `/api/image/share/plan` | Image Share Plan |
 | `GET` | `/api/image/size` | Image Size |
 | `GET` | `/api/image/steps/cost` | Image Steps Cost |
 | `GET` | `/api/image/tasks` | Image Tasks |
@@ -209,6 +211,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `POST` | `/api/image/filmstrip` | Image Filmstrip |
 | `POST` | `/api/image/knockout` | Image Knockout |
 | `POST` | `/api/image/load` | Image Load |
+| `POST` | `/api/image/share` | Share Image Run |
 | `POST` | `/api/image/steps` | Image Steps Run |
 | `POST` | `/api/image/unload` | Image Unload |
 | `POST` | `/api/judge` | Judge Score |

@@ -417,9 +417,30 @@ async def main() -> int:
         # a plain localhost port during verification, and a URL sniff called
         # that a real server and asserted a resting state the demo never has.
         demo = await page.query_selector(".demo-banner") is not None
-        loaded = await page.evaluate(
+        # ALL THREE MODALITIES, not just the text model. `/api/session`
+        # reports `model`, `image` and `vla` separately, and the topbar pill
+        # names whichever is held -- so a server with a diffusion pipeline
+        # loaded says `tiny-stable-diffusion-torch · cuda:0`, which is right,
+        # and is not "no model loaded". Asking only about `model.loaded` made
+        # this check fail at the one thing it is not about, with a message
+        # that named neither the cause nor a next step.
+        held = await page.evaluate(
             "async () => { try { const r = await fetch('/api/session');"
-            " return (await r.json()).model.loaded; } catch { return false; } }"
+            " const d = await r.json();"
+            " return ['model','image','vla'].filter(k => d[k] && d[k].loaded);"
+            " } catch { return []; } }"
+        )
+        loaded = bool(held)
+        # A REPLAY counts too, and this is the second time an ambient premise
+        # has sent this file's failures to the wrong place. The pill reads
+        # `replay · <model>` while a `.mri` is open, which is correct and is
+        # not "no model loaded" -- so against a maintainer's server with a
+        # recording open, this check went red at the one thing it is not
+        # about. `/api/session/state`, not `/api/session`: the first says
+        # whether a recording is open, the second describes the live model.
+        replaying = await page.evaluate(
+            "async () => { try { const r = await fetch('/api/session/state');"
+            " return (await r.json()).open === true; } catch { return false; } }"
         )
         if demo:
             pass
@@ -428,7 +449,12 @@ async def main() -> int:
             # that matters ("the app never loads one by itself") is asserted
             # above by the network check, which would have caught an
             # /api/model/load fired on mount.
-            print("    (a model is already loaded on this server — pill check n/a)")
+            print(
+                f"    (already loaded on this server: {', '.join(held)} "
+                f"— pill check n/a)"
+            )
+        elif replaying:
+            print("    (a recording is open on this server — pill check n/a)")
         else:
             check("model pill says nothing is loaded", "no model loaded" in text)
         for heading, expected in RESTING.items():

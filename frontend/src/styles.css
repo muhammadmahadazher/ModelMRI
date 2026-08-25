@@ -947,7 +947,25 @@ main > * {
     background-color var(--dur-micro) var(--ease-hover),
     border-color var(--dur-micro) var(--ease-hover),
     box-shadow var(--dur-small) var(--ease-out);
+  /* `nowrap` so a two-word status never breaks across lines mid-phrase — but
+     then a pill holding something LONG cannot shrink, and pushes the document
+     sideways instead. The three lines under it are what stop that:
+     `min-width: 0` lets it shrink inside a flex row, `max-width: 100%` bounds
+     it to its container, and the ellipsis makes the truncation VISIBLE rather
+     than clipping silently.
+
+     MEASURED, not theorised: with a `.mri` from
+     `hf-internal-testing/tiny-stable-diffusion-torch` open, the topbar's
+     `replay · <model>` pill rendered 438px wide inside a 331px topbar and
+     the page scrolled 84px sideways at 375px — `ui_check`'s overflow check
+     caught it. `.pill.accel` already carried exactly these lines for exactly
+     this reason; they belong on every pill, because any of them can be handed
+     a model id nobody chose the length of. */
   white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pill.on { color: var(--color-cobalt); border-color: color-mix(in oklab, var(--acc) 45%, transparent); }
 .pill.violet { color: var(--color-feat); border-color: color-mix(in oklab, var(--sem-feat) 45%, transparent); }
@@ -9158,4 +9176,92 @@ main > .panel[data-mri-group-label]::after {
   font-size: var(--t-md);
   letter-spacing: 0;
   color: var(--color-mute);
+}
+
+/* ---------------------------------------------------------------------------
+   ImageRunReplay — an image run somebody sent you (A6).
+
+   The strip scrolls in its own box rather than wrapping: a filmstrip read out
+   of order is not a filmstrip, and a wrapped one puts step 12 under step 0
+   where the eye reads them as a column of variants rather than a sequence.
+   The overflow is on the strip and never on the page — `ui_check` measures
+   the document at 375px and a horizontal scrollbar on `body` is a bug it
+   catches. */
+.irr-strip {
+  gap: var(--sp-2);
+  overflow-x: auto;
+  padding-bottom: var(--sp-1);
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+.irr-frame {
+  margin: 0;
+  flex: 0 0 auto;
+  max-width: 180px;
+}
+.irr-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-ctrl);
+  /* A denoising frame at step 0 is noise, and smoothing it into a soft grey
+     wash is a picture of something the model never produced. */
+  image-rendering: pixelated;
+  background: var(--color-card);
+}
+.irr-frame figcaption {
+  margin-top: 4px;
+  line-height: 1.4;
+}
+.irr-h {
+  margin: var(--sp-3) 0 var(--sp-1);
+  font: 600 var(--t-xs) / 1.3 var(--font-sans);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-mute);
+}
+.irr-maps {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: var(--sp-1) 0;
+}
+.irr-maprow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.irr-step {
+  flex: 0 0 auto;
+  min-width: 9em;
+}
+/* The cells scroll with the row, not with the page. 77 columns at a legible
+   width is wider than a phone. */
+.irr-cells {
+  display: flex;
+  gap: 1px;
+  overflow-x: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.irr-cell {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 14px;
+  background: var(--color-image);
+  border-radius: 1px;
+}
+/* PADDING IS DIMMED, NOT HIDDEN. CLIP pads to 77 and the padded tail carries
+   real attention mass — dropping it would hide a genuine finding, and drawing
+   it like a word would say the model is fascinated by `<pad>`. */
+.irr-cell.pad {
+  background: var(--color-mute);
+}
+.irr-rows {
+  margin: var(--sp-1) 0;
+  padding-left: 1.1em;
+  font-size: var(--t-xs);
+  line-height: 1.7;
 }

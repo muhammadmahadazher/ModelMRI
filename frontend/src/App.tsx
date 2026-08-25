@@ -20,6 +20,7 @@ import { DEMO } from "./demo";
 import Playground from "./Playground";
 import GraphPanel from "./GraphPanel";
 import ImagePanel from "./ImagePanel";
+import ImageRunReplay from "./ImageRunReplay";
 import ModelDiffPanel from "./ModelDiffPanel";
 import SectionNav from "./SectionNav";
 import SessionBar from "./SessionBar";
@@ -375,6 +376,18 @@ export default function App() {
               controls only when the resident model is one of its families. */}
           <ImagePanel kind="diffusion" />
           <ImagePanel kind="vision" />
+          {/* An image run somebody SENT, rather than one this machine made.
+              Outside the `!VIEWER` gate the two panels above sit behind, and
+              deliberately: the viewer is the build most likely to be holding
+              one, because a `.mri` with a denoising strip in it is exactly
+              what gets forwarded. It renders nothing when the open session
+              carries no image run, which is most of them. */}
+          <ImageRunReplay
+            epoch={resetKey}
+            sessionKey={
+              session.open ? (session.meta?.created_at ?? "open") : ""
+            }
+          />
           <VLAPanel />
           {/* Adopting a step makes the server's current generation that
               step's. Remounting the playground is what gets the panels to

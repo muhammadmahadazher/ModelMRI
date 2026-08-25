@@ -7,6 +7,7 @@ import {
   imageStepsRun,
   ImageFilmstripRun,
   ImageStepTrace,
+  shareImageRun,
 } from "./api";
 
 /**
@@ -80,6 +81,37 @@ export default function ImageSteps({ steps }: { steps: number }) {
     setErr("");
     try {
       setStrip(await imageFilmstrip({ prompt, steps, every, seed: shot() }));
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** Write the run this server just made into a `.mri`.
+   *
+   *  The blob is turned into a click rather than navigated to, because the
+   *  server refuses with JSON and a 409 when there is nothing to share -- a
+   *  plain link would save that sentence to disk under a `.mri` extension and
+   *  the recipient would open a file with nothing in it.
+   *
+   *  The object URL is revoked after the click. A data URL of a megabyte
+   *  filmstrip held on the document until reload is a leak with a plausible
+   *  excuse.
+   */
+  async function share() {
+    setBusy("share");
+    setErr("");
+    try {
+      const blob = await shareImageRun({
+        note: prompt ? `denoising run: ${prompt}` : "",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "image-run.mri";
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -260,6 +292,31 @@ export default function ImageSteps({ steps }: { steps: number }) {
             . A frame is what the decoder made of that step's latent, not
             evidence of when the latent settled — the measurement above is.
           </p>
+
+          {/* A6. Every other result this tool produces could be sent to
+              somebody; this one could only be screenshot — and a screenshot
+              carries no provenance, no seed, no scheduler and no statement of
+              what was shrunk. The file carries the strip AS MEASURED: the
+              server writes it from the run it made, so nothing this button
+              sends becomes a claim in it.
+
+              Bytes and a Content-Disposition rather than an `<a download>`,
+              like `exportSession`: the server answers a refusal as JSON, and
+              a link would cheerfully save that sentence to disk as a `.mri`
+              the recipient then cannot open. */}
+          <div className="row">
+            <button
+              className="ghost sm"
+              onClick={() => void share()}
+              disabled={busy !== ""}
+            >
+              {busy === "share" ? "writing…" : "Share this run (.mri)"}
+            </button>
+            <span className="meta">
+              {strip.frames_decoded} frame(s), the seed and the scheduler, in a
+              file that opens with nothing installed
+            </span>
+          </div>
         </div>
       )}
 

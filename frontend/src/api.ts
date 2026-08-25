@@ -6115,3 +6115,167 @@ export const neuronEvidence = (body: {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }).then((r) => json<NeuronEvidence>(r));
+
+// -------------------------------------- an image run as a `.mri` (A6)
+
+/** One decoded frame of a denoising run, or the picture a readout read.
+ *
+ *  `size` is the resolution this frame IS, and `decoded_size` — present only
+ *  when `downsampled` — is the resolution it came from. Both are required by
+ *  `session._image` for the same reason a robot frame's is: a cross-attention
+ *  map is drawn over the picture, and a picture silently resized puts every
+ *  cell in the wrong place. Wrong in the way that looks like a finding.
+ */
+export interface ImageRunFrame {
+  step: number;
+  /** `null` when the scheduler published none — never 0, which is a real
+   *  timestep at the end of a schedule. */
+  timestep: number | null;
+  png: string;
+  size: [number, number];
+  downsampled: boolean;
+  decoded_size?: [number, number];
+  /** `null` when it was not measured. */
+  latent_rms: number | null;
+}
+
+export interface ImageRunAttention {
+  tokens: string[];
+  steps: {
+    step: number;
+    timestep: number | null;
+    per_token: number[];
+    blocks: number;
+  }[];
+  /** Where the padding starts. CLIP pads to 77 and the padded tail carries
+   *  real attention mass, which is a genuine finding and a terrible chart. */
+  padding_from: number;
+  conditioning_width: number;
+  /** Columns that were MEASURED and have no label to put on them. A cap on
+   *  what can be shown, not on what was measured. */
+  columns_unlabelled: number;
+  steps_requested: number;
+  steps_measured: number;
+  resolutions: number[];
+  means: string;
+}
+
+/** What a classifier, detector or segmenter said.
+ *
+ *  `kind` is not decoration: a classifier's probability, a detector's
+ *  per-query confidence and a segmenter's share of the map are three
+ *  different quantities that all render as a number between 0 and 1. The
+ *  server refuses a readout that does not say which, so nothing here can be
+ *  read side by side as though it compared.
+ */
+export interface ImageRunReadout {
+  kind: string;
+  rows: {
+    label: string;
+    score: number;
+    index: number | null;
+    query: number | null;
+    /** `null`, never a zero rectangle — a box at the origin with no width is
+     *  drawable, and it would be drawn. */
+    box_xyxy: [number, number, number, number] | null;
+  }[];
+  means: string;
+}
+
+/** An image run carried inside a `.mri`.
+ *
+ *  A6, and the last unbuilt item in Theme A: every other result this tool
+ *  produces could be sent to somebody, and the one that is a PICTURE could
+ *  not — so an image finding was the only kind that had to be screenshot to
+ *  be shared, and a screenshot carries no provenance, no seed and no
+ *  statement of what was shrunk.
+ */
+export interface ImageRunSection {
+  provenance: {
+    repo: string;
+    family: string;
+    architecture: string;
+    /** `""` is a CLAIM — "this checkpoint published none" — and the server
+     *  accepts it. What it refuses is the field being absent, which cannot be
+     *  told apart from nobody having looked. */
+    revision: string;
+    kind: string;
+  };
+  prompt: string;
+  /** `null` means NO SEED WAS FIXED, which is not seed 0: rerun it and the
+   *  trajectory differs, and nothing downstream compares. */
+  seed: number | null;
+  scheduler: string;
+  frames?: ImageRunFrame[];
+  png_bytes_total?: number;
+  steps_requested: number;
+  steps_run: number;
+  decoded_steps: number[];
+  /** Ran and was not decoded — a CHOICE. */
+  skipped_steps: number[];
+  /** Selected and never arrived — a GAP. Kept apart from the line above
+   *  because a strip that folded them together reads as eight of fifty
+   *  either way. */
+  steps_never_reached: number[];
+  attention?: ImageRunAttention;
+  readout?: ImageRunReadout;
+  means: string;
+}
+
+/** The image run inside an opened `.mri`, or nothing.
+ *
+ *  `available: false` is a STATE and not an error: most sessions carry no
+ *  image run, and a panel that treated it as one would render "this
+ *  measurement is broken" for the ordinary case.
+ */
+export const getImageReplay = () =>
+  fetch("/api/image/replay").then((r) =>
+    json<{ available: boolean } & Partial<ImageRunSection>>(r),
+  );
+
+/** What a share would carry, before it is asked for.
+ *
+ *  Priced before it is spent like every other measurement here — except the
+ *  currency is BYTES, because the run has already happened and the only
+ *  remaining cost is the size of the file somebody is about to attach to an
+ *  issue.
+ */
+export const getImageSharePlan = () =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Pricing a share means reading the run this machine last made, and " +
+          "there is no image model behind this page to have made one.",
+      )
+    : fetch("/api/image/share/plan").then((r) =>
+        json<{
+          available: boolean;
+          kind?: string;
+          repo?: string;
+          n_frames?: number;
+          png_bytes?: number;
+          n_attention_steps?: number;
+          n_readout_rows?: number;
+          seed?: number | null;
+          means: string;
+        }>(r),
+      );
+
+/** The last image run, as a `.mri` somebody opens with nothing installed.
+ *
+ *  Bytes and a Content-Disposition rather than a plain `<a download>`, for
+ *  the same reason `shareVlaFinding` is: the server answers a refusal as JSON
+ *  with a 409 — nothing has been run yet — and a link would cheerfully save
+ *  that sentence to disk as a `.mri` the recipient then cannot open.
+ *
+ *  NOTHING IN THIS BODY BECOMES A CLAIM IN THE FILE. The section is built
+ *  from what the server measured; `note` is a caption and is the only field.
+ */
+export const shareImageRun = (body: { note?: string }) =>
+  fetch("/api/image/share", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    if (!r.ok) throw new ApiError(r.status, await r.text());
+    return r.blob();
+  });

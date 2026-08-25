@@ -538,6 +538,33 @@ def inspect_session(path, *, as_json: bool = False) -> int:
             if parsed.has_graph()
             else {"present": False}
         ),
+        # An IMAGE run, for exactly the reason the graph block above exists:
+        # `inspect` is triage, run before opening anything, and a file whose
+        # only content is a denoising strip has no tokens, no layers and no
+        # heads -- so without this it prints as an empty session and the
+        # reader deletes it.
+        "image": (
+            {
+                "present": True,
+                "kind": (parsed.image.get("provenance") or {}).get("kind", ""),
+                "repo": (parsed.image.get("provenance") or {}).get("repo", ""),
+                "prompt": parsed.image.get("prompt") or "",
+                # `None` is not 0 here and never becomes it: an unseeded run
+                # cannot be reproduced at all, and printing 0 would promise
+                # that it can.
+                "seed": parsed.image.get("seed"),
+                "frames": len(parsed.image.get("frames") or []),
+                "attention_steps": len(
+                    (parsed.image.get("attention") or {}).get("steps") or []
+                ),
+                "readout_rows": len(
+                    (parsed.image.get("readout") or {}).get("rows") or []
+                ),
+                "means": parsed.image.get("means") or "",
+            }
+            if parsed.has_image()
+            else {"present": False}
+        ),
     }
     if as_json:
         print(json.dumps(summary, indent=2))
@@ -572,6 +599,28 @@ def inspect_session(path, *, as_json: bool = False) -> int:
         line("graph", f"{g['n_nodes']:,} nodes, {g['edges']:,} edges carried")
         line("  computed by", f"{g['producer']} on {g['model'] or 'an unnamed model'}")
         line("", "NOT measured by ModelMRI")
+    if summary["image"]["present"]:
+        img = summary["image"]
+        line("image run", f"{img['kind']} — {img['repo'] or 'an unnamed checkpoint'}")
+        if img["frames"]:
+            line("  frames", f"{img['frames']:,} decoded")
+        if img["attention_steps"]:
+            line("  attention", f"{img['attention_steps']:,} denoising step(s)")
+        if img["readout_rows"]:
+            line("  readout", f"{img['readout_rows']:,} row(s)")
+        # Spelled out rather than printed as a bare value: `seed: None` reads
+        # as a missing field, and the thing it actually means -- this run
+        # cannot be reproduced -- is the most important line here.
+        line(
+            "  seed",
+            (
+                "none fixed, so this run does not repeat"
+                if img["seed"] is None
+                else img["seed"]
+            ),
+        )
+        if img["prompt"]:
+            line("  prompt", _clip(img["prompt"]))
     print()
     # Truncated on purpose: `inspect` is triage, and a 4,000-token prompt
     # scrolling past is the opposite of it. `--json` gives the whole thing.
