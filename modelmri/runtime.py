@@ -525,6 +525,11 @@ class ModelRuntime:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # NOT the lock. Generation streams, so it decodes on a daemon thread
+        # and holds no lock -- this says whether that thread is running
+        # forward passes, which is what any hook-installing measurement has to
+        # know. See `decoding`.
+        self._decoding = threading.Event()
         self.model: AutoModelForCausalLM | None = None
         self.tokenizer: AutoTokenizer | None = None
         self.hf_id: str | None = None
@@ -750,6 +755,33 @@ class ModelRuntime:
             # swallowed, because "I pressed Unload and nvidia-smi did not move"
             # is a question somebody will ask, and the answer is in here.
             log.info("could not empty the %s cache: %s", self.accel.kind, err)
+
+    def decoding(self) -> bool:
+        """Is a generation worker running forward passes right now?
+
+        `self._lock` cannot answer this. Generation streams, so it runs
+        `model.generate` on a daemon thread and holds no lock for the duration
+        -- which is correct for streaming and wrong for anything that installs
+        forward hooks on the shared blocks, because those hooks catch whatever
+        pass happens next. See `patch.trace`, where a concurrent decode step
+        produced a one-token cache and an IndexError.
+        """
+        return self._decoding.is_set()
+
+    def _refuse_if_decoding(self, what: str) -> None:
+        """Refuse a hook-installing measurement while a generation decodes.
+
+        Named cause, named next step, like every other refusal here. The
+        alternative is not "it works anyway": it is a measurement that
+        silently reads somebody else's forward pass.
+        """
+        if self._decoding.is_set():
+            raise Refusal(
+                f"A generation is still running, and {what} reads activations "
+                f"by installing hooks on the model -- it would capture the "
+                f"generation's forward passes instead of this measurement's. "
+                f"Wait for the run to finish, then ask again."
+            )
 
     def _in_flight(self, snap: progress.Snapshot) -> str:
         """A sentence describing the load already running, or "" if none is.
@@ -1292,6 +1324,11 @@ class ModelRuntime:
                 )
             if self.model is None:
                 raise Refusal("No model loaded — pick one first.")
+            # Before anything installs a hook. `patch.trace` reads the clean
+            # run's activations off the shared blocks, and a generation
+            # decoding on another thread fills those hooks with its own
+            # one-token passes.
+            self._refuse_if_decoding("a patching trace")
             # The config's count, not a guess: `_block` raises a Refusal for
             # an architecture it cannot walk, and asking it for layer 0 first
             # turns "unsupported layout" into that message rather than into an
@@ -1477,7 +1514,17 @@ class ModelRuntime:
         result: dict = {}
 
         def _generate() -> None:
-            result["ids"] = self.model.generate(**gen_kwargs)
+            # HELD FOR EXACTLY AS LONG AS FORWARD PASSES ARE HAPPENING.
+            # Set here rather than around the generator below, because
+            # `generate_stream` is a generator: a consumer that stops pulling
+            # leaves it suspended at `yield`, its `finally` unrun and
+            # `worker.join` never reached -- while this thread keeps decoding.
+            # The flag has to describe the THREAD, so the thread owns it.
+            self._decoding.set()
+            try:
+                result["ids"] = self.model.generate(**gen_kwargs)
+            finally:
+                self._decoding.clear()
 
         # One installer, shared with the attention capture. Two copies of
         # "what steering does" would eventually disagree, and the comparison
@@ -1956,6 +2003,11 @@ class ModelRuntime:
                 "intervene in. Load the model through HuggingFace."
             )
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+            # shared block modules, so a generation decoding on its own
+            # thread fills them with one-token passes -- see
+            # `_refuse_if_decoding` and `patch.trace`.
+            self._refuse_if_decoding("a head ablation")
             self._require_live_generation(
                 "Generate something first, then rank its heads."
             )
@@ -2097,6 +2149,11 @@ class ModelRuntime:
                 "intervene in. Load the model through HuggingFace."
             )
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+            # shared block modules, so a generation decoding on its own
+            # thread fills them with one-token passes -- see
+            # `_refuse_if_decoding` and `patch.trace`.
+            self._refuse_if_decoding("an ablation cost estimate")
             self._require_live_generation("Generate something first.")
             cfg = self.model.config
             n_layers, n_heads = (
@@ -2299,6 +2356,15 @@ class ModelRuntime:
         real = self.ablate_heads(layer, baseline)
 
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+
+            # shared block modules, so a generation decoding on its own
+
+            # thread fills them with one-token passes -- see
+
+            # `_refuse_if_decoding` and `patch.trace`.
+
+            self._refuse_if_decoding("a control ranking")
             cfg = self.model.config
             n_layers, n_heads = (
                 text_config(cfg).num_hidden_layers,
@@ -2798,6 +2864,15 @@ class ModelRuntime:
         from . import patch
 
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+
+            # shared block modules, so a generation decoding on its own
+
+            # thread fills them with one-token passes -- see
+
+            # `_refuse_if_decoding` and `patch.trace`.
+
+            self._refuse_if_decoding("a path trace")
             if self.replay is not None:
                 raise Refusal(
                     "This is a recording. Path patching means running the "
@@ -2894,6 +2969,11 @@ class ModelRuntime:
 
         def trace_fn(layer: int, position: int) -> dict:
             with self._lock:
+                # Before anything installs a forward hook. The hooks go on the
+                # shared block modules, so a generation decoding on its own
+                # thread fills them with one-token passes -- see
+                # `_refuse_if_decoding` and `patch.trace`.
+                self._refuse_if_decoding("a patching graph")
                 return patch.path_trace(
                     self.model,
                     self.tokenizer,
@@ -3298,6 +3378,15 @@ class ModelRuntime:
         from . import dla
 
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+
+            # shared block modules, so a generation decoding on its own
+
+            # thread fills them with one-token passes -- see
+
+            # `_refuse_if_decoding` and `patch.trace`.
+
+            self._refuse_if_decoding("direct logit attribution")
             if self.replay is not None:
                 raise Refusal(
                     "This is a recording. Direct attribution means running the "
@@ -3818,6 +3907,11 @@ class ModelRuntime:
                 "HuggingFace."
             )
         with self._lock:
+            # Before anything installs a forward hook. The hooks go on the
+            # shared block modules, so a generation decoding on its own
+            # thread fills them with one-token passes -- see
+            # `_refuse_if_decoding` and `patch.trace`.
+            self._refuse_if_decoding("a feature ranking")
             # Inside the lock, all of it, for the reason `_require_live_generation`
             # gives at length: `load` holds this same lock across the epoch bump
             # and the model swap, so a check taken outside it is a check against

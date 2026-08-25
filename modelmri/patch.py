@@ -281,6 +281,7 @@ def trace(
         finally:
             for h in handles:
                 h.remove()
+
         return got
 
     def run_patched(component: str, layer: int, pos: int, vec: torch.Tensor) -> float:
@@ -313,7 +314,7 @@ def trace(
         # thirds that would have worked — so the missing component is recorded
         # and the rest is measured.
         try:
-            caches[component] = cache_for(component)
+            got_cache = cache_for(component)
         except PatchError as err:
             # A PatchError is this project's own class and carries an
             # authored sentence, so the text is fine here -- but these notes
@@ -322,6 +323,44 @@ def trace(
             # edit does not swap in a library exception without noticing.
             skipped.append(f"{component}: {err}")  # leak-ok: PatchError is authored
             continue
+
+        # WHOSE FORWARD PASS DID THESE COME FROM?
+        #
+        # The hooks in `cache_for` are registered on the block MODULES, not on
+        # that call, so any forward pass through the model while they are
+        # installed fills them instead. Not hypothetical: `generate_stream`
+        # runs `model.generate` on a daemon thread, and a decode step passes
+        # exactly ONE token -- which is where
+        #
+        #     IndexError: index 1 is out of bounds for dimension 1 with size 1
+        #
+        # came from, reproduced deterministically by tracing while a
+        # generation was decoding.
+        #
+        # The crash was the LUCKY outcome. A foreign prefill of the same length
+        # would have matched every shape and produced a grid that looked
+        # exactly like a measurement of this pair and was not. So this checks
+        # the shape rather than catching the exception.
+        #
+        # DELIBERATELY OUTSIDE the `except PatchError` above. That handler
+        # means "this architecture has no such submodule" and records a skip;
+        # a raced capture is a different event and must stop the whole trace,
+        # not quietly drop one third of it. Putting the check inside
+        # `cache_for` did exactly that, and the test for it caught it.
+        for layer, tensor in got_cache.items():
+            if tensor.ndim < 2 or tensor.shape[1] != n_pos:
+                shape = "x".join(str(d) for d in tensor.shape)
+                raise PatchError(
+                    f"The clean run's activations at {component} layer {layer} "
+                    f"came back {shape}, and this prompt is {n_pos} tokens "
+                    f"long. Something else ran through the model while this "
+                    f"measurement was reading it -- a generation decoding on "
+                    f"another thread is one token wide, which is what this "
+                    f"looks like. Wait for the run in progress to finish and "
+                    f"trace again; the numbers from a shared pass would "
+                    f"describe neither prompt."
+                )
+        caches[component] = got_cache
         grids[component] = [
             [
                 run_patched(component, li, pi, caches[component][li][:, pi, :])
