@@ -275,9 +275,16 @@ def load_corpus(path: str | Path) -> tuple[list[str], str]:
     Every caller of this is a ROUTE, so the path is checked against
     `resolve_corpus` before it is opened.
     """
+    from . import corpus_index
     from . import sweep as sweep_mod
 
-    target = resolve_corpus(path)
+    # `corpus_index.resolve_any`, not `resolve_corpus`. Both accept a typed
+    # path; the difference is what reaches the reader. This one returns a
+    # `Path` the server built by descending its own directory reads, so no
+    # string from the request is ever used to construct the thing that gets
+    # opened — which is what five attempts at fencing the string could not
+    # achieve, because `Path.resolve()` is itself the sink.
+    target = corpus_index.resolve_any(path)
     return sweep_mod.load_prompts(target), target.name
 
 

@@ -161,6 +161,7 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | method | path | notes |
 |---|---|---|
 | `DELETE` | `/api/rubric/{name}` | Rubric Delete |
+| `GET` | `/api/corpus/available` | Corpus Available |
 | `GET` | `/api/devices` | List Devices |
 | `GET` | `/api/gguf` | Read Gguf |
 | `GET` | `/api/gguf/plan` | Plan Gguf |

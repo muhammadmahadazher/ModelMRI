@@ -108,7 +108,7 @@ def test_an_absolute_path_outside_every_root_is_refused(escape, monkeypatch):
     monkeypatch.setattr(Path, "cwd", staticmethod(lambda: Path(__file__).parent))
     with pytest.raises(BadRequest) as caught:
         fc.load_corpus(escape)
-    assert "resolves outside" in caught.value.sentence
+    assert "outside the directories" in caught.value.sentence
 
 
 def test_the_refusal_names_the_roots_and_the_way_out(monkeypatch):
@@ -151,9 +151,12 @@ def test_dot_dot_is_collapsed_before_the_check_not_after(tmp_path, monkeypatch):
 
 
 def test_a_path_the_os_cannot_resolve_is_a_refusal_not_a_traceback():
+    """An embedded NUL raises ValueError from some path calls and is silently
+    truncated by others. Named either way, rather than left to differ by
+    platform or to surface as a traceback through four routes."""
     with pytest.raises(BadRequest) as caught:
         fc.load_corpus("\0no-such-thing")
-    assert "resolve" in caught.value.sentence
+    assert "not a path this machine can read" in caught.value.sentence
 
 
 # ------------------------------------------- and the CLI is not behind it
@@ -204,7 +207,7 @@ def test_a_sibling_directory_that_merely_starts_the_same_is_refused(
 
     with pytest.raises(BadRequest) as caught:
         fc.load_corpus(sibling / "theirs.txt")
-    assert "resolves outside" in caught.value.sentence
+    assert "outside the directories" in caught.value.sentence
 
 
 def test_the_root_itself_is_inside_the_root(tmp_path, monkeypatch):

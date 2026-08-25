@@ -42,8 +42,20 @@ def test_a_corpus_loads_from_the_same_reader_the_sweep_uses(tmp_path):
 
 
 def test_a_missing_corpus_says_so(tmp_path):
-    with pytest.raises(BadRequest, match="could not be read"):
+    """And says WHICH part it could not find.
+
+    This used to assert the reader's own "could not be read", which arrived
+    after the open failed. The path is now walked down to one directory entry
+    at a time, so a name that is not there is caught a step earlier and the
+    refusal can name it — which is the thing a reader can act on, where "could
+    not be read" leaves them checking spelling by hand.
+    """
+    with pytest.raises(BadRequest) as caught:
         fc.load_corpus(tmp_path / "nope.txt")
+    said = caught.value.sentence
+    assert "nope.txt" in said
+    # A refusal with no next step is a wall.
+    assert "MODELMRI_CORPUS_DIRS" in said or "spelling" in said
 
 
 def test_the_same_corpus_hashes_the_same_way_in_any_order():

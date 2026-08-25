@@ -2495,6 +2495,28 @@ def create_app(
             },
         )
 
+    @app.get("/api/corpus/available")
+    async def corpus_available(request: Request):
+        """The .txt and .jsonl this machine can read, so you can pick one.
+
+        A corpus field that only accepts a typed path is a path-injection
+        primitive with a text box in front of it; one that only accepts an id
+        takes away the way people actually point this at their own file. Both
+        work, and neither is used to BUILD a path — see `corpus_index`.
+
+        Reading a directory is reading this machine, so it carries the same
+        WHO guard as every other route that touches the disk.
+        """
+        refusal = _not_from_this_machine(request, "Listing corpora on this machine")
+        if refusal is not None:
+            return refusal
+        from . import corpus_index
+
+        try:
+            return await asyncio.to_thread(lambda: corpus_index.scan().to_dict())
+        except Exception as err:
+            return _internal(err, "/api/corpus/available")
+
     @app.get("/api/vla/timeline")
     async def vla_timeline_tracks(episode: int = 0, max_points: int = 600):
         """One episode's series — actions, state, reward — on ONE time axis.
