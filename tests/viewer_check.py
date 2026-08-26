@@ -244,6 +244,24 @@ def build_robot_fixture() -> bytes:
                         "clears_control": None,
                         "control_draws": 0,
                     },
+                    # A VERDICT WITH NOTHING BEHIND IT. The reader validates
+                    # `clears_control` and the two control numbers
+                    # independently -- a null `control_max` survives on
+                    # purpose, because an uncontrolled block genuinely has
+                    # none -- so this shape passes it. The panel rendered it
+                    # as "0.0000 the best of 0 random occlusions managed": a
+                    # measured-looking zero over an absence.
+                    #
+                    # The LARGEST shift, deliberately, so it is the block the
+                    # answer slot speaks about.
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "shift": 0.9,
+                        "control_max": None,
+                        "clears_control": True,
+                        "control_draws": None,
+                    },
                 ],
             },
         },
@@ -295,7 +313,14 @@ def build_diff_fixture() -> bytes:
                     "drop": 0.02,
                 }
             ],
-            "layers": [],
+            # A ROW THE READER ACCEPTS AND THE PANEL HAD TO GUESS AT.
+            # `_rows` keeps `None` for any field, justified by a comment about
+            # `first_divergent_layer` only -- so a spread with no median, no
+            # bounds and no count is a legal row, and `?? 0` printed it as a
+            # measured zero-width spread over zero prompts.
+            "layers": [
+                {"layer": 0, "median": None, "low": None, "high": None, "n": None}
+            ],
             "heads": [],
             "tokens": [],
             # A TIGHT spread, so the panel must print the amount rather than
@@ -322,6 +347,233 @@ def build_diff_fixture() -> bytes:
             "seq_len": 24,
             "n_sequences": 6,
             "margin_sigma": 3.0,
+        },
+    )
+
+
+def build_causal_fixture() -> bytes:
+    """A `.mri` carrying all three CAUSAL sections at once — the patching
+    grid, the graph walked back out of it, and the grounding result.
+
+    Nothing here is edited after the build, and that is the point. This is
+    what `session.build` writes today, through `session._patch`,
+    `_patch_graph` and `_ground`, which are the same readers the app opens a
+    forwarded file with. All three sections have been written since the day
+    each landed, and the viewer's shim answered none of their three routes —
+    so every one of them fell through to its last line, "install ModelMRI to
+    point these instruments at your own models". That sentence is false about
+    a file whose bytes already carry the measurement, and it is the one
+    refusal a reader cannot act on: there is nothing to install their way out
+    of.
+
+    ONE file rather than three, because the three arrive together and are read
+    together. The graph is seeded from the grid's own flagged sites, so a
+    viewer that draws the graph and refuses the grid shows a conclusion with
+    its evidence withheld — and a reader who gets neither cannot tell a
+    measured circuit from a picture of one.
+    """
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a"],
+        prompt="a",
+        generation="",
+        attention={},
+        n_layers=2,
+        n_heads=1,
+        note="a causal session somebody sent",
+        patch={
+            # `resid` is the tab the panel opens on, so this is the grid the
+            # recipient sees first. The negative cell is deliberate: recovery
+            # is SIGNED, and a site that pushed the answer further from the
+            # clean run must not paint like a site that did nothing.
+            "grids": {
+                "resid": [[0.02, 0.87], [0.41, -0.31]],
+                "attn": [[0.00, 0.23], [0.09, 0.02]],
+            },
+            # WHAT MAKES THE GRID READABLE. Its columns are token positions,
+            # and its numbers are a fraction of the gap between two answers.
+            # The section carried neither, so the panel mounted and then said
+            # the server had answered in a shape it did not know -- to a
+            # reader with no server to restart.
+            "components": ["resid", "attn"],
+            "tokens": {
+                "clean": ["The", " Eiffel"],
+                "corrupt": ["The", " Colosseum"],
+            },
+            "answers": {
+                "clean": {"text": " Paris", "p": 0.71},
+                "corrupt": {"text": " Rome", "p": 0.66},
+            },
+            "sites": [
+                {
+                    "layer": 1,
+                    "position": 1,
+                    "component": "resid",
+                    "recovery": 0.87,
+                    "control_max": 0.11,
+                    "control_draws": 8,
+                    "shifted_position": 0.19,
+                    "clears_control": True,
+                    "clears_position": True,
+                }
+            ],
+            # The component this architecture never exposed. `patch.py` keeps
+            # the refusal that named it so two grids cannot arrive looking
+            # like the whole answer, and this note is the only place the third
+            # one is accounted for at all.
+            "notes": [
+                "mlp: this architecture exposes no separate mlp submodule, so "
+                "that grid is absent rather than empty"
+            ],
+            "clean": "The Eiffel Tower is located in the city of",
+            "corrupt": "The Colosseum is located in the city of",
+        },
+        patch_graph={
+            "nodes": [
+                {
+                    "id": "resid:1:1",
+                    "layer": 1,
+                    "head": None,
+                    "position": 1,
+                    "role": "seed",
+                    "depth": 0,
+                },
+                {
+                    "id": "attn:0:1:h0",
+                    "layer": 0,
+                    "head": 0,
+                    "position": 1,
+                    "role": "sender",
+                    "depth": 1,
+                },
+                {
+                    "id": "mlp:0:0",
+                    "layer": 0,
+                    "head": None,
+                    "position": 0,
+                    "role": "sender",
+                    "depth": 1,
+                },
+            ],
+            "edges": [
+                {
+                    "source": "attn:0:1:h0",
+                    "target": "resid:1:1",
+                    "recovery": 0.62,
+                    "control_max": 0.14,
+                    "controls": [0.05, 0.09, 0.14, 0.02, 0.11, 0.07, 0.13, 0.06],
+                    "control_draws": 8,
+                    "clears_control": True,
+                    "clears_position": True,
+                },
+                # TESTED AND FAILED, which is a finding rather than an absence
+                # — `patch_graph` returns it marked rather than dropping it,
+                # and `clears_position` is null because that second control was
+                # never run for this edge. Null travels; the reader is three-
+                # valued here on purpose, because coercing it to False would
+                # turn "not run" into "run, and failed".
+                {
+                    "source": "mlp:0:0",
+                    "target": "resid:1:1",
+                    "recovery": 0.08,
+                    "control_max": 0.21,
+                    "controls": [0.03, 0.21, 0.10, 0.07, 0.19, 0.05, 0.12, 0.08],
+                    "control_draws": 8,
+                    "clears_control": False,
+                    "clears_position": None,
+                },
+            ],
+            # NOT a footnote, and `_patch_graph` refuses a graph without one.
+            # Edge count is quadratic in sites, so every graph here is a
+            # subset by construction; one whose rule for choosing edges has
+            # been stripped is a picture rather than a measurement.
+            "seeding": "the 1 residual site that beat its controls, "
+            "expanded one level back",
+            "means": "A patching graph, built from nothing but the model this "
+            "file was recorded on — not a transcoder attribution graph.",
+            "clean": "The Eiffel Tower is located in the city of",
+            "corrupt": "The Colosseum is located in the city of",
+            "depth": 1,
+            "n_scored": 137,
+            "n_pruned": 12,
+            # HOW MUCH OF THE NETWORK THIS GRAPH STOPPED LOOKING AT, and what
+            # it cost. The reader dropped all three, so a recorded graph drew
+            # no pruning chips -- one that pruned most of the network read as
+            # the whole circuit -- and printed its two-minute run as "0s".
+            "n_weak": 41,
+            "n_untested": 9,
+            "seconds": 119.4,
+            "passes": 1096,
+            "prune_threshold": 0.02,
+            "prune_from": "the strongest edge at this level",
+            # The receiver whose senders were never expanded. Dropping it
+            # would turn "we stopped asking here" into "nothing wrote this".
+            "frontier": ["mlp:0:0"],
+        },
+        ground={
+            "question": "Question: which alloy carried the load?\nAnswer:",
+            "answer": " steel",
+            "answer_p": 0.7314,
+            "position": 41,
+            "chunks": [
+                {
+                    "index": 0,
+                    "preview": "The 1968 deck was rebuilt in weathering "
+                    "steel throughout.",
+                    "n_tokens": 34,
+                    "dependence": 0.4271,
+                    "attention": None,
+                    "depended_on": True,
+                    "looked_not_used": None,
+                },
+                {
+                    "index": 1,
+                    "preview": "The original towers were wrought iron, "
+                    "riveted on site.",
+                    "n_tokens": 22,
+                    "dependence": 0.0044,
+                    "attention": None,
+                    "depended_on": False,
+                    "looked_not_used": None,
+                },
+                {
+                    "index": 2,
+                    "preview": "Unrelated: the ferry runs hourly at weekends.",
+                    "n_tokens": 18,
+                    "dependence": 0.0009,
+                    "attention": None,
+                    "depended_on": False,
+                    "looked_not_used": None,
+                },
+            ],
+            "n_chunks": 3,
+            "n_prompt_tokens": 96,
+            # A REAL floor, which is what lets `depended_on` above be a claim
+            # rather than an assertion: `_ground` refuses a passage marked as
+            # depended-on in a file that does not say what it cleared.
+            "noise_floor": 0.0121,
+            "joint": 0.5108,
+            # THE UNMEASURED HALF, and the reason this fixture leaves every
+            # `attention` null. `ground.measure` reports None for every
+            # passage on a model whose attention implementation never built
+            # the score matrix, and sets `looked_not_used` to None with it —
+            # all of them or none of them, never a mix. A share of 0.0 there
+            # would read as "nothing looked at this passage", which is a
+            # finding, and nobody took that reading.
+            "attention_share": None,
+            "attention_available": False,
+            "attention_note": "this model fuses attention and never returned "
+            "a score matrix, so the looked-at half was not taken",
+            "floor_degenerate": False,
+            "ungrounded": False,
+            "passes": 7,
+            "seconds": 3.482,
         },
     )
 
@@ -357,6 +609,123 @@ async def diff_side(port: int) -> dict:
             }"""
         )
         await browser.close()
+        return got
+
+
+async def causal_side(port: int) -> dict:
+    """Open that file in the real viewer and read what it served and drew.
+
+    Three routes and three panels in one pass, because it is one failure.
+    `viewerFetch` handled none of `/api/patch`, `/api/patch/graph` or
+    `/api/ground`, so all three fell through to the shim's "install ModelMRI";
+    and `Playground` returned the attention panel alone under `if (VIEWER)`,
+    so the three panels that read a recorded causal result were never mounted
+    in the ONE build that exists to show recordings. Either half alone leaves
+    the reader with nothing: a route with no panel is data nobody sees, and a
+    panel with no route is a heading over a refusal.
+
+    None of these panels draws a recording until the reader asks for it —
+    each offers "Show the recorded …" where the button that re-runs the
+    measurement would be. So this clicks that button inside each panel rather
+    than waiting for something that never arrives on its own, and returns what
+    it clicked: a probe that quietly found no button reads exactly like a
+    panel that rendered nothing, and those are different failures.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        # `frontend/src` has no error boundary, so ONE TypeError in one panel
+        # unmounts the whole page. Without this the three mount checks below
+        # would fail together with nothing on the line saying why.
+        crashed: list[str] = []
+        page.on(
+            "pageerror",
+            lambda err: crashed.append(str(err).splitlines()[0][:160]),
+        )
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const post = async (path) => {
+                const r = await fetch(path, {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: '{}',
+                });
+                // The BODY as text, not as JSON: the thing under test is
+                // whether the recording came back or the refusal did, and
+                // both parse.
+                return {status: r.status, body: await r.text()};
+              };
+              const blob = await (await fetch('./causal.mri')).blob();
+              const file = new File([blob], 'causal.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const state = await (await fetch('/api/session/state')).json();
+              const patch = await post('/api/patch');
+              const graph = await post('/api/patch/graph');
+              const ground = await post('/api/ground');
+
+              // Re-queried inside the loop and never collected up front: a
+              // click re-renders its panel, React delegates events at the
+              // root, and a button detached by an earlier render is a button
+              // whose click goes nowhere.
+              const asked = [];
+              for (const sel of ['.panel.patch', '.panel.pgraph', '.panel.ground']) {
+                const panel = document.querySelector(sel);
+                if (!panel) continue;
+                const button = [...panel.querySelectorAll('button')]
+                  .find(b => (b.textContent || '').startsWith('Show the recorded'));
+                if (!button) continue;
+                asked.push(sel + ' — ' + button.textContent.trim());
+                button.click();
+                await new Promise(r => setTimeout(r, 700));
+              }
+              await new Promise(r => setTimeout(r, 600));
+
+              const drawn = (sel) => {
+                const el = document.querySelector(sel);
+                return el ? el.innerText : '';
+              };
+              return {
+                available: {
+                  patch: state && state.patch ? state.patch.available === true : false,
+                  graph: state && state.patch_graph
+                    ? state.patch_graph.available === true : false,
+                  ground: state && state.ground
+                    ? state.ground.available === true : false,
+                },
+                status: {
+                  patch: patch.status,
+                  graph: graph.status,
+                  ground: ground.status,
+                },
+                served: {
+                  patch: patch.body,
+                  graph: graph.body,
+                  ground: ground.body,
+                },
+                mounted: {
+                  patch: !!document.querySelector('.panel.patch'),
+                  graph: !!document.querySelector('.panel.pgraph'),
+                  ground: !!document.querySelector('.panel.ground'),
+                },
+                text: {
+                  patch: drawn('.panel.patch'),
+                  graph: drawn('.panel.pgraph'),
+                  ground: drawn('.panel.ground'),
+                },
+                asked,
+              };
+            }"""
+        )
+        await browser.close()
+        got["crashed"] = crashed
         return got
 
 
@@ -627,6 +996,7 @@ def main() -> int:
     (VIEWER / "image.mri").write_bytes(build_image_fixture())
     (VIEWER / "robot.mri").write_bytes(build_robot_fixture())
     (VIEWER / "diff.mri").write_bytes(build_diff_fixture())
+    (VIEWER / "causal.mri").write_bytes(build_causal_fixture())
 
     expected = python_side(data)
     port = 5921
@@ -637,6 +1007,7 @@ def main() -> int:
         shared = asyncio.run(image_side(port))
         robot = asyncio.run(robot_side(port))
         diff = asyncio.run(diff_side(port))
+        causal = asyncio.run(causal_side(port))
     finally:
         httpd.shutdown()
 
@@ -756,6 +1127,17 @@ def main() -> int:
             "-0.120" in robot["text"],
             "a negative attention/cause agreement keeps its sign",
         ),
+        (
+            "no numbers",
+            "control not recorded" in robot["text"]
+            and "not evidence on its own" in robot["text"],
+            "a verdict with no control numbers behind it says so",
+        ),
+        (
+            "no fake zero",
+            "the best of 0 random occlusion" not in robot["text"],
+            "a missing control is not printed as a control of zero over zero draws",
+        ),
     ):
         mark = "PASS" if passed else "FAIL"
         print(f"  [{mark}] robot     {label:10} — {detail}")
@@ -794,11 +1176,127 @@ def main() -> int:
             diff["labelled"],
             "head labels are served from the file, not refused with 'install ModelMRI'",
         ),
+        (
+            "no median",
+            "median —" in diff["text"],
+            "a layer row with no median reads as unmeasured, not as 0.00000",
+        ),
+        (
+            "no fake count",
+            "an unrecorded number of prompts" in diff["text"],
+            "a row with no prompt count says so rather than claiming zero "
+            "prompts were compared",
+        ),
     ):
         mark = "PASS" if passed else "FAIL"
         print(f"  [{mark}] diff      {label:13} — {detail}")
         diff_ok = diff_ok and passed
     ok = ok and diff_ok
+
+    print()
+    # A SHARED CAUSAL RESULT: the patching grid, the graph walked back out of
+    # it, and the grounding beside them. `session.build` has written all three
+    # for as long as each has existed — and the viewer answered none of their
+    # routes and mounted none of their panels, so in the one build that exists
+    # to show recordings, the causal half of a file answered "install
+    # ModelMRI" over bytes that already held the measurement.
+    causal_ok = True
+    refused = [
+        name
+        for name, body in causal["served"].items()
+        if "install modelmri" in body.lower()
+    ]
+    absent = [name for name, up in causal["mounted"].items() if not up]
+    codes = ", ".join(f"{n}={c}" for n, c in causal["status"].items())
+    for label, passed, detail in (
+        (
+            "available",
+            all(causal["available"].values()),
+            "the session state names all three sections, so each panel can "
+            "offer the recording instead of a button that can only refuse"
+            if all(causal["available"].values())
+            else "the state reports "
+            + ", ".join(
+                f"{n}={'yes' if flag else 'no'}"
+                for n, flag in causal["available"].items()
+            )
+            + " — a panel that is not told the file carries the measurement "
+            "cannot show it",
+        ),
+        (
+            "answered",
+            all(code == 200 for code in causal["status"].values()),
+            f"all three routes served the recording ({codes})"
+            if all(code == 200 for code in causal["status"].values())
+            else f"a route the file has an answer for did not give it ({codes})",
+        ),
+        (
+            "not refused",
+            not refused,
+            "no route told the reader to install the tool over a file that "
+            "already carries the measurement"
+            if not refused
+            else f"{', '.join(refused)} answered with the shim's install-the-"
+            "tool refusal, which is false about this file and the one thing "
+            "the reader cannot act on",
+        ),
+        (
+            "mounted",
+            not absent,
+            "all three panels are on the page"
+            if not absent
+            else f"{', '.join(absent)} never mounted"
+            + (
+                f"; the page threw {causal['crashed'][0]}"
+                if causal["crashed"]
+                else ", and nothing threw — this build simply does not render "
+                "them, which no unit test can see"
+            ),
+        ),
+        (
+            "patch grid",
+            "0.87" in causal["text"]["patch"],
+            "the site that recovered 0.87 of the gap is drawn, so the grid "
+            "rendered rather than merely mounting",
+        ),
+        (
+            "graph",
+            "137" in causal["text"]["graph"]
+            and "expanded one level back" in causal["text"]["graph"],
+            "the graph names the 137 senders it scored and the rule that "
+            "chose its edges, which is what makes it a measurement rather "
+            "than a picture of one",
+        ),
+        (
+            "ground nats",
+            "0.4271" in causal["text"]["ground"],
+            "the passage the answer depended on carries its 0.4271 nats, so "
+            "the finding is readable and not just the question it answered",
+        ),
+        (
+            "pruning",
+            "41" in causal["text"]["graph"] and "9" in causal["text"]["graph"],
+            "the graph says how many senders it found too weak and how many "
+            "it never tested, so a pruned circuit is not read as a whole one",
+        ),
+        (
+            "cost",
+            "119.4s" in causal["text"]["graph"],
+            "the run's real duration is printed, not a measured-looking zero "
+            "standing in for a number the file never carried",
+        ),
+        (
+            "unmeasured",
+            "not measured" in causal["text"]["ground"]
+            and "0.0000" not in causal["text"]["ground"],
+            "attention this model never produced reads as unmeasured, not as "
+            "a share of zero — which would be a finding nobody took",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] causal    {label:11} — {detail}")
+        causal_ok = causal_ok and passed
+    ok = ok and causal_ok
 
     print()
     # Two different failures, and the last line has to name the right one:
@@ -815,6 +1313,8 @@ def main() -> int:
         print("THE VIEWER MISHANDLES A SHARED ROBOT FINDING — see above")
     elif not diff_ok:
         print("THE VIEWER MISHANDLES A SHARED MODEL COMPARISON — see above")
+    elif not causal_ok:
+        print("THE VIEWER MISHANDLES A SHARED CAUSAL RESULT — see above")
     else:
         print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1

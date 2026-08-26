@@ -520,6 +520,42 @@ def decoder_blocks(root):
     return None
 
 
+def _recorded_patch(recorded: dict) -> dict:
+    """A stored patching section in the shape a LIVE trace answers in.
+
+    The panel has one renderer, and it reads `data.clean.answer.text`,
+    `data.corrupt.tokens[...]` and `data.components`. The file stores the
+    prompts flat -- `clean` and `corrupt` are strings there, which is what the
+    CLI and `session_info` read -- so something has to put the two shapes back
+    together, and doing it here means the panel never learns that a recording
+    is different from a run.
+
+    Absent parts stay absent rather than becoming empty strings: a file
+    written before the strip was carried has no token labels, and inventing
+    blank ones would draw a grid whose columns are labelled with nothing.
+    """
+    tokens = recorded.get("tokens") or {}
+    answers = recorded.get("answers") or {}
+    return {
+        **{
+            k: v
+            for k, v in recorded.items()
+            if k not in ("clean", "corrupt", "tokens", "answers")
+        },
+        "clean": {
+            "prompt": recorded.get("clean") or "",
+            "tokens": tokens.get("clean") or [],
+            "answer": answers.get("clean") or {},
+        },
+        "corrupt": {
+            "prompt": recorded.get("corrupt") or "",
+            "tokens": tokens.get("corrupt") or [],
+            "answer": answers.get("corrupt") or {},
+        },
+        "components": recorded.get("components") or sorted(recorded.get("grids") or {}),
+    }
+
+
 class ModelRuntime:
     """Owns the loaded model; thread-safe load, streaming generate, attention."""
 
@@ -1308,7 +1344,7 @@ class ModelRuntime:
                 # to be worth sending.
                 recorded = self.replay.patch
                 if recorded.get("grids"):
-                    return {**recorded, "recorded": True}
+                    return {**_recorded_patch(recorded), "recorded": True}
                 raise Refusal(
                     "This is a recording, and it does not carry a patching "
                     "trace. Patching means running the model again with an "
@@ -1358,10 +1394,31 @@ class ModelRuntime:
                     clean_sha256=receipts.digest(clean),
                     corrupt_sha256=receipts.digest(corrupt),
                 )
+                # THE PROMPTS FLATTENED, AND THE REST KEPT. `result` carries
+                # `clean`/`corrupt` as {prompt, tokens, answer}; overwriting
+                # them with the bare prompt strings -- which is all the reader
+                # preserved -- threw away the token strip that labels the
+                # grid's columns and the two answers the panel puts above it.
+                # A recipient got the grid and no way to read it: `PatchPanel`
+                # asks for `data.corrupt.tokens` and got a string, and its
+                # shape guard told them to restart a server they do not have.
+                #
+                # So the strings stay where the reader and the CLI expect
+                # them, and the parts they cannot hold travel beside.
+                clean_side = result.get("clean") or {}
+                corrupt_side = result.get("corrupt") or {}
                 self._last_patch = {
                     **result,
                     "clean": clean,
                     "corrupt": corrupt,
+                    "tokens": {
+                        "clean": clean_side.get("tokens") or [],
+                        "corrupt": corrupt_side.get("tokens") or [],
+                    },
+                    "answers": {
+                        "clean": clean_side.get("answer") or {},
+                        "corrupt": corrupt_side.get("answer") or {},
+                    },
                     "epoch": self.epoch,
                 }
                 return result
@@ -4809,6 +4866,17 @@ class ModelRuntime:
     def features_summary(self, top_k: int = 8) -> dict:
         """Per-token top-K firing features for the last generation."""
         feats = self._compute_features().float()  # [S, d_sae]
+        # `/api/features/summary` takes `top_k` as a bare query integer, and
+        # `topk` raises a torch error for anything above this SAE's width --
+        # which reaches the caller as a 500 about an index, rather than as the
+        # 422 it is. The bound is the SAE's own `d_sae`, read here rather than
+        # written down: two SAEs for the same model routinely differ in width.
+        width = int(feats.shape[-1])
+        if not 1 <= top_k <= width:
+            raise BadRequest(
+                f"top_k must be in [1,{width}]. This SAE has {width} features, "
+                f"and asking for more than it has is not a wider answer."
+            )
         tokens = [self.tokenizer.decode([tid]) for tid in self.last_ids.tolist()]
         acts, ids = feats.topk(top_k, dim=-1)
         return {

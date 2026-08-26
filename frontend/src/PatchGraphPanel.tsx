@@ -1,5 +1,6 @@
 import { CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import RunsOn from "./RunsOn";
+import RunsOn, { useModelIdentity } from "./RunsOn";
+import { counted } from "./measured";
 import {
   errorText,
   patchGraph,
@@ -94,6 +95,17 @@ export default function PatchGraphPanel({
    *  replaces every edge and an object held across it is a stale one. */
   const [picked, setPicked] = useState(-1);
   const [hovered, setHovered] = useState(-1);
+  const model = useModelIdentity(epoch);
+
+  // Same as `PatchPanel`: the `key={epoch}` below remounts the DOM subtree and
+  // leaves this component's own state exactly where it was, so a graph
+  // outlived the model it was computed on.
+  useEffect(() => {
+    setG(null);
+    setErr("");
+    setPicked(-1);
+    setHovered(-1);
+  }, [epoch, model]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scanRef = useScanOnData(g);
@@ -424,7 +436,10 @@ export default function PatchGraphPanel({
             )}
             <span className="spacer" />
             <span>
-              {num(g.passes) ?? 0} passes · {num(g.seconds) ?? 0}s
+              {counted(num(g.passes), "pass", "passes")} ·{" "}
+              {num(g.seconds) === null
+                ? "an unrecorded duration"
+                : `${num(g.seconds)}s`}
             </span>
           </div>
 

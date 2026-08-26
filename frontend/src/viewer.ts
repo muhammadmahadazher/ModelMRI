@@ -91,6 +91,100 @@ interface Doc {
     summary?: Record<string, unknown>;
     notes?: string[];
   };
+  /** An activation-patching trace: which layer and position, restored from
+   *  the clean run into the corrupt one, moved the answer back. Optional and
+   *  additive like `graph`.
+   *
+   *  `session.build` has written this section since it existed and this shim
+   *  served it nowhere, so the one finding in this tool that is CAUSAL rather
+   *  than correlational arrived as a file that opened on an attention panel
+   *  with nothing saying the trace was inside it. Field names mirror
+   *  `session._patch`. */
+  patch?: {
+    /** The token strip that labels the grid's columns, per side, and the two
+     *  answers the recovery was measured between. Both absent in a file
+     *  written before they were carried. */
+    tokens?: { clean?: string[]; corrupt?: string[] };
+    answers?: {
+      clean?: { text?: string; p?: number };
+      corrupt?: { text?: string; p?: number };
+    };
+    /** Which grids were measured, in the order the panel offers them. A file
+     *  written without it falls back to the grid names, sorted. */
+    components?: string[];
+    /** One grid per component, indexed `[layer][position]`. `session._patch`
+     *  guarantees each is rectangular, because the viewer indexes it as one
+     *  and a ragged grid draws as a table with holes and no error. */
+    grids?: Record<string, number[][]>;
+    sites?: Record<string, unknown>[];
+    notes?: string[];
+    clean?: string;
+    corrupt?: string;
+  };
+  /** The PATCHING graph — a different section from `graph` above, and
+   *  deliberately not the same key. `graph` carries a transcoder attribution
+   *  graph THIS TOOL DID NOT COMPUTE and is gated on provenance saying so;
+   *  this one is built here out of `patch.path_trace` and carries no such
+   *  disclaimer. `session._patch_graph` keeps them apart for exactly that
+   *  reason, and so does this interface.
+   *
+   *  It costs roughly 1,500 forward passes to build and a `.mri` holds
+   *  activations rather than weights, so the file is the only copy its
+   *  recipient will ever have. Field names mirror `session._patch_graph`. */
+  patch_graph?: {
+    nodes?: Record<string, unknown>[];
+    edges?: Record<string, unknown>[];
+    /** How the edges were chosen. `session._patch_graph` REFUSES a graph
+     *  without it: edge count is quadratic in sites, so every such graph is a
+     *  subset by construction, and one whose rule has been stripped is a
+     *  picture rather than a measurement. */
+    seeding?: string;
+    means?: string;
+    clean?: string;
+    corrupt?: string;
+    depth?: number;
+    n_scored?: number;
+    n_pruned?: number;
+    passes?: number;
+    prune_threshold?: number;
+    prune_from?: string;
+    /** Receivers that still had senders when the depth ran out. NOT an empty
+     *  edge list: "nothing wrote this" and "we did not ask" differ. */
+    frontier?: string[];
+  };
+  /** A grounding result: whether the answer came out of the document that was
+   *  supplied, or out of the weights. Optional and additive like `graph`.
+   *
+   *  The document itself is NOT in the file. A `.mri` carries passage
+   *  previews deliberately, because a grounded document is usually the
+   *  private half of the pair — which is also why the recipient can never
+   *  re-run this, and why serving what the file holds is the only way they
+   *  see it at all. Field names mirror `session._ground`. */
+  ground?: {
+    chunks?: Record<string, unknown>[];
+    question?: string;
+    answer?: string;
+    attention_note?: string;
+    /** Usually ABSENT: `runtime._ground_for_export` drops the sentence on the
+     *  way out and the app rebuilds it from the numbers. See `/api/ground`
+     *  below for why this page does not rebuild it. */
+    means?: string;
+    answer_p?: number;
+    noise_floor?: number;
+    joint?: number;
+    /** `null` is a third state and it is not 0: a model whose attention
+     *  implementation never built the score matrix reports no share, and 0
+     *  would read as "nothing looked here". */
+    attention_share?: number | null;
+    seconds?: number;
+    n_chunks?: number;
+    n_prompt_tokens?: number;
+    position?: number;
+    passes?: number;
+    attention_available?: boolean;
+    floor_degenerate?: boolean;
+    ungrounded?: boolean;
+  };
   /** An image run: a denoising strip, the cross-attention over the prompt
    *  that produced it, or a detector's readout. Optional and additive like
    *  `graph`.
@@ -283,6 +377,34 @@ function state() {
     n_tokens: (open.tokens ?? []).length,
     n_slices: Object.keys(open.attention ?? {}).length,
     slices: Object.keys(open.attention ?? {}).sort(),
+    // THE THREE CAUSAL SECTIONS, in the shape `runtime.session_info`
+    // publishes them. Each exists so a panel can offer the recorded finding
+    // instead of a button whose only outcome is a refusal — and this shim
+    // published none of the three, so a `.mri` built around a patching trace,
+    // a patching graph or a grounding result opened to panels that did not
+    // know the file held anything.
+    patch: {
+      available: Object.keys(open.patch?.grids ?? {}).length > 0,
+      clean: open.patch?.clean ?? "",
+      corrupt: open.patch?.corrupt ?? "",
+    },
+    // The question travels and the document does not, so this is the whole of
+    // what the panel can name before it asks for the result itself.
+    ground: {
+      available: (open.ground?.chunks ?? []).length > 0,
+      question: open.ground?.question ?? "",
+    },
+    // `available` is gated on EDGES, matching `Session.has_patch_graph` — a
+    // node list with no edge tested against its controls is not a graph
+    // anybody measured. The two counts are counts of lists the file either
+    // carries or does not, exactly as `len(...get("nodes", []))` counts them
+    // in `session_info`; neither is ever asked to stand for "unknown",
+    // because `available` is the field that answers that question.
+    patch_graph: {
+      available: (open.patch_graph?.edges ?? []).length > 0,
+      n_nodes: (open.patch_graph?.nodes ?? []).length,
+      n_edges: (open.patch_graph?.edges ?? []).length,
+    },
     // THE CARRIED RUN, in the shape `runtime.session_info` publishes. This is
     // how the agents panel learns a run exists, and it is the path that opens
     // on `step_ref` — the step the bundle was built AROUND, which is the
@@ -336,6 +458,44 @@ function viewerSteps(steps: Record<string, unknown>[]): Record<string, unknown>[
     ...step,
     seq: i,
   }));
+}
+
+/** A stored patching section in the shape a LIVE trace answers in.
+ *
+ *  `PatchPanel` has ONE renderer and it reads `data.clean.answer.text`,
+ *  `data.corrupt.tokens[...]` and `data.components`. The file stores the
+ *  prompts flat — `clean` and `corrupt` are strings there, which is what the
+ *  CLI and `session_info` read — so serving the section verbatim handed the
+ *  panel a string where it expected an object, and its shape guard told the
+ *  reader to restart a server they do not have.
+ *
+ *  This mirrors `_recorded_patch` in `modelmri/runtime.py`. Two
+ *  implementations of one reshape is exactly the drift this file exists to
+ *  avoid, so `tests/viewer_check.py` drives a `.mri` carrying a trace through
+ *  both and compares what lands on screen.
+ *
+ *  Absent parts stay absent. A file written before the strip was carried has
+ *  no token labels, and blank ones would label every column with the empty
+ *  string — a grid that looks measured and is not.
+ */
+function recordedPatch(patch: NonNullable<Doc["patch"]>): Record<string, unknown> {
+  const { clean, corrupt, tokens, answers, ...rest } = patch;
+  const strip = tokens ?? {};
+  const answer = answers ?? {};
+  return {
+    ...rest,
+    clean: {
+      prompt: clean ?? "",
+      tokens: strip.clean ?? [],
+      answer: answer.clean ?? {},
+    },
+    corrupt: {
+      prompt: corrupt ?? "",
+      tokens: strip.corrupt ?? [],
+      answer: answer.corrupt ?? {},
+    },
+    components: patch.components ?? Object.keys(patch.grids ?? {}).sort(),
+  };
 }
 
 export async function viewerFetch(
@@ -474,6 +634,93 @@ export async function viewerFetch(
           "Labelling heads means running the model on new random sequences, " +
           "and a `.mri` holds activations rather than weights. Whoever " +
           "exported it can label the heads and share it again.",
+      },
+    };
+  }
+
+  if (p === "/api/patch") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const patch = open.patch;
+    // `recorded: true` is the same flag `runtime.patch_trace` sets when it
+    // answers out of a replay, and the panel reads it to say the trace was
+    // measured elsewhere rather than here. Gated on `grids` for the same
+    // reason `Session.has_patch` is: a section carrying sites and notes and
+    // no grid has nothing to draw.
+    if (patch && Object.keys(patch.grids ?? {}).length > 0) {
+      return ok({ ...recordedPatch(patch), recorded: true });
+    }
+    // The APP's exact refusal for a recording with no trace, rather than the
+    // generic "install ModelMRI" or an `available: false` — the panel types
+    // this response as a grid, so a 200 saying nothing is here would render
+    // as an empty measurement instead of an explanation. The reader is not
+    // missing the tool; this file is missing the measurement.
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry a patching trace. " +
+          "Patching means running the model again with an activation " +
+          "replaced, and a `.mri` holds activations rather than weights — " +
+          "there is nothing here to re-run. Whoever exported it can run " +
+          "the trace and share it again.",
+      },
+    };
+  }
+
+  if (p === "/api/patch/graph") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const pg = open.patch_graph;
+    // Named `pg` and not `g`: the attribution graph above is a different
+    // section with a different disclaimer, and one letter between them in the
+    // same function is how those two get confused.
+    //
+    // Gated on `edges`, matching `runtime.patch_graph` and
+    // `Session.has_patch_graph`. Every edge here was drawn only because it
+    // beat eight same-norm control draws, which is what makes the picture a
+    // measurement instead of a ranking, so a graph with no edges is nothing.
+    if (pg && Array.isArray(pg.edges) && pg.edges.length > 0) {
+      return ok({ ...pg, recorded: true });
+    }
+    // The APP's exact refusal again. This one matters more than most: the
+    // graph cost roughly 1,500 forward passes on the sender's machine and
+    // the recipient has no weights at all, so "build it yourself" is not
+    // advice they can act on and the message does not offer it.
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry a patching graph. " +
+          "Building one means running the model again with activations " +
+          "replaced, hundreds of times, and a `.mri` holds activations " +
+          "rather than weights — there is nothing here to re-run. Whoever " +
+          "exported it can build the graph and share it again.",
+      },
+    };
+  }
+
+  if (p === "/api/ground") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const ground = open.ground;
+    // Served EXACTLY as recorded, and the `means` sentence is DELIBERATELY
+    // not rebuilt here. `runtime._recorded_ground` rebuilds it through the
+    // same `Grounding` dataclass the live path uses, and its docstring says
+    // why: there must be one implementation of what these numbers mean
+    // rather than a second one for replay that drifts. A TypeScript copy
+    // would be that second implementation, and it would drift in silence,
+    // because `GroundPanel.tsx` never reads `means` — nobody would see the
+    // two versions disagree until a reader trusted the wrong sentence.
+    if (ground && Array.isArray(ground.chunks) && ground.chunks.length > 0) {
+      return ok({ ...ground, recorded: true });
+    }
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry a grounding " +
+          "result. Masking a passage out of the model's attention means " +
+          "running the model, and a `.mri` holds activations rather than " +
+          "weights. Whoever exported it can ground an answer and share " +
+          "it again.",
       },
     };
   }

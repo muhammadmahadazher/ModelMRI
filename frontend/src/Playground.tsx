@@ -346,7 +346,33 @@ export default function Playground({
   // can only answer "install ModelMRI".
   if (VIEWER) {
     // Same rule in the zero-install viewer, which only ever shows recordings.
-    return <AttentionPanel epoch={epoch} replay />;
+    // But attention is not the only thing a recording carries: `session.build`
+    // writes `patch`, `patch_graph` and `ground` sections too, and returning
+    // the attention panel alone meant a file sent BECAUSE of its patching
+    // trace, its patching graph or its grounding result opened with that
+    // finding sitting unread inside it.
+    //
+    // Each of the three is gated on the same `available` flag the full build
+    // gates its own replay mounts on below, read off the same session state
+    // App.tsx already hands down — so a section appears exactly when the
+    // opened file holds one, and never as a form with nothing behind it.
+    //
+    // ProbePanel and PatchscopePanel stay out. Neither is a section a `.mri`
+    // can carry, so both would need the live model this page does not have.
+    return (
+      <>
+        <AttentionPanel epoch={epoch} replay />
+        {sessionGround?.available && (
+          <GroundPanel epoch={epoch} recorded={sessionGround} />
+        )}
+        {sessionPatch?.available && (
+          <PatchPanel epoch={epoch} recorded={sessionPatch} />
+        )}
+        {sessionPatchGraph?.available && (
+          <PatchGraphPanel epoch={epoch} recorded={sessionPatch ?? undefined} />
+        )}
+      </>
+    );
   }
 
   return (
@@ -583,8 +609,11 @@ export default function Playground({
           `AttentionPanel` gates token attribution off: the control would be a
           button whose only outcome is a refusal, and a visitor reads that as
           "this measurement is broken" rather than "this page has no model
-          behind it". `api.ts`'s `patchGraph` refuses in those builds too —
-          that is the second lock, and `tests/demo_check.py` checks this one. */}
+          behind it". `api.ts`'s `patchGraph` refuses in the demo too — that is
+          the second lock, and `tests/demo_check.py` checks this one. The
+          viewer is the other half of that split: it has no model either, but a
+          `.mri` CAN carry a graph, so the VIEWER branch above mounts the
+          recorded panel and `patchGraph` lets that call reach the file. */}
       {introspectable && !replay && !DEMO && !VIEWER && (
         <PatchGraphPanel epoch={epoch} />
       )}

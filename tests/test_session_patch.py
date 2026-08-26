@@ -41,6 +41,16 @@ TRACE = {
     "notes": ["mlp skipped: this architecture has no separate mlp submodule"],
     "clean": "The Eiffel Tower is located in the city of",
     "corrupt": "The Colosseum is located in the city of",
+    # WHAT READING THE GRID NEEDS. Its columns are token positions, and the
+    # recovery numbers mean nothing without the pair of answers the gap was
+    # measured between. The section carried neither, so it parsed and served
+    # and mounted and could not be read.
+    "components": ["resid", "attn"],
+    "tokens": {"clean": ["The", " Eiffel"], "corrupt": ["The", " Colosseum"]},
+    "answers": {
+        "clean": {"text": " Paris", "p": 0.71},
+        "corrupt": {"text": " Rome", "p": 0.66},
+    },
 }
 
 
@@ -287,9 +297,36 @@ def test_a_recording_that_carries_a_trace_serves_it(client):
     assert body["recorded"] is True
     assert body["grids"]["resid"] == [[0.02, 0.91], [0.15, 0.44]]
     # The prompts it was measured on travel with it: a grid without its pair
-    # is unreadable.
-    assert body["clean"].startswith("The Eiffel")
-    assert body["corrupt"].startswith("The Colosseum")
+    # is unreadable. NESTED, because a recording now answers in the same shape
+    # a live trace does -- `PatchPanel` has one renderer, and it reads
+    # `data.clean.prompt`, `data.corrupt.tokens` and `data.clean.answer`.
+    # Serving a second shape here is what made the panel show its "shape this
+    # page does not know" banner over a file that held the measurement.
+    assert body["clean"]["prompt"].startswith("The Eiffel")
+    assert body["corrupt"]["prompt"].startswith("The Colosseum")
+    # And the parts that make the grid readable rather than merely present.
+    assert body["corrupt"]["tokens"] == ["The", " Colosseum"]
+    assert body["clean"]["answer"] == {"text": " Paris", "p": 0.71}
+    assert body["components"] == ["resid", "attn"]
+
+
+def test_a_file_written_before_the_labels_still_opens(client):
+    """ADDITIVE, not required. A `.mri` exported before the strip was carried
+    has no `tokens` and no `answers`, and must still serve its grid rather
+    than refusing over a section it was written without.
+
+    Absent stays absent: an empty strip draws a grid with unlabelled columns,
+    which is honest. A blank one would label every column with the empty
+    string and look like a measurement of nothing.
+    """
+    old_shape = {k: v for k, v in TRACE.items() if k not in ("tokens", "answers")}
+    assert client.post("/api/session/open", content=make(old_shape)).status_code == 200
+    body = client.post("/api/patch", json={"clean": "x", "corrupt": "y"}).json()
+    assert body["recorded"] is True
+    assert body["grids"]["resid"] == [[0.02, 0.91], [0.15, 0.44]]
+    assert body["clean"]["prompt"].startswith("The Eiffel")
+    assert body["clean"]["tokens"] == []
+    assert body["clean"]["answer"] == {}
 
 
 def test_the_submitted_prompts_cannot_relabel_a_recording(client):

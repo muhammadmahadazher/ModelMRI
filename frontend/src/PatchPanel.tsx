@@ -1,6 +1,6 @@
-import { CSSProperties, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 import { measured } from "./measured";
-import RunsOn, { useModelReady } from "./RunsOn";
+import RunsOn, { useModelIdentity, useModelReady } from "./RunsOn";
 import {
   errorText,
   pathTrace,
@@ -90,6 +90,7 @@ export default function PatchPanel({
   // `RunsOn`'s cached session, so the badge and the control it disables
   // read one answer rather than two requests that can disagree.
   const ready = useModelReady(epoch);
+  const model = useModelIdentity(epoch);
   const [clean, setClean] = useState(recorded?.clean || CLEAN_DEFAULT);
   const [corrupt, setCorrupt] = useState(recorded?.corrupt || CORRUPT_DEFAULT);
   const [data, setData] = useState<PatchTrace | null>(null);
@@ -108,6 +109,20 @@ export default function PatchPanel({
   const [path, setPath] = useState<PathTrace | null>(null);
   const [tracing, setTracing] = useState(false);
   const [pathErr, setPathErr] = useState("");
+
+  // `key={epoch}` on the element this returns is NOT this. A key remounts the
+  // DOM subtree; it does not reset the state of the component that returns
+  // it, whose fiber identity comes from its position in the PARENT. So the
+  // recorded trace survived a model swap and sat under the new model's name,
+  // which is the one thing a causal result must never do.
+  useEffect(() => {
+    setData(null);
+    setErr("");
+    setHover(null);
+    setPinned(null);
+    setPath(null);
+    setPathErr("");
+  }, [epoch, model]);
   // Folded by default, and the fold is counted rather than silent.
   const [allSenders, setAllSenders] = useState(false);
   // The specular scan, on the same terms as every other panel: keyed on the
@@ -215,9 +230,17 @@ export default function PatchPanel({
           // `ready === false` and not `!ready`: null means the session could
           // not be read, and taking a working control away over a network
           // blip is worse than letting the route refuse in its own words.
-          disabled={busy || ready === false}
+          //
+          // AND NOT WHEN THERE IS A RECORDING. Showing one runs nothing: the
+          // grid is already in the file. This button read "Show the recorded
+          // trace" and was disabled underneath that label in every viewer
+          // build, because no model is loaded there and none ever will be —
+          // so the one audience the format exists for could see the sentence
+          // naming their measurement and not open it. `GroundPanel` had this
+          // right; this panel did not.
+          disabled={busy || (!recorded && ready === false)}
           title={
-            ready === false
+            !recorded && ready === false
               ? "Load a model in Run at the top of the page first — this measurement runs it."
               : undefined
           }

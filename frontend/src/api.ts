@@ -3523,7 +3523,15 @@ export interface GraphView {
 
 /** The attribution graph carried by the open session, if any. */
 export const getGraph = () =>
-  DEMO || VIEWER
+  // DEMO ONLY. `viewer.ts` has answered this path since the graph section
+  // shipped -- including a provenance guard written for exactly this case,
+  // "this copy runs in the RECIPIENT'S browser on a file a stranger
+  // forwarded" -- and this refusal fired before the patched fetch could ever
+  // reach it. So the guard had never run once, and a recipient sent a file
+  // carrying an attribution graph was told to install ModelMRI to see the
+  // thing already in their hands. The demo has no file behind it, so its
+  // refusal stays.
+  DEMO
     ? noModelHere(
         "Opening a circuit-tracer attribution graph reads a `.pt` from your disk, which a static page cannot see.",
       )
@@ -4056,7 +4064,17 @@ export const groundAnswer = (body: {
   question: string;
   max_chunks?: number;
 }) =>
-  DEMO || VIEWER
+  // DEMO ONLY, and the split is the point. The Pages demo has no file behind
+  // it and `demo.ts` has no handler for this path, so a refusal naming what
+  // the measurement would cost is the honest answer there.
+  //
+  // The viewer DOES have a file. `session.build` writes a `ground` section
+  // into every `.mri` that carries one, and this branch rejected before the
+  // patched fetch in main.tsx could reach `viewerFetch` — so a file sent
+  // because of its grounding result opened showing none of it. Re-running is
+  // still impossible here, and deliberately so: the document is the private
+  // half of the pair and is not in the file. The recording is what gets read.
+  DEMO
     ? noModelHere(
         "Asking whether the answer came from your document or the weights masks passages out and re-runs the model — and the document is yours, not the bundle’s.",
       )
@@ -4238,14 +4256,21 @@ export const patchGraph = (body: {
   depth?: number;
   max_receivers?: number;
 }) => {
-  // The second lock on a door the panel already keeps shut in these builds.
-  // A graph is thousands of forward passes with activations replaced —
-  // MEASURED at 1,735 on Qwen3-1.7B at depth 2 — and there is no model behind
-  // the Pages demo to run one. `demo.ts` has no handler for this path, so
-  // without the refusal the call would reach the real fetch and 404 on a
-  // static host: a visitor would learn that the measurement is broken rather
-  // than that the page has no model.
-  if (DEMO || VIEWER) {
+  // The second lock on a door the demo's panel already keeps shut. A graph is
+  // thousands of forward passes with activations replaced — MEASURED at 1,735
+  // on Qwen3-1.7B at depth 2 — and there is no model behind the Pages demo to
+  // run one. `demo.ts` has no handler for this path, so without the refusal
+  // the call would reach the real fetch and 404 on a static host: a visitor
+  // would learn that the measurement is broken rather than that the page has
+  // no model.
+  //
+  // NOT the viewer. A graph is the one section here a recipient could never
+  // rebuild — which is why `session.build` writes it into the `.mri` at all —
+  // and this branch fired before the patched fetch could reach `viewerFetch`,
+  // so the 1,735 passes the sender spent arrived as an "install ModelMRI"
+  // refusal. Nothing is re-run there; the recorded graph is read out of the
+  // file, and the panel says so.
+  if (DEMO) {
     return Promise.reject(
       new ApiError(
         409,
@@ -4820,6 +4845,15 @@ export interface PatchTrace {
   receipt?: Receipt | null;
 }
 
+/** The patching grid — live off the model, or read out of an opened `.mri`.
+ *
+ *  No DEMO/VIEWER branch, deliberately: both shims already answer this path.
+ *  `demo.ts` refuses `/api/patch` in words that name what patching costs, and
+ *  the viewer serves the `patch` section the opened file carries. A third copy
+ *  of that sentence on this side would buy the demo nothing and would, in the
+ *  viewer, be the lock that hid the recording — which is precisely what the
+ *  branches on `groundAnswer` and `patchGraph` above were doing.
+ */
 export const patchTrace = (clean: string, corrupt: string) =>
   fetch("/api/patch", {
     method: "POST",
