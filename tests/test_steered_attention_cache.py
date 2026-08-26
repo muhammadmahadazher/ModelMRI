@@ -58,7 +58,11 @@ def _runtime() -> ModelRuntime:
     rt.last_ids = torch.arange(N_TOKENS)
     rt.device = "cpu"
     rt._attn_tokens = ["a", "b", "c", "d"]
-    rt._steer_handle = lambda: Handle()
+    # THE CLASS, not a lambda that calls it. `_steer_handle()` has to return
+    # something with `.remove()`, and `Handle` constructs exactly that when
+    # called -- so the lambda was a wrapper around a callable that already did
+    # the job.
+    rt._steer_handle = Handle
     rt.model = lambda ids, output_attentions=False: Out(
         float(rt._steer[0]) if rt._steer else -1.0
     )
