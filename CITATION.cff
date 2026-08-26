@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If ModelMRI supports your research or engineering work, please cite it using this metadata."
 title: "ModelMRI"
 type: software
-version: 0.11.0
-date-released: '2026-08-16'
+version: 0.12.0
+date-released: '2026-08-26'
 authors:
   - family-names: "Azher"
     given-names: "Muhammad Mahad"

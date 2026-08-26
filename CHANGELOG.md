@@ -6,6 +6,89 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-26
+
+### Fixed
+
+- **A credential pasted into a prompt survived the share as its token strip.**
+  `session.build` sent the prompt and the generation through the recorder's
+  patterns and assigned the token strip straight into the document. No piece of
+  a split credential matches any pattern — a tokenizer cuts `sk-ant-api03-…`
+  into `sk`, `-ant`, `-api`, `03`, `-AAA…` — so the file's prompt field read
+  `[redacted:api-key]` while `"".join(tokens)` handed the recipient the key.
+  `image_share` had no redaction at all, and is worse: `from_attention` writes
+  `"prompt": ""`, so the words exist only in the cross-attention strip and
+  scanning the prompt field looks like redaction while doing nothing.
+
+  The reason it lasted: every redaction test asserted `API_KEY.encode() not in
+  blob`, which passes whether or not the bug is present, because the tokenizer
+  put the key in eight separate JSON strings.
+
+- **Three more measurements could read somebody else's forward pass.** A
+  forward hook belongs to the module, never to the call that installed it.
+  `_compute_features` is the worst of the family because its answer is CACHED —
+  one overlap with a streaming generation poisons every later features request
+  until the next generation. `CustomHandle.run`/`ablate` drop the field lock for
+  the forward pass by design, which left `inspect`'s hooks on every leaf module
+  uncovered: two overlapping runs publish each other's tensor statistics under
+  their own input shapes, and nothing raises. Two image captures on one pipeline
+  mixed one run's denoising steps into the other's.
+
+- **A steered attention map outlived the steering that produced it.**
+  `ablate:L.H` carries its parameters in the variant string; `"steered"` did
+  not, and `set_steering` clears nothing. A map measured under one feature went
+  on being served, labelled `"steered"`, after the feature changed — and the
+  "nothing is being steered" refusal sat below the cache lookup, where it could
+  not fire once any steered map had been cached.
+
+- **Four `.mri` sections were written without the reader that validates them.**
+  `lens`, `lens_info`, `patch` and `graph`. Ten siblings already went through
+  theirs. A writer laxer than its reader builds a file this tool signs its name
+  to and then cannot open, with the failure landing on the recipient.
+
+- **Unknown rendered as zero in two replay panels.** `measured()`/`signed()`
+  already answered `—` for anything non-finite; the `number` type forced `?? 0`
+  at nine call sites. A robot block carrying `clears_control: true` with null
+  control numbers rendered as "0.0000 the best of 0 random occlusions managed".
+  `counted()` joins them for counts, where `—` reads as a stray dash.
+
+- **Twelve sections a `.mri` carried that no surface could show.** One defect,
+  twelve mechanisms: no route; no panel mount; a panel behind a `!replay` gate;
+  a button disabled under its own "Show the recorded…" label; `api.ts` refusing
+  before the patched fetch could reach a working shim; a reader allow-list
+  omitting the field; a field guarded by `isinstance(int)` while the writer
+  emits a float; and a CSS selector missing a hyphen. The viewer now serves and
+  renders `patch`, `patch_graph`, `ground`, `lens`, `ranking` and `head_types`,
+  each carrying the receipt that produced it.
+
+  `tests/test_every_section_has_a_reader.py` pins five viewer routes and the
+  lens predicate, so the next instance fails CI rather than an audit.
+
+- **A recorded patching trace could not be read.** The format kept only
+  `grids/sites/notes/clean/corrupt` — the grid's columns are token positions and
+  its numbers are a fraction of a gap between two answers, and both the strip
+  and the answers were discarded. `_last_patch` threw them away first by
+  overwriting the trace's own objects with bare prompt strings.
+
+- **The VLA attention key ignored the camera.** `raw_frame` reads through the
+  reader's process-wide camera, so on a multi-camera dataset the same (episode,
+  timestep) names a different picture — one view's attention grid rendered over
+  another view's frame with the staleness pill suppressed.
+
+- **A measurement outlived the model it was measured on.** `epoch` counts
+  generations and cannot count loads, so panels holding a measurement that needs
+  no generation had no signal: load A, probe, load B left A's curve under B's
+  name. Loading a GGUF did not invalidate the shared session cache.
+
+- **Both unbounded `top_k` query integers.** `/api/lens` is bounded like its
+  POST siblings; `/api/features/summary` is bounded by the SAE's real `d_sae`
+  read off the tensor, not a written-down constant — it answered 500 about an
+  index where it meant 422.
+
+- Four `.headtype` colour classes had never applied: the component emits
+  `t-induction`, the stylesheet matched `.tinduction`.
+
+
 ### Added
 
 - **Seven interpretability features the roadmap owed, and the adversarial pass
