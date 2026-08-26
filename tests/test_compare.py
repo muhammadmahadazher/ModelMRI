@@ -151,15 +151,36 @@ def test_a_malformed_ablation_spec_says_what_it_expected():
 
 def test_variants_are_cached_separately_and_cleared_together():
     """A stale 'live' beside a fresh 'steered' would render a difference
-    between two different generations."""
+    between two different generations.
+
+    THE STEERED KEY CARRIES THE INTERVENTION. It used to be the bare string
+    "steered", and that was wrong twice: `set_steering` clears nothing and
+    every site that clears `_attn_variants` is about the MODEL changing, so
+    one feature's map was served under another feature's name -- and the
+    cache hit came BEFORE the "nothing is being steered" guard, which made
+    that refusal unreachable once any steered map had been cached.
+
+    This test used to seed `"steered"` directly, which is why it pinned the
+    old key. `test_steered_attention_cache.py` drives the whole path; what is
+    left here is the original property: two variants, two entries, cleared
+    together.
+    """
     rec = Recorder()
     rt = runtime_with(rec)
     rt._capture = runtime_mod.ModelRuntime._capture.__get__(rt)
+    # An SAE and a live steering, because a steered capture now refuses
+    # without them rather than answering from a cache.
+    rt.sae = object()
+    rt._steer = (100, 5.0)
 
     rt._attn_variants["live"] = ["sentinel-live"]
-    rt._attn_variants["steered"] = ["sentinel-steered"]
+    rt._attn_variants["steered:100:5.0"] = ["sentinel-steered"]
     assert rt._capture("live") == ["sentinel-live"]
     assert rt._capture("steered") == ["sentinel-steered"]
+
+    # Change the intervention and that entry is no longer what is asked for.
+    rt._steer = (100, -3.0)
+    assert "steered:100:-3.0" not in rt._attn_variants
 
     rt._attn_variants.clear()
     assert rt._attn_variants == {}

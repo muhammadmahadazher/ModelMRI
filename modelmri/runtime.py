@@ -1710,7 +1710,32 @@ class ModelRuntime:
         leading tokens. Subtracting misaligned sequences produces a smooth,
         plausible, entirely fictitious picture.
         """
-        cached = self._attn_variants.get(variant)
+        # A CACHE KEY HAS TO CARRY EVERYTHING THE ANSWER DEPENDS ON.
+        # `ablate:L.H` already does -- a different ablation is a different
+        # variant string, so it cannot collide. "steered" did not.
+        # `set_steering` writes `self._steer` and clears nothing, and every
+        # place that clears `_attn_variants` is about the MODEL changing:
+        # load, unload, generate, adopt_step, GGUF. So a map measured under
+        # feature 100 at scale 5 went on being served, labelled "steered",
+        # after the feature was changed to 200 at scale -3 -- and
+        # `/api/attention/diff?a=live&b=steered` reported a movement for an
+        # intervention that was never run.
+        key = variant
+        if variant == "steered":
+            # BEFORE the lookup, not in the miss path below it. Sitting after
+            # the cache made this refusal unreachable in exactly the case it
+            # exists for: once a steered map had been cached, switching
+            # steering OFF could no longer reach it, and the route kept
+            # serving a steered map for a model that was no longer steered.
+            if self._steer is None or self.sae is None:
+                raise Refusal(
+                    "Nothing is being steered, so there is no steered run "
+                    "to compare against. Set a feature and a scale first."
+                )
+            fid, scale = self._steer
+            key = f"steered:{fid}:{scale!r}"
+
+        cached = self._attn_variants.get(key)
         if cached is not None:
             return cached
 
@@ -1750,11 +1775,8 @@ class ModelRuntime:
                         str(err)
                     ) from err  # leak-ok: authored, see test_no_machine_leaks
             elif variant == "steered":
-                if self._steer is None or self.sae is None:
-                    raise Refusal(
-                        "Nothing is being steered, so there is no steered run "
-                        "to compare against. Set a feature and a scale first."
-                    )
+                # The refusal that used to live here moved above the cache
+                # lookup, where it can still fire once a map has been cached.
                 handles.append(self._steer_handle())
             elif variant != "live":
                 raise BadRequest(f"unknown variant {variant!r}")
@@ -1766,7 +1788,7 @@ class ModelRuntime:
                 handle.remove()
 
         captured = [a[0].detach().to(torch.float16).cpu() for a in out.attentions]
-        self._attn_variants[variant] = captured
+        self._attn_variants[key] = captured
         if self._attn_tokens is None:
             self._attn_tokens = [
                 self.tokenizer.decode([tid]) for tid in self.last_ids.tolist()
@@ -4715,6 +4737,14 @@ class ModelRuntime:
                 "That generation was produced by a different model. Generate again."
             )
         if self._feats is None:
+            # THE HOOK BELOW BELONGS TO THE BLOCK, NOT TO THIS CALL. Any
+            # forward pass through the model while it is installed fills
+            # `captured` too, and `generate_stream` runs `model.generate` on a
+            # daemon thread that holds no lock -- so a stream still yielding
+            # tokens puts its decode steps in here. The eight other
+            # hook-installing measurements already refuse; this one is worse
+            # than those if it does not, because its answer is CACHED.
+            self._refuse_if_decoding("reading SAE features")
             captured: list[torch.Tensor] = []
 
             block = self._block(self.sae.layer)
@@ -4747,6 +4777,30 @@ class ModelRuntime:
                 # features under another model's generation.
                 raise Refusal(
                     "The model changed while features were computing. Generate again."
+                )
+            # AND A BACKSTOP, because refusing is a race and this is not.
+            # A COUNT, not a shape: this method's own pass calls the hook
+            # exactly once, so a second entry means a foreign pass ran through
+            # it and `captured[0]` may be that one rather than this one. The
+            # shape check catches the other order -- a decode step is exactly
+            # ONE token, so `captured[0]` comes back [1, 1, d] and would cache
+            # a [1, d_sae] matrix beside a token list of length S, pairing
+            # every token in the panel with somebody else's row.
+            #
+            # Caching is what makes this the worst of the family: the poisoned
+            # matrix is served to every later features request until the next
+            # generation, so one unlucky overlap misreads a panel indefinitely.
+            n_tokens = int(self.last_ids.shape[0])
+            if len(captured) != 1 or captured[0].shape[-2] != n_tokens:
+                got = (
+                    "x".join(str(d) for d in captured[0].shape) if captured else "none"
+                )
+                raise Refusal(
+                    f"Another forward pass ran through this model while the "
+                    f"features were being read, so what came back ({got}, "
+                    f"{len(captured)} pass(es)) is not this prompt's "
+                    f"{n_tokens} tokens. Nothing was cached. Wait for the run "
+                    f"in flight to finish, then ask again."
                 )
             resid = captured[0][0].to("cpu")  # [S, d_in]
             self._feats = self.sae.encode(resid).to(torch.float16)

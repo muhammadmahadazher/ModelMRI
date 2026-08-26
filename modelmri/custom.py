@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -898,6 +899,11 @@ class CustomHandle:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # NOT `_lock`. That one guards the fields; this one guards the model
+        # while a measurement has hooks on it. They are separate because
+        # `run` deliberately drops `_lock` for the forward pass -- see
+        # `measuring`, which is what that release left uncovered.
+        self._measure_lock = threading.Lock()
         self.model = None
         self.example = None
         self.status_ = CustomStatus()
@@ -974,6 +980,46 @@ class CustomHandle:
             )
         return self.status_
 
+    @contextmanager
+    def measuring(self, what: str):
+        """One measurement at a time on this model.
+
+        `run` releases `_lock` before calling `inspect`, and says why: the
+        forward pass is the slow part and holding the lock across it would
+        block the status route. That release is correct and it left this
+        uncovered -- `inspect` registers a pre-hook and a post-hook on EVERY
+        LEAF MODULE, closing over that call's own `rows`, `starts`, `call_no`
+        and `order`, and a hook belongs to the module rather than to the call
+        that installed it.
+
+        So two overlapping runs fire each other's hooks. Run A's `rows` fills
+        with run B's tensors: `out_shape`, `mean`, `std` and `n_zero` are B's
+        statistics published under A's `input_shape`, `ms` is measured from a
+        start B overwrote, `n_layers` doubles and `meta.repeated` lists every
+        module as shared. NOTHING RAISES. A layer table describing an input
+        the caller never supplied comes back as a measurement, and
+        `self.rows`/`self.meta` are written back from it.
+
+        `ablate` releases the lock the same way and drives many more forward
+        passes through the same modules, so it takes the same slot.
+
+        Refused rather than queued, for the reason the load slots give: a
+        sweep can run for minutes, and a queued caller holds a thread from the
+        default executor for all of it.
+        """
+        if not self._measure_lock.acquire(timeout=0):
+            raise AdapterError(
+                f"Cannot {what} yet: another measurement is already running on "
+                f"this model. Both read it by hooking every layer, so running "
+                f"them together would report one run's tensors under the "
+                f"other's input -- and neither answer would say so. Wait for "
+                f"the one in flight to finish."
+            )
+        try:
+            yield
+        finally:
+            self._measure_lock.release()
+
     def run(self, shape: list[int] | None = None, seed: int = 0) -> dict:
         """One forward pass, hooked. `shape` overrides the adapter's example."""
         import torch
@@ -1010,7 +1056,8 @@ class CustomHandle:
                 "to your adapter."
             )
 
-        rows, meta = inspect(model, example)
+        with self.measuring("map this model's layers"):
+            rows, meta = inspect(model, example)
         used = list(getattr(example, "shape", []) or [])
         with self._lock:
             # Onto the status this run STARTED against, never onto whatever
@@ -1079,15 +1126,20 @@ class CustomHandle:
 
         task = ablate_mod.read_task(module)
         samples = ablate_mod.read_samples(module)
-        if kind == "inputs":
-            return ablate_mod.sweep_inputs(
-                model,
-                samples,
-                task=task,
-                grid=grid or ablate_mod.DEFAULT_PATCH_GRID,
-            ).to_dict()
-        if kind == "layers":
-            return ablate_mod.sweep_layers(model, samples, task=task).to_dict()
+        # The same slot as `run`, and for the same reason: a sweep replaces
+        # module outputs one at a time and drives a forward pass for each, so
+        # it holds hooks on these modules for far longer than one mapping run
+        # does.
+        with self.measuring("sweep this model causally"):
+            if kind == "inputs":
+                return ablate_mod.sweep_inputs(
+                    model,
+                    samples,
+                    task=task,
+                    grid=grid or ablate_mod.DEFAULT_PATCH_GRID,
+                ).to_dict()
+            if kind == "layers":
+                return ablate_mod.sweep_layers(model, samples, task=task).to_dict()
         raise AdapterError(f"unknown sweep {kind!r} — expected 'layers' or 'inputs'.")
 
 
