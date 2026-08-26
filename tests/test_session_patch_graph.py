@@ -1,9 +1,10 @@
 """A `.mri` carries the PATCHING graph, and what it refuses to carry.
 
 The graph costs thousands of forward passes to build — on Qwen3-1.7B at depth
-2 it walked 35 nodes and 48 edges out of 153 scored senders — and the recipient
-of a `.mri` has activations rather than weights, so there is nothing on their
-machine to rebuild it with. A section
+2, over "The Eiffel Tower is located in the city of" against its Colosseum
+twin, it walked 35 nodes and 48 edges out of 153 scored senders — and the
+recipient of a `.mri` has activations rather than weights, so there is nothing
+on their machine to rebuild it with. A section
 that travels is the difference between a finding somebody can show a colleague
 and one that dies on the laptop that took it.
 
@@ -59,12 +60,20 @@ GRAPH = {
     "seeding": "Seeded from the 4 strongest sites the node grid flagged and "
     "walked back 2 level(s). 153 senders in total, 105 pruned.",
     "means": "A PATCHING graph, not a transcoder attribution graph.",
-    "clean": "The Eiffel Tower is in the city of",
-    "corrupt": "The Colosseum is in the city of",
+    # THE PAIR THESE NUMBERS CAME FROM, spelled out. This repo calls two
+    # different prompts "the reference pair" -- `saes`, `lens` and
+    # `feature_ablate` use "is LOCATED in", `runtime` uses "is in" -- and this
+    # fixture used to carry the "is in" prompts beside metadata measured on the
+    # "is located in" one. They are not interchangeable: MEASURED on
+    # Qwen3-1.7B/bfloat16, "is located in" resolves to 0.006231 at a gap of
+    # 30.25 and "is in" to 0.007571 at a gap of 24.25, and the resolution sets
+    # the prune threshold, which sets how much of the graph is drawn.
+    "clean": "The Eiffel Tower is located in the city of",
+    "corrupt": "The Colosseum is located in the city of",
     "depth": 2,
     "n_scored": 153,
     "n_pruned": 105,
-    # Measured on Qwen3-1.7B at depth 2 over the reference pair. `passes` is
+    # Measured on Qwen3-1.7B at depth 2 over the pair named above. `passes` is
     # deliberately absent: it was not captured from that run, and a plausible
     # number written into a fixture reads exactly like a measured one.
     "prune_threshold": 0.006231,

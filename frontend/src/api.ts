@@ -4325,19 +4325,38 @@ export const patchGraph = (body: {
   max_receivers?: number;
 }) => {
   // The second lock on a door the demo's panel already keeps shut. A graph is
-  // thousands of forward passes with activations replaced — MEASURED at 1,735
-  // on Qwen3-1.7B at depth 2 — and there is no model behind the Pages demo to
-  // run one. `demo.ts` has no handler for this path, so without the refusal
-  // the call would reach the real fetch and 404 on a static host: a visitor
-  // would learn that the measurement is broken rather than that the page has
-  // no model.
+  // thousands of forward passes with activations replaced — MEASURED at 4,165
+  // on Qwen3-1.7B (bfloat16, cuda) at depth 2 on "The Eiffel Tower is in the
+  // city of" against "The Colosseum is in the city of", reproduced twice to
+  // the digit — and there is no model behind the Pages demo to run one.
+  // `demo.ts` has no handler for this path, so without the refusal the call
+  // would reach the real fetch and 404 on a static host: a visitor would learn
+  // that the measurement is broken rather than that the page has no model.
+  //
+  // THE COUNT IS PAIR-DEPENDENT AND THE SENTENCE SAYS SO. It used to read
+  // "1,735 forward passes" flat, and that number came from a DIFFERENT prompt
+  // pair than the one it was attributed to. This repo calls two prompts "the
+  // reference pair": "The Eiffel Tower is LOCATED in the city of" (saes, lens,
+  // feature_ablate) and "The Eiffel Tower is in the city of" (runtime). They
+  // resolve differently — MEASURED on Qwen3-1.7B/bfloat16, "is located in"
+  // gives a recovery resolution of 0.006231 at a gap of 30.25 and "is in"
+  // 0.007571 at a gap of 24.25 — and the resolution sets the prune threshold,
+  // which sets how much of the graph survives, which sets the pass count. The
+  // walk also seeds from the sites the node grid flags, and that count is
+  // per-pair too.
+  //
+  // So a reader sizing a run against 1,735 under-budgets the "is in" pair by
+  // 2.4x. Quoting one pair's cost as THE cost is the same error as quoting one
+  // control draw's verdict as the feature's — see `feature_ablate` — one layer
+  // down. The graph itself is deterministic: 4,165 passes, 2,227 senders
+  // scored, 2,131 pruned, 52 nodes and 96 edges, reproduced twice to the digit.
   //
   // NOT the viewer. A graph is the one section here a recipient could never
   // rebuild — which is why `session.build` writes it into the `.mri` at all —
   // and this branch fired before the patched fetch could reach `viewerFetch`,
-  // so the 1,735 passes the sender spent arrived as an "install ModelMRI"
-  // refusal. Nothing is re-run there; the recorded graph is read out of the
-  // file, and the panel says so.
+  // so the passes the sender spent arrived as an "install ModelMRI" refusal.
+  // Nothing is re-run there; the recorded graph is read out of the file, and
+  // the panel says so.
   if (DEMO) {
     return Promise.reject(
       new ApiError(
@@ -4345,9 +4364,11 @@ export const patchGraph = (body: {
         JSON.stringify({
           error:
             "Building a patching graph replaces activations and re-runs the " +
-            "model thousands of times — 1,735 forward passes on Qwen3-1.7B at " +
-            "depth 2 — and there is no model behind this page. Install " +
-            "ModelMRI (`pip install modelmri`) to build one on your own.",
+            "model thousands of times — 4,165 forward passes on Qwen3-1.7B at " +
+            "depth 2 on the pair this was measured with, and a different " +
+            "number on yours — and there is no model behind this page. " +
+            "Install ModelMRI (`pip install modelmri`) to build one on your " +
+            "own.",
         }),
       ),
     );

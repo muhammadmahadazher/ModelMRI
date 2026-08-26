@@ -53,7 +53,10 @@ EXEMPT = {
     # Exempt on the same route as `/api/attention/attribute` below: never
     # reachable, because the panel that would call it is not built here.
     # Building a graph replaces activations and re-runs the model thousands of
-    # times -- MEASURED at 1,735 forward passes on Qwen3-1.7B at depth 2 --
+    # times -- MEASURED at 4,165 forward passes on Qwen3-1.7B at depth 2 over
+    # the Eiffel/Colosseum pair, reproduced twice to the digit, and a different
+    # count on any other pair because the walk seeds from the sites the node
+    # grid flags --
     # against a live model this page does not have. A 501 would be the wrong
     # answer for the same reason it is wrong there: a control that can only
     # fail teaches a visitor that the measurement is broken.

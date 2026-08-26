@@ -6,6 +6,33 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pass count measured on one prompt pair, shown to visitors as the other
+  pair's cost.** The demo's refusal for `/api/patch/graph` told a reader that
+  building a graph costs "1,735 forward passes on Qwen3-1.7B at depth 2".
+  Measured on this tree, the same model at the same depth over *"The Eiffel
+  Tower is in the city of"* costs **4,165** — 2,227 senders scored, 2,131
+  pruned, 52 nodes, 96 edges — reproduced twice to the digit, so the graph is
+  deterministic and the number simply was not this pair's.
+
+  The cause is an ambiguity this repo carried in plain sight: **two different
+  prompts are both called "the reference pair."** `saes`, `lens` and
+  `feature_ablate` use *"The Eiffel Tower is LOCATED in the city of"*;
+  `runtime` and the graph fixture use *"The Eiffel Tower is in the city of"*.
+  They are not interchangeable. Measured on Qwen3-1.7B/bfloat16, the first
+  resolves to `0.006231` at a gap of 30.25 and the second to `0.007571` at a
+  gap of 24.25 — and the recovery resolution sets the prune threshold, which
+  sets how much of the graph survives, which sets the pass count.
+
+  `tests/test_session_patch_graph.py` had the same cross-wiring: the "is in"
+  prompts sitting beside metadata (`n_scored: 153`, `prune_threshold:
+  0.006231`) measured on the "is located in" one. Both now name their pair, and
+  the refusal says the count moves with yours instead of stating one as the
+  cost. A reader sizing a run against 1,735 under-budgets the "is in" pair by
+  2.4x.
+
+
 ## [0.12.0] — 2026-08-26
 
 ### Fixed
