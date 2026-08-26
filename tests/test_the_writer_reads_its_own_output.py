@@ -195,3 +195,139 @@ def test_features_top_k_is_bounded_by_the_sae_this_model_actually_has():
     # And the ordinary case still answers.
     out = rt.features_summary(top_k=2)
     assert len(out["tokens"]) == 3
+
+
+# ------------------------------------------------- and the session says so
+
+
+def test_a_carried_lens_is_announced_on_the_session_state():
+    """THE LAST OF THE FOUR. `runtime.logit_lens` has answered out of a
+    recording since the section landed, and nothing ever told a panel one was
+    there -- so `FeaturesPanel`, which owns the lens, stayed behind its
+    `!replay` gate and the trajectory in the file was displayed by nothing in
+    either build."""
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    rows = [{"layer": 0, "tokens": ["a", "b"], "probs": [0.7, 0.3]}]
+    blob = _build(lens=rows, lens_info={"final": " Paris", "settled_at": 3})
+
+    client = TestClient(create_app())
+    assert client.post("/api/session/open", content=blob).status_code == 200
+    lens = client.get("/api/session/state").json()["lens"]
+    assert lens["available"] is True
+    # ROWS, not layers: a trajectory usually carries one more row than the
+    # model has blocks, and calling it `n_layers` would make the panel's own
+    # count disagree with the model's.
+    assert lens["n_rows"] == 1
+    assert lens["final"] == " Paris"
+
+
+def test_scalars_without_a_trajectory_do_not_offer_a_lens():
+    """A file can carry what a lens produced and none of the trajectory it
+    describes. A panel offered for that has nothing to draw."""
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    client = TestClient(create_app())
+    blob = _build(lens=[], lens_info={"final": " Paris"})
+    assert client.post("/api/session/open", content=blob).status_code == 200
+    assert client.get("/api/session/state").json()["lens"]["available"] is False
+
+
+def test_a_carried_ranking_and_its_labels_are_announced():
+    """Both sections have answered out of a recording since they landed, and
+    nothing told a panel either was there -- so `AttentionPanel` kept the
+    ranking behind a `!replay` gate whose comment is true of MEASURING one and
+    false of showing one already in the file, and the labels sat behind a
+    button a recording could never press."""
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    ranking = {
+        "ranked": [{"layer": 0, "head": 0, "kl": 0.42}],
+        "target_token": " Paris",
+        "baseline": "zero",
+        "passes": 18,
+        "elapsed_s": 4.5,
+    }
+    head_types = {
+        "labels": [
+            {
+                "layer": 0,
+                "head": 0,
+                "label": "induction",
+                "margin": 31.4,
+                "times_chance": 12.0,
+                "peak": 0.89,
+                "null_kind": "repeat",
+                "scores": {"induction": 0.89, "sink": 0.01},
+            }
+        ]
+    }
+    blob = _build(ranking=ranking, head_types=head_types)
+
+    client = TestClient(create_app())
+    assert client.post("/api/session/open", content=blob).status_code == 200
+    state = client.get("/api/session/state").json()
+    assert state["ranking"]["available"] is True
+    assert state["ranking"]["target_token"] == " Paris"
+    assert state["ranking"]["n_heads"] == 1
+    assert state["head_types"]["available"] is True
+    assert state["head_types"]["n_labels"] == 1
+
+
+def test_a_session_with_no_ranking_offers_none():
+    """A panel offered for a section the file does not carry is a button whose
+    only outcome is a refusal."""
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    client = TestClient(create_app())
+    assert client.post("/api/session/open", content=_build()).status_code == 200
+    state = client.get("/api/session/state").json()
+    assert state["ranking"]["available"] is False
+    assert state["head_types"]["available"] is False
+
+
+def test_a_graph_carries_the_prompts_it_was_measured_on():
+    """`_patch_graph` has preserved the graph's own `clean`/`corrupt` all
+    along and nothing read them: the panel was handed the PATCH section's pair
+    instead, so a file carrying a graph and no patch trace prefilled its two
+    boxes with the hardcoded demo prompts -- a graph shown above prompts it
+    was not measured on."""
+    from fastapi.testclient import TestClient
+
+    from modelmri.server import create_app
+
+    graph = {
+        "provenance": {"measured_by": "modelmri"},
+        "nodes": [
+            {"id": "a", "layer": 0, "position": 0, "role": "sender", "depth": 0},
+            {"id": "b", "layer": 1, "position": 1, "role": "receiver", "depth": 1},
+        ],
+        "edges": [
+            {
+                "source": "a",
+                "target": "b",
+                "recovery": 0.5,
+                "clears_control": True,
+                "control_max": 0.1,
+                "control_draws": 4,
+            }
+        ],
+        "seeding": "the flagged sites of the patch grid",
+        "clean": "The Eiffel Tower is in",
+        "corrupt": "The Colosseum is in",
+    }
+    client = TestClient(create_app())
+    blob = _build(patch_graph=graph)
+    assert client.post("/api/session/open", content=blob).status_code == 200
+    got = client.get("/api/session/state").json()["patch_graph"]
+    assert got["available"] is True
+    assert got["clean"] == "The Eiffel Tower is in"
+    assert got["corrupt"] == "The Colosseum is in"

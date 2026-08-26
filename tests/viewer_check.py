@@ -497,8 +497,13 @@ def build_causal_fixture() -> bytes:
             "expanded one level back",
             "means": "A patching graph, built from nothing but the model this "
             "file was recorded on — not a transcoder attribution graph.",
-            "clean": "The Eiffel Tower is located in the city of",
-            "corrupt": "The Colosseum is located in the city of",
+            # DELIBERATELY DIFFERENT from the patch section's pair above.
+            # These were identical, which is exactly why the panel being
+            # handed the PATCH section's prompts was invisible: a file can
+            # carry a graph and a trace of two different prompts, and the
+            # graph was shown above the pair it was not measured on.
+            "clean": "The Louvre is located in the city of",
+            "corrupt": "The Prado is located in the city of",
             "depth": 1,
             "n_scored": 137,
             "n_pruned": 12,
@@ -576,6 +581,464 @@ def build_causal_fixture() -> bytes:
             "seconds": 3.482,
         },
     )
+
+
+def build_lens_fixture() -> bytes:
+    """A `.mri` carrying a LOGIT LENS — the oldest section in the format, and
+    the one nothing could display.
+
+    `lens` has been a field on `Session` since the format existed,
+    `session._lens` validates it, and `runtime.logit_lens` has an explicit
+    replay branch whose docstring says "a recording that carries a lens can
+    serve it". Two locks kept that promise from ever being kept: `LensPanel`
+    is mounted from inside `FeaturesPanel`, which is `!replay` because it also
+    holds live-model controls, and `viewer.ts` had no `/api/lens` handler at
+    all — so the route fell through to "install ModelMRI to point these
+    instruments at your own models", which is false about a file whose bytes
+    already carry the trajectory.
+
+    Written through `session.build`, unedited, so this is exactly what the
+    tool writes today.
+
+    LAYER 2 CARRIES NO ENTROPY, on purpose. `_lens` copies `entropy` only
+    when the file has a finite one, so that row is what a real file produces
+    — and the panel divided by it to size a bar and called `.toFixed` on it,
+    which is a `NaN%` width followed by a TypeError with no error boundary
+    above it. The reader's viewer went white. Layer 3 carries an entropy of
+    exactly 0.0 beside it, which IS a reading — the model is certain there —
+    so the two rows on one screen are the project's rule made visible:
+    unmeasured is "—", and zero is 0.00.
+    """
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=["a"],
+        prompt="The Eiffel Tower is located in the city of",
+        generation=" Paris",
+        attention={},
+        n_layers=3,
+        n_heads=1,
+        note="a lens somebody sent",
+        lens=[
+            {
+                "layer": 0,
+                "tokens": [" the", " a"],
+                "probs": [0.0413, 0.0209],
+                "entropy": 3.2109,
+                "kl_to_final": 7.4412,
+            },
+            {
+                "layer": 1,
+                "tokens": [" France", " Paris"],
+                "probs": [0.1806, 0.1274],
+                "entropy": 1.4,
+                "kl_to_final": 2.115,
+            },
+            # THE ROW THE READER HAS TO SURVIVE. No `entropy` and no
+            # `kl_to_final`: the sender's model reported neither for this
+            # depth, and `_lens` carries the row rather than dropping it,
+            # because a trajectory with a hole in it is still the trajectory.
+            {
+                "layer": 2,
+                "tokens": [" Paris", " Lyon"],
+                "probs": [0.6021, 0.0884],
+            },
+            {
+                "layer": 3,
+                "tokens": [" Paris", " France"],
+                "probs": [0.9137, 0.0311],
+                # A MEASURED ZERO. The last layer is the model's own answer,
+                # so it disagrees with itself by nothing at all — and this
+                # must print as 0.00 while the row above prints "—".
+                "entropy": 0.0,
+                "kl_to_final": 0.0,
+            },
+        ],
+        lens_info={
+            "final": " Paris",
+            "settled_at": 2,
+            "n_layers": 3,
+            "reliability": {
+                "note": "read on the sender's machine, not here",
+            },
+        },
+    )
+
+
+def build_ranking_fixture() -> bytes:
+    """A `.mri` carrying a HEAD RANKING and the head labels beside it — the
+    tool's headline measurement, and the one a recipient could not read.
+
+    Both sections have been written by `session.build` and validated by
+    `session._ranking` / `session._head_types` since each landed, and both
+    have working replay branches: `runtime.ablate_heads` returns the recorded
+    ranking with `recorded: True`, `runtime.head_types` does the same for the
+    labels, and `viewer.ts` already answered `/api/attention/types` with a
+    refusal written for recipients. Nothing could ask for either.
+    `AttentionPanel` gated the Rank-heads button on `!replay` — true of
+    MEASURING a ranking, false of SHOWING one already in the file — and the
+    only caller of the labels sat inside `{ranked && …}`, so the labels were
+    locked behind a button a recording could never press.
+
+    Written through `session.build`, unedited, so this is exactly what the
+    tool writes today.
+
+    THE ATTENTION CUBE IS NOT DECORATION. `AttentionPanel` returns its
+    "this session carries no attention maps" stub while `layers === 0`, so a
+    file with a ranking and no slices never reaches the controls at all — and
+    a ranking is measured against a generation whose attention you were
+    looking at, which is what `runtime.share` captures.
+
+    THREE ROWS, AND ONE OF THEM IS BELOW THE FLOOR. `noise_floor_kl` travels
+    with the scores because anything at or below it is arithmetic rather than
+    the model; a reader who gets the rows without it cannot tell the
+    difference, and every row would read as a finding.
+
+    `elapsed_s` IS A FLOAT ON PURPOSE. `ablate.py` writes
+    `round(seconds, 2)`, and `session._ranking` copies `elapsed_s` only when
+    it is an `int` — so this is what a real recorded ranking looks like on
+    arrival: no duration at all. The panel has to SAY that rather than print
+    "N forward passes · s".
+    """
+    sys.path.insert(0, str(ROOT))
+    from modelmri import session
+
+    n, layers, heads = 6, 4, 3
+    matrices = {}
+    for layer in range(layers):
+        for head in range(heads):
+            rows = []
+            for r in range(n):
+                raw = [
+                    ((layer * 5 + head * 7 + r * 3 + c) % 11) + 0.5
+                    for c in range(r + 1)
+                ]
+                raw[0] += 12.0  # the sink every real head has
+                raw += [0.0] * (n - r - 1)
+                total = sum(raw)
+                rows.append([v / total for v in raw])
+            matrices[(layer, head)] = rows
+
+    return session.build(
+        model_id="Qwen/Qwen3-1.7B",
+        device="cpu",
+        dtype="float32",
+        n_params=1,
+        tokens=[f"t{i}" for i in range(n)],
+        prompt="The Eiffel Tower is located in the city of",
+        generation=" Paris",
+        attention=matrices,
+        n_layers=layers,
+        n_heads=heads,
+        note="a ranking somebody sent",
+        ranking={
+            # Descending by KL, which is the order `ablate.rank_heads` writes
+            # and the order the panel trusts: it opens `ranked[0]`, so a file
+            # sorted any other way would take the reader to the wrong head.
+            "ranked": [
+                {
+                    "layer": 1,
+                    "head": 2,
+                    "kl": 0.4173,
+                    "p_top_before": 0.7104,
+                    "p_top_after": 0.2210,
+                    "flips_top": True,
+                },
+                {
+                    "layer": 1,
+                    "head": 0,
+                    "kl": 0.0231,
+                    "p_top_before": 0.7104,
+                    "p_top_after": 0.6902,
+                    "flips_top": False,
+                },
+                # AT OR BELOW THE FLOOR, which is a reading and not a gap: the
+                # row must render as "below the noise floor" rather than as a
+                # small finding.
+                {
+                    "layer": 1,
+                    "head": 1,
+                    "kl": 0.0004,
+                    "p_top_before": 0.7104,
+                    "p_top_after": 0.7101,
+                    "flips_top": False,
+                },
+            ],
+            # `_ranking` REFUSES a ranking without this: the three baselines
+            # agree only weakly, so rows that do not name theirs cannot be
+            # compared against anything.
+            "baseline": "zero",
+            "noise_floor_kl": 0.0008,
+            "target_token": " Paris",
+            "means": "Each row says only how far the answer moves when that "
+            "one head is removed. They do not add up.",
+            "position": 5,
+            "layer": 1,
+            "passes": 5,
+            "elapsed_s": 4.21,
+        },
+        head_types={
+            "labels": [
+                {
+                    "layer": 1,
+                    "head": 2,
+                    "label": "previous-token",
+                    "margin": 4.2,
+                    "times_chance": 3.1,
+                    "peak": 0.44,
+                    "null_kind": "repeat",
+                },
+                # NO TYPE DETECTED, which is the finding for most heads.
+                # `_head_types` keeps `None` rather than coercing it to "" —
+                # an unlabelled head must not look like one whose label went
+                # missing — and the panel must draw no chip for it.
+                {"layer": 1, "head": 0, "label": None},
+            ],
+            "counts": {"previous-token": 1},
+            "n_layers": layers,
+            "n_heads": heads,
+            "seq_len": 24,
+            "n_sequences": 6,
+            "margin_sigma": 3.0,
+            "means": "A behavioural label from random repeated tokens. It "
+            "does NOT explain the KL beside it.",
+        },
+    )
+
+
+async def ranking_side(port: int) -> dict:
+    """Open that file in the real viewer and read what it served and drew.
+
+    Same two halves as `lens_side`, because it is the same failure two
+    sections along: a route with no button is data nobody sees, and a button
+    with no route is a control that can only refuse.
+
+    Both buttons are pressed, in the order a reader meets them: the labels
+    live inside the ranking block, so until the ranking is on screen there is
+    no labels button to find. What each press actually clicked is returned —
+    a probe that quietly found no button reads exactly like a panel that drew
+    nothing, and those are different failures.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        # `frontend/src` has no error boundary, so ONE TypeError anywhere
+        # unmounts the whole page — the recipient's screen goes white with
+        # nothing on it saying why. "The panel did not draw" and "the page
+        # died drawing it" have to be distinguishable on the failure line.
+        crashed: list[str] = []
+        page.on(
+            "pageerror",
+            lambda err: crashed.append(str(err).splitlines()[0][:160]),
+        )
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const blob = await (await fetch('./ranking.mri')).blob();
+              const file = new File([blob], 'ranking.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const state = await (await fetch('/api/session/state')).json();
+              // The route exactly as `api.ts` calls it, query string and all.
+              const r = await fetch(
+                '/api/attention/ablate?layer=1&baseline=zero&scope=layer');
+              // The BODY as text: the thing under test is whether the
+              // recording came back or the refusal did, and both parse.
+              const body = await r.text();
+              let served = {};
+              try { served = JSON.parse(body); } catch (e) { served = {}; }
+
+              // The panel is re-queried inside the helper on every press:
+              // React delegates events at the root, and a button detached by
+              // an earlier render is a button whose click goes nowhere.
+              const press = async (starts) => {
+                const panel = document.querySelector('.panel.attn');
+                if (!panel) return '';
+                const button = [...panel.querySelectorAll('button')]
+                  .find(b => (b.textContent || '').startsWith(starts));
+                if (!button) return '';
+                const label = button.textContent.trim();
+                button.click();
+                await new Promise(r => setTimeout(r, 900));
+                return label;
+              };
+              const askedRanking = await press('Show the recorded ranking');
+              const askedLabels = await press('Show the recorded head labels');
+              await new Promise(r => setTimeout(r, 500));
+
+              const panel = document.querySelector('.panel.attn');
+              const list = panel ? panel.querySelector('.ranking-list') : null;
+              return {
+                available: {
+                  ranking: state && state.ranking
+                    ? state.ranking.available === true : false,
+                  types: state && state.head_types
+                    ? state.head_types.available === true : false,
+                  target: state && state.ranking
+                    ? state.ranking.target_token : undefined,
+                  rows: state && state.ranking ? state.ranking.n_heads : -1,
+                },
+                status: r.status,
+                body,
+                // The replay branch's shape, not a shape invented here: the
+                // recorded section spread whole with `recorded` last, exactly
+                // as `runtime.ablate_heads` returns `{**recorded, ...}`.
+                shape: {
+                  ranked: Array.isArray(served.ranked) ? served.ranked.length : -1,
+                  recorded: served.recorded === true,
+                  baseline: served.baseline,
+                  target_token: served.target_token,
+                },
+                mounted: !!panel,
+                askedRanking,
+                askedLabels,
+                // THE COLOUR, read as RENDERED, because the text alone
+                // cannot catch the way this breaks. The chip's class is the
+                // label with everything but [a-z] stripped -- `t-` then
+                // `previoustoken` -- and the four per-type rules in
+                // styles.css were written WITHOUT that hyphen, so not one of
+                // them could ever match. Every type drew in the inherited
+                // ink: four colours that existed in the stylesheet and had
+                // never once applied, with nothing on screen saying so and
+                // the label still reading correctly the whole time.
+                //
+                // The row the chip sits in is the reference rather than a
+                // colour written down here. A dead selector leaves the chip
+                // at EXACTLY its parent's colour, and comparing the two says
+                // "the rule matched" without pinning this to whatever
+                // --sem-base resolves to in the current theme.
+                chip: (() => {
+                  const el = list ? list.querySelector('.headtype') : null;
+                  if (!el) return null;
+                  return {
+                    cls: el.className,
+                    color: getComputedStyle(el).color,
+                    inherited: getComputedStyle(el.parentElement).color,
+                  };
+                })(),
+                // The LIST on its own, not the whole panel: the head dropdown
+                // carries the same KL, so "0.417 is somewhere in the panel"
+                // and "the ranked list drew it" are different questions.
+                list: list ? list.innerText : '',
+                text: panel ? panel.innerText : '',
+              };
+            }"""
+        )
+        await browser.close()
+        got["crashed"] = crashed
+        return got
+
+
+async def lens_side(port: int) -> dict:
+    """Open that file in the real viewer and read what it served and drew.
+
+    Same two halves as `causal_side`, because it is the same failure one
+    section along: a route with no panel is data nobody sees, and a panel with
+    no route is a heading over a refusal.
+
+    The `pageerror` listener is the point of the third assertion. The row with
+    no entropy used to throw inside `rows.map`, which unmounts the whole React
+    tree — the reader's screen goes white with nothing on it saying why — so
+    "the panel did not mount" and "the page died drawing it" have to be
+    distinguishable on the failure line.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        crashed: list[str] = []
+        page.on(
+            "pageerror",
+            lambda err: crashed.append(str(err).splitlines()[0][:160]),
+        )
+        await page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        got = await page.evaluate(
+            """async () => {
+              const blob = await (await fetch('./lens.mri')).blob();
+              const file = new File([blob], 'lens.mri');
+              const input = document.querySelector('input[type=file][accept=".mri"]');
+              const dt = new DataTransfer(); dt.items.add(file);
+              input.files = dt.files;
+              input.dispatchEvent(new Event('change', {bubbles: true}));
+              await new Promise(r => setTimeout(r, 1500));
+
+              const state = await (await fetch('/api/session/state')).json();
+              // The route exactly as `api.ts` calls it, query string and all.
+              const r = await fetch('/api/lens?top_k=4&kind=plain');
+              // The BODY as text: the thing under test is whether the
+              // recording came back or the refusal did, and both parse.
+              const body = await r.text();
+              let served = {};
+              try { served = JSON.parse(body); } catch (e) { served = {}; }
+
+              // Re-queried after the click for `causal_side`'s reason: React
+              // delegates at the root, and a node detached by a re-render is
+              // one whose click goes nowhere.
+              let asked = '';
+              const panel0 = document.querySelector('.panel.lensp');
+              if (panel0) {
+                const button = [...panel0.querySelectorAll('button')]
+                  .find(b => (b.textContent || '').startsWith('Show the recorded'));
+                if (button) {
+                  asked = button.textContent.trim();
+                  button.click();
+                  await new Promise(r => setTimeout(r, 900));
+                }
+              }
+
+              const panel = document.querySelector('.panel.lensp');
+              // Per ROW, not as one blob of text. "the entropy column reads
+              // 0.00 somewhere" and "THIS row reads 0.00" are different
+              // questions, and only the second one is the bug.
+              const rows = panel
+                ? [...panel.querySelectorAll('.lens-row')]
+                    .filter(el => !el.classList.contains('head'))
+                    .map(el => ({
+                      name: (el.querySelector('.l-name') || {}).innerText || '',
+                      entropy: (el.querySelector('.lens-h') || {}).innerText || '',
+                      lost: (el.querySelector('.lens-kl') || {}).innerText || '',
+                    }))
+                : [];
+              // The raw probabilities, which the table carries as a tooltip so
+              // a rounded percentage is never the only copy on screen.
+              const titles = panel
+                ? [...panel.querySelectorAll('.lens-tok')].map(el => el.title)
+                : [];
+              return {
+                available: state && state.lens ? state.lens.available === true : false,
+                status: r.status,
+                body,
+                // The replay branch's shape, not a shape invented here:
+                // `layers` plus the recorded scalars spread beside it.
+                shape: {
+                  layers: Array.isArray(served.layers) ? served.layers.length : -1,
+                  recorded: served.recorded === true,
+                  final: served.final,
+                  settled_at: served.settled_at,
+                },
+                mounted: !!panel,
+                asked,
+                rows,
+                titles,
+                text: panel ? panel.innerText : '',
+              };
+            }"""
+        )
+        await browser.close()
+        got["crashed"] = crashed
+        return got
 
 
 async def diff_side(port: int) -> dict:
@@ -715,6 +1178,12 @@ async def causal_side(port: int) -> dict:
                   graph: !!document.querySelector('.panel.pgraph'),
                   ground: !!document.querySelector('.panel.ground'),
                 },
+                // THE PROMPT BOXES, which `innerText` cannot see: the pair a
+                // panel was prefilled with lives in an <input> value, not in
+                // the rendered text.
+                graphPrompts: [
+                  ...document.querySelectorAll('.panel.pgraph input'),
+                ].map((i) => i.value).join(' | '),
                 text: {
                   patch: drawn('.panel.patch'),
                   graph: drawn('.panel.pgraph'),
@@ -997,6 +1466,8 @@ def main() -> int:
     (VIEWER / "robot.mri").write_bytes(build_robot_fixture())
     (VIEWER / "diff.mri").write_bytes(build_diff_fixture())
     (VIEWER / "causal.mri").write_bytes(build_causal_fixture())
+    (VIEWER / "lens.mri").write_bytes(build_lens_fixture())
+    (VIEWER / "ranking.mri").write_bytes(build_ranking_fixture())
 
     expected = python_side(data)
     port = 5921
@@ -1008,6 +1479,8 @@ def main() -> int:
         robot = asyncio.run(robot_side(port))
         diff = asyncio.run(diff_side(port))
         causal = asyncio.run(causal_side(port))
+        lens = asyncio.run(lens_side(port))
+        rank = asyncio.run(ranking_side(port))
     finally:
         httpd.shutdown()
 
@@ -1274,6 +1747,13 @@ def main() -> int:
             "the finding is readable and not just the question it answered",
         ),
         (
+            "own prompts",
+            "Louvre" in causal["graphPrompts"],
+            "the graph panel prefills with the pair the GRAPH was measured on, "
+            "not the patch section's -- a file can carry a graph and a trace "
+            "of two different prompts",
+        ),
+        (
             "pruning",
             "41" in causal["text"]["graph"] and "9" in causal["text"]["graph"],
             "the graph says how many senders it found too weak and how many "
@@ -1299,6 +1779,247 @@ def main() -> int:
     ok = ok and causal_ok
 
     print()
+    # A SHARED LOGIT LENS. The oldest section in the format and the last one
+    # with no reader: `session.build` writes it, `session._lens` validates it,
+    # `runtime.logit_lens` serves it out of a replay — and the only panel that
+    # draws one is mounted inside the features panel, which is `!replay`, so
+    # nothing could ask. The route was not handled here at all.
+    lens_ok = True
+    entropy_at = {row["name"].strip(): row["entropy"].strip() for row in lens["rows"]}
+    for label, passed, detail in (
+        (
+            "available",
+            lens["available"],
+            "the session state names the lens, so the panel can offer the "
+            "recording instead of a button that can only refuse"
+            if lens["available"]
+            else "the state does not say the file carries a lens, so nothing "
+            "downstream can mount a panel for it",
+        ),
+        (
+            "answered",
+            lens["status"] == 200,
+            f"the route served the recording (status {lens['status']})",
+        ),
+        (
+            "not refused",
+            "install modelmri" not in lens["body"].lower(),
+            "the route did not tell the reader to install the tool over a "
+            "file that already carries the trajectory"
+            if "install modelmri" not in lens["body"].lower()
+            else "the shim's install-the-tool refusal came back for a lens "
+            "sitting in the open file — the one refusal a reader cannot act on",
+        ),
+        (
+            "runtime shape",
+            lens["shape"]["recorded"]
+            and lens["shape"]["layers"] == 4
+            and lens["shape"]["final"] == " Paris"
+            and lens["shape"]["settled_at"] == 2,
+            "the answer is `runtime.logit_lens`'s replay shape exactly — the "
+            "trajectory under `layers` with the recorded scalars spread "
+            f"beside it ({lens['shape']})",
+        ),
+        (
+            "mounted",
+            lens["mounted"],
+            "the panel is on the page"
+            if lens["mounted"]
+            else "the panel never mounted"
+            + (
+                f"; the page threw {lens['crashed'][0]}"
+                if lens["crashed"]
+                else ", and nothing threw — this build simply does not render "
+                "it, which no unit test can see"
+            ),
+        ),
+        (
+            "asked",
+            lens["asked"].startswith("Show the recorded"),
+            f"the panel offers the recording rather than a live run "
+            f"({lens['asked']!r})",
+        ),
+        (
+            "probability",
+            "p = 0.9137" in lens["titles"] and "91%" in lens["text"],
+            "the last layer's 0.9137 is on screen, so the trajectory drew "
+            "rather than merely mounting",
+        ),
+        (
+            "unmeasured",
+            entropy_at.get("L 02") == "—",
+            "a layer whose entropy the file never carried reads as unmeasured"
+            if entropy_at.get("L 02") == "—"
+            else f"the row with no entropy reads {entropy_at.get('L 02')!r} — "
+            "an entropy nobody measured must not be printed as one",
+        ),
+        (
+            "measured zero",
+            entropy_at.get("L 03") == "0.00",
+            "an entropy that really is zero still prints as zero, so "
+            '"unmeasured" did not swallow a reading with it',
+        ),
+        (
+            "no white screen",
+            not lens["crashed"],
+            "nothing threw while drawing a trajectory with a hole in it"
+            if not lens["crashed"]
+            else f"the page threw {lens['crashed'][0]} — there is no error "
+            "boundary above this panel, so that is the whole viewer gone white",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] lens      {label:15} — {detail}")
+        lens_ok = lens_ok and passed
+    ok = ok and lens_ok
+
+    print()
+    # A SHARED HEAD RANKING, AND THE LABELS BEHIND IT. The tool's headline
+    # measurement: `session.build` writes it, `session._ranking` validates it
+    # row by row so it can be re-read, `runtime.ablate_heads` serves it out of
+    # a replay — and `AttentionPanel` gated the only button that asks on
+    # `!replay`, under a comment that is true of MEASURING a ranking and false
+    # of SHOWING one already in the file. The labels were locked one level
+    # deeper still: their only caller sits inside `{ranked && …}`, a block a
+    # recording could never open.
+    ranking_ok = True
+    for label, passed, detail in (
+        (
+            "available",
+            rank["available"]["ranking"] and rank["available"]["types"],
+            f"the session state names both sections, and the ranking names "
+            f"its target token ({rank['available']['target']!r}) over "
+            f"{rank['available']['rows']} ranked rows"
+            if rank["available"]["ranking"] and rank["available"]["types"]
+            else f"the state reports ranking="
+            f"{'yes' if rank['available']['ranking'] else 'no'}, head_types="
+            f"{'yes' if rank['available']['types'] else 'no'} — a panel that "
+            f"is not told the file carries the measurement cannot show it",
+        ),
+        (
+            "answered",
+            rank["status"] == 200,
+            f"the route served the recording (status {rank['status']})",
+        ),
+        (
+            "not refused",
+            "install modelmri" not in rank["body"].lower(),
+            "the route did not tell the reader to install the tool over a "
+            "file that already carries the ranking"
+            if "install modelmri" not in rank["body"].lower()
+            else "the shim's install-the-tool refusal came back for a ranking "
+            "sitting in the open file — the one refusal a reader cannot act on",
+        ),
+        (
+            "runtime shape",
+            rank["shape"]["recorded"]
+            and rank["shape"]["ranked"] == 3
+            and rank["shape"]["baseline"] == "zero"
+            and rank["shape"]["target_token"] == " Paris",
+            "the answer is `runtime.ablate_heads`'s replay shape exactly — "
+            "the recorded section spread whole, with `recorded` beside it "
+            f"({rank['shape']})",
+        ),
+        (
+            "mounted",
+            rank["mounted"],
+            "the panel is on the page"
+            if rank["mounted"]
+            else "the attention panel never mounted"
+            + (
+                f"; the page threw {rank['crashed'][0]}"
+                if rank["crashed"]
+                else ", so there was nowhere for either control to appear"
+            ),
+        ),
+        (
+            "asked",
+            rank["askedRanking"].startswith("Show the recorded"),
+            f"the panel offers the recording rather than a live sweep "
+            f"({rank['askedRanking']!r})",
+        ),
+        (
+            "no live sweep",
+            "Rank heads" not in rank["text"],
+            "a recording is never offered the button that spends a forward "
+            "pass per head — there is no model here to spend them on",
+        ),
+        (
+            "ranking drawn",
+            "0.417" in rank["list"],
+            "the head that moved the answer by 0.417 nats is in the ranked "
+            "list, so the ranking rendered rather than merely arriving",
+        ),
+        (
+            "noise floor",
+            "below the noise floor" in rank["list"],
+            "the floor travelled with the scores, so the row at 0.0004 reads "
+            "as arithmetic rather than as a small finding",
+        ),
+        (
+            "no blank duration",
+            "forward passes · s" not in rank["text"],
+            "a ranking whose duration the file never carried says so, rather "
+            "than printing a gap where the seconds go",
+        ),
+        (
+            "labels asked",
+            rank["askedLabels"].startswith("Show the recorded"),
+            f"the labels are reachable from the recorded ranking "
+            f"({rank['askedLabels']!r})"
+            if rank["askedLabels"]
+            else "no labels button was found inside the ranking block — the "
+            "labels are still locked behind a button a recording cannot press",
+        ),
+        (
+            # Case-folded, and that is not laziness. `.headtype` is
+            # `text-transform: uppercase` in styles.css and `innerText`
+            # reports text as RENDERED, so the chip reads "PREVIOUS-TOKEN" on
+            # screen while the file says "previous-token". Asserting the file
+            # spelling against rendered text would fail for a stylesheet
+            # reason and send the next reader hunting through the labels
+            # route, which is not where the answer would be.
+            "label drawn",
+            "previous-token" in rank["list"].lower(),
+            "the label this head earned is on the row beside its KL, so the "
+            "labels route was actually read rather than merely offered",
+        ),
+        (
+            # The label being on screen does NOT mean the label is being
+            # SHOWN as a type. `previous-token` renders identically whether
+            # its colour rule matched or missed, which is how four dead
+            # selectors survived every release that had this check in it:
+            # the assertion above passed the entire time they were dead.
+            "label coloured",
+            bool(rank["chip"])
+            and rank["chip"]["color"] != rank["chip"]["inherited"],
+            f"the chip draws in its own colour rather than the row's — "
+            f"{rank['chip']['cls'].split()[-1]} is "
+            f"{rank['chip']['color']}, against {rank['chip']['inherited']} "
+            f"beside it"
+            if rank["chip"] and rank["chip"]["color"] != rank["chip"]["inherited"]
+            else f"the chip is {rank['chip']['color']}, EXACTLY the colour of "
+            f"the row it sits in — {rank['chip']['cls']!r} matches no rule "
+            f"in styles.css, so the per-type colours are dead code and all "
+            f"four types read the same"
+            if rank["chip"]
+            else "the ranked list has no .headtype chip to read a colour off",
+        ),
+        (
+            "no white screen",
+            not rank["crashed"],
+            "nothing threw while drawing a ranking and its labels"
+            if not rank["crashed"]
+            else f"the page threw {rank['crashed'][0]} — there is no error "
+            "boundary above this panel, so that is the whole viewer gone white",
+        ),
+    ):
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] ranking   {label:17} — {detail}")
+        ranking_ok = ranking_ok and passed
+    ok = ok and ranking_ok
+
+    print()
     # Two different failures, and the last line has to name the right one:
     # "THE VIEWER DISAGREES WITH THE TOOL" about a run where every cell
     # matched and the browser simply never started would send the next reader
@@ -1315,6 +2036,10 @@ def main() -> int:
         print("THE VIEWER MISHANDLES A SHARED MODEL COMPARISON — see above")
     elif not causal_ok:
         print("THE VIEWER MISHANDLES A SHARED CAUSAL RESULT — see above")
+    elif not lens_ok:
+        print("THE VIEWER MISHANDLES A SHARED LOGIT LENS — see above")
+    elif not ranking_ok:
+        print("THE VIEWER MISHANDLES A SHARED HEAD RANKING — see above")
     else:
         print("every cell matched, but the ?f= guard was not proven — see above")
     return 0 if ok else 1

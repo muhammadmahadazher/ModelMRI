@@ -644,10 +644,23 @@ def _ranking(doc: dict) -> dict:
     # it as "N forward passes - Xs" AND divides by `passes` to estimate what a
     # whole-model sweep would cost. Dropped, that sentence rendered with a
     # blank where the duration goes and the estimate came out "~ NaNm NaNs".
-    for name in ("position", "layer", "passes", "draws", "elapsed_s"):
+    for name in ("position", "layer", "passes", "draws"):
         value = raw.get(name)
         if isinstance(value, int) and not isinstance(value, bool):
             out[name] = value
+    # A FLOAT, and it was first added to the int loop above -- where it was
+    # dropped exactly as before, because `ablate.py` writes
+    # `round(perf_counter() - started, 2)` and `round(x, 2)` returns a float.
+    # The panel prints it as "N forward passes - Xs" and divides by `passes`
+    # to price a whole-model sweep, so without it the sentence rendered with a
+    # blank where the duration goes and the estimate came out "~ NaNm NaNs".
+    elapsed = raw.get("elapsed_s")
+    if (
+        isinstance(elapsed, (int, float))
+        and not isinstance(elapsed, bool)
+        and math.isfinite(elapsed)
+    ):
+        out["elapsed_s"] = float(elapsed)
     return out
 
 
@@ -1674,6 +1687,11 @@ def _ground(doc: dict) -> dict:
 MAX_TRACE_STEPS = 500
 MAX_TRACE_TEXT = 4_200  # the writer's clip plus its marker
 MAX_TRACE_NAME = 200
+#: How many `meta` keys one step may carry into a browser. A trace step's
+#: meta is machine facts -- model id, dtype, token counts -- and a file
+#: claiming ten thousand of them per step is a way to make one nobody can
+#: open, not a richer recording.
+MAX_TRACE_META_KEYS = 64
 
 
 def _trace(doc: dict) -> dict:
@@ -1720,6 +1738,36 @@ def _trace(doc: dict) -> dict:
             "output": str(step.get("output") or "")[:MAX_TRACE_TEXT],
             "error": bool(step.get("error")),
         }
+        # THE MACHINE FACTS, which `bundle.py` goes to some trouble over.
+        # It carries `meta` through deliberately -- "model id, token ids,
+        # dtype" -- and SCANS EVERY STRING IN IT for credentials, on the
+        # grounds that a hand-written or ingested document is not bound by the
+        # contract that keeps prompt text out of it. Then this dropped the
+        # whole field, so that redaction pass protected something no reader
+        # would ever see, and `AgentsPanel`'s "recorded from <model>" line --
+        # `sel.meta?.model` -- was blank on every shared bundle. Optional
+        # chaining meant it degraded in silence rather than saying so.
+        #
+        # Scalars and short strings only. This arrives from a stranger and
+        # reaches a browser: a nested object here would be rendered by
+        # whatever the panel does with it, and an unbounded string is a way to
+        # make a file nobody can open.
+        meta = step.get("meta")
+        if isinstance(meta, dict):
+            clean["meta"] = {
+                str(k)[:MAX_TRACE_NAME]: (
+                    v[:MAX_TRACE_NAME] if isinstance(v, str) else v
+                )
+                for k, v in list(meta.items())[:MAX_TRACE_META_KEYS]
+                if isinstance(k, str)
+                and (
+                    v is None
+                    or isinstance(v, bool)
+                    or (isinstance(v, (int, float)) and math.isfinite(v))
+                    or isinstance(v, str)
+                )
+            }
+
         parent = step.get("parent_id")
         clean["parent_id"] = str(parent)[:120] if parent else None
         # Nullable, and kept nullable. `duration_ms` is None for a step
@@ -2394,6 +2442,12 @@ class Session:
 
     def has_patch(self) -> bool:
         return bool(self.patch.get("grids"))
+
+    def has_lens(self) -> bool:
+        """ROWS, not `lens_info`. A file can carry the scalars a lens
+        produced and none of the trajectory they describe, and a panel offered
+        for that has nothing to draw."""
+        return bool(self.lens)
 
     def has_head_types(self) -> bool:
         return bool(self.head_types.get("labels"))

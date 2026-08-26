@@ -17,8 +17,10 @@ import {
   getAttentionDiff,
   getAttentionMeta,
   getHeadTypes,
+  getSessionState,
   HeadTypes,
   rankHeads,
+  SessionState,
 } from "./api";
 import ArcCanvas from "./ArcCanvas";
 import ControlTwin from "./ControlTwin";
@@ -86,6 +88,39 @@ export default function AttentionPanel({
   // which is the change that does invalidate them.
   const [types, setTypes] = useState<HeadTypes | null>(null);
   const [typing, setTyping] = useState(false);
+
+  // WHICH OF THIS PANEL'S SECTIONS THE OPEN RECORDING ACTUALLY CARRIES.
+  //
+  // Read here rather than handed down as a prop. `Playground` mounts this
+  // panel from two places — its `if (VIEWER)` branch and the live one — and
+  // neither passes section flags, so a prop would arrive `undefined` in one
+  // of the two builds and the gates below would silently never open there,
+  // with nothing on screen saying why. `Playground` reads
+  // `/api/session/state` locally for exactly this reason for the lens.
+  //
+  // Only asked on a replay: with no file open there is nothing to have an
+  // opinion about, and the live gates below do not consult it at all.
+  const [recording, setRecording] = useState<SessionState | null>(null);
+  useEffect(() => {
+    if (!replay) {
+      // Not a state saying "carries nothing". The file is closed, so there is
+      // no file to have an opinion about, and the gates read `?.available`,
+      // which treats both the same way on purpose.
+      setRecording(null);
+      return;
+    }
+    let live = true;
+    void getSessionState()
+      .then((s) => live && setRecording(s))
+      // A refusing route or an older server: the controls stay absent, which
+      // is the same answer as "this file carries neither section" and is the
+      // safe one. Offering a button on an unknown puts a control over a
+      // refusal, which is the failure this whole gate exists to prevent.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [replay, epoch]);
 
   async function labelHeads() {
     setTyping(true);
@@ -197,7 +232,17 @@ export default function AttentionPanel({
       // possible number — 46.8% over on that run. Warm-up only ever inflates,
       // so the minimum is the honest estimator, and once warm the
       // extrapolation held to within 2.5% across repeats on both models.
-      if (result.passes > 0) {
+      //
+      // NOT FROM A RECORDING. `result.recorded` says these passes and seconds
+      // were spent on the SENDER'S machine, and this rate exists to price a
+      // sweep on THIS one — borrowing somebody else's GPU to quote a wait
+      // here is the same mistake `TelemetryBar` is hidden on a replay to
+      // avoid. `elapsed_s` is checked as well as `recorded` because
+      // `session._ranking` copies it only when it is an int and `ablate.py`
+      // writes a float, so a recorded ranking arrives with no duration at all
+      // — and `undefined / passes` is a NaN that would then be printed as the
+      // estimate for every button on the row.
+      if (!result.recorded && result.passes > 0 && result.elapsed_s !== undefined) {
         const rate = result.elapsed_s / result.passes;
         setSecPerPass((prev) => (prev === null ? rate : Math.min(prev, rate)));
       }
@@ -426,8 +471,11 @@ export default function AttentionPanel({
           {headOptions()}
         </select>
         <span className="meta">{info}</span>
-        {/* Needs a forward pass per head, so it needs a model — a recording
-            does not carry one. */}
+        {/* MEASURING a ranking needs a forward pass per head, so it needs a
+            model — a recording does not carry one. SHOWING one that is
+            already in the file needs nothing at all, and that half is the
+            branch below this one. This comment used to end at the first
+            sentence and gate both. */}
         {!replay && (
           <>
             <button
@@ -514,6 +562,52 @@ export default function AttentionPanel({
             </button>
           </>
         )}
+        {/* THE OTHER HALF, and the one that was missing.
+
+            `session.build` writes a `ranking` section, `session._ranking`
+            validates it row by row so it can be re-read, and
+            `runtime.ablate_heads` returns it from a replay with
+            `recorded: true` — and nothing on any surface could ask for it,
+            because the button above is gated on `!replay`. The headline
+            measurement of this tool was the one finding a recipient could
+            not read out of a file that carried it.
+
+            `PatchPanel`'s idiom, deliberately: "Show the recorded …" says
+            this draws somebody else's measurement rather than taking one.
+            NO COST ESTIMATE and no baseline select beside it — showing a
+            recording spends no forward passes, and offering a baseline would
+            imply this run can be taken again with a different one, which is
+            exactly what a `.mri` cannot do.
+
+            Gated on `available` rather than on `replay` alone, so a file that
+            carries no ranking does not offer a button whose one outcome is a
+            refusal. */}
+        {replay && recording?.ranking?.available && (
+          <button
+            className="ghost sm"
+            onClick={() => void rank("layer")}
+            disabled={ranking}
+            title={
+              "The ranking this file carries, as its sender measured it. " +
+              "Showing it runs nothing — the scores are already in the file, " +
+              "and a `.mri` holds activations rather than weights, so there " +
+              "is no model here to take the measurement again."
+            }
+          >
+            {ranking ? "reading…" : "Show the recorded ranking"}
+            <span className="meta">
+              {" "}
+              {recording.ranking.n_heads} head
+              {recording.ranking.n_heads === 1 ? "" : "s"}
+              {/* Only when the file named it. `target_token` is null rather
+                  than "" when it did not, and an empty pair of quotes here
+                  would read as a target the ranking watched. */}
+              {recording.ranking.target_token !== null
+                ? ` · ${JSON.stringify(recording.ranking.target_token)}`
+                : ""}
+            </span>
+          </button>
+        )}
         {/* Beside "Rank heads", and gated harder than it is.
 
             A recording, the static demo and the `.mri` viewer all have no
@@ -575,8 +669,17 @@ export default function AttentionPanel({
               {JSON.stringify(ranked.target_token)} moves
             </strong>
             <span className="meta">
-              {ranked.passes} forward passes · {ranked.elapsed_s}s ·{" "}
-              {ranked.baseline}-ablation
+              {ranked.passes} forward passes ·{" "}
+              {/* SAID, not left blank. `session._ranking` copies `elapsed_s`
+                  only when it is an int and `ablate.py` writes a float, so
+                  every ranking read back out of a `.mri` arrives without one
+                  — and rendering `undefined` here printed "18 forward passes
+                  · s · zero-ablation", a gap in a provenance line with
+                  nothing saying a number was missing rather than zero. */}
+              {ranked.elapsed_s === undefined
+                ? "duration not recorded"
+                : `${ranked.elapsed_s}s`}{" "}
+              · {ranked.baseline}-ablation
               {/* The corpus is part of a resample measurement: the same head
                   scores differently against different donor sentences, so a
                   number shown without it cannot be checked by anyone. */}
@@ -687,13 +790,26 @@ export default function AttentionPanel({
                           : " · changes the top token")}
                     </span>
                     <span className="spacer" />
-                    <button
-                      className="ghost sm"
-                      onClick={() => void compare(r.layer, r.head)}
-                      title={`Show what changes at layer ${r.layer + 1} when L${r.layer} H${r.head} is removed`}
-                    >
-                      what changes?
-                    </button>
+                    {/* `!replay`, because this re-runs the generation with
+                        the head removed and compares the two attention maps
+                        — `getAttentionDiff` needs the model, and a `.mri`
+                        carries the maps that were captured rather than the
+                        weights that made them. Until the ranking became
+                        reachable on a recording this row could not exist
+                        there, so the gate had never been needed; now it is,
+                        and without it every row of a recorded ranking ends
+                        in a button whose only outcome is "install
+                        ModelMRI" — which a reader holding the file cannot
+                        act on. */}
+                    {!replay && (
+                      <button
+                        className="ghost sm"
+                        onClick={() => void compare(r.layer, r.head)}
+                        title={`Show what changes at layer ${r.layer + 1} when L${r.layer} H${r.head} is removed`}
+                      >
+                        what changes?
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -789,32 +905,75 @@ export default function AttentionPanel({
               the block rather than the top because it answers a question you
               ask AFTER reading a number, not before. */}
           <div className="row" style={{ marginTop: 10 }}>
-            <button
-              className="ghost sm"
-              onClick={() => void labelHeads()}
-              disabled={typing}
-            >
-              {typing
-                ? "Labelling every head…"
-                : types
-                  ? "Re-label the heads"
-                  : "What kind of head is each of these?"}
-            </button>
+            {/* ON A RECORDING, ONLY WHEN THE FILE CARRIES THE LABELS.
+
+                This button was never gated on `!replay` and never needed to
+                be: it lives inside `{ranked && …}`, and until the branch
+                above existed `ranked` could only be filled by a live sweep,
+                so on a recording the button was unreachable rather than
+                refusing. Now that a recorded ranking fills it, an ungated
+                button would offer head labels for a file carrying none, and
+                its one outcome would be `runtime.head_types`' refusal —
+                which a reader holding the file cannot act on.
+
+                `head_types` survives a new generation on the live side (the
+                labels are measured on the detector's own random sequences),
+                which is why this is a separate section from the ranking and
+                a separate flag from it. */}
+            {(!replay || recording?.head_types?.available) && (
+              <button
+                className="ghost sm"
+                onClick={() => void labelHeads()}
+                disabled={typing}
+                title={
+                  replay
+                    ? "The labels this file carries, as its sender measured " +
+                      "them. Showing them runs nothing — labelling heads " +
+                      "means running the model on new random sequences, and " +
+                      "there is no model here."
+                    : undefined
+                }
+              >
+                {/* `PatchPanel`'s idiom on the recorded side, the measuring
+                    verb on the live one: "Re-label the heads" offers to take
+                    a measurement, and a recording cannot take one. */}
+                {replay
+                  ? typing
+                    ? "reading…"
+                    : "Show the recorded head labels"
+                  : typing
+                    ? "Labelling every head…"
+                    : types
+                      ? "Re-label the heads"
+                      : "What kind of head is each of these?"}
+              </button>
+            )}
             {types && (
               <span className="meta">
-                {Object.entries(types.counts)
+                {/* `?? {}` because the tally is OPTIONAL in the format:
+                    `session._head_types` copies `counts` only when the file
+                    has a dict there, so a `.mri` can arrive with labels and
+                    no tally at all. `Object.entries(undefined)` throws, and
+                    there is no error boundary above this panel — that is the
+                    recipient's whole page gone white over a summary line. */}
+                {Object.entries(types.counts ?? {})
                   .filter(([, n]) => n > 0)
                   .map(([k, n]) => `${n} ${k}`)
                   .join(" · ")}
               </span>
             )}
           </div>
-          {types && (
-            /* The caveat is not optional and not a tooltip. These labels are
-               behaviour on random repeated tokens, and the number beside them
-               in this very list is a causal measurement on a real prompt.
-               Reading one as explaining the other is the mistake the whole
-               feature is built to avoid. */
+          {/* The caveat is not optional and not a tooltip. These labels are
+              behaviour on random repeated tokens, and the number beside them
+              in this very list is a causal measurement on a real prompt.
+              Reading one as explaining the other is the mistake the whole
+              feature is built to avoid.
+
+              `types.means &&` as well as `types &&`: `session._head_types`
+              copies the sentence only when the file carries one, and an empty
+              `.hint.warn` is a yellow box with nothing in it — which reads as
+              a warning the reader failed to receive. */}
+          {types && types.means && (
             <div className="hint warn">{types.means}</div>
           )}
           <ReceiptLine receipt={ranked?.receipt} />

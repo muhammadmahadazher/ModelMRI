@@ -21,10 +21,31 @@ import ReceiptLine from "./ReceiptLine";
  *  Deliberately labelled as *not* features. It is a coarser probe, and saying
  *  so is the difference between a fallback and a substitute.
  */
-export default function LensPanel({ epoch }: { epoch: number }) {
+export default function LensPanel({
+  epoch,
+  recorded,
+}: {
+  epoch: number;
+  /** Set when a `.mri` is open and carries a trajectory: the answer it ended
+   *  on, so the panel offers the recording instead of a button whose only
+   *  outcome is a refusal.
+   *
+   *  There is nothing here to re-run. A lens means walking the residual
+   *  stream through the unembedding at every depth, and a `.mri` holds
+   *  activations rather than weights — so in this mode every control that
+   *  needs the model is gone rather than disabled, which is `PatchPanel`'s
+   *  rule after the same bug: a button labelled "Show the recorded trace"
+   *  that was disabled underneath the label in every viewer build. */
+  recorded?: { available: boolean; n_rows: number; final: string };
+}) {
   const [rows, setRows] = useState<LensRow[] | null>(null);
   const [final, setFinal] = useState("");
-  const [settled, setSettled] = useState<number | null>(null);
+  // THREE STATES, not two. A number is the layer the answer first stays on
+  // top at; `null` is the finding "it never gets on top before the last
+  // layer"; `undefined` is a file that never said. `session._lens` keeps
+  // `settled_at: null` deliberately and drops the key when it is absent, so
+  // collapsing the two here would print a finding over a silence.
+  const [settled, setSettled] = useState<number | null | undefined>(undefined);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -55,7 +76,13 @@ export default function LensPanel({ epoch }: { epoch: number }) {
   // the panel came back after any refresh believing no lens existed and
   // quietly requested `kind=plain` — the tuned column simply never appeared
   // again, with nothing on screen saying why.
+  //
+  // NOT ASKED FOR A RECORDING. A translator is fitted to the LIVE model, and
+  // a `.mri` was recorded on somebody else's — so a trained lens found here
+  // would caption a stranger's trajectory with "N of M layers improved" about
+  // a model that never produced it.
   useEffect(() => {
+    if (recorded) return;
     let live = true;
     void tunedLensStatus()
       .then((s) => {
@@ -65,15 +92,21 @@ export default function LensPanel({ epoch }: { epoch: number }) {
     return () => {
       live = false;
     };
-  }, [epoch]);
+  }, [epoch, recorded]);
 
   async function run() {
     setBusy(true);
     setErr("");
     try {
-      const d = await getLens(4, tunedInfo ? "both" : "plain");
+      const d = await getLens(4, !recorded && tunedInfo ? "both" : "plain");
       setRows(d.layers);
-      setFinal(d.final);
+      // `?? ""` and `d.settled_at` LEFT ALONE. A recording's scalars are
+      // whatever `lens_info` carried: the live route always sends both, a
+      // `.mri` need not, and `final.trim()` on an absent one is a TypeError
+      // that takes the whole page down with it. "" is what this panel already
+      // reads as "the answer was not named" — see the sentence below, which
+      // falls back to "the answer" — while `settled_at` keeps its third state.
+      setFinal(d.final ?? "");
       setSettled(d.settled_at);
       setReceipt(d.receipt ?? null);
       setTuned(d.tuned ?? null);
@@ -118,7 +151,22 @@ export default function LensPanel({ epoch }: { epoch: number }) {
     }
   }
 
-  const maxH = rows ? Math.max(...rows.map((r) => r.entropy), 0.001) : 1;
+  // Defensive by TYPE, not by presence, and for GraphPanel's reason: this
+  // renders a file a stranger forwarded, `parse()` in viewer.ts does not walk
+  // the lens section, and `frontend/src` has no error boundary — so a row
+  // carrying `entropy: "high"` would take the whole page white rather than
+  // one cell. Python validates its side; this is the side that must not
+  // trust Python having run.
+  const nats = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  // The widest bar is the largest entropy ANYBODY MEASURED. `reduce`, not
+  // `Math.max(...spread)`, so a long trajectory cannot throw RangeError; and
+  // no 0.001 floor, because the floor was standing in for the divide-by-zero
+  // that only happens when there is nothing to scale — which is now answered
+  // by drawing no bar at all.
+  const peakH = rows
+    ? rows.reduce((m, r) => Math.max(m, nats(r.entropy) ?? 0), 0)
+    : 0;
   // BY LAYER, never by index. The plain lens has one more row than the tuned
   // one -- the model's own final state, which needs no translator because it
   // is the answer -- so zipping the two arrays positionally would put every
@@ -128,17 +176,42 @@ export default function LensPanel({ epoch }: { epoch: number }) {
     (tunedInfo?.layers ?? []).map((r) => [r.layer, r.gain]),
   );
 
-  return (
+  const body = (
     <div className="lens">
       <div className="row" style={{ marginBottom: 10 }}>
         <button className="violet" onClick={() => void run()} disabled={busy}>
-          {busy ? "Reading every layer…" : "Run the logit lens"}
+          {busy
+            ? "Reading every layer…"
+            : recorded
+              ? "Show the recorded lens"
+              : "Run the logit lens"}
         </button>
         <span className="meta">
-          what this model would have said if it stopped at each layer
+          {recorded
+            ? "what that model would have said if it stopped at each layer — read on the sender's machine"
+            : "what this model would have said if it stopped at each layer"}
         </span>
       </div>
 
+      {recorded && (
+        <p className="meta">
+          This is a recording. The trajectory is already in the file and
+          nothing here re-reads it: a lens means walking the residual stream
+          through the unembedding at every depth, and a `.mri` holds
+          activations rather than weights.
+          {recorded.final.trim() && (
+            <>
+              {" "}
+              The model ended on <b>{recorded.final.trim()}</b>.
+            </>
+          )}
+        </p>
+      )}
+
+      {/* GONE, not disabled, on a recording. A translator is fitted to a LIVE
+          model over a corpus — minutes of compute — and the model this
+          trajectory came off is not on this machine and never will be. */}
+      {!recorded && (
       <details className="tune">
         <summary>
           {tunedInfo
@@ -183,6 +256,7 @@ export default function LensPanel({ epoch }: { epoch: number }) {
         )}
         {tunedInfo?.means && <div className="hint">{tunedInfo.means}</div>}
       </details>
+      )}
 
       {err && <div className="hint err">{err}</div>}
 
@@ -220,11 +294,12 @@ export default function LensPanel({ epoch }: { epoch: number }) {
             </div>
             {rows.map((r, ri) => {
               const agrees = r.tokens[0] === final;
+              const h = nats(r.entropy);
               return (
                 <div
                   className={`lens-row ${tuned ? "twin " : ""}${
                     agrees ? "agrees" : ""
-                  } ${settled !== null && r.layer === settled ? "settle" : ""}`}
+                  } ${typeof settled === "number" && r.layer === settled ? "settle" : ""}`}
                   key={r.layer}
                   role="row"
                   style={{ "--i": ri } as CSSProperties}
@@ -232,9 +307,16 @@ export default function LensPanel({ epoch }: { epoch: number }) {
                   <span className="l-name">
                     {r.layer === 0 ? "embed" : `L ${String(r.layer).padStart(2, "0")}`}
                   </span>
+                  {/* NO BAR AT ALL when nobody measured it. A zero-width bar
+                      beside "0.00" is a reading — "this layer was already
+                      certain" — and that is the opposite of what an absent
+                      entropy says. `measured` answers "—" for an unknown,
+                      which is the same mark `lost` uses one column along. */}
                   <span className="lens-h">
-                    <i style={{ width: `${(r.entropy / maxH) * 100}%` }} />
-                    {r.entropy.toFixed(2)}
+                    {h !== null && peakH > 0 && (
+                      <i style={{ width: `${(h / peakH) * 100}%` }} />
+                    )}
+                    {measured(h, 2)}
                   </span>
                   <span className="lens-kl mid">
                     {r.kl_to_final === undefined ? "—" : measured(r.kl_to_final, 3)}
@@ -308,11 +390,20 @@ export default function LensPanel({ epoch }: { epoch: number }) {
             })}
           </div>
           <div className="hint">
-            {settled !== null && settled > 0 ? (
+            {typeof settled === "number" && settled > 0 ? (
               <>
                 {final.trim() || "the answer"} first stays on top at layer{" "}
                 <b>{settled}</b> and never loses it — everything below that is
                 the model still deciding.
+              </>
+            ) : settled === undefined ? (
+              /* THE THIRD STATE. A `.mri` need not carry `settled_at`, and
+                 the sentence below is a FINDING about the model — saying it
+                 over a file that never took that reading would be inventing
+                 the measurement this tool exists to demand. */
+              <>
+                This recording does not say where the answer settled, so the
+                trajectory above is the whole of what it carries.
               </>
             ) : (
               <>
@@ -326,6 +417,24 @@ export default function LensPanel({ epoch }: { epoch: number }) {
           <ReceiptLine receipt={receipt} />
         </>
       )}
+    </div>
+  );
+
+  // Inside the features panel this is a SECTION of one — it has a heading
+  // above it already, and `.lens`'s hairline is what separates it from the
+  // SAE half. A recording has no features panel to sit in (that one carries
+  // live-model controls and is `!replay` by construction), so on that path it
+  // becomes a panel of its own, with the features accent because the lens is
+  // the answer for every model that has no sparse autoencoder.
+  if (!recorded) return body;
+  return (
+    <div className="panel lensp">
+      <div className="sect">
+        <span className="dot d-feat" />
+        <h2 className="h-feat">LOGIT LENS — WHAT IT WOULD HAVE SAID, LAYER BY LAYER</h2>
+        <span className="rule" />
+      </div>
+      {body}
     </div>
   );
 }

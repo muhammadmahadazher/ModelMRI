@@ -204,6 +204,59 @@ def test_a_strip_with_nothing_in_it_is_left_exactly_alone():
     assert parsed.tokens == plain
 
 
+# ------------------------------------------------------- the machine facts
+
+
+def test_a_steps_meta_reaches_the_reader():
+    """`AgentsPanel` prints "recorded from <model>" off `step.meta.model`.
+
+    The reader dropped `meta` entirely, so that line was blank on every shared
+    bundle -- optional-chained, so it degraded in silence rather than saying
+    the fact was missing.
+    """
+    doc = _trace()
+    doc["steps"][0]["meta"] = {"model": "Qwen/Qwen3-1.7B", "dtype": "bfloat16"}
+    parsed = session.parse(_build(trace=doc))
+    assert parsed.trace["steps"][0]["meta"]["model"] == "Qwen/Qwen3-1.7B"
+
+
+def test_the_redaction_that_scans_meta_is_no_longer_wasted():
+    """THE PAIRING THAT MAKES THE DROP VISIBLE. `bundle.prepare` scans every
+    string in `meta` for credentials, and says why in as many words: a
+    hand-written or ingested document is not bound by the contract that keeps
+    prompt text out of it.
+
+    With the field dropped afterwards, that pass protected something no reader
+    would ever see. Now the redacted value arrives, which is what makes the
+    scan worth running.
+    """
+    doc = _trace()
+    doc["steps"][0]["meta"] = {"note": f"called with {API_KEY}"}
+    parsed = session.parse(_build(trace=doc))
+    said = parsed.trace["steps"][0]["meta"]["note"]
+    assert API_KEY not in said
+    assert "[redacted:api-key]" in said
+
+
+def test_a_step_with_no_meta_carries_no_empty_one():
+    """Absent stays absent. An empty dict would make every step claim machine
+    facts it does not have, and the panel would print a heading over
+    nothing."""
+    parsed = session.parse(_build(trace=_trace()))
+    assert "meta" not in parsed.trace["steps"][0]
+
+
+def test_meta_holding_a_nested_object_drops_that_key_and_keeps_the_rest():
+    """This arrives from a stranger and reaches a browser. A nested object
+    would be rendered by whatever the panel does with it, so scalars and short
+    strings only -- and the key it came with is not a reason to refuse the
+    whole file."""
+    doc = _trace()
+    doc["steps"][0]["meta"] = {"model": "gpt2", "nested": {"a": 1}, "n": 3}
+    kept = session.parse(_build(trace=doc)).trace["steps"][0]["meta"]
+    assert kept == {"model": "gpt2", "n": 3}
+
+
 # ------------------------------------------------------------- the bounds
 
 

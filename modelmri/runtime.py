@@ -520,6 +520,35 @@ def decoder_blocks(root):
     return None
 
 
+def _recorded_receipt(replay, op: str) -> dict | None:
+    """The receipt for one recorded measurement, out of the file's own list.
+
+    `session.build` writes a run's receipts as ONE list, and every export
+    helper strips the copy nested inside its section -- `_patch_graph_for_export`
+    says why: "a second copy nested inside a section would be a second answer
+    to the question of what produced these numbers." That is the right call,
+    and the other half of it was never built. Nothing served the list: it
+    appears nowhere in `server.py` and nowhere in the viewer, so `ReceiptLine`
+    -- whose own docstring says it "renders receipts from a `.mri` a stranger
+    sent" -- rendered nothing on every recorded measurement, and the file's
+    provenance was carried the whole way and shown to no one.
+
+    Matched on `op`, which is the field a receipt uses to say what it is a
+    receipt FOR. The LAST one wins: a session that ran the same measurement
+    twice describes the numbers it kept, which are the second run's.
+
+    `None` rather than an empty dict when there is none. The panel renders
+    nothing for a missing receipt and a sentence for a present one, and an
+    empty dict would be a receipt claiming a run with no model, no revision
+    and no dtype -- provenance that says nothing, which is worse than an
+    absence that says so.
+    """
+    for receipt in reversed(getattr(replay, "receipts", None) or []):
+        if isinstance(receipt, dict) and receipt.get("op") == op:
+            return receipt
+    return None
+
+
 def _recorded_patch(recorded: dict) -> dict:
     """A stored patching section in the shape a LIVE trace answers in.
 
@@ -1344,7 +1373,11 @@ class ModelRuntime:
                 # to be worth sending.
                 recorded = self.replay.patch
                 if recorded.get("grids"):
-                    return {**_recorded_patch(recorded), "recorded": True}
+                    return {
+                        **_recorded_patch(recorded),
+                        "recorded": True,
+                        "receipt": _recorded_receipt(self.replay, "patch_trace"),
+                    }
                 raise Refusal(
                     "This is a recording, and it does not carry a patching "
                     "trace. Patching means running the model again with an "
@@ -2068,7 +2101,15 @@ class ModelRuntime:
             # too much -- which is the lesson `patch_trace` records.
             recorded = getattr(self.replay, "ranking", None) or {}
             if recorded.get("ranked"):
-                return {**recorded, "recorded": True}
+                return {
+                    **recorded,
+                    "recorded": True,
+                    # The receipt out of the file's own list. Every section is
+                    # exported WITHOUT its own copy, deliberately -- see
+                    # `_recorded_receipt` -- and nothing ever read the list they
+                    # were consolidated into.
+                    "receipt": _recorded_receipt(self.replay, "ablate_heads"),
+                }
             raise Refusal(
                 "This is a recording, and it does not carry a head ranking. "
                 "Ranking heads means running the model once per head, and a "
@@ -2787,7 +2828,11 @@ class ModelRuntime:
                 # does not have it.
                 recorded = getattr(self.replay, "ground", None) or {}
                 if recorded.get("chunks"):
-                    return {**self._recorded_ground(recorded), "recorded": True}
+                    return {
+                        **self._recorded_ground(recorded),
+                        "recorded": True,
+                        "receipt": _recorded_receipt(self.replay, "ground"),
+                    }
                 raise Refusal(
                     "This is a recording, and it does not carry a grounding "
                     "result. Masking a passage out of the model's attention "
@@ -3025,7 +3070,15 @@ class ModelRuntime:
         if self.replay is not None:
             recorded = self.replay.patch_graph
             if recorded.get("edges"):
-                return {**recorded, "recorded": True}
+                return {
+                    **recorded,
+                    "recorded": True,
+                    # The receipt out of the file's own list. Every section is
+                    # exported WITHOUT its own copy, deliberately -- see
+                    # `_recorded_receipt` -- and nothing ever read the list they
+                    # were consolidated into.
+                    "receipt": _recorded_receipt(self.replay, "patch_graph"),
+                }
             raise Refusal(
                 "This is a recording, and it does not carry a patching graph. "
                 "Building one means running the model again with activations "
@@ -3245,7 +3298,15 @@ class ModelRuntime:
             if self.replay is not None:
                 recorded = getattr(self.replay, "head_types", None) or {}
                 if recorded.get("labels"):
-                    return {**recorded, "recorded": True}
+                    return {
+                        **recorded,
+                        "recorded": True,
+                        # The receipt out of the file's own list. Every section is
+                        # exported WITHOUT its own copy, deliberately -- see
+                        # `_recorded_receipt` -- and nothing ever read the list they
+                        # were consolidated into.
+                        "receipt": _recorded_receipt(self.replay, "head_types"),
+                    }
                 raise Refusal(
                     "This is a recording, and it does not carry head type "
                     "labels. Labelling heads means running the model on new "
@@ -3527,6 +3588,9 @@ class ModelRuntime:
                         "layers": recorded,
                         **(getattr(self.replay, "lens_info", None) or {}),
                         "recorded": True,
+                        # And the receipt, like every other recorded
+                        # measurement. See `_recorded_receipt`.
+                        "receipt": _recorded_receipt(self.replay, "logit_lens"),
                     }
                 raise Refusal(
                     "This is a recording, and it does not carry a logit lens. "
@@ -4493,6 +4557,23 @@ class ModelRuntime:
                 "clean": self.replay.patch.get("clean", ""),
                 "corrupt": self.replay.patch.get("corrupt", ""),
             },
+            # Same reason again, and the last of the four. `runtime.logit_lens`
+            # has answered out of a recording since the section landed, and
+            # nothing ever told a panel one was there -- so `FeaturesPanel`,
+            # which owns the lens, stayed behind its `!replay` gate and the
+            # trajectory in the file was displayed by nothing in either build.
+            "lens": {
+                "available": self.replay.has_lens(),
+                # ROWS, not layers. A lens trajectory usually carries one more
+                # row than the model has layers -- the embedding read before
+                # any block runs -- and calling it `n_layers` here would make
+                # the panel's own count disagree with the model's.
+                "n_rows": len(self.replay.lens or []),
+                # What the model actually said, so the panel can put the
+                # trajectory under its own answer. Absent in a file that
+                # carried the rows and not the scalars.
+                "final": (self.replay.lens_info or {}).get("final"),
+            },
             # Same reason as `patch`: the grounding panel needs a document and
             # a question, and a recording carries neither the document nor a
             # model to re-run it on. Telling the panel it HAS a result lets it
@@ -4509,6 +4590,38 @@ class ModelRuntime:
                 "available": self.replay.has_patch_graph(),
                 "n_nodes": len(self.replay.patch_graph.get("nodes", [])),
                 "n_edges": len(self.replay.patch_graph.get("edges", [])),
+                # ITS OWN PROMPTS. `_patch_graph` has preserved these all
+                # along and nothing read them: the panel was handed the PATCH
+                # section's pair instead, so a file carrying a graph and no
+                # patch trace prefilled its two boxes with the hardcoded demo
+                # prompts -- a graph shown above the prompts it was not
+                # measured on.
+                "clean": self.replay.patch_graph.get("clean") or "",
+                "corrupt": self.replay.patch_graph.get("corrupt") or "",
+            },
+            # THE HEAD RANKING, AND THE LABELS BEHIND IT. `ablate_heads` and
+            # `head_types` have both answered out of a recording since those
+            # sections landed, and `viewer.ts` implements the labels route
+            # with a refusal written for recipients -- but nothing told the
+            # panel either section was there.
+            #
+            # `AttentionPanel` gates the Rank-heads button on `!replay`, with
+            # a comment that is true of MEASURING one ("needs a forward pass
+            # per head") and not of SHOWING one already in the file. And the
+            # only caller of the labels sits inside `{ranked && …}`, so the
+            # labels were locked behind a button a recording could never
+            # press: two sections shipped in the file and readable by nothing.
+            "ranking": {
+                "available": self.replay.has_ranking(),
+                # What the ranking is ABOUT. A ranking names the token whose
+                # logit it watched, and a table of heads with no target is a
+                # list of numbers about nothing in particular.
+                "target_token": self.replay.ranking.get("target_token"),
+                "n_heads": len(self.replay.ranking.get("ranked", [])),
+            },
+            "head_types": {
+                "available": self.replay.has_head_types(),
+                "n_labels": len(self.replay.head_types.get("labels", [])),
             },
             # And the fourth, which was missing while its three siblings were
             # here. `session.py` parses an agent run out of a `.mri` and

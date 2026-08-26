@@ -8,15 +8,18 @@ import {
   getAttentionMeta,
   getDiscovered,
   getLoadProgress,
+  getSessionState,
   loadModel,
   LoadProgress,
   ModelStatus,
+  SessionState,
   streamGenerate,
 } from "./api";
 import AttentionPanel from "./AttentionPanel";
 import TelemetryBar from "./TelemetryBar";
 import FeaturesPanel from "./FeaturesPanel";
 import GroundPanel from "./GroundPanel";
+import LensPanel from "./LensPanel";
 import ProbePanel from "./ProbePanel";
 import PatchscopePanel from "./PatchscopePanel";
 import PatchGraphPanel from "./PatchGraphPanel";
@@ -34,7 +37,16 @@ interface Props {
   sessionPatch?: { available: boolean; clean: string; corrupt: string };
   /** The recorded patching GRAPH, which is a separate section and can be
    *  present without the grid or absent beside it. */
-  sessionPatchGraph?: { available: boolean; n_nodes: number; n_edges: number };
+  sessionPatchGraph?: {
+    available: boolean;
+    n_nodes: number;
+    n_edges: number;
+    /** The graph's OWN pair, so the panel prefills with the prompts it was
+     *  measured on rather than the patch section's -- a `.mri` can carry a
+     *  graph and no patch trace. */
+    clean?: string;
+    corrupt?: string;
+  };
   sessionGround?: { available: boolean; question: string };
   /**
    * A generation finished — succeeded or failed, the server records both.
@@ -213,6 +225,41 @@ export default function Playground({
     };
   }, [replay]);
 
+  // WHETHER THE OPEN RECORDING CARRIES A LOGIT LENS.
+  //
+  // Read here rather than handed down beside `sessionPatch`, `sessionGround`
+  // and `sessionPatchGraph`. Those three are published by BOTH halves of the
+  // wire — `runtime.session_info` for the app and `viewer.ts`'s `state()` for
+  // the zero-install build — so `App.tsx` has one answer to pass down. `lens`
+  // is not yet in `session_info`, and a prop that is `undefined` in one of the
+  // two builds is a gate that silently never opens in that build, with
+  // nothing on screen saying why. Asking `/api/session/state` here reads
+  // whichever answer THIS build actually serves, and the app build starts
+  // showing the panel the moment `session_info` grows the same key — without
+  // a second edit in a third file to remember.
+  const [sessionLens, setSessionLens] = useState<SessionState["lens"]>(
+    undefined,
+  );
+  useEffect(() => {
+    if (!replay) {
+      // Not `available: false`. The file is closed, so there is no file to
+      // have an opinion about — and the mounts below ask `?.available`, which
+      // reads both states the same way on purpose.
+      setSessionLens(undefined);
+      return;
+    }
+    let live = true;
+    void getSessionState()
+      .then((s) => live && setSessionLens(s.lens))
+      // A refusing route or an older server: the panel stays absent, which is
+      // the same answer as "this file carries no lens" and is the safe one.
+      // Mounting on an unknown would put a heading over a refusal.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [replay]);
+
   // A cold load is minutes long. Poll the server so the wait is legible
   // instead of a frozen button.
   useEffect(() => {
@@ -369,7 +416,27 @@ export default function Playground({
           <PatchPanel epoch={epoch} recorded={sessionPatch} />
         )}
         {sessionPatchGraph?.available && (
-          <PatchGraphPanel epoch={epoch} recorded={sessionPatch ?? undefined} />
+          <PatchGraphPanel
+            epoch={epoch}
+            /* ITS OWN PROMPTS, not the patch section's. A `.mri` can carry a
+               graph and no patch trace, and this handed the panel the other
+               section's pair — so those files prefilled with the hardcoded
+               demo prompts and showed a measured graph above a pair it had
+               nothing to do with. */
+            recorded={{
+              clean: sessionPatchGraph.clean ?? "",
+              corrupt: sessionPatchGraph.corrupt ?? "",
+            }}
+          />
+        )}
+        {/* The fourth section, and the one that had been in the format from
+            the beginning. `LensPanel` is mounted from inside `FeaturesPanel`
+            in the app, and that panel is `!replay` because it also holds
+            live-model controls — so the lens was unreachable on both
+            surfaces at once, and `viewer.ts` answered `/api/lens` with
+            "install ModelMRI" over bytes that already held the trajectory. */}
+        {sessionLens?.available && (
+          <LensPanel epoch={epoch} recorded={sessionLens} />
         )}
       </>
     );
@@ -648,7 +715,29 @@ export default function Playground({
           the recipient has no weights to rebuild it with, so the panel appears
           only when the file actually carries one. */}
       {replay && sessionPatchGraph?.available && (
-        <PatchGraphPanel epoch={epoch} recorded={sessionPatch ?? undefined} />
+        <PatchGraphPanel
+            epoch={epoch}
+            /* ITS OWN PROMPTS, not the patch section's. A `.mri` can carry a
+               graph and no patch trace, and this handed the panel the other
+               section's pair — so those files prefilled with the hardcoded
+               demo prompts and showed a measured graph above a pair it had
+               nothing to do with. */
+            recorded={{
+              clean: sessionPatchGraph.clean ?? "",
+              corrupt: sessionPatchGraph.corrupt ?? "",
+            }}
+          />
+      )}
+      {/* Same rule once more, for the section that has been in the format
+          since the format existed. On a live model the lens lives INSIDE the
+          features panel below — it is the answer for a model with no sparse
+          autoencoder, which is most of them, and it belongs beside the one it
+          stands in for. That panel is `!replay` because its other controls
+          need the model, so on a recording the lens has to be mounted here or
+          it is mounted nowhere: `runtime.logit_lens` would serve the recorded
+          trajectory and no surface could ask. */}
+      {replay && sessionLens?.available && (
+        <LensPanel epoch={epoch} recorded={sessionLens} />
       )}
       {epoch > 0 && introspectable && !replay && (
         <FeaturesPanel

@@ -100,12 +100,63 @@ export interface SessionState {
    *  costs ~1,500 forward passes to build and cannot be rebuilt from a `.mri`
    *  at all, so the panel needs to know the file has one rather than offering
    *  a button whose only outcome is a refusal. */
-  patch_graph?: { available: boolean; n_nodes: number; n_edges: number };
+  patch_graph?: {
+    available: boolean;
+    n_nodes: number;
+    n_edges: number;
+    /** The graph's OWN pair. `_patch_graph` has preserved these all along and
+     *  nothing read them — the panel was handed the PATCH section's pair
+     *  instead, so a file carrying a graph and no patch trace prefilled with
+     *  the hardcoded demo prompts. */
+    clean?: string;
+    corrupt?: string;
+  };
   /** Whether the recording carries a grounding result, and what it asked.
    *  The document itself is NOT in the file — a `.mri` carries passage
    *  previews, deliberately, because a grounded document is usually the
    *  private half of the pair. */
   ground?: { available: boolean; question: string };
+  /** Whether the recording carries a LOGIT LENS, and what the model ended up
+   *  saying.
+   *
+   *  Same reason as the three above: `runtime.logit_lens` will serve a
+   *  recorded trajectory, but the only surface that draws one lives inside
+   *  `FeaturesPanel`, which is `!replay` by construction — so the panel has to
+   *  be told the file holds a lens before it can offer it.
+   *
+   *  `n_rows` is the number of rows carried, which is usually one MORE than
+   *  the model's layer count because the trajectory starts at the embedding.
+   *  `final` is "" when the file never named the answer, which is how the
+   *  panel already reads an unnamed one. */
+  lens?: { available: boolean; n_rows: number; final: string };
+  /** Whether the recording carries a HEAD RANKING, and what it ranked heads
+   *  against.
+   *
+   *  Same reason as the four above. `runtime.ablate_heads` has served a
+   *  recorded ranking since the section landed, and `AttentionPanel` gated
+   *  the only button that asks on `!replay` — a comment true of MEASURING a
+   *  ranking and false of SHOWING one already in the file — so the tool's
+   *  headline measurement was the one nobody could read out of a `.mri`.
+   *
+   *  `target_token` is `null`, never "", when the file did not name the token
+   *  it watched: the panel prints it beside the button, and an empty string
+   *  there would read as a target rather than as a silence.
+   *
+   *  `n_heads` is the number of RANKED ROWS the file carries, which is not
+   *  the model's head count — a one-layer ranking scores one layer's heads. */
+  ranking?: {
+    available: boolean;
+    target_token: string | null;
+    n_heads: number;
+  };
+  /** Whether the recording carries BEHAVIOURAL HEAD LABELS.
+   *
+   *  The panel's only caller of `/api/attention/types` sits inside its
+   *  `{ranked && …}` block, so the labels were locked behind a button a
+   *  recording could never press. Unlocking that button is not enough on its
+   *  own: without this flag the panel would offer the labels for a file that
+   *  carries none, and the one outcome of pressing it would be a refusal. */
+  head_types?: { available: boolean; n_labels: number };
   /** Whether the recording carries an AGENT RUN, and how much of one.
    *
    *  The three fields above all exist so a panel can show the recorded
@@ -390,9 +441,20 @@ export interface Ablation {
    *  this is arithmetic, not the model. */
   noise_floor_kl: number;
   passes: number;
-  elapsed_s: number;
+  /** How long the sweep took. OPTIONAL because a recorded one may not carry
+   *  it: `session._ranking` copies `elapsed_s` only when it is an int, and
+   *  `ablate.py` writes `round(seconds, 2)` — a float — so a ranking read
+   *  back out of a `.mri` arrives with no duration at all. Typed as required,
+   *  the header printed "18 forward passes · s" and the rate arithmetic below
+   *  produced a NaN seconds-per-pass that priced the whole-model button. */
+  elapsed_s?: number;
   ranked: HeadScore[];
   means: string;
+  /** Set by `runtime.ablate_heads`'s replay branch and by `viewer.ts`'s
+   *  `/api/attention/ablate`: these passes and seconds were spent on the
+   *  SENDER'S machine. The panel reads it to keep a recording out of its
+   *  seconds-per-pass estimate, which exists to price a sweep on THIS one. */
+  recorded?: boolean;
   /** Resample only. Part of the measurement, not provenance: the same head
    *  scores differently against a different corpus. */
   corpus?: string;
@@ -3692,7 +3754,13 @@ export interface LensRow {
   layer: number;
   tokens: string[];
   probs: number[];
-  entropy: number;
+  /** OPTIONAL, like `kl_to_final` below, because `session._lens` copies it
+   *  only when the file carries a finite one — so a recorded row can arrive
+   *  with no entropy at all. Typed `number` here, it was read as one: the
+   *  panel divided by it to size a bar and called `.toFixed` on it, which is
+   *  `NaN%` widths followed by a TypeError, and `frontend/src` has no error
+   *  boundary above this. The recipient's viewer went white. */
+  entropy?: number;
   /** KL(truth ‖ lens) in nats: how much information is lost by reading THIS
    *  layer instead of the model's own final answer.
    *
@@ -4433,7 +4501,13 @@ export interface HeadTypeLabel {
 
 export interface HeadTypes {
   labels: HeadTypeLabel[];
-  counts: Record<string, number>;
+  /** How many heads earned each label. OPTIONAL because a recorded set may
+   *  not carry it: `session._head_types` copies `counts` only when the file
+   *  has a dict there, so a `.mri` can legally arrive with labels and no
+   *  tally. Typed as required, the panel called `Object.entries` on it — and
+   *  there is no error boundary above this panel, so a file written without
+   *  the tally took the whole page white in the recipient's browser. */
+  counts?: Record<string, number>;
   n_layers: number;
   n_heads: number;
   seq_len: number;

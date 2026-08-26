@@ -309,7 +309,25 @@ def _reads_ranking():
     assert d.status_code == 200
 
 
+def _reads_lens():
+    """The logit-lens trajectory, which had no reader on any surface until
+    today: `FeaturesPanel` owns the panel and sits behind `!replay`, and
+    `viewer.ts` had no `/api/lens` route at all -- so a file carrying a lens
+    showed one nowhere, while `runtime.logit_lens` had answered out of a
+    recording since the section landed."""
+    rows = [{"layer": 0, "tokens": ["a", "b"], "probs": [0.7, 0.3]}]
+    opened = _opened(_mri(lens=rows, lens_info={"final": " Paris"}))
+    state = opened.get("/api/session/state")
+    assert state.status_code == 200
+    assert state.json()["lens"]["available"] is True
+    # And the route serves the trajectory rather than refusing over it.
+    got = opened.get("/api/lens")
+    assert got.status_code == 200, got.text
+    assert got.json()["recorded"] is True
+
+
 READERS = {
+    "has_lens": _reads_lens,
     "has_model_diff": _reads_model_diff,
     "has_head_types": _reads_head_types,
     "has_vla": _reads_vla,
@@ -333,6 +351,15 @@ VIEWER_ROUTES = (
     "/api/session/trace",
     "/api/graph",
     "/api/attention/types",
+    # The three causal sections, the lens and the ranking. Each was written
+    # into a `.mri` from the day it landed and answered by nothing in the
+    # recipient's build -- the same shape as the image run and the robot
+    # finding above.
+    "/api/patch",
+    "/api/patch/graph",
+    "/api/ground",
+    "/api/lens",
+    "/api/attention/ablate",
 )
 
 

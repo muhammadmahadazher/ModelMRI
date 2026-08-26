@@ -78,7 +78,28 @@ interface Doc {
   n_layers?: number;
   n_heads?: number;
   attention?: Record<string, { q: string; scale: number }>;
+  /** The logit-lens trajectory: per layer, the tokens that layer was about to
+   *  emit and their probabilities.
+   *
+   *  Rows stay `unknown` deliberately. `parse()` does not walk this section —
+   *  `session._lens` validates it on the SENDER'S machine, and this copy runs
+   *  in the recipient's browser on a file a stranger forwarded, so the reader
+   *  that draws these numbers is the one that must not assume Python ran. */
   lens?: unknown[];
+  /** `final`, `settled_at` and the layer count that travel WITH the
+   *  trajectory. A separate key from `lens` for the same reason
+   *  `session.Session` splits them: `lens` is a list, and scalars do not fit
+   *  in one. */
+  lens_info?: {
+    final?: string;
+    /** `null` is a real reading here and NOT absence: "the answer never gets
+     *  on top before the last layer" is a finding, and 0 would claim it
+     *  settled at the embedding. `session._lens` keeps the distinction on the
+     *  way in, so this keeps it on the way out. */
+    settled_at?: number | null;
+    n_layers?: number;
+    reliability?: Record<string, unknown>;
+  };
   /** An attribution graph THIS TOOL DID NOT COMPUTE, read from a
    *  circuit-tracer file. Optional and additive, like `patch`: a file written
    *  before it simply has no key, which is why the format version does not
@@ -209,6 +230,44 @@ interface Doc {
     attention?: Record<string, unknown>;
     readout?: Record<string, unknown>;
     means?: string;
+  };
+  /** The head ranking: how far removing one head moved the answer to one
+   *  token. Optional and additive like `graph`.
+   *
+   *  `runtime.ablate_heads` has answered out of a recording since this
+   *  section landed — "a recording that CARRIES a ranking can serve it" — and
+   *  this shim handled the route nowhere, so the headline measurement of the
+   *  whole tool fell through to "install ModelMRI to point these instruments
+   *  at your own models" in the one build that exists to read recordings.
+   *
+   *  Rows stay `unknown` for the reason `lens` does: `session._ranking`
+   *  validates them on the SENDER'S machine, and this copy runs in the
+   *  recipient's browser on a file a stranger forwarded. Field names mirror
+   *  `session._ranking`.
+   *
+   *  EVERY SCALAR HERE IS OPTIONAL BECAUSE THE READER MAKES IT SO.
+   *  `session._ranking` copies `noise_floor_kl`, `target_token`, `corpus`,
+   *  `means`, `position`, `layer`, `passes`, `draws` and `elapsed_s` only
+   *  when each is the right type, so a file can legally carry rows and none
+   *  of them. Declaring them required here would be this shim asserting
+   *  something the format does not guarantee. */
+  ranking?: {
+    ranked?: Record<string, unknown>[];
+    /** What a removed head was replaced with. `session._ranking` REFUSES a
+     *  ranking without it: the three baselines agree only weakly, so rows
+     *  that do not name theirs cannot be compared against anything. */
+    baseline?: string;
+    noise_floor_kl?: number;
+    /** The token whose logit the ranking watched. A table of heads with no
+     *  target is a list of numbers about nothing in particular. */
+    target_token?: string;
+    corpus?: string;
+    means?: string;
+    position?: number;
+    layer?: number;
+    passes?: number;
+    draws?: number;
+    elapsed_s?: number;
   };
   /** Behavioural labels for every head, each gated on a measured null.
    *
@@ -404,6 +463,60 @@ function state() {
       available: (open.patch_graph?.edges ?? []).length > 0,
       n_nodes: (open.patch_graph?.nodes ?? []).length,
       n_edges: (open.patch_graph?.edges ?? []).length,
+      // ITS OWN PAIR. `_patch_graph` has preserved these all along and
+      // nothing read them: the panel was handed the PATCH section's prompts,
+      // so a file carrying a graph and a trace of two DIFFERENT prompts
+      // showed the graph above the pair it was not measured on.
+      clean: open.patch_graph?.clean ?? "",
+      corrupt: open.patch_graph?.corrupt ?? "",
+    },
+    // AND THE LENS, on the same terms. `runtime.logit_lens` has had an
+    // explicit replay branch since the lens moved onto the runtime — "a
+    // recording that carries a lens can serve it" — and no surface could ever
+    // ask for it: `LensPanel` is mounted from inside `FeaturesPanel`, which is
+    // `!replay` by construction because it also holds live-model controls. So
+    // a `.mri` written with a trajectory in it opened with no way to see one.
+    //
+    // Gated on ROWS, for the reason `patch` is gated on grids: `lens_info`
+    // without a trajectory is a caption with no table under it.
+    lens: {
+      available: (open.lens ?? []).length > 0,
+      // Rows carried, counted the way `n_nodes` above counts a list the file
+      // either holds or does not. NOT `lens_info.n_layers`: that is the
+      // MODEL's layer count, and a trajectory usually carries one row more
+      // than that (the embedding, before any layer has run). The two are
+      // different numbers and naming them alike is how they get confused.
+      n_rows: (open.lens ?? []).length,
+      final: open.lens_info?.final ?? "",
+    },
+    // THE HEAD RANKING AND THE LABELS BEHIND IT, in the shape
+    // `runtime.session_info` publishes them. Both sections have been written
+    // by `session.build` and served out of a replay by `runtime` since each
+    // landed, and no surface could ask for either: `AttentionPanel` gates the
+    // Rank-heads button on `!replay` — true of MEASURING a ranking, false of
+    // SHOWING one already in the file — and the only caller of the labels
+    // sits inside `{ranked && …}`, so the labels were locked behind a button
+    // a recording could never press.
+    //
+    // Gated on ROWS and on LABELS, matching `Session.has_ranking` and
+    // `Session.has_head_types`: a ranking section carrying a baseline and no
+    // rows is a caption with no table under it.
+    ranking: {
+      available: (open.ranking?.ranked ?? []).length > 0,
+      // `null`, never "". A ranking that did not name the token it watched is
+      // a different thing from one that watched the empty string, and the
+      // panel prints this beside the button — an empty label there would read
+      // as a target rather than as a silence.
+      target_token: open.ranking?.target_token ?? null,
+      // Rows carried, counted the way `n_nodes` above counts a list the file
+      // either holds or does not. `runtime.session_info` counts the same list
+      // under the same name, and `available` is the field that answers
+      // "unknown" — this one never stands in for it.
+      n_heads: (open.ranking?.ranked ?? []).length,
+    },
+    head_types: {
+      available: (open.head_types?.labels ?? []).length > 0,
+      n_labels: (open.head_types?.labels ?? []).length,
     },
     // THE CARRIED RUN, in the shape `runtime.session_info` publishes. This is
     // how the agents panel learns a run exists, and it is the path that opens
@@ -614,6 +727,40 @@ export async function viewerFetch(
     return ok({ available: true, ...img });
   }
 
+  // EXACT, not a prefix: `/api/attention/ablate/estimate` prices a sweep on
+  // the machine that would run it, and this page runs nothing — it falls
+  // through to the install refusal below, which is the true answer there.
+  if (p === "/api/attention/ablate") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const ranking = open.ranking;
+    // `recorded: true` is the same flag `runtime.ablate_heads` sets when it
+    // answers from a replay, and it is what tells the panel these seconds and
+    // passes were spent on the SENDER'S machine rather than on this one.
+    // Gated on `ranked` for the reason `Session.has_ranking` is: a section
+    // with a baseline and no rows has nothing to rank.
+    if (ranking && Array.isArray(ranking.ranked) && ranking.ranked.length > 0) {
+      return ok({ ...ranking, recorded: true });
+    }
+    // The APP's exact refusal for a recording with no ranking, copied
+    // verbatim from `runtime.ablate_heads` rather than reworded — the generic
+    // "install ModelMRI" is false about a file whose bytes are already open,
+    // and it is the one refusal a reader cannot act on. NOT `available: false`
+    // either: `AttentionPanel` types this response as a ranking, so a 200
+    // saying nothing is here would render as a sweep that found no head worth
+    // naming, which is a finding about the MODEL rather than about the file.
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry a head ranking. " +
+          "Ranking heads means running the model once per head, and a " +
+          "`.mri` holds activations rather than weights — there is " +
+          "nothing here to re-run. Whoever exported it can rank the " +
+          "heads and share it again.",
+      },
+    };
+  }
+
   if (p === "/api/attention/types") {
     if (!open) return { status: 409, payload: { error: "No session open." } };
     const types = open.head_types;
@@ -721,6 +868,38 @@ export async function viewerFetch(
           "running the model, and a `.mri` holds activations rather than " +
           "weights. Whoever exported it can ground an answer and share " +
           "it again.",
+      },
+    };
+  }
+
+  if (p === "/api/lens") {
+    if (!open) return { status: 409, payload: { error: "No session open." } };
+    const rows = open.lens;
+    // THE SHAPE IS `runtime.logit_lens`'S REPLAY BRANCH, EXACTLY: the
+    // trajectory under `layers`, the recorded scalars spread beside it, and
+    // `recorded: true` last. The panel reads one response type on both
+    // surfaces, so a second shape invented here would be a viewer that draws
+    // a slightly different table than the tool — which is the drift this
+    // whole file exists to avoid.
+    if (Array.isArray(rows) && rows.length > 0) {
+      return ok({ layers: rows, ...(open.lens_info ?? {}), recorded: true });
+    }
+    // The APP's exact refusal for a recording with no lens, copied verbatim
+    // from `runtime.logit_lens` rather than reworded — the generic "install
+    // ModelMRI" this used to fall through to is false about a file whose
+    // bytes are already open, and it is the one refusal a reader cannot act
+    // on. NOT `available: false` either: `LensPanel` types this response as a
+    // trajectory, so a 200 saying nothing is here would render as a lens that
+    // read no layers, which is a finding about the MODEL rather than about
+    // the file.
+    return {
+      status: 409,
+      payload: {
+        error:
+          "This is a recording, and it does not carry a logit lens. " +
+          "The lens means running the model, and a `.mri` holds " +
+          "activations rather than weights. Whoever exported it can " +
+          "read the lens and share it again.",
       },
     };
   }

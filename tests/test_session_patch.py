@@ -329,6 +329,65 @@ def test_a_file_written_before_the_labels_still_opens(client):
     assert body["clean"]["answer"] == {}
 
 
+def test_a_recorded_trace_carries_the_receipt_that_produced_it(client):
+    """THE OTHER HALF OF A DECISION THAT WAS ONLY HALF MADE.
+
+    `session.build` writes a run's receipts as ONE list, and every export
+    helper strips the copy nested inside its own section --
+    `_patch_graph_for_export` says why: a second copy would be a second answer
+    to the question of what produced these numbers. That is right. But nothing
+    ever served the list: `receipts` appears nowhere in `server.py` and
+    nowhere in the viewer, so `ReceiptLine` -- whose docstring says it renders
+    receipts from a `.mri` a stranger sent -- rendered nothing on every
+    recorded measurement, and the provenance travelled the whole way to be
+    shown to no one.
+    """
+    blob = make(
+        TRACE,
+        receipts=[
+            {
+                "op": "patch_trace",
+                "tool_version": "1.0.0",
+                "model": "Qwen/Qwen3-1.7B",
+                "dtype": "float32",
+            }
+        ],
+    )
+    assert client.post("/api/session/open", content=blob).status_code == 200
+
+    body = client.post("/api/patch", json={"clean": "x", "corrupt": "y"}).json()
+    assert body["recorded"] is True
+    assert body["receipt"]["op"] == "patch_trace"
+    assert body["receipt"]["model"] == "Qwen/Qwen3-1.7B"
+
+
+def test_a_recording_with_no_receipt_says_nothing_rather_than_an_empty_one(client):
+    """`None`, not `{}`. The panel renders nothing for a missing receipt and a
+    sentence for a present one -- an empty dict would be a receipt claiming a
+    run with no model, no revision and no dtype, which is provenance that says
+    nothing and is worse than an absence that says so."""
+    assert client.post("/api/session/open", content=make(TRACE)).status_code == 200
+    body = client.post("/api/patch", json={"clean": "x", "corrupt": "y"}).json()
+    assert body["recorded"] is True
+    assert body["receipt"] is None
+
+
+def test_the_last_receipt_for_a_measurement_is_the_one_that_describes_it(client):
+    """A session that ran the same measurement twice kept the second run's
+    numbers, so the second run's receipt is the one that describes them."""
+    blob = make(
+        TRACE,
+        receipts=[
+            {"op": "patch_trace", "model": "first"},
+            {"op": "generate", "model": "unrelated"},
+            {"op": "patch_trace", "model": "second"},
+        ],
+    )
+    client.post("/api/session/open", content=blob)
+    body = client.post("/api/patch", json={"clean": "x", "corrupt": "y"}).json()
+    assert body["receipt"]["model"] == "second"
+
+
 def test_the_submitted_prompts_cannot_relabel_a_recording(client):
     """A recording answers with the pair it was MEASURED on. Echoing back
     whatever the caller sent would let a grid be presented under a prompt it

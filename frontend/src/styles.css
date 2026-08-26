@@ -5050,10 +5050,16 @@ main > [id^="sec-"] {
      context for it, and equal weight would invite reading them as one claim. */
   opacity: 0.8;
 }
-.headtype.tinduction { color: var(--sem-feat); }
-.headtype.tprevioustoken { color: var(--sem-base); }
-.headtype.tduplicatetoken { color: var(--sem-vla); }
-.headtype.tsink { color: var(--color-mute); }
+/* `t-` WITH THE HYPHEN. `AttentionPanel` emits
+   `headtype t-${label.replace(/[^a-z]/g, "")}` -- so `t-induction`,
+   `t-previoustoken` -- and these four selectors were written without it.
+   Every one of them missed, so a labelled head has been rendering in the
+   inherited colour since the labels shipped: four type colours that exist in
+   the stylesheet and have never once applied. */
+.headtype.t-induction { color: var(--sem-feat); }
+.headtype.t-previoustoken { color: var(--sem-base); }
+.headtype.t-duplicatetoken { color: var(--sem-vla); }
+.headtype.t-sink { color: var(--color-mute); }
 
 /* ══════════════════════════════════════════════════════════════════════════
    PROBES · PATCHSCOPES · PATH PATCHING · FEATURE EVIDENCE
