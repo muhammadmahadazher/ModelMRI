@@ -418,21 +418,19 @@ rather than from taste.
 
 ## Theme D — Say it properly
 
-**STATUS 2026-08-26 — D1 done. D2 part-done, and the rest is the maintainer's
-to press send on.**
+**STATUS 2026-08-26 — THEME D IS DONE. All three channels are live.**
 
-- **X — DONE.** An 11-post thread for 0.12.0 is live from @mahad_azher_08.
-- **Hacker News — the form is filled and waiting on a human click.** Title and
-  URL are in; the author comment is written. Drafts in
-  `ModelMRI-D2-hn-0.12.0.md` (outside the repo).
-- **Substack — written, not posted.** The account is not signed in anywhere an
-  agent can reach, and credentials are the maintainer's to enter. Post in
-  `ModelMRI-substack-0.12.0.md`.
+- **X** — an 11-post thread for 0.12.0 from @mahad_azher_08.
+- **Hacker News** — Show HN at `news.ycombinator.com/item?id=49447785`, with
+  the author comment as the first reply.
+- **Substack** — *Redacted in one field, spelled out in the next*, at
+  `modelmri.substack.com/p/redacted-in-one-field-spelled-out`, published and
+  emailed to subscribers.
 
 The older `ModelMRI-D2-announcement-drafts.md` is SUPERSEDED and must not be
 posted from: it is v0.11.0 and calls the control measurement "34 of 43 heads"
 when the rows are SAE features, on gpt2, which breaks the Qwen3-1.7B-only rule
-for published numbers.
+for published numbers. Nothing from it was ever posted.
 
 Every image in the README is captured from the current UI in BOTH themes, and
 `tests/test_readme_media.py` fails the build if a pair ever disagrees again.
