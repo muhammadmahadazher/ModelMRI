@@ -1991,8 +1991,7 @@ def main() -> int:
             # selectors survived every release that had this check in it:
             # the assertion above passed the entire time they were dead.
             "label coloured",
-            bool(rank["chip"])
-            and rank["chip"]["color"] != rank["chip"]["inherited"],
+            bool(rank["chip"]) and rank["chip"]["color"] != rank["chip"]["inherited"],
             f"the chip draws in its own colour rather than the row's — "
             f"{rank['chip']['cls'].split()[-1]} is "
             f"{rank['chip']['color']}, against {rank['chip']['inherited']} "
