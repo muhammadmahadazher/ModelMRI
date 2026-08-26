@@ -88,3 +88,8 @@ tests/fixtures/parity.mri
 # clean exit and five of them were committed by a run that did not have one —
 # 40 MB of webm nobody reads, in a repo whose media directory is already 19 MB.
 docs/media/**/_raw/
+
+# Planning files. These track work in progress for the maintainer; they are not
+# documentation and were never meant to be published. Kept on disk, out of git.
+ROADMAP.md
+ROADMAP-V1.md
