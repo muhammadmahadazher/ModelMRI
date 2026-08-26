@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import RunsOn, { useModelReady } from "./RunsOn";
+import RunsOn, { useModelIdentity, useModelReady } from "./RunsOn";
 import { errorText, getSession, Patchscope, runPatchscope } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -48,6 +48,7 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
   // `RunsOn`'s cached session, so the badge and the control it disables
   // read one answer rather than two requests that can disagree.
   const ready = useModelReady(epoch);
+  const model = useModelIdentity(epoch);
   const [prompt, setPrompt] = useState(SOURCE_DEFAULT);
   const [layer, setLayer] = useState(0);
   const [position, setPosition] = useState(-1);
@@ -80,12 +81,12 @@ export default function PatchscopePanel({ epoch }: { epoch: number }) {
     return () => {
       live = false;
     };
-  }, [epoch]);
+  }, [epoch, model]);
 
   useEffect(() => {
     setData(null);
     setErr("");
-  }, [epoch]);
+  }, [epoch, model]);
 
   async function run() {
     setBusy(true);

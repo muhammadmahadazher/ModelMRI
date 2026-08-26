@@ -115,6 +115,46 @@ export function useSessionVersion(): number {
  * `RunsOn` already prints the sentence, and this is what stops the control
  * beneath it from being clickable anyway.
  */
+/** WHICH model is resident, or null when none is.
+ *
+ *  `epoch` counts GENERATIONS, and the note above records why it cannot be
+ *  made to count loads instead: `epoch > 0` gates the telemetry bar and the
+ *  attention panel, so bumping it on a load would mount both for a run that
+ *  never happened.
+ *
+ *  That left every panel holding a MEASUREMENT with no signal to clear on.
+ *  `Playground.ensureLoaded` ends with `setEpoch(0)`, which is a no-op when
+ *  epoch is already 0 — and it is, for every measurement that needs no
+ *  generation: a probe is fitted to your own examples, a patchscope reads a
+ *  residual stream directly. So load A, probe, load B left A's curve on
+ *  screen under B's name, which is the exact substitution those panels'
+ *  own clear-effects were written to prevent.
+ *
+ *  The GGUF marker is part of the identity: loading one swaps the resident
+ *  model while `hf_id` can stay exactly where it was.
+ */
+export function useModelIdentity(epoch: number): string | null {
+  const [id, setId] = useState<string | null>(null);
+  const seen = useSessionVersion();
+  useEffect(() => {
+    let live = true;
+    void sessionFor(epoch)
+      .then((s) => {
+        if (!live) return;
+        const m = s.model;
+        setId(m?.loaded ? `${m.hf_id ?? ""}|${m.gguf?.plan.path ?? ""}` : null);
+      })
+      // Unknown stays unknown, deliberately: throwing a measurement away
+      // because one status request failed would lose real work over a
+      // network blip. `useModelReady` answers `null` for the same reason.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [epoch, seen]);
+  return id;
+}
+
 export function useModelReady(epoch: number): boolean | null {
   const [ready, setReady] = useState<boolean | null>(null);
   const seen = useSessionVersion();

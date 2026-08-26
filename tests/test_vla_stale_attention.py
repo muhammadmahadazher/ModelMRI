@@ -55,7 +55,11 @@ def handle():
     # Two layers of [heads, 8, 8] attention, as `analyse` would leave them.
     torch.manual_seed(0)
     h._attn = [torch.rand(2, 8, 8) for _ in range(2)]
-    h._attn_key = (3, 40)
+    # (episode, timestep, CAMERA). `raw_frame` reads through the reader's
+    # process-wide current camera, so the same (episode, timestep) names a
+    # different picture on a multi-camera dataset -- and this fixture stands
+    # for a frame analysed while the reader was on `_Reader.camera`.
+    h._attn_key = (3, 40, "top")
     return h
 
 
@@ -81,7 +85,7 @@ def test_another_frames_attention_is_not_ranked_against_this_ones(handle):
 def test_the_matching_frame_is_compared_normally(handle):
     """The guard must not disable the feature — the same key still compares."""
     frames = _frames()
-    out = handle.occlude(frames[0], frames, stride=4, key=(3, 40))
+    out = handle.occlude(frames[0], frames, stride=4, key=(3, 40, "top"))
     assert out["attention_agreement"] is not None
     assert out["compared_layer"] == 1, "layer -1 means the last layer"
     assert "against layer 1" in out["means"]
@@ -111,7 +115,7 @@ def test_a_layer_outside_the_tower_is_refused_not_silently_dropped(handle):
 
     frames = _frames()
     with pytest.raises(BadRequest, match=r"layer must be in \[0,2\)"):
-        handle.occlude(frames[0], frames, stride=4, layer=99, key=(3, 40))
+        handle.occlude(frames[0], frames, stride=4, layer=99, key=(3, 40, "top"))
 
 
 # ------------------------------------------------------------------- share
@@ -142,3 +146,24 @@ def test_a_shared_finding_does_not_carry_another_frames_attention(handle):
 def test_a_shared_finding_carries_the_attention_of_its_own_frame(handle):
     payload = vla.share_payload(handle, _Reader(), episode=3, timestep=40, layer=-1)
     assert payload["attention"], "the matching frame's maps must still ship"
+
+
+class _OtherCamera(_Reader):
+    """The same dataset, read through a different lens."""
+
+    camera = "wrist"
+
+
+def test_a_shared_finding_does_not_carry_another_cameras_attention(handle):
+    """THE HALF THE KEY WAS MISSING. Episode and timestep matched exactly and
+    the maps shipped anyway, because the key said nothing about WHICH CAMERA
+    produced them -- so a wrist-tower attention grid could ride in a file
+    beside an overhead frame, with `provenance.camera` naming only one of
+    them and nothing saying the pair disagreed.
+
+    Same episode, same timestep, different camera: not this frame's maps.
+    """
+    payload = vla.share_payload(
+        handle, _OtherCamera(), episode=3, timestep=40, layer=-1
+    )
+    assert "attention" not in payload or not payload["attention"]

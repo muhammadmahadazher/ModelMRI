@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { errorText, getDiffReplay, ModelDiffSection } from "./api";
-import { measured, percent } from "./measured";
+import { counted, measured, percent } from "./measured";
 
 /** A comparison of two models somebody sent you, opened with nothing installed.
  *
@@ -187,9 +187,9 @@ export default function ModelDiffReplay({
               <li key={i}>
                 <b>layer {row.layer}</b>{" "}
                 <span className="meta">
-                  median {measured(row.median ?? 0, 5)}, middle half{" "}
-                  {measured(row.low ?? 0, 5)}–{measured(row.high ?? 0, 5)} over{" "}
-                  {row.n ?? 0} prompt(s)
+                  median {measured(row.median, 5)}, middle half{" "}
+                  {measured(row.low, 5)}–{measured(row.high, 5)} over{" "}
+                  {counted(row.n, "prompt")}
                   {typeof row.n_first === "number" && row.n_first > 0 && (
                     <> · first to diverge on {row.n_first}</>
                   )}
@@ -216,8 +216,8 @@ export default function ModelDiffReplay({
                   L{h.layer}H{h.head}
                 </b>{" "}
                 <span className="meta">
-                  {measured(h.median_a ?? 0, 4)} → {measured(h.median_b ?? 0, 4)}{" "}
-                  (shift {measured(h.shift ?? 0, 4)} over {h.n ?? 0} prompt(s))
+                  {measured(h.median_a, 4)} → {measured(h.median_b, 4)}{" "}
+                  (shift {measured(h.shift, 4)} over {counted(h.n, "prompt")})
                   {(h.top_a || h.top_b) && (
                     <>
                       {" "}

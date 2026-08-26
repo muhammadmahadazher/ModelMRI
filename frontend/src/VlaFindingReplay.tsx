@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { errorText, getVlaReplay, VlaBlock, VlaFindingSection } from "./api";
-import { measured, signed } from "./measured";
+import { counted, measured, signed } from "./measured";
 
 /** A robot finding somebody sent you, opened with nothing installed.
  *
@@ -32,6 +32,30 @@ import { measured, signed } from "./measured";
  *
  *  It renders NOTHING when there is no robot finding, which is most sessions.
  */
+/** Whether a block's control verdict has its numbers behind it.
+ *
+ *  `clears_control` and the two control numbers are read INDEPENDENTLY by the
+ *  session reader: a null `control_max` survives on purpose, because an
+ *  uncontrolled block genuinely has none. So a file can arrive carrying a
+ *  verdict with nothing behind it, and `?? 0` rendered that as "0.0000 the
+ *  best of 0 random occlusions managed" — a measured-looking zero over an
+ *  absence, which is the one substitution this panel exists to prevent.
+ *
+ *  A type predicate rather than a boolean, so the branches it guards can
+ *  print the numbers without asking the compiler to take `?? 0` for an
+ *  answer.
+ */
+function controlRead(
+  b: VlaBlock,
+): b is VlaBlock & { control_max: number; control_draws: number } {
+  return (
+    b.clears_control !== null &&
+    typeof b.control_max === "number" &&
+    Number.isFinite(b.control_max) &&
+    typeof b.control_draws === "number"
+  );
+}
+
 export default function VlaFindingReplay({
   /** Bumped whenever the page resets. */
   epoch,
@@ -107,8 +131,24 @@ export default function VlaFindingReplay({
     (best, b) => (best === null || b.shift > best.shift ? b : best),
     null,
   );
-  const controlled = blocks.filter((b) => b.clears_control !== null);
+  // The verdict AND its numbers. Counting a block as controlled on the
+  // strength of a bare `clears_control` inflates this against occlusions
+  // nothing was ever measured beside.
+  const controlled = blocks.filter(controlRead);
   const cleared = blocks.filter((b) => b.clears_control === true);
+  // ONE reading of the control, shared by the badge and the label below.
+  // Three parallel ternaries over the same three-state field is how they
+  // drift apart -- and "a verdict with no numbers behind it" is a fourth
+  // state that only appears if something names it.
+  const verdict =
+    strongest === null || !controlRead(strongest)
+      ? strongest !== null && strongest.clears_control !== null
+        ? "no-numbers"
+        : "uncontrolled"
+      : strongest.clears_control === true
+        ? "cleared"
+        : "not-cleared";
+
   const agreement = occ?.attention_agreement;
   const where = (b: VlaBlock) =>
     typeof b.row === "number" && typeof b.col === "number"
@@ -155,29 +195,39 @@ export default function VlaFindingReplay({
         </p>
       ) : (
         <p
-          className={`answer${strongest.clears_control === true ? "" : " unmeasured"}`}
+          className={`answer${verdict === "cleared" ? "" : " unmeasured"}`}
         >
           <span className="answer-n">
-            {strongest.clears_control === true
+            {verdict === "cleared"
               ? `${where(strongest)} moved the action`
-              : strongest.clears_control === false
+              : verdict === "not-cleared"
                 ? "no patch beat its control"
-                : "uncontrolled"}
+                : verdict === "no-numbers"
+                  ? "control not recorded"
+                  : "uncontrolled"}
           </span>
           <span className="answer-of">
-            {strongest.clears_control === true ? (
+            {controlRead(strongest) && strongest.clears_control === true ? (
               <>
                 by {measured(strongest.shift, 4)} when covered — more than the{" "}
-                {measured(strongest.control_max ?? 0, 4)} the best of{" "}
-                {strongest.control_draws ?? 0} random occlusions managed, which
-                is what makes it a finding rather than a number
+                {measured(strongest.control_max, 4)} the best of{" "}
+                {counted(strongest.control_draws, "random occlusion")} managed,
+                which is what makes it a finding rather than a number
               </>
-            ) : strongest.clears_control === false ? (
+            ) : controlRead(strongest) && strongest.clears_control === false ? (
               <>
                 the largest shift was {measured(strongest.shift, 4)} at{" "}
                 {where(strongest)} and a random occlusion of the same size
-                managed {measured(strongest.control_max ?? 0, 4)}. Covering
-                anything moves a policy that never saw a covered frame
+                managed {measured(strongest.control_max, 4)}. Covering anything
+                moves a policy that never saw a covered frame
+              </>
+            ) : strongest.clears_control !== null ? (
+              <>
+                the largest shift was {measured(strongest.shift, 4)} at{" "}
+                {where(strongest)}, and this file records a verdict for it
+                without the control numbers behind it — so there is nothing
+                here to check the shift against. A verdict is not evidence on
+                its own
               </>
             ) : (
               <>
@@ -245,19 +295,21 @@ export default function VlaFindingReplay({
               <li key={i}>
                 <b>{where(b)}</b>{" "}
                 <span className="meta">shift {measured(b.shift, 4)}</span>
-                {b.clears_control === null ? (
+                {!controlRead(b) ? (
                   <span className="meta">
                     {" "}
                     ·{" "}
                     <span className="warn">
-                      not controlled, so this shift is not yet a finding
+                      {b.clears_control === null
+                        ? "not controlled, so this shift is not yet a finding"
+                        : "a verdict with no control numbers behind it, so there is nothing to check it against"}
                     </span>
                   </span>
                 ) : (
                   <span className="meta">
                     {" "}
-                    · control {measured(b.control_max ?? 0, 4)} over{" "}
-                    {b.control_draws ?? 0} draw(s) ·{" "}
+                    · control {measured(b.control_max, 4)} over{" "}
+                    {counted(b.control_draws, "draw")} ·{" "}
                     {b.clears_control ? (
                       "clears it"
                     ) : (

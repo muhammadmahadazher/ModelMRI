@@ -1,6 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
 import { measured, percent } from "./measured";
-import RunsOn, { useModelReady } from "./RunsOn";
+import RunsOn, { useModelIdentity, useModelReady } from "./RunsOn";
 import { errorText, GroundScore, Grounding, groundAnswer } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -88,6 +88,7 @@ export default function GroundPanel({
   // `RunsOn`'s cached session, so the badge and the control it disables
   // read one answer rather than two requests that can disagree.
   const ready = useModelReady(epoch);
+  const model = useModelIdentity(epoch);
   const [doc, setDoc] = useState(DOC_DEFAULT);
   const [file, setFile] = useState("");
   const [question, setQuestion] = useState(
@@ -104,7 +105,7 @@ export default function GroundPanel({
   useEffect(() => {
     setData(null);
     setErr("");
-  }, [epoch]);
+  }, [epoch, model]);
 
   async function run() {
     setBusy(true);

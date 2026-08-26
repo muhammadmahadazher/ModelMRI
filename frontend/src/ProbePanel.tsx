@@ -1,6 +1,6 @@
 import { CSSProperties, useEffect, useState } from "react";
 import { percent } from "./measured";
-import RunsOn, { useModelReady } from "./RunsOn";
+import RunsOn, { useModelIdentity, useModelReady } from "./RunsOn";
 import { errorText, LayerProbe, ProbeReport, runProbe } from "./api";
 import ReceiptLine from "./ReceiptLine";
 import { useScanOnData } from "./useScanOnData";
@@ -128,6 +128,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
   // `RunsOn`'s cached session, so the badge and the control it disables
   // read one answer rather than two requests that can disagree.
   const ready = useModelReady(epoch);
+  const model = useModelIdentity(epoch);
   const [a, setA] = useState(A_DEFAULT);
   const [b, setB] = useState(B_DEFAULT);
   const [name, setName] = useState("");
@@ -165,7 +166,7 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
   useEffect(() => {
     setData(null);
     setErr("");
-  }, [epoch]);
+  }, [epoch, model]);
 
   return (
     <div className="panel probe" ref={scanRef}>

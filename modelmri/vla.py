@@ -1274,6 +1274,25 @@ class VLAHandle:
 MAX_SHARE_EDGE = 512
 
 
+def attention_key(episode, timestep, camera: str = "") -> tuple:
+    """What a cached attention map is ABOUT.
+
+    THE CAMERA BELONGS IN HERE. `raw_frame` reads through the reader's
+    process-wide current camera, so on a multi-camera dataset the same
+    (episode, timestep) names a DIFFERENT picture -- and the panel refetches
+    the frame when the camera changes while leaving `heat` and `heatKey`
+    exactly where they were. With the camera missing from the key, neither
+    side could tell that the map and the picture had come apart: `stale`
+    stayed false, the "heatmap is from another frame" pill stayed hidden, and
+    one tower's grid was drawn over another view's frame while
+    `/api/vla/attention/meta` reported the pair as current.
+
+    One function because three call sites built this tuple by hand, and a key
+    assembled in three places is a key that drifts.
+    """
+    return (int(episode), int(timestep), str(camera or ""))
+
+
 def share_payload(
     handle,
     reader,
@@ -1322,7 +1341,9 @@ def share_payload(
     # frames in one file with nothing saying so, and the whole point of the
     # file is that somebody else can trust what is in it.
     maps = []
-    fresh = handle._attn_key is None or tuple(handle._attn_key) == (episode, timestep)
+    fresh = handle._attn_key is None or tuple(handle._attn_key) == attention_key(
+        episode, timestep, getattr(reader, "camera", "")
+    )
     if handle._attn and fresh:
         wanted = range(len(handle._attn)) if layer < 0 else [layer]
         for index in wanted:

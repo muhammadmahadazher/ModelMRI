@@ -42,8 +42,15 @@ const floorFor = (decimals: number) => 0.5 * 10 ** -decimals;
  * @param v        the measurement
  * @param decimals fixed places for the ordinary case
  */
-export function measured(v: number, decimals = 3): string {
-  if (!Number.isFinite(v)) return "—";
+export function measured(
+  v: number | null | undefined,
+  decimals = 3,
+): string {
+  // NULL IS NOT ZERO. The body already answered "—" for anything non-finite;
+  // it was the `number` TYPE that forced `?? 0` at every call site, and a
+  // `?? 0` is how "not measured" becomes "measured, and it was zero". The
+  // widening is the fix — the call sites just stop lying to the compiler.
+  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
   if (v === 0) return v.toFixed(decimals);
   return Math.abs(v) < floorFor(decimals) ? v.toExponential(1) : v.toFixed(decimals);
 }
@@ -55,8 +62,13 @@ export function measured(v: number, decimals = 3): string {
  * finding from one that pushed it up — so it is never dropped and never left to
  * a colour alone.
  */
-export function signed(v: number, decimals = 4): string {
-  if (!Number.isFinite(v)) return "—";
+export function signed(
+  v: number | null | undefined,
+  decimals = 4,
+): string {
+  // Same rule as `measured`: a movement nobody measured is not a movement of
+  // zero, and zero here is a real reading that means "it did not move".
+  if (v === null || v === undefined || !Number.isFinite(v)) return "—";
   if (v === 0) return "0";
   const a = Math.abs(v);
   const body =
@@ -64,6 +76,28 @@ export function signed(v: number, decimals = 4): string {
   return (v > 0 ? "+" : "-") + body;
 }
 
+
+/**
+ * A COUNT, in words, which is a different thing from a measurement.
+ *
+ * `measured` answers "—" for an unknown, which reads correctly where a number
+ * belongs. A count sits inside a sentence — "over N prompt(s)" — where "—"
+ * reads as a stray dash and `?? 0` reads as "we counted, and there were
+ * none". Both are wrong about a count nobody recorded.
+ *
+ * The project's rule, stated once: an INDEX at 0 is an assertion, a COUNT at
+ * 0 is an absence.
+ */
+export function counted(
+  v: number | null | undefined,
+  one: string,
+  many = one + "s",
+): string {
+  if (typeof v !== "number" || !Number.isFinite(v)) {
+    return `an unrecorded number of ${many}`;
+  }
+  return `${v} ${v === 1 ? one : many}`;
+}
 
 /**
  * A FRACTION rendered as a percentage, without rendering a real share as 0%.

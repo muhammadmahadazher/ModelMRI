@@ -345,6 +345,12 @@ export default function App() {
           <CustomPanel
             onModelChange={() => {
               void refresh();
+              // AND THE SHARED SESSION CACHE. `onUnload` above does this and
+              // says why: the cache is module-level, so it survives the
+              // remount `resetKey` causes. Without it a GGUF load swapped the
+              // resident model while every panel went on naming the previous
+              // one from the cached answer.
+              invalidateSession();
               setResetKey((k) => k + 1);
             }}
           />

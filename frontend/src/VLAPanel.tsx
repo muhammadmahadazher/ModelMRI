@@ -126,7 +126,12 @@ export default function VLAPanel() {
     };
   }, [layer, heatKey, vla?.loaded]);
 
-  const currentKey = `${episode}:${t}`;
+  // AND THE CAMERA. The frame effect above depends on `camera` and refetches;
+  // `heat` and `heatKey` do not, so without the camera here `stale` stayed
+  // false and one view's attention grid rendered over another view's frame
+  // with the "from another frame" pill suppressed. `setHeatKey(currentKey)`
+  // uses this same expression, so both sides move together.
+  const currentKey = `${episode}:${t}:${camera}`;
   const stale = heatKey !== "" && heatKey !== currentKey;
 
   async function onOpen() {

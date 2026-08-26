@@ -38,10 +38,18 @@ def test_the_cache_can_be_invalidated_and_the_readers_subscribe():
     so nothing would re-run to notice it was cleared."""
     runs_on = _read("RunsOn.tsx")
     assert "export function invalidateSession" in runs_on
-    # Both readers re-run on a version change, not on epoch alone.
-    assert runs_on.count("}, [epoch, seen]);") == 2, (
+    # NO READER KEYED ON EPOCH ALONE. This used to assert that exactly two
+    # effects were subscribed, which is a count and not the property: adding a
+    # third subscribed reader -- `useModelIdentity`, which exists so a panel
+    # holding a measurement can tell a model swap from a generation -- failed
+    # a test about the opposite mistake.
+    assert "}, [epoch]);" not in runs_on, (
         "a reader is keyed on epoch alone again, so it will not notice a model "
         "change that did not also produce a generation"
+    )
+    assert runs_on.count("}, [epoch, seen]);") >= 2, (
+        "the subscribed readers are gone; a cleared cache would be cleared "
+        "with nothing re-running to notice"
     )
     assert "useSessionVersion" in runs_on
 
