@@ -1958,7 +1958,7 @@ def create_app(
         }
 
     @app.get("/api/lens")
-    async def lens(top_k: int = 5, kind: str = "plain"):
+    async def lens(top_k: Annotated[int, Query(ge=1, le=100)] = 5, kind: str = "plain"):
         """Logit lens — what the model would have said at each layer.
 
         The fallback for every model with no SAE, which is most of them.
@@ -5273,6 +5273,7 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
 
         def run():
+            from . import vla as vla_mod
             from . import vla_occlude
 
             frame = reader.raw_frame(episode, timestep)
@@ -5293,7 +5294,7 @@ def create_app(
                 head=_whole(body, "head", -1),
                 # So a cached attention map from a DIFFERENT frame is not
                 # silently ranked against this frame's causal map.
-                key=(episode, timestep),
+                key=vla_mod.attention_key(episode, timestep, reader.camera),
                 camera=reader.camera,
             )
             # No post-hoc patching of the three identity fields here any more:
@@ -5474,8 +5475,19 @@ def create_app(
     @app.post("/api/vla/analyse")
     async def vla_analyse(req: VLAAnalyseRequest):
         def run() -> dict:
-            rgb = _reader().raw_frame(req.episode, req.t)
-            return app.state.vla.analyse(rgb, key=(req.episode, req.t))
+            from . import vla as vla_mod
+
+            reader = _reader()
+            rgb = reader.raw_frame(req.episode, req.t)
+            # THE CAMERA THIS FRAME CAME FROM. `raw_frame` reads through the
+            # reader's current camera, so without it the cache key says two
+            # different pictures are the same one.
+            return app.state.vla.analyse(
+                rgb,
+                key=vla_mod.attention_key(
+                    req.episode, req.t, getattr(reader, "camera", "")
+                ),
+            )
 
         try:
             return await asyncio.to_thread(run)

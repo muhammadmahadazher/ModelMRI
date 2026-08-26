@@ -640,7 +640,11 @@ def _ranking(doc: dict) -> dict:
         value = raw.get(name)
         if isinstance(value, str):
             out[name] = value[:MAX_RANKING_TEXT]
-    for name in ("position", "layer", "passes", "draws"):
+    # `elapsed_s` beside them: `ablate.py` writes it, `AttentionPanel` prints
+    # it as "N forward passes - Xs" AND divides by `passes` to estimate what a
+    # whole-model sweep would cost. Dropped, that sentence rendered with a
+    # blank where the duration goes and the estimate came out "~ NaNm NaNs".
+    for name in ("position", "layer", "passes", "draws", "elapsed_s"):
         value = raw.get(name)
         if isinstance(value, int) and not isinstance(value, bool):
             out[name] = value
@@ -1846,7 +1850,56 @@ def _patch(doc: dict) -> dict:
         else [],
         "clean": raw.get("clean") if isinstance(raw.get("clean"), str) else "",
         "corrupt": raw.get("corrupt") if isinstance(raw.get("corrupt"), str) else "",
+        # WHAT READING THE GRID NEEDS. The grid's columns are token positions
+        # and its two axes mean nothing without the strip that labels them --
+        # and the panel puts the two answers above it, because "0.87 of the
+        # gap recovered" is only a sentence once you know what the gap was
+        # between. All of it was dropped here, so a recipient got a section
+        # that parsed, served, mounted, and could not be read.
+        #
+        # Additive: a file written before this carries none of it, and each
+        # piece is absent rather than blank. An empty token strip draws a grid
+        # with unlabelled columns; a blank one would label them with nothing
+        # and look like a measurement of the empty string.
+        "components": [c for c in (raw.get("components") or []) if isinstance(c, str)][
+            :MAX_DIM
+        ],
+        "tokens": {
+            side: [
+                str(t)[:MAX_RANKING_TEXT]
+                for t in ((raw.get("tokens") or {}).get(side) or [])[:MAX_DIM]
+            ]
+            for side in ("clean", "corrupt")
+        }
+        if isinstance(raw.get("tokens"), dict)
+        else {},
+        "answers": {
+            side: _patch_answer((raw.get("answers") or {}).get(side))
+            for side in ("clean", "corrupt")
+        }
+        if isinstance(raw.get("answers"), dict)
+        else {},
     }
+
+
+def _patch_answer(raw: Any) -> dict:
+    """One side's answer: the token the model gave, and how sure it was.
+
+    `p` is a probability the panel prints beside the token. A string where the
+    number belongs would render as one, so it is refused rather than coerced
+    -- and a missing `p` stays missing, because "we did not record how sure it
+    was" is not "it was not sure at all".
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    text = raw.get("text")
+    if isinstance(text, str):
+        out["text"] = text[:MAX_RANKING_TEXT]
+    p = raw.get("p")
+    if isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p):
+        out["p"] = float(p)
+    return out
 
 
 def _is_index(v: Any) -> bool:
@@ -2080,6 +2133,25 @@ def _patch_graph(doc: dict) -> dict:
         "prune_from": raw.get("prune_from")[:MAX_GRAPH_TEXT]
         if isinstance(raw.get("prune_from"), str)
         else "",
+        # WHAT THE GRAPH LEFT OUT, AND WHAT IT COST. `patch_graph.to_dict`
+        # writes all three and this dropped all three, so a recorded graph
+        # rendered without the two chips that say how much of the network it
+        # stopped looking at -- a graph that pruned most of it read as the
+        # whole circuit, which is the confusion the strip exists to prevent --
+        # and printed "1,735 passes - 0s" for a run that took two minutes.
+        #
+        # `None` and not 0 when absent. Nothing was too weak is a RESULT and
+        # `n_weak: 0` says it; a file that never recorded the number is a
+        # different fact, and the panel has to be able to tell them apart.
+        "n_weak": int(raw["n_weak"]) if _is_index(raw.get("n_weak")) else None,
+        "n_untested": int(raw["n_untested"])
+        if _is_index(raw.get("n_untested"))
+        else None,
+        "seconds": float(raw["seconds"])
+        if isinstance(raw.get("seconds"), (int, float))
+        and not isinstance(raw.get("seconds"), bool)
+        and math.isfinite(raw["seconds"])
+        else None,
         # Names the receivers whose senders were never expanded. Dropping it
         # would turn "we stopped asking here" into "nothing wrote this".
         "frontier": [
@@ -2441,6 +2513,17 @@ def build(
     # tokens "".join() back to the key.
     tokens = bundle_mod.redact_token_strip(tokens, _leaving)
 
+    # THROUGH THE READER'S VALIDATOR, like every additive section below.
+    # `_lens`'s own docstring records how this one was missed: the section was
+    # in the format from the beginning and nothing ever wrote it, so the
+    # reader was hardened and the writer was never brought up to match. The
+    # cost is a Share button that produces a file the recipient cannot open --
+    # `/api/lens` takes `top_k` as a bare int, and a lens row wider than
+    # MAX_DIM is refused by `parse` after `build` has happily written it.
+    clean_lens, clean_lens_info = _lens(
+        {"lens": lens or [], "lens_info": lens_info or {}}
+    )
+
     blocks: dict[str, dict] = {}
     for (layer, head), matrix in attention.items():
         q, scale = _quantise(matrix)
@@ -2474,12 +2557,16 @@ def build(
         "n_layers": n_layers,
         "n_heads": n_heads,
         "attention": blocks,
-        "lens": lens or [],
+        "lens": clean_lens,
     }
     # Only when there is one. An empty key would make every file claim a
     # patching section and every reader render an empty one.
     if patch and patch.get("grids"):
-        doc["patch"] = patch
+        # Through `_patch` for the same reason every section below goes
+        # through its own reader: a ragged grid or a 40,000-wide claim is
+        # refused at WRITE time, where the person who can fix it is standing,
+        # rather than at read time in a stranger's browser.
+        doc["patch"] = _patch({"patch": patch})
     # Same additive rule: written only when there is one, so a session without
     # a graph carries no empty section for a reader to render as one.
     #
@@ -2497,7 +2584,11 @@ def build(
                 "it. ModelMRI did not, and a session that renders one without "
                 "saying so is the confusion this section exists to prevent."
             )
-        doc["graph"] = graph
+        # The explicit check above is the AUTHOR's sentence -- it names what
+        # ModelMRI did and did not compute. `_graph` is the structural one,
+        # and both belong: the first says why a graph needs provenance, the
+        # second refuses every other shape the reader would.
+        doc["graph"] = _graph({"graph": graph})
     # Through the READER's validator like every additive section below, which
     # here means a graph whose seeding rule was left out, or one carrying an
     # edge with no verdict behind it, is refused at WRITE time. Both are the
@@ -2517,7 +2608,11 @@ def build(
     if head_types and head_types.get("labels"):
         doc["head_types"] = _head_types({"head_types": head_types})
     if lens_info and (lens or []):
-        doc["lens_info"] = lens_info
+        # The validated copy, so the scalars in the file are the ones a reader
+        # will actually read -- `_lens` keeps the keys it understands and drops
+        # the rest, and writing the raw dict meant the file carried fields no
+        # reader would ever surface.
+        doc["lens_info"] = clean_lens_info
     if ranking and ranking.get("ranked"):
         doc["ranking"] = _ranking({"ranking": ranking})
     # Through the READER's validator, like every additive section above it: a
