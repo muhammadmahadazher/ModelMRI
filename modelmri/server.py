@@ -439,6 +439,39 @@ class RobotExportRequest(Body):
     camera: str = Field(default="", max_length=200)
 
 
+class CounterfactualRequest(Body):
+    """Which prediction to move, and what to move it to.
+
+    Name the target ONCE — `target` as text or `target_token_id` as an id.
+    Text is resolved against this tokenizer and refused if it is not a single
+    token, because a counterfactual moves exactly one next-token prediction.
+    """
+
+    position: int | None = Field(default=None, ge=0)
+    target: str | None = Field(default=None, max_length=64)
+    target_token_id: int | None = Field(default=None, ge=0)
+    #: How many positions the edit may touch, and how wide the shortlist is at
+    #: each step. Both are reported in the answer rather than applied quietly.
+    max_edits: int = Field(default=3, ge=1, le=8)
+    n_proposals: int = Field(default=24, ge=1, le=128)
+    #: Draws per control arm. A found edit is only a finding if random edits of
+    #: the same size do NOT reach the target, so this is the evidence behind
+    #: `beats_controls` and it is published as a count, not a rate.
+    n_controls: int = Field(default=24, ge=0, le=256)
+    #: `gradient` screens substitutions with a first-order estimate and
+    #: measures every one it shortlists; `pool` searches the donor corpus and
+    #: reaches only targets that corpus can spell.
+    candidates: str = Field(default="gradient")
+    seed: int = Field(default=0, ge=0)
+
+
+class CounterfactualCostRequest(Body):
+    """What a counterfactual search would cost, before it is paid for."""
+
+    position: int | None = Field(default=None, ge=0)
+    max_edits: int = Field(default=3, ge=1, le=8)
+
+
 class AnchorRequest(Body):
     """Which prediction to find a sufficient token set for.
 
@@ -2636,6 +2669,56 @@ def create_app(
             return JSONResponse({"error": err.sentence}, status_code=422)
         except Exception as err:
             return _internal(err, "/api/vla/ood/cost")
+
+    @app.post("/api/attention/counterfactual")
+    async def token_counterfactual(req: CounterfactualRequest):
+        """The smallest edit to the prompt that makes it predict a named token.
+
+        The third question this server can ask about a prompt.
+        `/api/attention/attribute` asks what breaks when a word is removed
+        (necessity) and `/api/attention/anchors` asks whether a few words hold
+        the answer alone (sufficiency). Both describe the answer the model
+        already gives. This one is directional and produces a recipe: what to
+        write INSTEAD.
+
+        `edited_ids` doubles as the corrupt half of a patching pair, searched
+        for against a named target and controlled rather than typed.
+        """
+        try:
+            return await asyncio.to_thread(
+                lambda: runtime.token_counterfactual(
+                    req.position,
+                    target=req.target,
+                    target_token_id=req.target_token_id,
+                    max_edits=req.max_edits,
+                    n_proposals=req.n_proposals,
+                    n_controls=req.n_controls,
+                    candidates=req.candidates,
+                    seed=req.seed,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/counterfactual")
+
+    @app.post("/api/attention/counterfactual/cost")
+    async def token_counterfactual_cost(req: CounterfactualCostRequest):
+        """Forward passes before any are spent, priced at both ends."""
+        try:
+            return await asyncio.to_thread(
+                lambda: runtime.counterfactual_cost(
+                    req.position, max_edits=req.max_edits
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/attention/counterfactual/cost")
 
     @app.post("/api/attention/anchors")
     async def token_anchors(req: AnchorRequest):

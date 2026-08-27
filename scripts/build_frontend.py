@@ -150,7 +150,21 @@ def main() -> int:
     else:
         base, work = ROOT, FRONTEND
 
-    if not (work / "node_modules" / "vite").is_dir():
+    # A PARTIAL INSTALL PASSES A PACKAGE-DIRECTORY CHECK. `node_modules/vite`
+    # can exist while `node_modules/.bin` is empty, which is exactly what an
+    # interrupted or drive-corrupted `npm ci` leaves behind -- and then this
+    # guard says "installed", the build runs, and it fails at `tsc: not found`
+    # somewhere much less obvious. Measured on this repo: the Drive-hosted
+    # tree has 90 zero-byte package.json files under node_modules and a vite
+    # directory that looks perfectly present.
+    #
+    # So check the thing the build actually executes, not the folder it lives
+    # in.
+    binaries = work / "node_modules" / ".bin"
+    have_vite = (work / "node_modules" / "vite").is_dir() and any(
+        (binaries / name).exists() for name in ("vite", "vite.cmd", "vite.ps1")
+    )
+    if not have_vite:
         run(["npm", "ci", "--no-audit", "--no-fund"], work)
 
     target = "build:viewer" if args.viewer else ("build:demo" if args.demo else "build")

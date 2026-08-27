@@ -6,7 +6,64 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Counterfactual generation** — `modelmri/counterfactual.py`,
+  `POST /api/attention/counterfactual`, and a panel beside the anchor one. The
+  third question this tool can ask about a prompt. `attribute.rank_tokens`
+  masks a token out and measures what breaks (necessity);
+  `anchors.find_anchor` keeps a few and perturbs the rest (sufficiency). Both
+  describe the answer the model already gives. This one is directional — the
+  smallest substitution that makes the next token become one you NAME — and it
+  produces a recipe rather than a description.
+
+  Its output doubles as the corrupt half of a patching pair. Every number
+  `patch_graph` publishes is a difference between a clean prompt and a corrupt
+  one, and until now that corrupt prompt was typed by hand. The entry above
+  records what that cost once already.
+
+  **A flipped answer is not a finding**, so every edit is scored against two
+  controls: random words at the same indices, and random words at as many
+  indices anywhere. Both come back as counts with Wilson bounds.
+  `beats_controls` is true only when both arms were actually DRAWN and both
+  came back empty — an arm whose every draw was abandoned reports
+  `measured: false`, because zero successes out of zero draws is an absence and
+  rendering it as 0% would turn the absence of evidence into the strongest
+  evidence on screen.
+
+  Candidates come from a first-order substitution estimate (HotFlip) which
+  proposes; a real forward pass on every shortlisted pair decides. The payload
+  publishes how often the estimate's top choice actually won its step, so the
+  screen's quality is visible rather than assumed — measured 0/4 on one
+  Qwen3-1.7B run, which is exactly the sort of thing a screen should have to
+  admit.
+
+  Two measured results worth naming. Steering *"The Eiffel Tower is in the city
+  of"* toward *" Rome"* on Qwen3-1.7B fails at the default budget (78 forward
+  passes, `found: false`) and succeeds at four edits with a 64-wide shortlist
+  (267 passes), beating both controls 0/24 — with an edit that reads as junk:
+  `"The皇家cente虹桥LTR is in the city of"`. A gradient-guided token search finds
+  ADVERSARIAL substitutions, not paraphrases. That is printed under the result
+  rather than hidden by it.
+
 ### Fixed
+
+- **A greedy search that committed steps moving away from its own target.**
+  Greedy picks the best candidate on offer, and the best on offer can still be
+  worse than committing nothing. Measured on Qwen3-1.7B before the guard
+  existed: three committed edits took p(target) `0.004418` → `0.002118` →
+  `0.000441`, each further from the target than the last, and the run then
+  reported that edit as its best effort. It now stops and says which bound it
+  hit.
+
+- **A frontend build guard that a partial install passed.**
+  `scripts/build_frontend.py` checked for `node_modules/vite` as a DIRECTORY,
+  which exists even when `node_modules/.bin` is empty — the state an
+  interrupted or sync-corrupted `npm ci` leaves behind. The build then ran and
+  failed later at a missing binary. Measured on this tree: the Drive-hosted
+  `node_modules` holds **90 zero-byte `package.json` files** while
+  `node_modules/vite` looks perfectly present. The guard now checks the
+  executable the build actually runs.
 
 - **A pass count measured on one prompt pair, shown to visitors as the other
   pair's cost.** The demo's refusal for `/api/patch/graph` told a reader that

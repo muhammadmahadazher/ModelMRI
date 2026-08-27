@@ -5932,6 +5932,129 @@ export const tokenAnchors = (body: {
         body: JSON.stringify(body),
       }).then((r) => json<Anchors>(r));
 
+// ------------------------- the smallest edit that changes the answer
+
+/** One control arm: a count out of a sample, never a bare rate.
+ *
+ *  `measured: false` means the arm took NO draws — every one was abandoned, or
+ *  none was requested — and `successes` is then 0 out of 0, which is an
+ *  absence. Rendering it as 0% would read as "we checked and it never
+ *  happened", which is the strongest possible support for a finding nobody
+ *  measured. */
+export interface ControlArm {
+  measured: boolean;
+  successes: number;
+  samples: number;
+  /** `null` whenever `measured` is false. Never 0. */
+  point: number | null;
+  /** `[low, high]`, or `null` when nothing was drawn. */
+  interval: [number, number] | null;
+  confidence: number;
+  method?: string;
+}
+
+/** One committed substitution. */
+export interface CounterfactualStep {
+  step: number;
+  index: number;
+  from_token_id: number;
+  /** `null` when nobody decoded it — render the id, not an empty string. */
+  from_token: string | null;
+  to_token_id: number;
+  to_token: string | null;
+  target_p_after: number;
+}
+
+export interface Counterfactual {
+  position: number;
+  base_token_id: number;
+  base_token: string | null;
+  target_token_id: number;
+  target_token: string | null;
+  /** What the target was worth before any edit: its probability and its rank.
+   *  Rank 1 is impossible here — a target the model already predicts is
+   *  refused rather than answered with an empty edit. */
+  base_target_p: number;
+  base_target_rank: number;
+  found: boolean;
+  /** Which bound stopped the search, as a sentence. */
+  stopped_because: string;
+  edit: CounterfactualStep[];
+  size: number;
+  /** The prompt with the edit applied, every index preserved. Usable as the
+   *  corrupt half of a patching pair. */
+  edited_ids: number[];
+  edited_ids_are: string;
+  edited_text?: string;
+  /** The closest the search came when it did NOT succeed. `null` when nothing
+   *  was committed — which is the correct answer when no substitution raised
+   *  the target at all, not a zero-size edit dressed up as an attempt. */
+  best_effort: { size: number; target_p: number; reached_target: boolean } | null;
+  controls: {
+    same_positions: ControlArm;
+    same_positions_asks: string;
+    any_positions: ControlArm;
+    any_positions_asks: string;
+    measured: boolean;
+    not_measured_because: string | null;
+    draws_requested_per_arm: number;
+    draws_abandoned: number;
+    no_self_substitution: string;
+  };
+  /** True only when BOTH arms were measured and BOTH came back empty. */
+  beats_controls: boolean;
+  beats_controls_means: string;
+  candidates: string;
+  screen: {
+    source: string;
+    proposals_per_step: number | null;
+    backward_passes: number;
+    /** How often the first-order estimate's top choice actually won its step.
+     *  A screen that never agrees is a screen to stop trusting. */
+    top_choice_won: ControlArm;
+    top_choice_won_asks: string;
+  };
+  minimality: {
+    search: string;
+    smaller_may_exist: boolean;
+    positions_considered: number;
+    donors_per_step: number;
+  };
+  trials_skipped_self: number;
+  trials_short_circuited: number;
+  trials_unavailable: number;
+  passes: number;
+  passes_expected: number;
+  seconds: number;
+  seed: number;
+  target_named?: string | null;
+  receipt?: Receipt | null;
+}
+
+export const tokenCounterfactual = (body: {
+  position?: number;
+  target?: string;
+  target_token_id?: number;
+  max_edits?: number;
+  n_proposals?: number;
+  n_controls?: number;
+  candidates?: string;
+  seed?: number;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Finding the smallest edit that makes a model say something else " +
+          "means re-running it once per candidate substitution, then once per " +
+          "control draw — 78 forward passes at the default budget on " +
+          "Qwen3-1.7B and 267 at four edits with a wider shortlist, both " +
+          "measured — and there is no model behind this page.",
+      )
+    : fetch("/api/attention/counterfactual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<Counterfactual>(r));
+
 // ------------------------------- integrated gradients, with the gap named
 
 /** One token's share of the move, with whether it can be read at all. */

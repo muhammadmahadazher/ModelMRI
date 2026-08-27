@@ -8742,6 +8742,123 @@ button:disabled,
   border-left: 1px dashed var(--color-ink);
 }
 
+/* ------------------------------------------------------------------------
+   The smallest edit that changes the answer. Same track/band/point idiom as
+   the anchor intervals above, deliberately: both are proportions with a
+   sample behind them, and a reader who has learned one bar should not have to
+   learn a second. What differs is the verdict line, because "found an edit"
+   and "the edit is a finding" are different claims and the second one is the
+   one that matters.
+   --------------------------------------------------------------------- */
+.cf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--sp-2, 8px);
+  margin-bottom: var(--sp-3, 12px);
+}
+.cf-controls label {
+  display: grid;
+  gap: 3px;
+  font-size: var(--t-xs);
+  color: var(--color-muted, inherit);
+}
+.cf-controls input[type="text"] { min-width: 10em; }
+.cf-controls input[type="number"] { width: 5em; }
+
+.cf-verdict { margin: 0 0 2px; }
+.cf-verdict code, .cf-steps code {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+}
+
+/* The two verdicts are given different weight on purpose. "Beats its
+   controls" is the rarer and stronger claim, so it is the one that gets the
+   accent; "not a finding" is stated plainly rather than shouted, because it
+   is the ordinary outcome and a panel that alarms on the ordinary outcome
+   teaches people to ignore it. */
+.cf-finding {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--color-attn);
+  background: color-mix(in oklab, var(--color-attn) 8%, transparent);
+  font-size: var(--t-xs);
+}
+.cf-notfinding {
+  margin: 6px 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line-soft);
+  font-size: var(--t-xs);
+  color: var(--color-muted, inherit);
+}
+
+.cf-steps { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; }
+.cf-steps li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.cf-arrow { color: var(--color-muted, inherit); }
+.cf-from { text-decoration: line-through; opacity: 0.7; }
+.cf-to { font-weight: 600; }
+
+.cf-edited { display: grid; gap: 2px; margin: 8px 0; }
+.cf-edited code {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  overflow-x: auto;
+  padding: 4px 6px;
+  background: color-mix(in oklab, var(--color-ink) 3%, transparent);
+  border-radius: var(--r-1, 4px);
+}
+
+.cf-arms { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.cf-arm {
+  display: grid;
+  grid-template-columns: minmax(8em, 14em) 1fr 10em;
+  align-items: center;
+  gap: 8px;
+}
+.cf-arm b {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+/* The question each arm answers, kept beside the number rather than in a
+   footnote. Which arm came back empty is what the reader has to interpret. */
+.cf-asks { grid-column: 1 / -1; }
+.cf-track {
+  position: relative;
+  height: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-1, 4px);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+.cf-band {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  background: color-mix(in oklab, var(--color-attn) 45%, transparent);
+  border-radius: 1px;
+}
+.cf-point {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-attn);
+}
+
+.cf-how { margin: 12px 0 4px; font-weight: 600; }
+.cf-detail { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+
+@media (max-width: 720px) {
+  .cf-arm { grid-template-columns: 1fr; }
+}
+
 .an-notes { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; }
 
 @media (max-width: 720px) {

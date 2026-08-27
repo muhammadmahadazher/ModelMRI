@@ -80,6 +80,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/vla/attention` | Vla Attention |
 | `GET` | `/api/vla/attention/meta` | Vla Attention Meta |
 | `POST` | `/api/attention/anchors` | Token Anchors |
+| `POST` | `/api/attention/counterfactual` | Token Counterfactual |
+| `POST` | `/api/attention/counterfactual/cost` | Token Counterfactual Cost |
 | `POST` | `/api/attention/gradients` | Token Gradients |
 | `POST` | `/api/attention/head/evidence` | Head Evidence |
 

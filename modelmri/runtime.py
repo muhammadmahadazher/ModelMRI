@@ -3693,6 +3693,144 @@ class ModelRuntime:
             out["receipt"] = self.receipt("anchors", position=position, **kw)
             return out
 
+    def resolve_target_token(self, text: str) -> int:
+        """One token id for `text`, or a sentence saying why there is not one.
+
+        A counterfactual moves the NEXT TOKEN, so the target has to be a single
+        token. "Rome" is one on most tokenizers and "Colosseum" is not, and the
+        difference is a property of the tokenizer rather than of the words, so
+        it is measured here rather than assumed either way.
+
+        Leading whitespace matters and is not added silently: mid-sentence, the
+        model predicts " Rome" with a space and `Rome` without one is a
+        different id that it may never emit. Both are tried, the one that
+        tokenizes to a single id wins, and if both do the spaced form wins
+        because that is the continuation position this runs at.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise BadRequest(
+                "name the token the model should be steered toward, as text."
+            )
+        candidates = [text if text.startswith(" ") else " " + text, text.strip()]
+        tried = []
+        for form in candidates:
+            ids = self.tokenizer(form, add_special_tokens=False).input_ids
+            tried.append((form, len(ids)))
+            if len(ids) == 1:
+                return int(ids[0])
+        pieces = [
+            self.tokenizer.decode([i])
+            for i in self.tokenizer(candidates[0], add_special_tokens=False).input_ids
+        ]
+        shapes = ", ".join(f"{f!r} -> {n} tokens" for f, n in tried)
+        raise BadRequest(
+            f"{text!r} is not a single token for this tokenizer ({shapes}), and "
+            "a counterfactual moves exactly one next-token prediction. It cuts "
+            f"into {pieces}. Name one of those pieces, or a shorter word that "
+            "means the same thing — this is a property of the tokenizer, not "
+            "of the model."
+        )
+
+    def token_counterfactual(
+        self,
+        position: int | None = None,
+        *,
+        target: str | None = None,
+        target_token_id: int | None = None,
+        **kw,
+    ) -> dict:
+        """The smallest edit to the prompt that makes the model say something else.
+
+        The third question about a prompt, beside `attribute_tokens`
+        (necessity — what breaks when this word is removed) and `token_anchors`
+        (sufficiency — do these words hold the answer alone). This one is
+        directional: what do I write INSTEAD to get the answer I name.
+
+        Its output doubles as the corrupt half of a patching pair. Every number
+        `patch_graph` publishes is a difference between a clean prompt and a
+        corrupt one, and until now that corrupt prompt was typed by hand.
+        """
+        from . import attribute
+        from . import counterfactual as cf_mod
+
+        with self._lock:
+            self._require_live_generation(
+                "Generate something first, then ask what would make it say "
+                "something else."
+            )
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise BadRequest(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+            if (target is None) == (target_token_id is None):
+                raise BadRequest(
+                    "name the target once: either `target` as text or "
+                    "`target_token_id` as an id. Passing both leaves it "
+                    "ambiguous which one the answer is about, and passing "
+                    "neither leaves nothing to steer toward."
+                )
+            resolved = (
+                int(target_token_id)
+                if target_token_id is not None
+                else self.resolve_target_token(target)
+            )
+            control = attribute.control_token_ids(self.tokenizer)
+            pool, perturbation = cf_mod.donor_pool(self.tokenizer, control_ids=control)
+            out = cf_mod.find_counterfactual(
+                self.model,
+                self.last_ids.unsqueeze(0).to(self.device),
+                position=position,
+                target_token_id=resolved,
+                pool=pool,
+                perturbation=perturbation,
+                control_ids=control,
+                typed_span=self.last_user_span,
+                n_prompt=int(self.last_n_prompt_tokens or 0),
+                decode=lambda t: self.tokenizer.decode([t]),
+                **kw,
+            )
+            out["target_named"] = target
+            out["edited_text"] = self.tokenizer.decode(out["edited_ids"])
+            out["receipt"] = self.receipt(
+                "counterfactual", position=position, target=resolved, **kw
+            )
+            return out
+
+    def counterfactual_cost(
+        self, position: int | None = None, *, max_edits: int = 3, **kw
+    ) -> dict:
+        """What a counterfactual search will cost, before it costs it."""
+        from . import counterfactual as cf_mod
+
+        with self._lock:
+            self._require_live_generation(
+                "Generate something first, then price a counterfactual search over it."
+            )
+            size = int(self.last_ids.shape[0])
+            if position is None:
+                position = max(0, min(self.last_n_prompt_tokens - 1, size - 1))
+            if not 0 <= position < size:
+                raise BadRequest(
+                    f"position must be in [0,{size}) — that generation is "
+                    f"{size} tokens long."
+                )
+            # The editable window is what the cost depends on, and it is the
+            # same window the search itself uses: index 0 is an attention sink
+            # and `position` is its own query.
+            n_positions = max(0, position - 1)
+            if n_positions < 1:
+                raise BadRequest(
+                    f"there is nothing editable before position {position}, so "
+                    "there is no search to price."
+                )
+            return cf_mod.estimate_cost(
+                n_positions=n_positions, max_edits=max_edits, **kw
+            )
+
     def token_gradients(self, position: int | None = None, **kw) -> dict:
         """Integrated gradients over the input embeddings, with the gap named.
 

@@ -27,6 +27,7 @@ import ControlTwin from "./ControlTwin";
 import DirectPanel from "./DirectPanel";
 import HeadWiring from "./HeadWiring";
 import TokenAnchors from "./TokenAnchors";
+import TokenCounterfactual from "./TokenCounterfactual";
 import TokenGradients from "./TokenGradients";
 import HeadEvidencePanel from "./HeadEvidence";
 import ReceiptLine from "./ReceiptLine";
@@ -1024,6 +1025,7 @@ export default function AttentionPanel({
       {!replay && !DEMO && !VIEWER && (
         <>
           <TokenAnchors position={pinned} epoch={epoch} disabled={ranking} />
+          <TokenCounterfactual position={pinned} epoch={epoch} disabled={ranking} />
           <TokenGradients position={pinned} epoch={epoch} disabled={ranking} />
         </>
       )}
