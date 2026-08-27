@@ -5958,19 +5958,21 @@ export interface CounterfactualStep {
   step: number;
   index: number;
   from_token_id: number;
-  /** `null` when nobody decoded it — render the id, not an empty string. */
-  from_token: string | null;
+  /** Always a string: the decoded token, or the bare id when no decoder was
+   *  given. Never null — `anchors.py` uses the same contract, and a second
+   *  nullable case is a second branch in every renderer. */
+  from_token: string;
   to_token_id: number;
-  to_token: string | null;
+  to_token: string;
   target_p_after: number;
 }
 
 export interface Counterfactual {
   position: number;
   base_token_id: number;
-  base_token: string | null;
+  base_token: string;
   target_token_id: number;
-  target_token: string | null;
+  target_token: string;
   /** What the target was worth before any edit: its probability and its rank.
    *  Rank 1 is impossible here — a target the model already predicts is
    *  refused rather than answered with an empty edit. */

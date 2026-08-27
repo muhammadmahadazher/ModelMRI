@@ -525,18 +525,26 @@ def estimate_cost(
     }
 
 
-def _token(tokenizer_decode, token_id: int) -> str | None:
-    """Decode one id, or None when the caller gave no decoder.
+def _token(tokenizer_decode, token_id: int) -> str:
+    """Decode one id, on `anchors.py`'s contract: `decode(id)`, not
+    `decode([id])`.
 
-    None means "nobody decoded this", which a renderer must show as the bare id
-    rather than as an empty string that looks like the model emitted one.
+    Every caller in `runtime.py` passes `lambda t: self.tokenizer.decode([t])`,
+    which already does the wrapping. Passing a list to it produced
+    `decode([[id]])` and every token in the payload came back as a one-element
+    LIST — `["The"]` where a string belonged, which a renderer prints as
+    `The` with brackets or, in a template literal, as the whole array. Measured
+    through the live route before this was fixed. The fallback is `str(id)`
+    rather than None for the same reason `anchors._token_id` uses it: a bare id
+    is still information, where a null is a second case every renderer has to
+    handle.
     """
     if tokenizer_decode is None:
-        return None
+        return str(int(token_id))
     try:
-        return tokenizer_decode([int(token_id)])
+        return tokenizer_decode(int(token_id))
     except Exception:
-        return None
+        return str(int(token_id))
 
 
 def _check_inputs(
@@ -853,8 +861,8 @@ def find_counterfactual(
             if hit is None and best_here[0] <= current_p:
                 stopped = (
                     "no remaining substitution raised the target's "
-                    f"probability above {round(current_p, 6)} — the best one "
-                    f"on offer reached {round(best_here[0], 6)} — so the "
+                    f"probability above {current_p:.6g} — the best one "
+                    f"on offer reached {best_here[0]:.6g} — so the "
                     "search stopped rather than commit a step that moves away "
                     "from the target"
                 )
@@ -881,12 +889,12 @@ def find_counterfactual(
                     "from_token": _token(decode, int(ids[0, index])),
                     "to_token_id": donor,
                     "to_token": _token(decode, donor),
-                    "target_p_after": round(score, 6),
+                    "target_p_after": float(score),
                 }
             )
             best_effort = {
                 "size": steps_taken,
-                "target_p": round(score, 6),
+                "target_p": float(score),
                 "reached_target": hit is not None,
             }
             if hit is not None:
@@ -989,7 +997,7 @@ def find_counterfactual(
         "base_token": _token(decode, base_top),
         "target_token_id": int(target_token_id),
         "target_token": _token(decode, int(target_token_id)),
-        "base_target_p": round(base_target_p, 6),
+        "base_target_p": float(base_target_p),
         "base_target_rank": base_target_rank,
         "noise_floor_kl": round(floor, 6),
         "agreement_kl": round(agreement, 6),

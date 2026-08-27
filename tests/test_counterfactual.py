@@ -566,3 +566,38 @@ def test_an_unknown_candidate_source_is_refused_by_name():
             pool=POOL,
             candidates="vibes",
         )
+
+
+def test_decode_is_called_with_one_id_not_a_list():
+    """The contract `anchors.py` uses, pinned.
+
+    Every caller in `runtime.py` passes `lambda t: tokenizer.decode([t])` — the
+    wrapping is already done. This module briefly passed `[id]` into that, so
+    every token in the payload came back as `["The"]`: a one-element LIST where
+    a string belonged. Nothing in the unit suite noticed, because the tests
+    asserted on `*_token_id` and left `decode` unset. The live route noticed
+    immediately, which is the argument for this test existing.
+    """
+    seen = []
+
+    def decode(token_id):
+        seen.append(token_id)
+        return f"<{token_id}>"
+
+    _, out = run(decode=decode)
+    assert seen, "decode was never called"
+    for token_id in seen:
+        assert isinstance(token_id, int), (
+            f"decode got {token_id!r}; the contract is one id, not a sequence"
+        )
+    assert isinstance(out["base_token"], str)
+    assert out["base_token"] == f"<{out['base_token_id']}>"
+    for step in out["edit"]:
+        assert isinstance(step["from_token"], str)
+        assert isinstance(step["to_token"], str)
+
+
+def test_without_a_decoder_a_token_is_its_id_not_a_null():
+    _, out = run()
+    assert out["base_token"] == str(out["base_token_id"])
+    assert isinstance(out["target_token"], str)

@@ -1010,14 +1010,22 @@ export default function AttentionPanel({
           but the sink — and they already say what would make the measurement
           work. Anything added in front of them is the client guessing. */}
       {attrErr && <div className="hint err">{attrErr}</div>}
-      {/* THE OTHER TWO WAYS TO ATTRIBUTE A PREDICTION TO ITS INPUTS, and
+      {/* THE OTHER THREE WAYS TO ATTRIBUTE A PREDICTION TO ITS INPUTS, and
           they are here together because reading one alone is the mistake.
           "Rank tokens" above masks a token out and measures what breaks —
           NECESSITY. Anchors keeps a few and perturbs the rest —
           SUFFICIENCY. Gradients asks what the output was sensitive to in
-          the limit of an infinitesimal nudge, which is neither. All three
-          disagree, all three are real, and the disagreement is the
+          the limit of an infinitesimal nudge, which is neither. All of them
+          disagree, all of them are real, and the disagreement is the
           finding rather than a fault in one of them.
+
+          Counterfactual is the odd one and belongs beside them anyway. The
+          three above all DESCRIBE the answer the model already gives; that
+          one is directional — the smallest edit that makes it give a
+          different one — so it is the only control here that produces a
+          recipe rather than a reading. Its output is also the corrupt half
+          of a patching pair, which every panel further down takes as
+          typed-in input.
 
           Gated exactly as "Rank tokens" is: no model behind a replay, a
           demo or a viewer build, and a control that can only error

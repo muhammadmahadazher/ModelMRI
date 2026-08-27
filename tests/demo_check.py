@@ -115,6 +115,14 @@ EXEMPT = {
         "MEASURED on the narrowest search this offers, thousands on a wide "
         "one, and every one of them against a live model"
     ),
+    "/api/attention/counterfactual": (
+        "searches for a substitution that makes the model predict a token the "
+        "VISITOR names, then draws random edits of the same size to control "
+        "it — 78 forward passes MEASURED on Qwen3-1.7B at the default budget "
+        "and 267 at four edits with a wider shortlist, every one of them "
+        "against a live model, and the target is not knowable in advance so "
+        "nothing about it can be baked"
+    ),
     "/api/attention/gradients": (
         "a forward AND a backward pass at every step of the path from the "
         "baseline to your prompt; a backward pass needs the graph a live "

@@ -28,6 +28,18 @@ import Disclosure from "./Disclosure";
  *  under the result rather than hidden by it.
  */
 
+/** A probability that may be many orders of magnitude below 1.
+ *
+ *  `measured(x, 6)` prints 2.3e-08 as `0.000000`, which reads as "this step
+ *  changed nothing" beside a step that was committed BECAUSE it changed
+ *  something. The payload deliberately stopped rounding these for that reason;
+ *  re-rounding them here would have put the zero straight back.
+ */
+function prob(x: number): string {
+  if (x === 0) return "0";
+  return Math.abs(x) < 1e-4 ? x.toExponential(2) : measured(x, 6);
+}
+
 function Arm({ arm, label, asks }: { arm: ControlArm; label: string; asks: string }) {
   if (!arm.measured || arm.point === null || arm.interval === null) {
     return (
@@ -100,7 +112,12 @@ export default function TokenCounterfactual({
     setBusy(true);
     setErr("");
     tokenCounterfactual({
-      position,
+      // -1 is "nothing pinned", and the request model declares `ge=0`. Sent
+      // as-is it came back as pydantic's own "Input should be greater than or
+      // equal to 0" -- a validator's sentence rather than one written for a
+      // reader. Omitted, the route defaults to the last prompt token, which is
+      // the same thing every sibling panel does.
+      position: position >= 0 ? position : undefined,
       target: target.trim(),
       max_edits: maxEdits,
       n_proposals: proposals,
@@ -126,43 +143,70 @@ export default function TokenCounterfactual({
         disabled={disabled}
       >
 
-      <div className="cf-controls">
-        <label>
-          Steer toward
+      <div className="row cf-controls">
+        <label className="meta cf-target">
+          steer toward
           <input
             type="text"
             value={target}
-            placeholder="e.g. Rome"
+            placeholder="a single token — e.g. Rome"
             onChange={(e) => setTarget(e.target.value)}
             disabled={disabled || busy}
+            spellCheck={false}
           />
         </label>
-        <label>
-          Edits
+        <label className="meta">
+          edits
           <input
             type="number"
             min={1}
             max={8}
             value={maxEdits}
-            onChange={(e) => setMaxEdits(Number(e.target.value))}
+            onChange={(e) =>
+              setMaxEdits(Math.max(1, Math.min(8, +e.target.value || 1)))
+            }
             disabled={disabled || busy}
           />
         </label>
-        <label>
-          Shortlist
+        <label className="meta">
+          shortlist
           <input
             type="number"
             min={1}
             max={128}
             value={proposals}
-            onChange={(e) => setProposals(Number(e.target.value))}
+            onChange={(e) =>
+              setProposals(Math.max(1, Math.min(128, +e.target.value || 1)))
+            }
             disabled={disabled || busy}
           />
         </label>
-        <button onClick={run} disabled={disabled || busy}>
-          {busy ? "Searching…" : "Find an edit"}
+        <button className="ghost sm" onClick={run} disabled={disabled || busy}>
+          {busy ? "searching…" : data ? "search again" : "find an edit"}
         </button>
       </div>
+      {/* The budget is the REACH, not a speed dial. A target several edits away
+          is simply unreachable at one edit however good the screen is, and the
+          run says so rather than failing — measured on Qwen3-1.7B, steering
+          "The Eiffel Tower is in the city of" to " Rome" needs four. Saying it
+          here means a reader does not have to spend a run to learn it. */}
+      <p className="meta">
+        Edits are reach, not speed. A target several substitutions away is
+        unreachable at one however good the shortlist is — the run says which
+        bound it hit rather than returning nothing.
+      </p>
+      {/* MEASURED: with nothing pinned this steers the last PROMPT token, which
+          on a chat-template model is the template's own `assistant` marker. The
+          same trap `TokenAnchors` warns about, and for the same reason — the
+          only obvious click on a fresh panel lands somewhere uninteresting. */}
+      {position < 0 && (
+        <p className="meta warn">
+          No token pinned, so this steers the last prompt token — which on a
+          chat-template model is the template's own marker rather than a word
+          you wrote. Click a token in the strip below to choose the position
+          where the model is answering.
+        </p>
+      )}
 
       {err && <div className="hint err">{err}</div>}
 
@@ -172,12 +216,12 @@ export default function TokenCounterfactual({
             {data.found ? (
               <>
                 <b>{data.size}</b> substitution{data.size === 1 ? "" : "s"} make
-                it predict <code>{data.target_token ?? data.target_token_id}</code>{" "}
-                instead of <code>{data.base_token ?? data.base_token_id}</code>.
+                it predict <code>{data.target_token}</code>{" "}
+                instead of <code>{data.base_token}</code>.
               </>
             ) : (
               <>No edit within this budget reached{" "}
-                <code>{data.target_token ?? data.target_token_id}</code>.</>
+                <code>{data.target_token}</code>.</>
             )}
           </p>
           <p className="meta">{data.stopped_because}.</p>
@@ -197,11 +241,11 @@ export default function TokenCounterfactual({
               {data.edit.map((s) => (
                 <li key={s.step}>
                   <span className="meta">index {s.index}</span>
-                  <code className="cf-from">{s.from_token ?? s.from_token_id}</code>
+                  <code className="cf-from">{s.from_token}</code>
                   <span className="cf-arrow">→</span>
-                  <code className="cf-to">{s.to_token ?? s.to_token_id}</code>
+                  <code className="cf-to">{s.to_token}</code>
                   <span className="meta">
-                    p(target) = {measured(s.target_p_after, 6)}
+                    p(target) = {prob(s.target_p_after)}
                   </span>
                 </li>
               ))}
@@ -246,7 +290,7 @@ export default function TokenCounterfactual({
               )}
               <li>
                 The target started at rank {data.base_target_rank} with
-                p = {measured(data.base_target_p, 6)}.
+                p = {prob(data.base_target_p)}.
               </li>
               <li>
                 {data.passes} forward passes ({data.screen.backward_passes}{" "}
