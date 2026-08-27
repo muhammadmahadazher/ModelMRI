@@ -93,3 +93,6 @@ docs/media/**/_raw/
 # documentation and were never meant to be published. Kept on disk, out of git.
 ROADMAP.md
 ROADMAP-V1.md
+
+# Same class as the ROADMAPs: a maintainer planning file, kept on disk, out of git.
+GAPS.md
