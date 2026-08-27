@@ -161,6 +161,7 @@ import base64
 import binascii
 import json
 import math
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -173,6 +174,16 @@ from .errors import BadRequest, Refusal
 # this file with a recording from the robot can tell in the topic list which
 # side each series came from. That is the same claim `circuit.py` makes with
 # its banner, made where a Foxglove user actually looks.
+# Seconds to wait for `rerun analytics config`. A privacy check that hangs
+# is a export that hangs, and the answer on timeout is 'could not tell',
+# which refuses.
+ANALYTICS_TIMEOUT_S = 10
+
+# Seconds to wait for Rerun's batching pipeline to reach the file. The SDK
+# defaults to effectively forever; a writer that hangs is worse than one
+# that raises, and the raise names the file.
+RRD_FLUSH_TIMEOUT_S = 60.0
+
 TOPIC_PREFIX = "modelmri/"
 
 # MCAP's profile field names a well-known message-schema convention ("ros1",
@@ -1456,6 +1467,76 @@ class ExportPlan:
         return " ".join(parts)
 
 
+def rerun_cli() -> Path | None:
+    """The `rerun` binary that ships INSIDE the installed wheel, or None.
+
+    Located from `rerun.__file__` rather than from PATH or a literal path: the
+    wheel bundles its own CLI beside the Python package, and that is the one
+    whose version matches the SDK doing the writing. A `rerun` on PATH could be
+    a different build with a different analytics config, which would make the
+    check below answer a question about the wrong program.
+    """
+    try:
+        import rerun
+    except ImportError:
+        return None
+    root = Path(rerun.__file__).resolve().parent.parent / "rerun_cli"
+    for name in ("rerun.exe", "rerun"):
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def rerun_analytics() -> tuple[bool | None, str]:
+    """Whether rerun's usage analytics are on, asked of rerun itself.
+
+    Returns `(enabled, detail)`. **`None` means could not determine, and it is
+    a distinct answer from False.** Treating "we could not ask" as "it is off"
+    would be the `?? 0` bug pointed at a privacy promise: the caller would get
+    silence where it needed a no.
+
+    Asked by running `rerun analytics config`, which prints its own JSON, so
+    the config path is never hardcoded here. It moves between platforms and it
+    is rerun's to move.
+    """
+    cli = rerun_cli()
+    if cli is None:
+        return None, "the rerun CLI that ships with the wheel was not found"
+    try:
+        done = subprocess.run(
+            [str(cli), "analytics", "config"],
+            capture_output=True,
+            text=True,
+            timeout=ANALYTICS_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as err:
+        return None, (
+            f"`rerun analytics config` could not be run ({type(err).__name__})"
+        )
+    if done.returncode != 0:
+        return None, f"`rerun analytics config` exited {done.returncode}"
+    # The command prints JSON on stdout, but a first run prints a welcome
+    # banner too, so the object is found rather than assumed to be the whole
+    # of stdout.
+    text = done.stdout
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None, "`rerun analytics config` printed no JSON object"
+    try:
+        config = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as err:
+        return None, (
+            f"`rerun analytics config` printed unreadable JSON ({type(err).__name__})"
+        )
+    value = config.get("analytics_enabled")
+    if not isinstance(value, bool):
+        return None, "`rerun analytics config` did not report analytics_enabled"
+    return value, f"reported by {cli.name} in {config.get('config_file_path', '?')}"
+
+
 def writer_available(container: str) -> tuple[tuple[bool, str], str]:
     """Whether this machine can write `format`, and which package would.
 
@@ -1484,29 +1565,59 @@ def writer_available(container: str) -> tuple[tuple[bool, str], str]:
 
     if container == "rrd":
         try:
-            import rerun
-
-            installed = getattr(rerun, "__version__", "an unknown version")
-            head = f"rerun-sdk {installed} is installed, and this module still "
+            import rerun  # noqa: F401
         except ImportError:
-            head = (
-                "The `rerun` package is not installed (`pip install "
-                "rerun-sdk`), and even with it this module "
-            )
-        return (
-            False,
-            (
-                head + "writes no .rrd. Rerun's logging API moves between "
-                "releases and an .rrd is read by the SDK version that wrote "
-                "it — ROADMAP.md already records that Rerun could not load "
-                "LeRobot v3.0 until a patch this year. Nothing here has ever "
-                "been run against an installed rerun-sdk, so emitting one "
-                "would be publishing a file whose correctness is a guess. "
-                "Write the MCAP instead: it is a documented open container, "
-                "and the plan beside this sentence describes exactly what it "
-                "would contain."
-            ),
-        ), "rerun-sdk"
+            return (
+                False,
+                (
+                    "Writing .rrd needs the `rerun-sdk` package, which is not "
+                    "installed on this machine. Install it with `pip install "
+                    "rerun-sdk`. It is not a ModelMRI dependency: this export "
+                    "exists for people who already run Rerun, and everyone "
+                    "else should not pay 134 MB for it. The plan beside this "
+                    "sentence is real and was computed without it."
+                ),
+            ), "rerun-sdk"
+
+        # THE REFUSAL THAT REPLACED "we have never run this".
+        #
+        # We have now. rerun-sdk 0.36.3 writes a file `rerun rrd verify` loads
+        # without error, and the round trip is a test. What is left is not a
+        # doubt about correctness, it is a promise this project made:
+        # ModelMRI has no telemetry and says so on its front page. rerun ships
+        # analytics ENABLED BY DEFAULT — measured on this machine, a first run
+        # created a persistent analytics id under
+        # AppData/Roaming/rerun/config/analytics.json and said so on stderr.
+        #
+        # Writing an .rrd through a library that phones home would make that
+        # promise false for anyone who used this button, and they would have no
+        # way to know. So the refusal is conditional and it names the exact
+        # command that clears it, rather than being a blanket no.
+        enabled, detail = rerun_analytics()
+        if enabled is not False:
+            unknown = enabled is None
+            return (
+                False,
+                (
+                    (
+                        "Cannot tell whether rerun's usage analytics are on "
+                        f"({detail}), and an unknown here is not a no. "
+                        if unknown
+                        else f"rerun's usage analytics are ENABLED ({detail}). "
+                    )
+                    + "ModelMRI has no telemetry and says so on its front "
+                    "page; writing this file through a library that reports "
+                    "usage would make that false for you without your "
+                    "knowing. Run `rerun analytics disable` once and this "
+                    "export works — it is rerun's own command and it is "
+                    "machine-wide. Or write the MCAP instead, which needs no "
+                    "such thing: it is a documented open container and the "
+                    "plan beside this sentence describes exactly what it "
+                    "would contain."
+                ),
+            ), "rerun-sdk"
+
+        return (True, ""), "rerun-sdk"
 
     raise BadRequest(
         f"unknown export container {container!r} — expected one of {list(FORMATS)}"
@@ -1670,16 +1781,177 @@ def write_mcap(timeline: Timeline, path: str | Path) -> dict:
     }
 
 
-def write_rrd(timeline: Timeline, path: str | Path) -> dict:
-    """Refuses, and says what would have to be true first.
+def rrd_entity(track: Track) -> str:
+    """Where one track's series lands in the Rerun entity tree.
 
-    Kept as a function rather than left out so the refusal is reachable from
-    the same call site as the MCAP writer — a caller switching on `container`
-    gets a sentence, not an AttributeError, and `plan(timeline, container="rrd")`
-    beside it still describes the file in full.
+    Namespaced under `TOPIC_PREFIX` for the same reason every MCAP topic is:
+    somebody who merges this with a recording from the robot has to be able to
+    tell, in the entity list, which side each series came from.
     """
-    (_, reason), _ = writer_available("rrd")
-    raise Refusal(reason)
+    return f"{TOPIC_PREFIX}episode_{track.episode}/{track.metric}"
+
+
+def _rrd_provenance(timeline: Timeline, version: str) -> str:
+    """The provenance block, as markdown Rerun will render.
+
+    The same content the MCAP writer puts in metadata records. Markdown rather
+    than JSON because Rerun renders a TextDocument, and the person who opens
+    the file is who this is for.
+    """
+    p = timeline.provenance
+    policy = f"- **policy** - {p.policy or 'not recorded'}"
+    if p.policy_revision:
+        policy += f" @ {p.policy_revision}"
+    lines = [
+        "# ModelMRI export",
+        "",
+        f"- **tool** - {p.tool} {p.tool_version}",
+        f"- **written by** - rerun-sdk {version} (an .rrd is read by the "
+        "version that wrote it)",
+        f"- **dataset** - {p.dataset}",
+        f"- **camera** - {p.camera}",
+        policy,
+        f"- **measured by** - {p.measured_by}",
+        f"- **taken at** - {p.taken_at}",
+        f"- **clock** - {timeline.clock.sentence}",
+    ]
+    if p.mri_pointer:
+        lines.append(f"- **.mri** - {p.mri_pointer}")
+    if timeline.omitted:
+        lines += ["", "## Not in this file", ""]
+        lines += [f"- {sentence}" for sentence in timeline.omitted]
+    return chr(10).join(lines)
+
+
+def write_rrd(timeline: Timeline, path: str | Path) -> dict:
+    """Write the timeline as a Rerun `.rrd`, or refuse and name the fix.
+
+    This function refused unconditionally until 2026-08-27, on the grounds that
+    "nothing here has ever been run against an installed rerun-sdk, so emitting
+    one would be publishing a file whose correctness is a guess." That was true
+    and it is no longer: rerun-sdk 0.36.3 writes a file that `rerun rrd verify`
+    loads without error, and the test beside this runs that round trip rather
+    than asserting the bytes look plausible.
+
+    What did NOT go away is the version tie, so it is PUBLISHED instead of
+    argued about. An `.rrd` is read by the Rerun version that wrote it, and the
+    API moves under it: `rr.set_time_sequence`, which nearly every example
+    still uses, does not exist in 0.36.3 - the call below is
+    `rr.set_time(..., sequence=...)`. So the version goes in the receipt AND
+    into the file, because a reader who cannot open it needs to know which
+    version to install and the receipt will be long gone.
+
+    The static `SeriesLines` per track is not decoration. With no name the
+    viewer labels a series by its entity path, so the UNIT - the thing that
+    makes the number mean anything - would appear nowhere on the plot.
+    """
+    (available, reason), _ = writer_available("rrd")
+    if not available:
+        raise Refusal(reason)
+
+    import rerun as rr
+
+    shape = plan(timeline, container="rrd")
+    if shape.n_messages > MAX_MESSAGES:
+        raise Refusal(
+            f"that is {shape.n_messages:,} messages and the cap is "
+            f"{MAX_MESSAGES:,}. Raise the sweep's stride rather than having "
+            f"the export cut short: a timeline missing its tail looks exactly "
+            f"like a timeline, and by the time it is open in Rerun there is "
+            f"nothing of ours left to say so."
+        )
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    version = getattr(rr, "__version__", "unknown")
+
+    # A recording id derived from the run rather than a fresh uuid per call, so
+    # two exports of the same measurement are the same recording to a reader
+    # merging them.
+    # THE FILE IS NOT WHOLE UNTIL THE STREAM CLOSES, AND `save()` DOES NOT
+    # CLOSE IT.
+    #
+    # `save()` only attaches the sink. The batching pipeline drains on its own
+    # thread and the footer is written when the stream is dropped, so a size
+    # read straight after `save()` is the size of a half-written file. Measured
+    # here, both before the fix: the receipt published 7,427 bytes for a file
+    # that settled at 14,555, and `flush()` alone still only reached 14,558 of
+    # it. A caller who copied the path the moment `write_rrd` returned would
+    # have copied a truncated recording, and `rerun rrd verify` on it is the
+    # only thing that would have said so.
+    #
+    # The context manager closes it. Every measurement below is taken AFTER.
+    with rr.RecordingStream(
+        "modelmri",
+        recording_id=f"{timeline.provenance.dataset}-{timeline.clock.kind}",
+    ) as recording:
+        recording.save(destination)
+
+        for track in timeline.tracks:
+            entity = rrd_entity(track)
+            rr.log(
+                entity,
+                rr.SeriesLines(names=[f"{track.metric} ({track.unit})"]),
+                static=True,
+                recording=recording,
+            )
+            for sample in track.samples:
+                rr.set_time(
+                    "timestep", sequence=int(sample.timestep), recording=recording
+                )
+                rr.log(entity, rr.Scalars(float(sample.value)), recording=recording)
+
+        if timeline.frame is not None:
+            frame = timeline.frame
+            rr.set_time("timestep", sequence=int(frame.timestep), recording=recording)
+            rr.log(
+                f"{TOPIC_PREFIX}episode_{frame.episode}/camera",
+                rr.EncodedImage(contents=frame.png, media_type="image/png"),
+                recording=recording,
+            )
+
+        # WHAT THE FILE SAYS ABOUT ITSELF. `omitted` names what ModelMRI
+        # measured that did NOT travel into this file, and it is written INTO
+        # the recording rather than only returned: a receipt in a terminal is
+        # not attached to the artifact somebody opens a week later.
+        rr.log(
+            f"{TOPIC_PREFIX}provenance",
+            rr.TextDocument(
+                _rrd_provenance(timeline, version), media_type="text/markdown"
+            ),
+            static=True,
+            recording=recording,
+        )
+        recording.flush(timeout_sec=RRD_FLUSH_TIMEOUT_S)
+
+    written = destination.stat().st_size
+
+    return {
+        "path": str(destination),
+        "container": "rrd",
+        "bytes_written": written,
+        # The estimate is MCAP's, and this says so rather than quietly
+        # comparing a Rerun file against a plan for a different container.
+        "bytes_estimated": shape.estimated_file_bytes,
+        "estimate_basis": (
+            "the MCAP plan. Rerun chunks and compresses on its own terms, so "
+            "this ratio describes the payload rather than the container."
+        ),
+        "estimate_over_actual": round(shape.estimated_file_bytes / written, 3),
+        "n_messages": shape.n_messages,
+        "n_channels": shape.n_channels,
+        "n_metadata_records": shape.n_metadata_records,
+        "writer_version": version,
+        "plan": shape.to_dict(),
+        "means": (
+            f"{shape.n_messages:,} measurement(s) written to "
+            f"{destination.name} ({fmt.bytes_si(written)}) by rerun-sdk "
+            f"{version}. An .rrd is read by the version that wrote it, so that "
+            f"version is in the file as well as in this sentence. Every series "
+            f"carries its unit in its name, and the file states what ModelMRI "
+            f"measured that did NOT travel into it."
+        ),
+    }
 
 
 def write(timeline: Timeline, path: str | Path, *, container: str = "mcap") -> dict:

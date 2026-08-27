@@ -1012,21 +1012,66 @@ def test_mcap_refuses_with_the_install_command_when_the_package_is_absent(
     assert not list(tmp_path.iterdir())
 
 
-def test_rrd_is_refused_for_a_reason_installing_rerun_would_not_fix(tmp_path):
-    """Two facts, and the second is the one that matters: rerun-sdk is absent
-    here AND this module has never been run against one. Refusing only on the
-    import would promise that `pip install rerun-sdk` produces a working
-    export, which nobody has verified."""
+def test_rrd_refuses_while_rerun_reports_usage(tmp_path, monkeypatch):
+    """The refusal that replaced "we have never run this".
+
+    Until 2026-08-27 this refused unconditionally, on the grounds that nothing
+    had been run against an installed rerun-sdk. Something has now:
+    `tests/test_robot_export_rrd.py` writes a file and hands it to
+    `rerun rrd verify`. What stands in its place is a promise rather than a
+    doubt - ModelMRI has no telemetry and rerun ships usage analytics ENABLED
+    by default, so the export refuses while they are on and names the one
+    command that clears it.
+
+    Forced rather than observed. The old version of this test asserted a
+    refusal that only held because no machine here had rerun, which made it an
+    assertion about the machine.
+    """
+    monkeypatch.setattr(rx, "rerun_analytics", lambda: (True, "reported by rerun"))
+    monkeypatch.setitem(sys.modules, "rerun", types.ModuleType("rerun"))
+
     (ok, why), package = rx.writer_available("rrd")
     assert ok is False
     assert package == "rerun-sdk"
-    assert "rerun-sdk" in why
-    assert "correctness is a guess" in why
-    assert "Write the MCAP instead" in why
+    assert "ENABLED" in why
+    assert "rerun analytics disable" in why
+    assert "no telemetry" in why
+
+    with pytest.raises(Refusal):
+        rx.write_rrd(_timeline(), tmp_path / "out.rrd")
+    assert not list(tmp_path.iterdir()), "a refused export must leave no file"
+
+
+def test_rrd_refuses_when_it_cannot_tell_whether_analytics_are_on(
+    tmp_path, monkeypatch
+):
+    """An unknown answer to a privacy question is not a yes.
+
+    `rerun_analytics` returns None when it could not ask - no bundled CLI, a
+    non-zero exit, unreadable JSON. Treating that as "off" would be the `?? 0`
+    bug pointed at a promise instead of a number.
+    """
+    monkeypatch.setattr(rx, "rerun_analytics", lambda: (None, "the CLI was not found"))
+    monkeypatch.setitem(sys.modules, "rerun", types.ModuleType("rerun"))
+
+    (ok, why), _ = rx.writer_available("rrd")
+    assert ok is False
+    assert "not a no" in why
 
     with pytest.raises(Refusal):
         rx.write_rrd(_timeline(), tmp_path / "out.rrd")
     assert not list(tmp_path.iterdir())
+
+
+def test_rrd_refuses_by_naming_the_install_when_rerun_is_absent(tmp_path, monkeypatch):
+    """The other half: absent is a different refusal from present-and-noisy."""
+    monkeypatch.setitem(sys.modules, "rerun", None)
+    (ok, why), package = rx.writer_available("rrd")
+    assert ok is False
+    assert package == "rerun-sdk"
+    assert "pip install rerun-sdk" in why
+    # And it must not claim to be a ModelMRI dependency, because it is not.
+    assert "not a ModelMRI dependency" in why
 
 
 class RecordingWriter:
@@ -1252,8 +1297,22 @@ def test_write_routes_on_the_container_name(monkeypatch, tmp_path):
     # reports success for work it did not do.
     wrote = rx.write(_timeline(), tmp_path / "a.mcap", container="mcap")
     assert wrote["n_messages"] == 8
-    with pytest.raises(Refusal):
+
+    # `rrd` must route to `write_rrd` rather than to the mcap writer. Asserted
+    # by making that function raise something unmistakable, because `rrd` no
+    # longer refuses on every machine - on one with rerun installed and its
+    # analytics off it writes a real file, and a test that asserted `Refusal`
+    # would then be reporting a routing failure it never checked.
+    called = {}
+
+    def spy(timeline, path):
+        called["path"] = str(path)
+        raise Refusal("routed to write_rrd")
+
+    monkeypatch.setattr(rx, "write_rrd", spy)
+    with pytest.raises(Refusal, match="routed to write_rrd"):
         rx.write(_timeline(), tmp_path / "a.rrd", container="rrd")
+    assert called["path"].endswith("a.rrd")
 
 
 # ------------------------------------------------------------------- helpers

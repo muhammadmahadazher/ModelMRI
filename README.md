@@ -50,6 +50,7 @@ pip install modelmri && modelmri serve      # → http://localhost:5900
 |:--:|---|---|
 | 👁️ | **Attention** | Every layer, every head, from a live forward pass — with a causal ranking of which heads actually mattered, scored in KL nats. |
 | 🎯 | **Activation patching** | Where in the model the answer is decided, on a (layer × position) grid — each site checked against eight same-norm random draws. |
+| ✏️ | **Counterfactuals** | The smallest edit to your prompt that makes it predict a token you name — controlled against random edits of the same size, so a flipped answer has to earn the word *finding*. |
 | 🧠 | **Concepts** | SAE features, or contrastive steering vectors when no SAE exists. Find one, turn it off, watch the output change. |
 | 🔭 | **Lenses** | Logit lens and a tuned lens trained on *your* text, scored on held-out KL and shown side by side. |
 | 🤖 | **Robot policies** | What a VLA looked at, and — through a sidecar with its own environment — what it would *do*. |
@@ -182,7 +183,41 @@ Each of the strongest sites is run again against **eight** same-norm random draw
 
 Most casually-written pairs are refused, and both failures are invisible unless you are told — the prompts must tokenize to the same length (2 of 8 natural minimal pairs did not) and must predict different tokens (2 of 3 did not, making the denominator exactly 0). Both refusals print what to change.
 
-### 4. Find a concept and turn it off
+### 4. Ask what would make it say something else
+
+Three questions about one prompt, and they are not the same question:
+
+| | asks | answers |
+|---|---|---|
+| **Rank tokens** | mask a word out — how far did the answer move? | necessity |
+| **Anchors** | keep only these words, perturb the rest — does it hold? | sufficiency |
+| **Counterfactual** | what do I write *instead* to get the answer I name? | reachability |
+
+The first two describe the answer the model already gives. The third is a
+recipe, and its output doubles as the corrupt half of a patching pair —
+searched for against a named target and controlled, rather than typed.
+
+A first-order estimate proposes substitutions; a real forward pass on every
+shortlisted pair decides. The payload publishes **how often the estimate's top
+choice actually won its step**, so the screen has to admit when it is not
+helping — measured 0 of 4 on one Qwen3-1.7B run.
+
+**A flipped answer is not a finding.** Every edit is scored against random
+edits of the same size at the same positions, and at as many positions
+anywhere. Measured on Qwen3-1.7B, steering *"The Eiffel Tower is in the city
+of"* toward `" Rome"`:
+
+| budget | passes | result |
+|---|---|---|
+| 3 edits, 24-wide shortlist | 78 | not reached — says which bound it hit |
+| 4 edits, 64-wide shortlist | 267 | reached, and beat both controls 0/24 |
+
+The edit that worked was `"The皇家cente虹桥LTR is in the city of"`. A
+gradient-guided token search finds **adversarial** substitutions, not
+paraphrases — that is a true property of the method and it is printed under
+the result rather than hidden by it.
+
+### 5. Find a concept and turn it off
 
 Load a sparse autoencoder and ModelMRI shows the human-interpretable features firing on every token. Click one, drag the slider, and run a deterministic A/B:
 
@@ -209,7 +244,7 @@ and refuses to plot anything when no convention reconstructs. On the default SAE
 that is the difference between **60.5** features firing per token and **7,491**,
 and between an FVU of **0.0010** and **13,579**.
 
-### 5. Find the step where your agent died
+### 6. Find the step where your agent died
 
 Two lines of `modelmri.record` around any agent run gives you a timeline: LLM calls, tool calls, subagents, each as a block. The failure glows. Click it for the exact input, output, tokens, and error.
 
@@ -224,7 +259,7 @@ with trace("fix-failing-tests"):
 
 Or instrument automatically: `modelmri.record.instrument_anthropic()`.
 
-### 6. Look inside a robot policy
+### 7. Look inside a robot policy
 
 This is the part nobody else ships. ModelMRI loads the **vision tower of the real SmolVLA checkpoint** and runs actual robot-camera frames through it, painting each image patch's attention back onto the frame. Scrub an episode, run the policy, drag the layer slider.
 
@@ -238,7 +273,9 @@ Measured on PushT frames — share of attention mass in the top 5% of patches:
 
 Early layers look everywhere; deep layers lock on. No robot hardware required — it reads public LeRobot datasets straight from disk.
 
-### 7. Debug a model you trained yourself
+A sweep can leave as **MCAP** (Foxglove, ROS tooling) or a Rerun **`.rrd`**. Both are optional installs and neither is a ModelMRI dependency. The `.rrd` path refuses while rerun's usage analytics are enabled — they are on by default, this tool has no telemetry, and it will not quietly make that untrue on your behalf; it names `rerun analytics disable` and writes the file once you have run it.
+
+### 8. Debug a model you trained yourself
 
 Everything above is transformer-shaped. This isn't. Point ModelMRI at your own `nn.Module` — an MLP, a small CNN, whatever you're training — and get a layer-by-layer map of one real forward pass.
 
@@ -262,7 +299,7 @@ Dead units, saturated activations, and **the first layer where a `nan` appears**
 
 A `state_dict` alone is refused, with the reason: it's weights without an architecture, and guessing one would produce a map that looks authoritative and describes a network you never trained.
 
-### 8. Send someone the finding, not the model
+### 9. Send someone the finding, not the model
 
 You found the head. Now show a colleague — who does not have your GPU, your prompt, or 8 GB of spare disk.
 

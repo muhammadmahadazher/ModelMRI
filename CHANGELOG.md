@@ -8,6 +8,44 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **`.rrd` export, and a refusal that is measured rather than blanket.**
+  `write_rrd` refused unconditionally, and its reason was honest at the time:
+  *"nothing here has ever been run against an installed rerun-sdk, so emitting
+  one would be publishing a file whose correctness is a guess."* It has now
+  been run. rerun-sdk 0.36.3 writes a file that **`rerun rrd verify` loads
+  without error**, and `tests/test_robot_export_rrd.py` runs that round trip
+  rather than checking the bytes look plausible — a file with the right magic
+  number and a believable size is exactly what a broken writer produces.
+
+  What replaced the old objection is a different one, and it is conditional.
+  **rerun ships usage analytics ENABLED by default** — measured here, a first
+  run created a persistent analytics id under
+  `AppData/Roaming/rerun/config/analytics.json` and announced it on stderr —
+  and ModelMRI's front page says it has no telemetry. Writing through a library
+  that reports usage would make that promise false for anyone who pressed the
+  button, without their knowing. So the export refuses while rerun's analytics
+  are on and names the one command that clears it (`rerun analytics disable`),
+  rather than refusing forever or shipping quietly.
+
+  The probe asks rerun itself (`rerun analytics config`, parsed from its own
+  JSON) so no config path is hardcoded, and it uses the CLI **bundled inside
+  the wheel** rather than one on `PATH` — a different build can carry a
+  different analytics config, which would answer a question about the wrong
+  program. **"Could not tell" refuses too**: an unknown answer to a privacy
+  question is not a yes.
+
+  `rerun-sdk` is not a ModelMRI dependency and is not added as one, on the same
+  footing as `mcap`: the export exists for people who already run Rerun.
+
+- **The robot export got a button.** `exportVlaSweep` had existed in `api.ts`
+  since the export landed and **nothing in the app had ever called it** —
+  `grep -rn exportVlaSweep frontend/src` returned its own definition and
+  nothing else. The route worked, `mcap_records` was tested, and a user of the
+  page could not reach any of it. That is the fourth writer-with-no-reader in
+  this project; the agent trace, the image run and the shared robot finding
+  were the first three, and all four were found by looking for the caller
+  rather than by any test.
+
 - **Counterfactual generation** — `modelmri/counterfactual.py`,
   `POST /api/attention/counterfactual`, and a panel beside the anchor one. The
   third question this tool can ask about a prompt. `attribute.rank_tokens`
@@ -47,6 +85,15 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   rather than hidden by it.
 
 ### Fixed
+
+- **A `.rrd` receipt that measured a half-written file.** `RecordingStream.save()`
+  only attaches the sink; the batching pipeline drains on its own thread and
+  the footer lands when the stream closes. Measured, both before the fix: the
+  receipt published **7,427 bytes for a file that settled at 14,555**, and
+  `flush()` alone still only reached 14,558 of it. A caller who copied the path
+  the moment `write_rrd` returned would have copied a truncated recording, and
+  `rerun rrd verify` was the only thing that would have said so. The writer now
+  closes the stream before it measures anything.
 
 - **A greedy search that committed steps moving away from its own target.**
   Greedy picks the best candidate on offer, and the best on offer can still be

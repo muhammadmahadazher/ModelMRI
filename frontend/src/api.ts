@@ -3930,7 +3930,7 @@ export const shareVlaFinding = (body: {
  *  Bytes and a Content-Disposition, like `exportSession`, so it does not go
  *  through the demo shim's patched fetch and is not a plain `<a download>`
  *  either: the server answers a refusal as JSON with a 409 or a 422 — no sweep
- *  stored under those three keys, the `mcap` package absent, `.rrd` declined —
+ *  stored under those three keys, the `mcap` package absent, rerun's analytics on —
  *  and a link would cheerfully save that sentence to disk as an `.mcap` file
  *  the reader then opens in Foxglove and sees nothing in.
  *
@@ -3946,7 +3946,10 @@ export async function exportVlaSweep(body: {
   metric: string;
   policy?: string;
   camera?: string;
-  /** "mcap" today; "rrd" is answered with the reasons it is declined. */
+  /** "mcap" or "rrd". Both write real files as of 0.13.0; each refuses
+   *  with a sentence when its writer is absent, and `rrd` refuses a
+   *  second time when rerun's usage analytics are on, because ModelMRI
+   *  promises no telemetry and cannot make that promise for rerun. */
   container?: string;
   /** The download's filename stem. The server rebuilds it from an allowlist. */
   name?: string;

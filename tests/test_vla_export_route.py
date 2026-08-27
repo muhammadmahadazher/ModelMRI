@@ -30,6 +30,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from test_vla_sweep import FakeHandle, FakeReader
 
+from modelmri import robot_export
 from modelmri import vla_sweep as sw
 from modelmri.errors import Refusal
 from modelmri.server import create_app
@@ -337,21 +338,30 @@ def test_the_missing_writer_is_409_naming_what_installs_it(tmp_path, monkeypatch
     assert "pip install mcap" in r.json()["error"]
 
 
-def test_rrd_is_declined_on_reasoning_that_installing_rerun_would_not_fix(
-    tmp_path, monkeypatch
-):
-    """The `.rrd` half of B4 stands on its own argument: Rerun's logging API
-    moves between releases, an `.rrd` is read by the SDK version that wrote it,
-    and nothing here has ever run against an installed rerun-sdk."""
+def test_rrd_is_declined_while_rerun_reports_usage(tmp_path, monkeypatch):
+    """The route hands back the sentence, not a 500.
+
+    `.rrd` writes real files as of 0.13.0; what it still refuses is writing one
+    through a library that reports usage while this tool's front page says it
+    has no telemetry. The refusal is a 409 carrying a command the reader can
+    run, which is the whole product when an export cannot happen.
+    """
     _store_a_sweep(tmp_path, monkeypatch)
     _install_fake_mcap(monkeypatch)
     _install_dataset(monkeypatch)
+    # Forced, so this asserts the code rather than whether the machine running
+    # the suite happens to have rerun installed.
+    monkeypatch.setattr(
+        robot_export, "rerun_analytics", lambda: (True, "reported by rerun")
+    )
+    monkeypatch.setitem(sys.modules, "rerun", types.ModuleType("rerun"))
 
     r = _client().post("/api/vla/export", json=_body(container="rrd"))
 
     assert r.status_code == 409, r.text
-    assert "correctness is a guess" in r.json()["error"]
-    assert "Write the MCAP instead" in r.json()["error"]
+    said = r.json()["error"]
+    assert "rerun analytics disable" in said
+    assert "no telemetry" in said
 
 
 def test_an_unknown_container_names_the_ones_that_exist(tmp_path, monkeypatch):

@@ -2,6 +2,7 @@ import { CSSProperties, useEffect, useState } from "react";
 import { measured, ordinal, percent } from "./measured";
 import {
   errorText,
+  exportVlaSweep,
   occludeFrame,
   occlusionCost,
   OcclusionMap,
@@ -60,6 +61,7 @@ export default function VLACausal({
   const [map, setMap] = useState<OcclusionMap | null>(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
+  const [container, setContainer] = useState("mcap");
 
   const [metric, setMetric] = useState<string>("attention_entropy");
   const [frameStride, setFrameStride] = useState(25);
@@ -129,6 +131,36 @@ export default function VLACausal({
     setSweep(null);
     try {
       setSweep(await runVlaSweep({ metric, frame_stride: frameStride }));
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function exportSweep() {
+    if (!sweep) return;
+    setBusy("export");
+    setErr("");
+    try {
+      // dataset/metric/policy/camera come off the SWEEP, not off whatever is
+      // loaded now. A sweep outlives the session that ran it, and the server
+      // stores it under those three columns - reading them from the current
+      // session is how an export comes to describe the wrong run.
+      const { blob, filename } = await exportVlaSweep({
+        dataset: sweep.dataset,
+        metric: sweep.metric,
+        policy: sweep.policy ?? "",
+        camera: sweep.camera,
+        container,
+        resolution: sweep.unit ? `${sweep.metric} in ${sweep.unit}` : undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -405,6 +437,38 @@ export default function VLACausal({
           {/* The stride, first. A strided ranking can miss the worst frame
               entirely, and the top of a list is read as the worst thing there
               is. */}
+          {/* THE EXPORT, WHICH HAD NO BUTTON.
+              `exportVlaSweep` has existed in api.ts since the export landed
+              and nothing called it, so every one of these files was reachable
+              only from the CLI. The two containers refuse differently and both
+              refusals are sentences, so they are shown as text rather than
+              hidden behind a disabled control: "install mcap" and "run rerun
+              analytics disable" are both things the reader can act on, and a
+              greyed-out button says neither. */}
+          <div className="row vla-export">
+            <span className="meta">take it somewhere else</span>
+            <select
+              className="meta"
+              value={container}
+              onChange={(e) => setContainer(e.target.value)}
+              disabled={busy !== ""}
+              aria-label="export container"
+            >
+              <option value="mcap">MCAP — Foxglove, ROS tooling</option>
+              <option value="rrd">.rrd — Rerun</option>
+            </select>
+            <button
+              className="ghost sm"
+              onClick={() => void exportSweep()}
+              disabled={busy !== ""}
+            >
+              {busy === "export" ? "writing…" : "export this sweep"}
+            </button>
+            <span className="meta">
+              the ranking and its units, not the attention grids behind it —
+              the file says so itself
+            </span>
+          </div>
           <div className="vla-verdict differ">
             <b>
               {sweep.frame_stride === 1
