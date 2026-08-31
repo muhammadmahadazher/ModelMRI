@@ -2,7 +2,8 @@
 
 `modelmri diff before.mri after.mri` compares two saved analyses of the same
 prompt and says which heads moved in the ablation ranking, which patching sites
-changed sign, and whether the model still says the same thing. With
+changed sign, which edges of the traced circuit stopped clearing their
+controls, and whether the model still says the same thing. With
 `--fail-over` it exits non-zero, so a repo can check in a baseline `.mri` and
 have CI say **"your quantisation changed which heads carry this answer"** in
 the pull request that did it.
@@ -16,8 +17,18 @@ THE FLOOR IS NOT INVENTED
 Every delta is compared against a floor the FILES supply. `session._quantise`
 stores each attention matrix as uint8 against that matrix's own maximum, so
 that block's `scale` is the smallest difference it can represent -- and a
-comparison of two files cannot be finer than the coarser of the two. There is
-no epsilon in this module that somebody chose.
+comparison of two files cannot be finer than the coarser of the two. A
+patching graph carries its own: `patch_graph` prunes at the trace's recovery
+resolution, records the number and records the sentence saying where it came
+from. There is no epsilon in this module that somebody chose.
+
+And where no file supplies one, none is borrowed. A forwarded attribution
+graph records no resolution of any kind, so this compares what needs no floor
+-- which edges are there and which changed sign -- and reports the rest as
+unavailable rather than as a magnitude of unknown significance. Which edges are
+STRONGEST belongs to the second group and not the first: it is an ordering of
+the same unjudgeable weights, and two a hair apart rank in whatever order the
+last digits fell.
 
 WHAT IT REFUSES TO COMPARE
 
@@ -65,13 +76,31 @@ class Delta:
     status: str
     detail: str
     # The magnitude and the floor it was judged against, in this metric's own
-    # units -- nats for the ranking and patching, attention weight for
-    # attention. Units differ per metric and are named rather than blended
-    # into one score that would mean nothing.
+    # units. Units differ per metric and are named rather than blended into one
+    # score that would mean nothing; which units a report contains is read off
+    # the deltas themselves, so no list of them is written down twice and none
+    # can fall behind the sections.
+    #
+    # `floor` stays None where no file supplies one -- a forwarded attribution
+    # graph records no resolution at all -- and a `magnitude` of None means
+    # the finding is categorical rather than small: a changed generation, a
+    # flipped control verdict, a leader that moved. `exit_code` fails those
+    # unconditionally for exactly that reason.
     magnitude: float | None = None
     floor: float | None = None
     unit: str = ""
     measured: dict = field(default_factory=dict)
+    # WHETHER `--fail-over` CAN GATE THIS SECTION AT ALL, which is a property
+    # of the section and not of how this particular run came out. Three
+    # sections are categorical by construction -- a changed generation, a
+    # logit-lens leader that moved, an attribution graph with no resolution
+    # behind its weights -- and every CHANGED they can produce carries
+    # `magnitude=None`, which `exit_code` fails at every threshold. Reading
+    # eligibility off this run's magnitude instead selects almost exactly the
+    # wrong set: their SAME verdicts carry `magnitude=0.0` and would be named
+    # as gated, and their CHANGED verdicts, the ones that always fail, would
+    # not be.
+    gated: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -133,6 +162,11 @@ def _receipt(parsed, op: str) -> dict:
         if receipt.get("op") == op:
             return receipt
     return {}
+
+
+def _is_number(value) -> bool:
+    """A real number, and `True` is not one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _comparable(a, b) -> tuple[list[str], list[str]]:
@@ -215,6 +249,7 @@ def _diff_generation(a, b) -> Delta:
             f"both files continue with {a.generation!r}.",
             magnitude=0.0,
             unit="text",
+            gated=False,
         )
     return Delta(
         "generation",
@@ -222,10 +257,14 @@ def _diff_generation(a, b) -> Delta:
         f"the model said {a.generation!r} and now says {b.generation!r}.",
         # No magnitude. There is no number at which "it says something else"
         # is within tolerance, and `exit_code` treats a magnitude of None as
-        # unconditionally failing for exactly that reason.
+        # unconditionally failing for exactly that reason. `gated=False` says
+        # the same thing to `render`: "0.01 in text units" is not a threshold
+        # anybody could set, so the sentence explaining `--fail-over` must not
+        # offer it as one.
         magnitude=None,
         unit="text",
         measured={"a": a.generation, "b": b.generation},
+        gated=False,
     )
 
 
@@ -787,6 +826,10 @@ def _diff_lens(a, b) -> Delta:
                     "now": now,
                     "layers_compared": rows,
                 },
+                # Which token leads is a name, not a size. Every CHANGED this
+                # section can produce reports `magnitude=None`, so there is no
+                # threshold in tokens or in layers for `--fail-over` to hold.
+                gated=False,
             )
 
     settled_a = (a.lens_info or {}).get("settled_at")
@@ -800,6 +843,7 @@ def _diff_lens(a, b) -> Delta:
             magnitude=None,
             unit="layer",
             measured={"settled_at_a": settled_a, "settled_at_b": settled_b},
+            gated=False,
         )
     return Delta(
         "logit lens",
@@ -808,7 +852,882 @@ def _diff_lens(a, b) -> Delta:
         magnitude=0.0,
         unit="token",
         measured={"layers_compared": rows},
+        gated=False,
     )
+
+
+def _named(items: list[str], cap: int = NAMED_HEADS) -> str:
+    """The first `cap` names, then a count of the ones not printed.
+
+    A terminal line naming forty edges is a line nobody reads, and one that
+    silently stops at six is one that hides thirty-four. The count is the
+    difference between the two.
+    """
+    rest = len(items) - cap
+    return ", ".join(items[:cap]) + (f" and {rest} more" if rest > 0 else "")
+
+
+def _plural(count: int, noun: str) -> str:
+    """`1 edge`, `2 edges` — a count and its noun, agreeing.
+
+    `_diff_patch` writes "3 patching sites changed sign" and every other differ
+    either pluralises or phrases around the question; the two lines that wrote
+    "1 edge(s)" were the only places in this module that made the reader do it.
+    """
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def _sentence(text: str) -> str:
+    """The same clause, capitalised for use after another sentence.
+
+    Every detail in this module opens lowercase -- "both files continue
+    with...", "the first file carries no..." -- so a clause that is sometimes
+    the first sentence of one and sometimes the third is built once in that
+    voice and cased where it is used.
+    """
+    return text[:1].upper() + text[1:]
+
+
+def _set_line(noun: str, entered: list[str], left: list[str]) -> str:
+    """Which of something the second file gained and lost, as a sentence.
+
+    A sibling of `_top_k_line` rather than a reuse of it. That one builds its
+    names out of `(layer, head)` pairs, and everything here arrives already
+    named by the file that carried it -- so the two share a shape and not a
+    body, and the shape is the part a reader notices.
+    """
+    parts = []
+    if entered:
+        parts.append(f"{_named(entered)} entered")
+    if left:
+        parts.append(f"{_named(left)} left")
+    return f"the {noun} changed: " + " and ".join(parts) + "."
+
+
+def _top_edges_line(
+    top: int, entered: list[str], left: list[str], noun: str = "strongest"
+) -> str:
+    """`_top_k_line`'s sentence for edges that are already named.
+
+    `noun` because the two graph sections order their edges by two different
+    quantities and only one of them is a strength. An attribution weight is
+    ranked by magnitude, so "strongest" is what it is; a patching recovery is a
+    SIGNED fraction of the gap, ranked the way `path_trace` and the walk's own
+    seeding rank it, so the edge at the top is the one that recovers the most
+    and an edge at -0.9 is a sender pushing the answer away rather than a
+    strong one. Calling that ordering "the strongest" would be this module
+    naming a verdict the file never made.
+    """
+    return (
+        f"the {noun} {top} changed: "
+        + _named(entered)
+        + " entered"
+        + (" and " + _named(left) + " left" if left else "")
+        + "."
+    )
+
+
+def _keyed(edges: list[dict], key) -> tuple[dict, object]:
+    """Edges by key, plus the first key that turned up twice.
+
+    Both graph sections are joined edge-to-edge on a key their readers do not
+    require to be unique. A pair carried twice makes the list a multiset, and
+    joining two multisets on it compares an arbitrary member of one against an
+    arbitrary member of the other -- reported, rather than collapsed to
+    whichever entry happened to be last.
+    """
+    out: dict = {}
+    duplicate = None
+    for edge in edges:
+        k = key(edge)
+        if k in out and duplicate is None:
+            duplicate = k
+        out[k] = edge
+    return out, duplicate
+
+
+def _changed_sign(was: float, now: float) -> bool:
+    """The same rule `_diff_patch` applies cell by cell, in one place.
+
+    A quantity that pushed toward the clean answer and now pushes away from it
+    is a different causal story however small the numbers are. Zero on either
+    side is excluded: it has no direction to have changed.
+    """
+    return (was > 0) != (now > 0) and abs(was) > 0 and abs(now) > 0
+
+
+def _diff_patch_graph(a, b) -> Delta:
+    """Does the same circuit still carry the answer, edge by edge?
+
+    `patch_graph` is a graph THIS tool measured: `patch.path_trace` walked back
+    from the sites the node grid flagged and every drawn edge was run against
+    eight same-norm control draws. So unlike `graph` below it comes with its
+    own floor -- the prune threshold, which the walk read off the dtype's
+    recovery resolution rather than choosing -- and the two files carry it.
+
+    THREE FINDINGS, IN DESCENDING STRENGTH OF CLAIM, because they fail
+    differently and a reader acts on them differently:
+
+      1. A VERDICT THAT FLIPPED. `clears_control` is the section's whole
+         guarantee: an edge is drawn because it beat its controls. One that
+         used to and no longer does is the loudest thing this section can say,
+         and it is a boolean -- there is no magnitude in recovery fractions at
+         which it is within tolerance, which is why it reports `None` and
+         fails at any `--fail-over`, exactly as a changed generation does.
+         BOTH DIRECTIONS ARE THAT FINDING and only the verb differs: an edge
+         that failed its controls is kept and marked `clears_control: false`
+         rather than dropped, so one that now clears them is an ordinary
+         outcome and saying it "no longer clears" them would be this module
+         reporting the opposite of what it read.
+      2. A RECOVERY THAT CHANGED SIGN, the same finding `_diff_patch` leads
+         with on the node grid and in the same units, so an edge here and a
+         cell there can still be read together.
+      3. AN EDGE THAT ENTERED OR LEFT. Weaker than it looks, and the sentence
+         says so: the file that dropped an edge does not record what that edge
+         scored, so a recovery that fell below the prune threshold and a
+         circuit that genuinely rerouted are indistinguishable from here. An
+         absent edge is not a zero, and it is not a regression either until
+         something says which of the two it was.
+
+    Only then the magnitude, judged against the coarser of the two thresholds.
+    """
+    graph_a, graph_b = a.patch_graph or {}, b.patch_graph or {}
+    if not graph_a or not graph_b:
+        which = "the first" if not graph_a else "the second"
+        return Delta(
+            "patching graph",
+            NOT_COMPARABLE,
+            f"{which} file carries no patching graph. A missing section is "
+            f"not a zero, so this comparison is unavailable rather than clean.",
+        )
+
+    # THE PAIR THE RECOVERIES WERE MEASURED AGAINST. Recovery is a fraction of
+    # the gap between the clean run and the corrupted one, so two graphs over
+    # two different pairs are two measurements rather than one that moved --
+    # the same category error `_diff_ground` refuses for two questions.
+    #
+    # BOTH SIDES OR NEITHER. `session._patch_graph` defaults an absent `clean`
+    # or `corrupt` to "", so a file that never recorded the pair arrives here
+    # indistinguishable from one that recorded an empty string -- and comparing
+    # that against a file that did record it produced a refusal asserting the
+    # two walks ran over different prompts, quoting '' as the second one. That
+    # is an unknown rendered as a value, in a sentence claiming to have
+    # measured a difference. One side recording nothing is not a disagreement;
+    # both sides travel in `measured` and this only refuses what both files
+    # actually said.
+    for key, label in (("clean", "clean"), ("corrupt", "corrupted")):
+        left, right = graph_a.get(key) or "", graph_b.get(key) or ""
+        if left and right and left != right:
+            return Delta(
+                "patching graph",
+                NOT_COMPARABLE,
+                f"these two graphs were walked over different {label} prompts "
+                f"({left!r} against {right!r}). Recovery is a fraction of the "
+                f"gap between one run and the other, so a graph over a "
+                f"different pair is a different measurement and not a changed "
+                f"one.",
+            )
+
+    # HOW FAR THE WALK WENT. Edge count is quadratic in sites, so every such
+    # graph is a subset by construction and the rule that chose the subset has
+    # to match before the subsets can be compared. `depth` is the part of that
+    # rule the reader keeps: `max_receivers` is dropped by `session._patch_graph`
+    # and the `seeding` sentence embeds `n_scored` and `n_pruned`, which move
+    # between two honest runs of the same walk -- refusing on the sentence
+    # would refuse nearly every real diff, so both sentences travel in
+    # `measured` instead and only the reach is a refusal.
+    depth_a, depth_b = graph_a.get("depth", 0), graph_b.get("depth", 0)
+    if depth_a != depth_b:
+        return Delta(
+            "patching graph",
+            NOT_COMPARABLE,
+            f"these two walks went back {depth_a} level(s) and {depth_b}. Edge "
+            f"count is quadratic in sites, so each graph is a subset by "
+            f"construction — and two walks of different reach hold different "
+            f"edges for a reason that is not the model.",
+        )
+
+    def _pair(edge: dict) -> tuple:
+        return (edge["source"], edge["target"])
+
+    edges_a, dup_a = _keyed(graph_a.get("edges") or [], _pair)
+    edges_b, dup_b = _keyed(graph_b.get("edges") or [], _pair)
+    if dup_a or dup_b:
+        which = "the first" if dup_a else "the second"
+        source, target = dup_a or dup_b
+        return Delta(
+            "patching graph",
+            NOT_COMPARABLE,
+            f"{which} file's patching graph carries {source} → {target} more "
+            f"than once, so its edge list is a multiset and a per-edge "
+            f"comparison would pick an arbitrary one of them.",
+        )
+
+    ids_a = {n["id"] for n in graph_a.get("nodes") or []}
+    ids_b = {n["id"] for n in graph_b.get("nodes") or []}
+    nodes_entered, nodes_left = sorted(ids_b - ids_a), sorted(ids_a - ids_b)
+
+    # THE FLOOR THE FILES SUPPLY. `patch_graph.build` sets `prune_threshold`
+    # from the trace's own recovery resolution -- one representable step of the
+    # gap between the two runs' answers, which is why it is per model and per
+    # pair and never a constant -- and records `prune_from` saying so. The
+    # coarser of the two is the finest difference this comparison can claim,
+    # for the reason the ranking takes the larger noise floor.
+    thr_a = float(graph_a.get("prune_threshold") or 0.0)
+    thr_b = float(graph_b.get("prune_threshold") or 0.0)
+    floor = max(thr_a, thr_b)
+    coarser = (graph_b if thr_b > thr_a else graph_a).get("prune_from") or ""
+    floor_from = (
+        f"the coarser of the two files' prune thresholds ({coarser})"
+        if coarser
+        else "the coarser of the two files' prune thresholds, neither of "
+        "which says where it came from"
+    )
+
+    shared = sorted(edges_a.keys() & edges_b.keys())
+    edges_entered = [f"{s} → {t}" for s, t in sorted(edges_b.keys() - edges_a.keys())]
+    edges_left = [f"{s} → {t}" for s, t in sorted(edges_a.keys() - edges_b.keys())]
+
+    # BY DIRECTION, BECAUSE ONLY ONE DIRECTION HAS A VERB. Both are a flipped
+    # verdict and both are equally a change, but "no longer clears its
+    # controls" and "now clears the controls it used to fail" are opposite
+    # claims about the model -- and `patch_graph` keeps an edge that LOST its
+    # control and marks it `clears_control: false` rather than dropping it, so
+    # a file carrying `false` is an ordinary file and False -> True is an
+    # ordinary outcome. Collected with a bare `!=` and printed with the losing
+    # verb, this section published the opposite of what it measured, in the
+    # strongest sentence it can say.
+    lost_control: list[str] = []
+    gained_control: list[str] = []
+    lost_position: list[str] = []
+    gained_position: list[str] = []
+    changed_sign: list[str] = []
+    moved: list[tuple[float, str, float, float]] = []
+    for key in shared:
+        edge_a, edge_b = edges_a[key], edges_b[key]
+        name = f"{key[0]} → {key[1]}"
+        if edge_a["clears_control"] != edge_b["clears_control"]:
+            (lost_control if edge_a["clears_control"] else gained_control).append(name)
+        # THREE-VALUED, AND ONLY THE TWO-VALUED TRANSITION IS A FINDING.
+        # `clears_position` is a separate pass a file may legitimately not have
+        # run, and the reader keeps that as None on purpose. None becoming True
+        # is a pass that was skipped becoming one that was run -- a change in
+        # what the walk did, not in what the model does -- and reading None as
+        # False here would turn "not run" into "run, and failed".
+        pos_a, pos_b = edge_a.get("clears_position"), edge_b.get("clears_position")
+        if isinstance(pos_a, bool) and isinstance(pos_b, bool) and pos_a != pos_b:
+            (lost_position if pos_a else gained_position).append(name)
+        was, now = float(edge_a["recovery"]), float(edge_b["recovery"])
+        if _changed_sign(was, now):
+            changed_sign.append(name)
+        if abs(now - was) > floor:
+            moved.append((abs(now - was), name, was, now))
+    moved.sort(reverse=True)
+
+    # WHICH EDGES RECOVER THE MOST needs no floor, exactly as the ranking's top
+    # five does not: it is a comparison of two orderings, and "this edge no
+    # longer leads" is what a reader acts on. Ranked by SIGNED recovery, which
+    # is how `path_trace` ranks its senders and how the walk seeds its next
+    # level -- so this ordering is the file's own and not a second one invented
+    # here. An edge at -0.9 is therefore at the BOTTOM of it, which is right:
+    # it is a sender pushing the answer away, and the sign finding above is
+    # what says so.
+    top = min(5, len(shared))
+    top_a = sorted(shared, key=lambda k: -edges_a[k]["recovery"])[:top]
+    top_b = sorted(shared, key=lambda k: -edges_b[k]["recovery"])[:top]
+    entered_top = [f"{s} → {t}" for s, t in top_b if (s, t) not in top_a]
+    left_top = [f"{s} → {t}" for s, t in top_a if (s, t) not in top_b]
+
+    measured = {
+        "nodes_compared": len(ids_a & ids_b),
+        "nodes_entered": nodes_entered,
+        "nodes_left": nodes_left,
+        "edges_compared": len(shared),
+        "edges_entered": edges_entered,
+        "edges_left": edges_left,
+        "edges_moved": len(moved),
+        # A COUNT AND THE NAMES BEHIND IT, PER DIRECTION. The first version
+        # published a bare count for the position flips and named only the
+        # control ones, so an edge whose position verdict moved appeared
+        # nowhere -- not in the terminal, not in `--json` -- and the count was
+        # a number with no receipt. Uncapped on purpose: the terminal sentence
+        # elides with `_named` and says how many it elided, and this is where
+        # the reader who wants all of them looks.
+        "verdicts_flipped": len(lost_control) + len(gained_control),
+        "control_verdicts_lost": lost_control,
+        "control_verdicts_gained": gained_control,
+        "position_verdicts_flipped": len(lost_position) + len(gained_position),
+        "position_verdicts_lost": lost_position,
+        "position_verdicts_gained": gained_position,
+        "edges_changed_sign": len(changed_sign),
+        "changed_sign": changed_sign[:NAMED_HEADS],
+        "max_abs_recovery_diff": moved[0][0] if moved else 0.0,
+        "worst_edge": moved[0][1] if moved else None,
+        "floor": floor,
+        "floor_from": floor_from,
+        "top_k": top,
+        "entered_top_k": entered_top,
+        "left_top_k": left_top,
+        "depth": depth_a,
+        "seeding_a": graph_a.get("seeding"),
+        "seeding_b": graph_b.get("seeding"),
+        # THE PAIR EACH WALK RAN OVER, both sides, because the guard above
+        # refuses only when both files recorded one. "" is what the reader
+        # leaves behind for a file that recorded nothing AND for one that
+        # recorded an empty string, and it cannot tell those apart -- so it
+        # travels as `None`, which says "this file does not say" rather than
+        # naming a prompt nobody ran.
+        "clean_a": graph_a.get("clean") or None,
+        "clean_b": graph_b.get("clean") or None,
+        "corrupt_a": graph_a.get("corrupt") or None,
+        "corrupt_b": graph_b.get("corrupt") or None,
+        # HOW MANY SENDERS EACH WALK SCORED AND PRUNED. An edge list is a
+        # subset of what was looked at, and these two are what say how big the
+        # subset was -- without them "neither walk drew an edge" is a fact with
+        # nothing behind it.
+        "n_scored_a": graph_a.get("n_scored"),
+        "n_scored_b": graph_b.get("n_scored"),
+        "n_pruned_a": graph_a.get("n_pruned"),
+        "n_pruned_b": graph_b.get("n_pruned"),
+        # Carried through as `None` where the file recorded nothing. "Nothing
+        # was too weak" is a result and `0` says it; a walk that never wrote
+        # the number is a different fact, and folding the second into the first
+        # is the defect class this whole module keeps documenting.
+        "n_weak_a": graph_a.get("n_weak"),
+        "n_weak_b": graph_b.get("n_weak"),
+        "n_untested_a": graph_a.get("n_untested"),
+        "n_untested_b": graph_b.get("n_untested"),
+        # Where each walk stopped asking. An edge missing from a graph whose
+        # frontier names its receiver was never looked for, which is a
+        # different fact from one that was looked for and pruned.
+        "frontier_a": graph_a.get("frontier") or [],
+        "frontier_b": graph_b.get("frontier") or [],
+    }
+
+    if not edges_a and not edges_b:
+        # THE FACT, AND NOT A CAUSE FOR IT. This sentence used to say no sender
+        # in either file cleared both its prune threshold and its controls,
+        # which is a reason nothing in the section records and which its own
+        # numbers can contradict: `patch_graph` KEEPS an edge that failed its
+        # controls and marks it `clears_control: false`, so a graph with no
+        # edges is not a graph of edges that lost, and `n_scored` minus
+        # `n_pruned` in `measured` can sit well above zero right beside the
+        # claim that nothing survived the threshold. What both files do say is
+        # that the list is empty.
+        return Delta(
+            "patching graph",
+            SAME,
+            "neither walk drew an edge. Two graphs agreeing that there was "
+            "nothing to draw is a finding, and this is it — how many senders "
+            "each walk scored and pruned on the way to that is in "
+            "`n_scored_a`/`n_pruned_a` and their counterparts, which is where "
+            "the reason lives if either file recorded one.",
+            magnitude=0.0,
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    # THE SET CHANGE TRAVELS WITH WHATEVER OUTRANKS IT rather than instead of
+    # it. The branches below are ordered by strength of claim, and the first
+    # draft returned on the first one that matched -- so a run where an edge
+    # lost its verdict AND another edge vanished printed only the verdict, and
+    # the vanished edge lived in `measured` where a terminal reader never
+    # looks. One headline, and the rest of the findings appended to it.
+    #
+    # THE EDGE CAVEAT BELONGS TO THE EDGE LINE. Attached to the joined block
+    # instead, a run where only a NODE entered the walk was explained by a
+    # sentence about an edge that neither entered nor left -- an answer to a
+    # question the finding did not ask.
+    lines = []
+    if edges_entered or edges_left:
+        lines.append(
+            _set_line("edge set", edges_entered, edges_left)
+            + f" An edge carried by one file and not the other is either a "
+            f"circuit that rerouted or a recovery that crossed the "
+            f"{floor:.6g} prune threshold — the file that dropped it does not "
+            f"record what it scored, so an absent edge is not a zero and this "
+            f"cannot tell the two apart."
+        )
+    if nodes_entered or nodes_left:
+        lines.append(_set_line("nodes walked", nodes_entered, nodes_left))
+    membership = (
+        lines[0] + "".join(f" {_sentence(x)}" for x in lines[1:]) if lines else ""
+    )
+
+    # ONE CLAUSE PER VERDICT CLASS THAT FIRED, joined -- not the first
+    # non-empty list. `flipped_control or flipped_position` returns whichever
+    # is truthy first, so a run where one edge lost its control verdict and
+    # another its position verdict named only the first, and the second was
+    # a bare count in `measured` with no name anywhere. That is the same
+    # defect the membership block above documents, one branch lower.
+    verdicts = []
+    if lost_control:
+        verdicts.append(
+            f"{_named(lost_control)} no longer clears the eight same-norm "
+            f"control draws behind it"
+        )
+    if gained_control:
+        verdicts.append(
+            f"{_named(gained_control)} now clears the eight same-norm control "
+            f"draws it previously failed"
+        )
+    if lost_position:
+        verdicts.append(
+            f"{_named(lost_position)} no longer clears the shifted-position control"
+        )
+    if gained_position:
+        verdicts.append(
+            f"{_named(gained_position)} now clears the shifted-position "
+            f"control it previously failed"
+        )
+    if verdicts:
+        headline = verdicts[0] + "".join(f". {_sentence(v)}" for v in verdicts[1:])
+        return Delta(
+            "patching graph",
+            CHANGED,
+            f"{headline}. An edge is drawn only because it was "
+            f"tested, so a verdict that flipped is this section's strongest "
+            f"finding — and a verdict is a boolean, with no size in recovery "
+            f"fractions at which it is within tolerance. {_sentence(membership)}".strip(),
+            # None, and not the recovery gap sitting in `measured`: nothing
+            # here was judged against the floor, and publishing one next to a
+            # magnitude of None would say it had been.
+            magnitude=None,
+            floor=None,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    if changed_sign:
+        return Delta(
+            "patching graph",
+            CHANGED,
+            f"{_plural(len(changed_sign), 'edge')} changed sign "
+            f"({_named(changed_sign)}) "
+            f"— a sender that moved the answer toward the clean run and now "
+            f"moves it away is a different causal story, however small the "
+            f"numbers are. {_sentence(membership)}".strip(),
+            magnitude=moved[0][0] if moved else 0.0,
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    if membership:
+        return Delta(
+            "patching graph",
+            CHANGED,
+            # The threshold named again rather than referred back to: with the
+            # edge caveat now attached to the edge line, a report whose only
+            # membership finding is a NODE never mentions a threshold, and
+            # "that threshold" pointed at nothing.
+            f"{membership} {len(moved)} of {len(shared)} shared edges also "
+            f"moved past the {floor:.2e} prune threshold.",
+            magnitude=moved[0][0] if moved else 0.0,
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    if entered_top or left_top:
+        return Delta(
+            "patching graph",
+            CHANGED,
+            f"the same {len(shared)} edges are drawn, but "
+            f"{_top_edges_line(top, entered_top, left_top, 'highest-recovering')} "
+            f"{len(moved)} of them moved past the {floor:.2e} prune threshold.",
+            magnitude=moved[0][0] if moved else 0.0,
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    if moved:
+        _, name, was, now = moved[0]
+        step = now - was
+        return Delta(
+            "patching graph",
+            CHANGED,
+            f"the circuit is the same {len(shared)} edges in the same order, "
+            f"but {name} recovered "
+            f"{'+' if step >= 0 else '−'}{fmt.measured(abs(step), 5)} more of "
+            f"the gap, from {fmt.measured(was, 5)} to {fmt.measured(now, 5)}. "
+            f"{len(moved)} of {len(shared)} edges moved past the "
+            f"{floor:.2e} prune threshold.",
+            magnitude=moved[0][0],
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+
+    if floor <= 0.0:
+        # Neither file carried a threshold above zero -- and the reader
+        # defaults a missing one to 0.0, so "recorded zero" and "never
+        # recorded" arrive here identical and this cannot tell them apart.
+        # With a floor of zero `abs(now - was) > floor` only holds for
+        # identical numbers, so SAME is right; implying a tolerance was
+        # applied to reach it is not.
+        return Delta(
+            "patching graph",
+            SAME,
+            f"all {len(shared)} edges carry identical recoveries and the same "
+            f"verdicts. Both files carry a prune threshold of exactly zero — "
+            f"recorded as zero or never recorded, which this cannot tell "
+            f"apart — so that is bit-for-bit equality rather than agreement "
+            f"within a tolerance.",
+            magnitude=0.0,
+            floor=floor,
+            unit="recovery fraction",
+            measured=measured,
+        )
+    return Delta(
+        "patching graph",
+        SAME,
+        f"all {len(shared)} edges hold their verdicts and score within the "
+        f"{floor:.2e} prune threshold these files recorded, and the same "
+        f"edges recover the most.",
+        magnitude=0.0,
+        floor=floor,
+        unit="recovery fraction",
+        measured=measured,
+    )
+
+
+def _diff_graph(a, b) -> Delta:
+    """Two attribution graphs SOMEBODY ELSE'S tool computed.
+
+    The section exists because a `.mri` can forward a transcoder attribution
+    graph, and `session._graph` refuses one that does not say who measured it.
+    That disclaimer is the whole reason the key is separate from `patch_graph`,
+    and it governs this comparison too: everything below is a difference
+    between two runs of another tool, and where that tool's own resolution
+    would be needed there is no number to reach for.
+
+    WHAT THE READER ACTUALLY HANDS THIS FUNCTION is narrower than what the
+    writer wrote. `_graph` builds its output from scratch and never copies the
+    node list, so an edge here names its endpoints by INDEX into a list this
+    file does not carry. There is no id to join two graphs on -- only the
+    assumption that two graphs from the same tool, over the same model and the
+    same prompt, with the same node count, numbered their nodes the same way.
+    Every refusal below is one leg of that assumption, checked rather than
+    assumed, and the comparison says out loud that the rest of it is an
+    assumption.
+
+    AND THERE IS NO FLOOR. `circuit.Graph.summary` records `density` and
+    `max_abs_weight`; nothing anywhere says what the producing tool could
+    resolve. So a weight that merely moved is reported as not comparable with
+    the number printed, and only the floor-independent findings -- membership
+    and sign -- are ever called a change. Which edges are strongest travels
+    with that refusal rather than as a change, because ranking near-equal
+    weights is exactly the comparison the missing resolution forbids.
+    Inventing an epsilon here is the one thing this module has never done.
+    """
+    graph_a, graph_b = a.graph or {}, b.graph or {}
+    if not graph_a or not graph_b:
+        which = "the first" if not graph_a else "the second"
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"{which} file carries no attribution graph. A missing section is "
+            f"not a zero, so this comparison is unavailable rather than clean.",
+        )
+
+    prov_a = graph_a.get("provenance") or {}
+    prov_b = graph_b.get("provenance") or {}
+    for key, label in (("producer", "tool"), ("model", "model")):
+        left, right = prov_a.get(key), prov_b.get(key)
+        if left != right:
+            return Delta(
+                "attribution graph",
+                NOT_COMPARABLE,
+                f"these graphs name a different {label} ({left!r} against "
+                f"{right!r}). ModelMRI computed neither of them, so a diff "
+                f"across two {label}s measures the {label} rather than "
+                f"anything either file recorded.",
+            )
+
+    # ONLY WHERE BOTH FILES CARRY IT. `prompt` is optional the whole way down:
+    # `circuit.to_session` forwards `graph.prompt`, which may be None, and
+    # `session._graph` writes the key only when the value it found was a
+    # string. Read as `.get("prompt") or ""`, a file that never recorded one
+    # became a file that recorded the empty prompt, and the refusal said in so
+    # many words that these graphs were computed over different prompts,
+    # quoting '' as the second one -- an unknown rendered as a value inside a
+    # sentence claiming to have measured a difference. It is the rule this
+    # same function applies to `edge_limit` and `truncated` twenty lines down.
+    if (
+        "prompt" in graph_a
+        and "prompt" in graph_b
+        and graph_a["prompt"] != graph_b["prompt"]
+    ):
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"these graphs were computed over different prompts "
+            f"({graph_a['prompt']!r} against {graph_b['prompt']!r}), so their "
+            f"nodes are different tokens and an edge in one names nothing in "
+            f"the other.",
+        )
+
+    nodes_a, nodes_b = graph_a.get("n_nodes"), graph_b.get("n_nodes")
+    if nodes_a != nodes_b:
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"these graphs declare {nodes_a} nodes and {nodes_b}. An edge here "
+            f"names its endpoints by index into a node list the section does "
+            f"not carry, so with two different node counts the indices do not "
+            f"name the same nodes and a per-edge comparison would be "
+            f"arithmetic over two different graphs.",
+        )
+
+    # WHAT DECIDED MEMBERSHIP. `circuit.Graph.edges` returns only the strongest
+    # `edge_limit`, and the summary records both the limit and whether it bit.
+    # Two lists cut at different points, or one cut and one whole, differ
+    # because of the cut -- so the set comparison below would report the export
+    # setting. Compared only where BOTH files carry the field: an absent
+    # `truncated` is not a `False`.
+    sum_a = graph_a.get("summary") or {}
+    sum_b = graph_b.get("summary") or {}
+    limit_a, limit_b = sum_a.get("edge_limit"), sum_b.get("edge_limit")
+    if _is_number(limit_a) and _is_number(limit_b) and limit_a != limit_b:
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"these graphs were exported at different edge limits ({limit_a} "
+            f"against {limit_b}), so which edges each list holds was decided "
+            f"by the export and not by the graph.",
+        )
+    trunc_a, trunc_b = sum_a.get("truncated"), sum_b.get("truncated")
+    if isinstance(trunc_a, bool) and isinstance(trunc_b, bool) and trunc_a != trunc_b:
+        which = "the first" if trunc_a else "the second"
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"{which} file's edge list was truncated at its export limit and "
+            f"the other's was not, so one is the strongest slice of a graph "
+            f"and the other is a whole one. Their edge sets differ because of "
+            f"that rather than because of the model.",
+        )
+
+    def _pair(edge: dict) -> tuple:
+        return (edge["source"], edge["target"])
+
+    edges_a, dup_a = _keyed(graph_a.get("edges") or [], _pair)
+    edges_b, dup_b = _keyed(graph_b.get("edges") or [], _pair)
+    if dup_a or dup_b:
+        which = "the first" if dup_a else "the second"
+        source, target = dup_a or dup_b
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"{which} file's graph carries the edge #{source} → #{target} more "
+            f"than once, so its edge list is a multiset and a per-edge "
+            f"comparison would pick an arbitrary one of them.",
+        )
+
+    shared = sorted(edges_a.keys() & edges_b.keys())
+    entered = [f"#{s} → #{t}" for s, t in sorted(edges_b.keys() - edges_a.keys())]
+    left = [f"#{s} → #{t}" for s, t in sorted(edges_a.keys() - edges_b.keys())]
+
+    changed_sign: list[str] = []
+    worst_edge, worst_gap = None, 0.0
+    for key in shared:
+        was = float(edges_a[key]["weight"])
+        now = float(edges_b[key]["weight"])
+        if _changed_sign(was, now):
+            changed_sign.append(f"#{key[0]} → #{key[1]}")
+        if abs(now - was) > worst_gap:
+            worst_edge, worst_gap = f"#{key[0]} → #{key[1]}", abs(now - was)
+
+    top = min(5, len(shared))
+    top_a = sorted(shared, key=lambda k: -abs(edges_a[k]["weight"]))[:top]
+    top_b = sorted(shared, key=lambda k: -abs(edges_b[k]["weight"]))[:top]
+    entered_top = [f"#{s} → #{t}" for s, t in top_b if (s, t) not in top_a]
+    left_top = [f"#{s} → #{t}" for s, t in top_a if (s, t) not in top_b]
+
+    measured = {
+        "n_nodes": nodes_a,
+        # BOTH PROMPTS, because the guard above refuses only when both files
+        # carry one. `session._graph` writes the key only for a string, so
+        # `None` here is "this file did not record a prompt" and not "this file
+        # was computed over the empty prompt" -- which is the distinction the
+        # guard now keeps and the receipt has to keep with it.
+        "prompt_a": graph_a.get("prompt"),
+        "prompt_b": graph_b.get("prompt"),
+        "edges_compared": len(shared),
+        "edges_entered": entered,
+        "edges_left": left,
+        "edges_changed_sign": len(changed_sign),
+        "changed_sign": changed_sign[:NAMED_HEADS],
+        "top_k": top,
+        "entered_top_k": entered_top,
+        "left_top_k": left_top,
+        "max_abs_weight_diff": worst_gap,
+        "worst_edge": worst_edge,
+        # There is no floor to publish, and `None` says that rather than a
+        # zero saying the tool could resolve everything.
+        "floor": None,
+        "floor_from": "no attribution graph records what its producer could "
+        "resolve, so a weight difference has nothing to be judged against",
+        # BOTH SIDES, because the guard above compares only `producer` and
+        # `model`. Two files may disclaim in two different sentences and still
+        # be compared, so publishing one of them under an unqualified key
+        # reports the first file's disclaimer as the pair's.
+        "measured_by_a": prov_a.get("measured_by"),
+        "measured_by_b": prov_b.get("measured_by"),
+        # Unqualified because the refusal above proves the two are equal.
+        "producer": prov_a.get("producer"),
+        # THE PRODUCING TOOL'S OWN NUMBERS, carried and not judged: the summary
+        # is that tool's block, its keys are open ended, and deriving a verdict
+        # from one would report a producer's version bump as a change in the
+        # model. Named field by field rather than copied wholesale, because
+        # `report.to_dict()` is dumped with `allow_nan=False` and
+        # `session._graph` checks a summary value for finiteness only at the
+        # top level -- so a NESTED block could still carry a NaN, and
+        # `modelmri diff --json` would end in a serialiser crash rather than in
+        # a wrong number. These four are top level and are already checked.
+        #
+        # `_a`/`_b` on all of them, including the two the guards above touched:
+        # those guards fire only when BOTH files carry the field, so what
+        # survives them is exactly the one-sided case -- a pair where the first
+        # file records no `edge_limit` and the second was cut at 2000 passes,
+        # the differ reports the second's missing edges as "left", and a
+        # receipt saying `edge_limit: None` hides the export setting that
+        # decided membership. Which is the confusion the guards exist for.
+        "edge_limit_a": limit_a,
+        "edge_limit_b": limit_b,
+        "truncated_a": trunc_a,
+        "truncated_b": trunc_b,
+        "nonzero_edges_a": sum_a.get("nonzero_edges"),
+        "nonzero_edges_b": sum_b.get("nonzero_edges"),
+        "density_a": sum_a.get("density"),
+        "density_b": sum_b.get("density"),
+        "max_abs_weight_a": sum_a.get("max_abs_weight"),
+        "max_abs_weight_b": sum_b.get("max_abs_weight"),
+    }
+
+    joined = (
+        "These two graphs are joined on node index — the same tool, model, "
+        "prompt and node count, which is the strongest link this section "
+        "carries and still an assumption rather than a check, because the "
+        "node list itself does not travel."
+    )
+
+    if not edges_a and not edges_b:
+        return Delta(
+            "attribution graph",
+            SAME,
+            f"neither graph carries an edge, so there is nothing here that "
+            f"could have moved. {joined}",
+            magnitude=0.0,
+            unit="attribution weight",
+            measured=measured,
+            gated=False,
+        )
+
+    # MEMBERSHIP AND SIGN, AND NOT ORDER. The first two need no floor: an edge
+    # is in a list or it is not, and a weight that pushed toward the answer and
+    # now pushes away is a different claim at any size. WHICH EDGES ARE
+    # STRONGEST IS NOT LIKE THEM -- it is an ordering of the very magnitudes
+    # this section says it cannot judge, so two weights a hair apart rank in
+    # whatever order the last digits fell. Called a change here, and the
+    # arithmetic decided a CI outcome: `exit_code` fails a CHANGED delta with
+    # no magnitude at EVERY `--fail-over`, so seven edges differing by 1e-10
+    # swapped ranks 5 and 6 and failed `--fail-over 1e9`, while a weight that
+    # moved by 0.5 without reordering anything returned NOT_COMPARABLE and
+    # exited 0. The reorder is reported below instead, in the branch that
+    # already says the magnitudes have nothing to be judged against.
+    if changed_sign or entered or left:
+        lines = []
+        if changed_sign:
+            lines.append(
+                f"{_plural(len(changed_sign), 'edge')} changed sign "
+                f"({_named(changed_sign)})."
+            )
+        if entered or left:
+            lines.append(_set_line("edge set", entered, left))
+        # Every finding that fired, not the first one: both need no floor and
+        # neither is a stronger claim than the other, so neither is a headline
+        # the other hides behind.
+        joined_lines = lines[0] + "".join(f" {_sentence(x)}" for x in lines[1:])
+        return Delta(
+            "attribution graph",
+            CHANGED,
+            f"{joined_lines} These are findings that need no floor — "
+            f"membership and sign — because nothing in either file says what "
+            f"the producing tool could resolve, so how far a weight moved "
+            f"cannot be judged here at all. {joined}",
+            # No magnitude, for the same reason a changed generation has none:
+            # the finding is categorical, and the only number available would
+            # be one no file gave a scale for.
+            magnitude=None,
+            floor=None,
+            unit="attribution weight",
+            measured=measured,
+            gated=False,
+        )
+
+    if worst_gap > 0.0:
+        if entered_top or left_top:
+            head = (
+                f"the same {len(shared)} edges are here with the same signs, "
+                f"and {_top_edges_line(top, entered_top, left_top)} "
+                f"{worst_edge} moved by {fmt.measured(worst_gap, 5)} in the "
+                f"producing tool's own units."
+            )
+            tail = (
+                "Which edges are strongest is an ordering of those same "
+                "weights, so the reorder above is reported here rather than "
+                "as a change: two of them a hair apart rank in whatever order "
+                "the last digits fell. Re-export both graphs from a tool that "
+                "records a resolution and this becomes answerable."
+            )
+        else:
+            head = (
+                f"the same {len(shared)} edges are here in the same order and "
+                f"with the same signs, and {worst_edge} moved by "
+                f"{fmt.measured(worst_gap, 5)} in the producing tool's own "
+                f"units."
+            )
+            tail = (
+                "Re-export both graphs from a tool that records one, or read "
+                "this as the ordering holding."
+            )
+        return Delta(
+            "attribution graph",
+            NOT_COMPARABLE,
+            f"{head} Nothing in either file says what that tool could resolve, "
+            f"and an absent resolution is not a resolution of zero — with one, "
+            f"every last digit counts as a change. {tail}",
+            # The one branch of this function where a number was actually
+            # computed, and the first draft was the only one that published no
+            # receipt for it: `worst_edge`, `max_abs_weight_diff` and both
+            # files' summary scalars were all in scope and dropped, so a
+            # `--json` reader got the sentence and nothing to check it against.
+            unit="attribution weight",
+            measured=measured,
+            gated=False,
+        )
+    return Delta(
+        "attribution graph",
+        SAME,
+        f"all {len(shared)} edges carry identical weights, so these two "
+        f"graphs are the same graph rather than two that agree within "
+        f"something. {joined}",
+        magnitude=0.0,
+        unit="attribution weight",
+        measured=measured,
+        gated=False,
+    )
+
+
+def _named_list(names: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c` — an English list, for one sentence."""
+    if len(names) < 2:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 # ------------------------------------------------------------------- driver
@@ -847,8 +1766,14 @@ def diff(path_a: str | Path, path_b: str | Path) -> DiffReport:
     report.deltas.append(_diff_ranking(a, b))
     report.deltas.append(_diff_attention(a, b))
     report.deltas.append(_diff_patch(a, b))
+    # Straight after the node grid it was walked out of, and in the same units,
+    # so a reader who has just been told which cells moved is told next which
+    # edges between them did.
+    report.deltas.append(_diff_patch_graph(a, b))
     report.deltas.append(_diff_lens(a, b))
     report.deltas.append(_diff_ground(a, b))
+    # Last, because it is the one section here ModelMRI did not measure.
+    report.deltas.append(_diff_graph(a, b))
     return report
 
 
@@ -872,10 +1797,32 @@ def render(report: DiffReport, fail_over: float | None = None) -> str:
         f"{totals[NOT_COMPARABLE]} not comparable"
     )
     if fail_over is not None:
+        # THE UNITS, READ OFF THE REPORT RATHER THAN REMEMBERED. This sentence
+        # named three of them from a literal -- "nats for the ranking and
+        # patching, attention weight for attention" -- and the moment a
+        # section was added, `--fail-over` was being compared in units the
+        # sentence explaining `--fail-over` did not mention. A hardcoded list
+        # of what a report contains drifts from the report by construction;
+        # the deltas already carry their own units, so they are the source.
+        #
+        # Only the sections the threshold can actually gate -- and that is a
+        # property of the section, which is why it is read off `delta.gated`
+        # and not off this run's magnitude. Read off the magnitude, the
+        # sentence selected almost exactly the wrong set: a SAME generation
+        # carries `magnitude=0.0` and was named, offering "0.01 in text units";
+        # a CHANGED patching graph whose verdict flipped carries `None`, is the
+        # delta that produced the exit 1, and its "recovery fraction" was left
+        # out of the sentence explaining the threshold that failed it.
+        by_unit: dict[str, list[str]] = {}
+        for delta in report.deltas:
+            if delta.gated and delta.unit:
+                by_unit.setdefault(delta.unit, []).append(delta.name)
+        named = ", ".join(
+            f"{unit} for {_named_list(names)}" for unit, names in by_unit.items()
+        )
         lines.append(
-            f"  failing over {fail_over} in each metric's own units "
-            f"(nats for the ranking and patching, attention weight for "
-            f"attention)"
+            f"  failing over {fail_over} in each metric's own units"
+            + (f" ({named})" if named else "")
         )
     for note in report.notes:
         lines.append(f"  note: {note}")

@@ -8,6 +8,37 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **`modelmri diff` reads the two graph sections it was blind to.** The differ
+  compared six sections — generation, attention, ranking, ground, patch, lens —
+  while every `.mri` that ran a circuit walk also carries `graph` and
+  `patch_graph`. Two runs could differ in the whole shape of the circuit they
+  found and the diff would report nothing. `_diff_patch_graph` and `_diff_graph`
+  close it: node and edge membership, the verdicts each edge carries, sign
+  changes, and recovery deltas on shared edges.
+
+  **The floor came from the files, not from a number chosen here.**
+  `patch_graph` records the recovery resolution it measured for that model and
+  that prompt pair, so the differ uses `max()` of the two files' own
+  `prune_threshold` and publishes `floor_from` verbatim beside it. The
+  attribution graph has no such floor anywhere — so membership, sign and
+  ordering are reported as findings, and a weight that merely *moved* is
+  `NOT_COMPARABLE` with the number printed rather than judged against an
+  invented epsilon.
+
+  Three review passes over the first draft caught four things worth naming,
+  because each was a rule this project states and the code broke:
+  a `clears_control` verdict that flipped **to passing** was printed as *"no
+  longer clears the eight same-norm control draws behind it"* — a fabricated
+  verdict, and it survived because only the failing direction had a test; a
+  position-verdict flip was dropped from the sentence whenever a control flip
+  existed, leaving `measured` carrying a bare count with no receipt; an absent
+  optional `prompt` was read as an empty one and refused as *"computed over
+  different prompts ('…' against '')"*, stating a value that was never
+  recorded; and a top-k reorder driven by weights the same function declines to
+  judge made a **1e-10** move fail CI unconditionally while a 0.5 move exited 0.
+
+  33 mutations across the two passes, 33 caught.
+
 - **`.rrd` export, and a refusal that is measured rather than blanket.**
   `write_rrd` refused unconditionally, and its reason was honest at the time:
   *"nothing here has ever been run against an installed rerun-sdk, so emitting

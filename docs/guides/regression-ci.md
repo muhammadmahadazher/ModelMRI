@@ -59,13 +59,32 @@ jobs:
 | `1` | something moved — the output names what |
 | `2` | the two files are not about the same run, and were not compared |
 
-`--fail-over X` is in **each metric's own units** — nats for the head ranking
-and patching, attention weight for attention. Omit it to fail on anything past
-the floor the files themselves record, which is the strictest honest threshold:
-a difference below that floor is not one the files can represent.
+`--fail-over X` is in **each metric's own units** — nats for the head ranking,
+patching and grounding, attention weight for attention, recovery fraction for
+the patching graph. The run itself prints the list, read off the sections that
+report actually contains rather than from a fixed list here, and it names only
+the sections the threshold can gate at all: three of them are categorical by
+construction and a number in "text units" or in tokens is not a threshold
+anybody could set. Omit it to fail on anything past the floor the files
+themselves record, which is the strictest honest threshold: a difference below
+that floor is not one the files can represent.
 
 **A changed generation always fails**, at any threshold. There is no magnitude
-at which "the model now says something else" is within tolerance.
+at which "the model now says something else" is within tolerance. So does a
+patching-graph edge whose control verdict flipped, and for the same reason: a
+boolean has no size at which it is within tolerance. Both directions of that
+flip are the same finding and both fail — an edge that now clears the controls
+it used to fail is reported in those words, not as one that stopped clearing
+them.
+
+**The forwarded attribution graph is compared without a floor**, because no
+attribution graph records what the tool that computed it could resolve. Which
+edges are present and which changed sign are reported as changes — and, having
+no magnitude to be judged, they fail at *any* `--fail-over`. Which edges are
+strongest is not among them: that is an ordering of the same unjudgeable
+weights, so two a hair apart rank in whatever order the last digits fell, and
+it is reported alongside the weight that moved as not comparable, with both
+numbers printed, rather than judged against an epsilon nobody measured.
 
 ## The same gate over a whole set
 
