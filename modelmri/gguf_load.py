@@ -650,7 +650,18 @@ def load(
     if on_stage:
         on_stage("device", f"moving to {device}")
     try:
-        model = model.to(device)
+        # Metered, like the HuggingFace path. Imported here rather than at the
+        # top because `runtime` imports this module; a function-local import is
+        # how the rest of this package breaks that cycle.
+        #
+        # The reason is weaker here than there and the meter is still worth it:
+        # a dequantised model is already in RAM, so this is a plain host copy
+        # at bus speed rather than the mmap being pulled off a disk. It is
+        # still gigabytes, and a reader watching one stage report bytes and
+        # the other report nothing would reasonably read that as a hang.
+        from .runtime import move_to_device
+
+        move_to_device(model, device)
     except Exception as err:
         # Was bare, so a CUDA OOM here escaped as a 500 "check the terminal"
         # -- and this is precisely where the preflight is weakest, because a

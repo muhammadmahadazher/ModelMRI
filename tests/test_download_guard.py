@@ -312,6 +312,52 @@ def test_a_redundant_second_copy_of_the_weights_is_not_downloaded(monkeypatch):
     assert "*.safetensors" not in got["ignore"]
 
 
+def test_metas_original_checkpoint_is_skipped_even_when_the_listing_fails(monkeypatch):
+    """`original/` is a second complete copy of the weights in Meta's own
+    format, and `from_pretrained` never opens it.
+
+    It used to be reachable only through `*.pth`, which is added ONLY when the
+    repo listing succeeds -- and the documented behaviour when that call fails
+    is to fetch everything rather than guess. One unlucky listing and a Llama
+    repo pulls its whole second copy. Measured in this machine's cache, which
+    holds both: `model.safetensors` at 2,471,645,608 bytes and
+    `original/consolidated.00.pth` at 2,471,677,246 -- 4.9 GB on disk for a
+    2.5 GB model.
+    """
+    got = _run_prefetch(monkeypatch, None)  # the listing is unreachable
+    assert "original/*" in got["ignore"]
+    # And the conditional rule really is unavailable on this path, which is
+    # exactly what made an unconditional entry necessary.
+    assert "*.pth" not in got["ignore"]
+
+
+def test_the_fetcher_and_the_meter_agree_about_variant_folders(monkeypatch):
+    """Two places encode one claim -- that a load reads top-level files only --
+    and they had drifted apart.
+
+    `progress._default_keep` counts nothing in a subfolder, naming onnx/,
+    coreml/ and "Meta's original/" as variants `from_pretrained` never reads.
+    The fetcher's ignore list named all of those but original/, so the bar
+    drew a denominator over a set of files smaller than the set being pulled.
+    Scoped to the folders both sides actually name: a repo is free to keep
+    other things in subdirectories and this says nothing about those.
+    """
+    import fnmatch
+
+    from modelmri import progress as progress_mod
+
+    got = _run_prefetch(monkeypatch, ["model.safetensors", "config.json"])
+    for name in (
+        "original/consolidated.00.pth",
+        "onnx/model.onnx",
+        "coreml/model.mlpackage",
+        "openvino/openvino_model.bin",
+        "tflite/model.tflite",
+    ):
+        assert progress_mod._default_keep(name) is False, name
+        assert any(fnmatch.fnmatchcase(name, pat) for pat in got["ignore"]), name
+
+
 def test_a_repo_with_only_bin_weights_still_gets_them(monkeypatch):
     """The whole point of checking rather than blacklisting. Plenty of models
     predate safetensors, and refusing their only weight file would turn a

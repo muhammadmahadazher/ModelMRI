@@ -739,6 +739,188 @@ def test_a_quiet_load_is_diagnosed_by_stage(monkeypatch):
     assert note("device", False, quiet, progress.WEDGED_CPU_S + 1) == ""
 
 
+def test_a_sign_of_life_restarts_both_halves_of_the_wedge_window():
+    """The two numbers the wedge test compares have to describe the SAME
+    window, or it weighs a duration against CPU spent outside it.
+
+    They were two variables reset in different places: the clock restarted
+    whenever bytes moved or the stage changed, the CPU reading only on a stage
+    change. So once bytes had moved, `cpu_s` went on accumulating from the top
+    of the stage — and a few seconds of ordinary work then held it above the
+    threshold for good. The check disarmed itself within seconds of any stage
+    beginning and could never fire again during the stretch it exists to
+    watch.
+    """
+    from modelmri import progress
+
+    clock = {"t": 0.0, "cpu": 0.0}
+    window = progress._Window(lambda: clock["t"], lambda: clock["cpu"])
+
+    clock["t"], clock["cpu"] = 100.0, 40.0
+    assert window.quiet_s() == 100.0
+    assert window.cpu_s() == 40.0
+
+    window.mark()
+    clock["t"], clock["cpu"] = 130.0, 40.5
+    # Thirty seconds quiet, and half a CPU-second inside those thirty seconds.
+    # The old pairing would have reported 40.5 here — the whole stage's CPU
+    # against a thirty-second window.
+    assert window.quiet_s() == 30.0
+    assert window.cpu_s() == 0.5
+
+
+def test_the_download_meter_does_not_outlive_the_download():
+    """Reported from the browser: 21 minutes on "Moving to the accelerator"
+    under a bar drawn FULL, reading "2.5 GB / 2.5 GB · 0 bytes left · ~0s
+    left".
+
+    Every number there was the finished download's, still being published
+    into a snapshot the next stage shares. A byte count is progress for the
+    work that produced it and for nothing else, so a stage that did not
+    measure them does not inherit them. Zero is the field's way of saying
+    unknown, and the UI draws an indeterminate bar for it.
+    """
+    from modelmri import progress
+
+    tracker = progress._Tracker()
+    tracker.start_external("acme/big", stage="weights")
+    try:
+        tracker.publish(bytes_done=2_500_000_000, bytes_total=2_500_000_000)
+        # `_eta` withholds a figure until there is history to divide, so the
+        # clock is wound back rather than slept through: the point is the
+        # "~0s left" the reader saw, which needs an ETA to exist at all.
+        tracker._t0 -= 5.0
+        finished = tracker.snapshot()
+        assert finished.bytes_done == finished.bytes_total == 2_500_000_000
+        assert finished.eta_s == 0.0  # true of the download, and only of it
+
+        tracker.stage("device", "moving to the GPU")
+        moving = tracker.snapshot()
+        assert moving.stage == "device"
+        assert (moving.bytes_done, moving.bytes_total) == (0, 0)
+        assert moving.eta_s is None
+    finally:
+        tracker.finish()
+
+
+def test_two_moments_of_one_download_keep_their_bytes():
+    """`resolving` and `weights` are one transfer seen twice, so moving
+    between them must not drop the figures. Scoping the counters per STAGE
+    rather than per phase would blank the bar at the instant the download it
+    describes actually starts."""
+    from modelmri import progress
+
+    tracker = progress._Tracker()
+    tracker.start_external("acme/big", stage="resolving")
+    try:
+        tracker.publish(bytes_done=10, bytes_total=100)
+        tracker.stage("weights")
+        snap = tracker.snapshot()
+        assert (snap.bytes_done, snap.bytes_total) == (10, 100)
+    finally:
+        tracker.finish()
+
+
+def test_the_stage_that_owns_the_meter_publishes_into_it():
+    """Dropping the download's numbers leaves a gap, and the stage that took
+    over fills it with its own. That is the whole point of scoping them —
+    `runtime.move_to_device` does exactly this for the copy onto the GPU."""
+    from modelmri import progress
+
+    tracker = progress._Tracker()
+    tracker.start_external("acme/big", stage="weights")
+    try:
+        tracker.publish(bytes_done=1000, bytes_total=1000)
+        tracker.stage("device", "moving to the GPU")
+        tracker.publish(bytes_done=400, bytes_total=1000)
+        tracker._t0 -= 5.0
+        snap = tracker.snapshot()
+        assert (snap.bytes_done, snap.bytes_total) == (400, 1000)
+        assert snap.eta_s is not None and snap.eta_s > 0
+    finally:
+        tracker.finish()
+
+
+def test_the_watcher_stops_counting_the_cache_once_the_download_is_over(
+    tmp_path, monkeypatch
+):
+    """The cache directory measures the DOWNLOAD.
+
+    The watcher wrote it into the shared snapshot on every poll for the rest
+    of the load, so whatever was last on disk was published as the device
+    move's progress — and, the download being finished, that is a full bar.
+    """
+    from modelmri import progress
+
+    blobs = tmp_path / "models--acme--big" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "w").write_bytes(b"x" * 500)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(
+        progress, "_expected_files", lambda _id, *_: (frozenset(), 1000)
+    )
+
+    tracker = progress._Tracker()
+    tracker.start("acme/big")
+    try:
+        for _ in range(60):
+            if tracker.snapshot().bytes_done == 500:
+                break
+            time.sleep(0.05)
+        assert tracker.snapshot().bytes_done == 500
+
+        tracker.stage("device", "moving to the GPU")
+        # More bytes land in the cache. They are not this stage's progress,
+        # and neither was the 500 already there.
+        (blobs / "more").write_bytes(b"x" * 400)
+        time.sleep(1.6)
+        snap = tracker.snapshot()
+        assert snap.stage == "device"
+        assert (snap.bytes_done, snap.bytes_total) == (0, 0)
+    finally:
+        tracker.finish()
+
+
+def test_a_device_move_reporting_progress_is_not_called_wedged(tmp_path, monkeypatch):
+    """Liveness is whatever the READER is watching move, not the cache
+    directory — which stands perfectly still throughout a device move.
+
+    Both halves are asserted on one tracker, because "it never fires" is as
+    easy to pass by accident as "it always does": the moving stage must stay
+    quiet and the still one must speak.
+    """
+    from modelmri import progress
+
+    blobs = tmp_path / "models--acme--big" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "w").write_bytes(b"x" * 500)
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(progress, "_expected_files", lambda _id, *_: (frozenset(), 500))
+    monkeypatch.setattr(progress, "WEDGED_AFTER_S", 0.05)
+    # No amount of CPU may excuse it, so the only thing under test is whether
+    # the published counter counts as a sign of life.
+    monkeypatch.setattr(progress, "WEDGED_CPU_S", 10.0**9)
+
+    tracker = progress._Tracker()
+    tracker.start("acme/big")
+    try:
+        tracker.stage("device", "moving to the GPU")
+        for step in range(1, 26):  # ~2.5s of visible progress
+            tracker.publish(bytes_done=step * 40, bytes_total=1000)
+            time.sleep(0.1)
+            assert "stopped rather than slowed" not in tracker.snapshot().detail
+
+        # Now stop moving. Same stage, same cache directory, nothing else
+        # changed — and it has to be noticed.
+        for _ in range(40):
+            if "stopped rather than slowed" in tracker.snapshot().detail:
+                break
+            time.sleep(0.1)
+        assert "stopped rather than slowed" in tracker.snapshot().detail
+    finally:
+        tracker.finish()
+
+
 def test_the_hub_is_not_called_when_the_hub_is_off_limits(monkeypatch):
     """HF_HUB_OFFLINE is the hub's own switch, and the meter has to honour it."""
     import huggingface_hub

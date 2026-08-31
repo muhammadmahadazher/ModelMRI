@@ -46,6 +46,32 @@ from pathlib import Path
 # itself as barely started.
 _CONFIG = (".json", ".txt", ".model")
 
+# The stages whose progress IS the download. `resolving` and `weights` are one
+# transfer seen at two moments, so a byte figure published under either
+# describes the same job.
+DOWNLOAD_STAGES = ("resolving", "weights")
+
+
+def _phase(stage: str) -> str:
+    """Which job a byte count belongs to.
+
+    A byte count is only progress for the work that produced it. The download
+    kept publishing its finished figure into a shared snapshot after the
+    download was over, so a load that had moved on to `device` drew a FULL bar
+    labelled "2.5 GB / 2.5 GB - 0 bytes left - ~0s left" over a copy onto the
+    GPU that had not started. Reported from the browser as 21 minutes of
+    "Moving to the accelerator" beside a meter that said there was nothing
+    left to do.
+
+    Every stage after the download is different work in this process, and the
+    download's total is not a measure of it. Naming the phase is what lets the
+    tracker drop counters that have stopped describing what is happening --
+    an empty meter is an indeterminate bar, which is the truth, while a full
+    one is a claim.
+    """
+    return "download" if stage in DOWNLOAD_STAGES else stage
+
+
 # How long a download may sit at the same byte count before we call it stalled.
 #
 # This was 45 s, chosen before hf_xet existed. huggingface_hub 1.x installs
@@ -302,6 +328,41 @@ def _eta(done: int, total: int, elapsed: float) -> float | None:
     return round((total - done) / rate, 1)
 
 
+class _Window:
+    """The stretch of time since the load last showed a sign of life.
+
+    Both halves of the wedge test have to be measured over the SAME window or
+    it compares a duration against CPU that was spent outside it. They were
+    two variables reset in different places -- the clock restarted whenever
+    bytes moved OR the stage changed, the CPU reading only on a stage change
+    -- so after a byte count moved, `cpu_s` went on accumulating from the top
+    of the stage. A few seconds of real work then held it permanently above
+    the threshold and the wedge check could never fire again for the rest of
+    that stage, which is precisely the stretch it exists to watch.
+
+    The clocks are injectable so a test can prove `mark()` resets both,
+    rather than sleeping and hoping.
+    """
+
+    def __init__(self, monotonic=time.monotonic, cpu=time.process_time) -> None:
+        self._monotonic = monotonic
+        self._cpu = cpu
+        self.mark()
+
+    def mark(self) -> None:
+        """The load just showed a sign of life. Start the window again."""
+        self._t0 = self._monotonic()
+        self._cpu0 = self._cpu()
+
+    def quiet_s(self) -> float:
+        """Seconds since the last sign of life."""
+        return self._monotonic() - self._t0
+
+    def cpu_s(self) -> float:
+        """Process CPU seconds burned since the last sign of life."""
+        return self._cpu() - self._cpu0
+
+
 class _Tracker:
     """Single in-flight load. Loads are serialised by the runtime lock."""
 
@@ -310,6 +371,10 @@ class _Tracker:
         self._snap = Snapshot()
         self._t0 = 0.0
         self._stop: threading.Event | None = None
+        # Which phase the byte counters in `_snap` were measured for. Written
+        # by whoever writes bytes, read by `stage` to drop a figure that has
+        # stopped describing what the load is doing. See `_phase`.
+        self._bytes_phase = ""
         # Which load is current. A watcher writes into the shared snapshot,
         # so without this the previous load's watcher can publish its byte
         # counts under the next load's name -- and did: a hung load of
@@ -424,6 +489,7 @@ class _Tracker:
             self._gen += 1
             gen = self._gen
             self._snap = Snapshot(active=True, hf_id=name, stage=stage, detail=detail)
+            self._bytes_phase = _phase(stage)
         self._stop = None
         self._started.gen = gen
         return gen
@@ -453,15 +519,33 @@ class _Tracker:
         with self._lock:
             if self._stale(token) or not self._snap.active:
                 return False
+            # Stage first, so numbers supplied in the same call are stamped
+            # with the stage they were measured for rather than the one
+            # before it.
+            if stage:
+                self._enter_stage(stage)
             if bytes_done is not None:
                 self._snap.bytes_done = max(0, int(bytes_done))
             if bytes_total is not None:
                 self._snap.bytes_total = max(0, int(bytes_total))
-            if stage:
-                self._snap.stage = stage
+            if bytes_done is not None or bytes_total is not None:
+                self._bytes_phase = _phase(self._snap.stage)
             if detail:
                 self._snap.detail = detail
             return True
+
+    def _enter_stage(self, stage: str) -> None:
+        """Name the stage, dropping byte counters that were not measured for
+        it. Call with the lock held.
+
+        See `stage` for why a counter outliving its phase is a wrong answer
+        rather than a stale one.
+        """
+        if _phase(stage) != self._bytes_phase:
+            self._snap.bytes_done = 0
+            self._snap.bytes_total = 0
+            self._bytes_phase = _phase(stage)
+        self._snap.stage = stage
 
     def start(self, hf_id: str, patterns: tuple[str, ...] | None = None) -> int:
         """Begin tracking, returning this job's token. `patterns` is the
@@ -480,6 +564,10 @@ class _Tracker:
             self._snap = Snapshot(
                 active=True, hf_id=hf_id, stage="resolving", detail="contacting the Hub"
             )
+            # A fresh snapshot's counters are zero and belong to whatever this
+            # job starts as, so the first stage inside the same phase does not
+            # look like a phase change.
+            self._bytes_phase = _phase("resolving")
         self._stop = threading.Event()
         self._started.gen = gen
         threading.Thread(
@@ -493,11 +581,19 @@ class _Tracker:
         Same guard as `publish`, for the same reason: a superseded job
         restamping the stage would relabel the live one, and "ready" is a
         stage.
+
+        Moving to a stage the current byte counters were not measured for
+        DROPS them, because they have stopped being a measure of anything
+        happening. A meter reading "2.5 GB / 2.5 GB - 0 bytes left" against a
+        21-minute copy onto the GPU is not a stale number, it is a wrong
+        answer to "how far along is this"; zero means unknown here and the UI
+        draws an indeterminate bar for it. The new stage is free to publish
+        its own figures, and `runtime` does exactly that for the device move.
         """
         with self._lock:
             if self._stale(token) or not self._snap.active:
                 return False
-            self._snap.stage = stage
+            self._enter_stage(stage)
             if detail:
                 self._snap.detail = detail
             return True
@@ -554,6 +650,8 @@ class _Tracker:
                 return False
             for key, value in fields.items():
                 setattr(self._snap, key, value)
+            if "bytes_done" in fields or "bytes_total" in fields:
+                self._bytes_phase = _phase(self._snap.stage)
             return True
 
     def _watch(
@@ -589,28 +687,33 @@ class _Tracker:
         ):
             return
 
-        last_change = time.monotonic()
-        last_bytes = start_bytes
-        # Process-wide CPU, not this thread's: the question a wedge asks is
-        # whether *anything* in here is still executing. It is a plain
-        # counter read, so unlike asking CUDA how much memory it has handed
-        # out it cannot itself block on the thing that is stuck.
-        last_cpu = time.process_time()
+        # One object, so the clock and the CPU reading can only ever be
+        # restarted together. Process-wide CPU, not this thread's: the
+        # question a wedge asks is whether *anything* in here is still
+        # executing. It is a plain counter read, so unlike asking CUDA how
+        # much memory it has handed out it cannot itself block on the thing
+        # that is stuck.
+        alive = _Window()
+        last_bytes: int | None = None
         last_stage = ""
         warning: str | None = None  # our own text, if we have overwritten detail
         said = ""  # what the load was saying before we did
         while not stop.wait(0.7):
             done = _bytes_on_disk(hf_id, wanted)
-            now = time.monotonic()
-            if done != last_bytes:
-                last_bytes, last_change = done, now
             with self._lock:
                 if gen != self._gen or not self._snap.active:
                     return
                 if self._snap.stage != last_stage:
-                    last_stage, last_change = self._snap.stage, now
-                    last_cpu = time.process_time()
-                self._snap.bytes_done = min(done, total) if total else done
+                    last_stage = self._snap.stage
+                    alive.mark()
+                # The cache directory measures the DOWNLOAD, so it is only
+                # this job's progress while this job is downloading. Publishing
+                # it afterwards is what put a full bar and "0 bytes left" over
+                # a 21-minute copy onto the GPU. The stage that owns the meter
+                # now publishes its own figures; see `_phase`.
+                if _phase(self._snap.stage) == "download":
+                    self._snap.bytes_done = min(done, total) if total else done
+                    self._bytes_phase = "download"
                 if done > start_bytes and self._snap.stage == "resolving":
                     self._snap.stage = "weights"
                 # "Already cached" was decided from the tree's size before
@@ -622,13 +725,21 @@ class _Tracker:
                 # under that message. Bytes arriving is proof it was wrong.
                 if cached and done > start_bytes + _CACHE_WRONG_AFTER:
                     cached = False
-                    last_change = now
+                    alive.mark()
                     self._snap.detail = (
                         f"downloading {_si_bytes(total)}" if total else "downloading"
                     )
-                stalled_s = now - last_change
-                cpu_s = time.process_time() - last_cpu
-                note = self._quiet_note(self._snap.stage, cached, stalled_s, cpu_s)
+                # A sign of life is whatever the READER is watching move, not
+                # the cache directory. Once the download is over the directory
+                # stands perfectly still while the device move publishes real
+                # progress every quarter second, and reading the disk would
+                # have called that healthy load wedged at the two-minute mark.
+                if self._snap.bytes_done != last_bytes:
+                    last_bytes = self._snap.bytes_done
+                    alive.mark()
+                note = self._quiet_note(
+                    self._snap.stage, cached, alive.quiet_s(), alive.cpu_s()
+                )
                 # Restore whatever the load itself was saying once it moves
                 # again, so a warning cannot outlive the condition it
                 # described. Only our own text is replaced.

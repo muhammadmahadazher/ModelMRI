@@ -86,6 +86,59 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **A full progress bar over a load that had not started.** Reported from the
+  browser: 21 minutes on **"Moving to the accelerator"** under a bar drawn full
+  reading *"2.5 GB / 2.5 GB · 0 bytes left · ~0s left"*. Every number there
+  belonged to the **finished download**, which the cache watcher went on
+  publishing into a snapshot the next stage shares. Byte counters are now
+  scoped to the phase that measured them — `resolving` and `weights` are one
+  transfer seen twice, everything after is different work — and a stage that
+  did not measure them starts empty, which the UI already draws as an
+  indeterminate bar.
+
+- **The device move had no meter at all, and it is where the time goes.**
+  Measured on this machine (RTX 4060 Laptop, torch 2.11.0+cu128, transformers
+  5.13.0, `meta-llama/Llama-3.2-1B-Instruct` fully cached): **7.1 s** inside
+  `from_pretrained` and **15.36 s** moving 2,471,629,056 bytes. Safetensors are
+  memory-mapped, so the downloaded file is not actually read until something
+  touches the tensors — the step that looks like a pointer copy is the step
+  that takes the minutes. `runtime.move_to_device` now walks `modules()`
+  deepest-first and publishes bytes as they land, so that stretch has a real
+  bar and a real countdown — **measured through the running server**, which
+  reported 108 distinct `device` rows climbing from 0 to 2,471,629,056 bytes
+  with the countdown falling 30.7 s to 0. Public API only, on purpose:
+  `Module.to` is `Module._apply` underneath, and a private traversal on the
+  load path would break loading rather than break a number. The repeat walks
+  cost **23 ms across the model's 215 modules** with nothing left to copy,
+  against 3 ms for one `Module.to`. The GGUF path is metered the same way; its
+  weights are already in RAM so the copy is at bus speed, but a reader watching
+  one loader report bytes and the other report nothing would reasonably read
+  the silence as a hang.
+
+- **The wedge detector disarmed itself.** "No progress for N seconds and only
+  M CPU-seconds in that time" was measured over two different windows: the
+  clock restarted whenever bytes moved *or* the stage changed, the CPU reading
+  only on a stage change. So once any bytes had moved, the CPU figure went on
+  accumulating from the top of the stage, and a few seconds of ordinary work
+  held it above the threshold for good — the check could never fire again
+  during the stretch it exists to watch. Both halves now come from one
+  `_Window`. Liveness also reads the counter the reader is watching rather
+  than the cache directory, which stands perfectly still throughout a device
+  move.
+
+- **A Llama repo downloaded its weights twice.** `original/` is Meta's own
+  checkpoint format shipped beside the transformers one, and `from_pretrained`
+  never opens it. It was only ever reachable through `*.pth`, which the
+  prefetch adds **only when the repo file listing succeeds** — and the
+  documented behaviour when that call fails is to fetch everything rather than
+  guess. Measured in this machine's cache, which holds both:
+  `model.safetensors` at 2,471,645,608 bytes and `original/consolidated.00.pth`
+  at 2,471,677,246 — **4.9 GB on disk for a 2.5 GB model**. `original/*` joins
+  `onnx/*` and `coreml/*` in the unconditional list, which also settles a
+  disagreement: `progress._default_keep` already counted top-level files only,
+  so the bar was drawing a 2.5 GB denominator over a fetch that could pull
+  4.9 GB.
+
 - **A `.rrd` receipt that measured a half-written file.** `RecordingStream.save()`
   only attaches the sink; the batching pipeline drains on its own thread and
   the footer lands when the stream closes. Measured, both before the fix: the
