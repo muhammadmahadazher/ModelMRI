@@ -754,7 +754,24 @@ export interface SAECalibration {
  *  or a sentence naming the rule and the alternatives it beat, so the panel
  *  can tell a deliberate choice from a default. `available` is the index for
  *  THIS layer only, and `null` in it never means "none exist" — it means the
- *  Hub listing could not be read. */
+ *  Hub listing could not be read.
+ *
+ *  Open-ended by design, but a SAELens release answers with these keys and
+ *  they are the ones worth rendering:
+ *    `architecture`  whether the gate was DECLARED by cfg.json or READ off a
+ *                    schema too old to have the key — different facts, and a
+ *                    reader has to be able to tell them apart.
+ *    `apply_b_dec_to_input`  what the config said, beside
+ *                    `SAECalibration.declared_b_dec`. "Absent" is its own
+ *                    answer and is not "false".
+ *    `model`         the model the release names. Nothing checks it against
+ *                    the loaded one — only that the widths agree — so it is
+ *                    a declaration to read, not a guarantee.
+ *    `weights`       present only when the weight file carried tensors this
+ *                    does not apply. Its absence means nothing was dropped.
+ *    `rescale_acts_by_decoder_norm`  present only when the decoder-norm fold
+ *                    was applied, in which case the loaded `W_dec` rows are
+ *                    unit-norm and are NOT the published ones. */
 export interface SAERelease {
   repo: string;
   layout: string;
@@ -779,12 +796,18 @@ export interface SAEStatus {
   d_in: number | null;
   d_sae: number | null;
   calibration?: SAECalibration | null;
-  /** "relu" or "jumprelu". `null` when nothing is loaded — an unloaded panel
-   *  does not have a plain-ReLU SAE, it has no SAE. */
+  /** "relu" | "jumprelu" | "topk" | "gated" — the rule the release NAMED,
+   *  not one inferred from which tensors it shipped. `null` when nothing is
+   *  loaded: an unloaded panel does not have a plain-ReLU SAE, it has no
+   *  SAE. */
   activation: string | null;
-  /** `[min, max]` of the JumpReLU thresholds. `null` for a ReLU SAE, which
-   *  has no thresholds at all rather than thresholds of zero. */
+  /** `[min, max]` of the JumpReLU thresholds. `null` for every architecture
+   *  with no thresholds at all, rather than thresholds of zero. */
   threshold_span: [number, number] | null;
+  /** How many features a top-k gate lets fire per token. `null` for every
+   *  other architecture, which have no such number — not 0, which would read
+   *  as a gate that fires nothing. */
+  k: number | null;
   release: SAERelease | null;
 }
 

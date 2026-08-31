@@ -61,6 +61,25 @@ wrongness as the input-convention bug above — right shape, plausible
 magnitudes, a gate that was never applied — so `_activate` is the one place
 either rule lives.
 
+## The gate is named by the release, not inferred from its tensors
+
+`threshold is None` used to mean "plain ReLU", and for a while that was true of
+every SAE this could open: Gemma Scope shipped thresholds, SAELens shipped none.
+It is false now. SAELens registers four inference architectures — standard,
+gated, topk, jumprelu — and a TopK release ships EXACTLY the four tensors a
+standard release ships. Nothing in its weight file betrays it; the entire gate
+is one cfg.json key. So a loader that parsed cfg.json for nothing loaded every
+modern release wide open, and the failure looks like the two above: right
+shape, plausible magnitudes, a rule that was never applied.
+
+`_read_sae_lens` therefore reads the architecture, and `_activate` dispatches on
+that name rather than on which tensors turned up. What cannot be encoded is
+refused BY NAME — a Refusal naming the architecture is an ordinary answer, and
+the one thing that must never happen is a gated SAE loading as a ReLU. The same
+rule covers `normalize_activations`, whose scaling factor SAELens keeps in its
+own bundled table rather than in the release, and `reshape_activations`, which
+says the SAE reads per-head attention output rather than the residual stream.
+
 ## Two fidelity numbers, and only one of them was in activation space
 
 `calibrate` answers "does this SAE reconstruct the stream it is attached to",
@@ -107,6 +126,90 @@ from .errors import BadRequest, Refusal
 # could exist, and matching on names would open the wrong reader for it.
 LAYOUT_SAE_LENS = "sae_lens"
 LAYOUT_GEMMA_SCOPE = "gemma_scope"
+
+# The activation function an SAE's encoder ends in, and the one place each name
+# is spelled. SAELens calls these "architectures"; this module calls the four
+# it can apply activations, because "standard" names a release and `relu` names
+# a rule, and the rule is what `_activate` has to run.
+ACT_RELU = "relu"
+ACT_JUMPRELU = "jumprelu"
+ACT_TOPK = "topk"
+ACT_GATED = "gated"
+
+# SAELens's `architecture` strings mapped to the rule each one means. This is
+# the whole of what this module encodes; every other string is refused by name.
+# Refused rather than approximated because the nearest gate to an architecture
+# nobody here has read is a plain ReLU, and a plain ReLU is precisely the wrong
+# answer — read off the register_sae_class calls in sae_lens/__init__.py at
+# 6.50.0, where these four are the architectures that have an inference class
+# AND read and write the same stream.
+ARCHITECTURE_ACTIVATION: dict[str, str] = {
+    "standard": ACT_RELU,
+    "gated": ACT_GATED,
+    "topk": ACT_TOPK,
+    "jumprelu": ACT_JUMPRELU,
+}
+
+# Registered for TRAINING only: `get_sae_class("batchtopk")` is a bare dict
+# lookup in SAELens and raises. A cfg.json naming one of these is a training
+# checkpoint rather than a release, and its gate ranks activations across a
+# whole batch — which would make one token's features depend on which other
+# tokens were in the request. A RELEASED BatchTopK SAE says "jumprelu" and
+# ships the distilled threshold, and that one loads through the JumpReLU path,
+# because at inference it IS JumpReLU.
+ARCHITECTURES_TRAINING_ONLY = ("batchtopk", "matryoshka_batchtopk")
+
+# Registered with inference classes and still refused. A transcoder maps
+# between TWO hook points (`hook_name` -> `hook_name_out`), so it does not
+# reconstruct the stream it reads, and `calibrate`'s "how much of the variance
+# comes back" is not a question that can be asked of it at all.
+ARCHITECTURES_TRANSCODER = (
+    "transcoder",
+    "skip_transcoder",
+    "jumprelu_transcoder",
+    "jumprelu_skip_transcoder",
+)
+
+# Which tensors a release must ship, per activation. Gated is the one to read
+# twice: it has NO b_enc. SAELens assigns `self.b_enc = None` on a name it never
+# registered as a parameter, so the key never reaches the file — asking for one
+# would refuse every gated release, and defaulting one to zeros would load one
+# wrong, which is worse.
+_WEIGHT_KEYS: dict[str, tuple[str, ...]] = {
+    ACT_RELU: ("W_enc", "b_enc", "W_dec", "b_dec"),
+    ACT_TOPK: ("W_enc", "b_enc", "W_dec", "b_dec"),
+    ACT_JUMPRELU: ("W_enc", "b_enc", "W_dec", "b_dec", "threshold"),
+    ACT_GATED: ("W_enc", "W_dec", "b_dec", "b_gate", "r_mag", "b_mag"),
+}
+
+# cfg.json has been written by three schemas, and which one a file is decides
+# what an ABSENT `architecture` key means — the whole point of telling them
+# apart. In the modern schema the key is always written, so its absence is a
+# broken file; in the two older ones it did not exist yet, so its absence is
+# the schema and standard is what SAELens's own migration resolves it to.
+SCHEMA_MODERN = "modern"  # >= 6.0.0-rc.0: SAEConfig fields + a nested metadata
+SCHEMA_FLAT = "flat"  # v3-v5: flat keys, activation_fn_str, no metadata
+SCHEMA_LEGACY = "legacy"  # pre-v3: hook_point, and no architecture at all
+
+# SAELens's own cutover, from `handle_config_defaulting`: a file whose
+# sae_lens_version is below 6.0.0-rc.0 goes through the legacy migration. Only
+# the major number is compared, because that is the only question asked of it
+# and parsing a full version needs a dependency this module does not have.
+_SCHEMA_MODERN_MAJOR = 6
+
+# What `normalize_activations` may say. Four values, and only one of them can
+# be honoured here — see `_refuse_unencodable_preprocessing` for why each of
+# the others is a refusal rather than a silent load.
+NORMALIZE_NONE = "none"
+NORMALIZE_EXPECTED_AVERAGE = "expected_average_only_in"
+NORMALIZE_CONSTANT = "constant_norm_rescale"
+NORMALIZE_LAYER_NORM = "layer_norm"
+
+# `reshape_activations`. "hook_z" says the SAE was trained on per-head
+# attention output and expects [..., n_heads, d_head] flattened before the
+# encoder, which is not the tensor this module addresses.
+RESHAPE_NONE = "none"
+RESHAPE_HOOK_Z = "hook_z"
 
 # The ONLY reader of a Gemma Scope path. `embedding/width_4k/...` exists in the
 # same repo and deliberately does not match: this module addresses transformer
@@ -224,14 +327,33 @@ class _Loaded:
     """
 
     W_enc: torch.Tensor
-    b_enc: torch.Tensor
+    #: The encoder bias, or None for a Gated release — which genuinely has
+    #: none. SAELens assigns `self.b_enc = None` on a name it never registered
+    #: as a parameter, so the key never reaches the file. None rather than a
+    #: zero vector, for the same reason `threshold` is: "this architecture has
+    #: no such tensor" and "its values happen to be zero" are different facts,
+    #: and only the first one is true of a gated SAE.
+    b_enc: torch.Tensor | None
     W_dec: torch.Tensor
     b_dec: torch.Tensor
+    #: Which rule turns pre-activations into feature activations. READ from
+    #: the release rather than inferred from which tensors turned up: a TopK
+    #: release ships exactly the four tensors a standard one ships, so there
+    #: is nothing to infer from and the guess would always be "relu".
+    activation: str
     #: JumpReLU gate, per feature. None means plain ReLU — an SAE that has no
     #: thresholds, not one whose thresholds are zero.
     threshold: torch.Tensor | None
     declared_b_dec: bool | None
     release: SAERelease
+    #: How many features may fire per token. TopK only, where it is the whole
+    #: gate; None everywhere else, because no other architecture has one.
+    k: int | None = None
+    #: The three tensors only a Gated release ships: the gate's own bias, the
+    #: per-feature log-scale on the magnitude path, and the magnitude bias.
+    b_gate: torch.Tensor | None = None
+    r_mag: torch.Tensor | None = None
+    b_mag: torch.Tensor | None = None
 
 
 # repo -> {layer: {width: [average_l0, ...]}}. One listing per repo per
@@ -357,6 +479,369 @@ def _parse_hook(hook: str) -> tuple[int, str]:
     return int(m.group(1)), point
 
 
+def _cfg_schema(cfg: dict) -> str:
+    """Which of the three cfg.json generations wrote this file.
+
+    Exactly one question depends on the answer, and it is the load-bearing
+    one: what an ABSENT `architecture` key means. SAELens 6 writes that key
+    unconditionally — it is `SAEConfig.to_dict()` calling `self.architecture()`
+    — so a modern file without one is a broken file and defaulting it would be
+    inventing a claim. The two older schemas had no such key at all, so its
+    absence there is the schema speaking, and standard is what SAELens's own
+    migration resolves it to because standard was the only architecture that
+    existed when those files were written.
+
+    The version gate is SAELens's own, from `handle_config_defaulting`:
+    `sae_lens_version` at top level, else `metadata.sae_lens_version`, else
+    legacy, with the cutover at 6.0.0-rc.0.
+    """
+    metadata = cfg.get("metadata")
+    version = cfg.get("sae_lens_version")
+    if version is None and isinstance(metadata, dict):
+        version = metadata.get("sae_lens_version")
+    if isinstance(version, str):
+        # Only the major number, and only compared for ">= 6". Telling
+        # "6.0.0-rc.0" from "6.0.0" needs a PEP 440 parser this package does
+        # not depend on and does not need one: every released 6.x is at or
+        # above the cutover and nothing below 6 can reach it, so the major
+        # number answers the only question being asked.
+        major = version.split(".", 1)[0]
+        if major.isdigit() and int(major) >= _SCHEMA_MODERN_MAJOR:
+            return SCHEMA_MODERN
+    # A nested `metadata` dict is the modern schema's own shape — the two
+    # older ones are flat — so a modern file that lost its version is still
+    # recognisable. `activation_fn_str` settles it the other way: it is a key
+    # the modern schema deleted, so a file carrying one is not modern
+    # whatever else it holds.
+    if isinstance(metadata, dict) and "activation_fn_str" not in cfg:
+        return SCHEMA_MODERN
+    if "activation_fn_str" in cfg or "architecture" in cfg:
+        return SCHEMA_FLAT
+    return SCHEMA_LEGACY
+
+
+def _refuse_unencodable_preprocessing(cfg: dict, repo: str, hook: str) -> None:
+    """Everything cfg.json says happens BEFORE the encoder, or a Refusal.
+
+    Two keys, and both describe a transform applied to the activations on
+    their way in. An SAE trained on rescaled activations and fed the raw
+    residual stream is the same failure as the input convention at the top of
+    this file — right shape, plausible magnitudes, a rule that was never
+    applied — except that neither of these is recoverable by measurement the
+    way the b_dec convention is, because the number to undo them with is not
+    in the release.
+
+    Checked before the architecture, so a release that is wrong here is
+    refused once rather than once per gate.
+    """
+    norm = cfg.get("normalize_activations", NORMALIZE_NONE)
+    # SAELens wrote a bool here before it wrote a string, and its own
+    # migration reads False as "none" and True as "expected_average_only_in".
+    # The bool test has to come first: `isinstance(True, int)` is True, and a
+    # True compared against the strings would fall through to the
+    # unknown-value refusal below and name `True` at a reader who would then
+    # have nothing to search for.
+    if isinstance(norm, bool):
+        norm = NORMALIZE_EXPECTED_AVERAGE if norm else NORMALIZE_NONE
+    if norm is None:
+        norm = NORMALIZE_NONE
+
+    if norm == NORMALIZE_EXPECTED_AVERAGE:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares normalize_activations="
+            f"{NORMALIZE_EXPECTED_AVERAGE!r}, and the scaling factor that "
+            f"needs is not in this release. SAELens keeps that number in its "
+            f"own bundled release table, keyed by release name and SAE id, "
+            f"and folds it into the weights when it loads — reading a repo "
+            f"path alone cannot recover it, and without it every feature "
+            f"magnitude is off by an unknown constant. Load this one through "
+            f"sae-lens, or pick a release that needs no folding."
+        )
+    if norm in (NORMALIZE_CONSTANT, NORMALIZE_LAYER_NORM):
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares normalize_activations="
+            f"{norm!r}, which rescales each activation vector on the way in "
+            f"and has to be undone on the way out. `encode` and `decode` are "
+            f"separate calls here with no state between them, so half of that "
+            f"rule would hand back a reconstruction in units nothing else "
+            f"uses. Pick a release trained on unnormalised activations."
+        )
+    if norm != NORMALIZE_NONE:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares normalize_activations="
+            f"{norm!r}, which is not one of the values SAELens defines "
+            f"({NORMALIZE_NONE}, {NORMALIZE_EXPECTED_AVERAGE}, "
+            f"{NORMALIZE_CONSTANT}, {NORMALIZE_LAYER_NORM}). Something "
+            f"normalises this SAE's input and nothing here knows what."
+        )
+
+    reshape = cfg.get("reshape_activations", RESHAPE_NONE)
+    if reshape is None:
+        reshape = RESHAPE_NONE
+    if reshape == RESHAPE_HOOK_Z:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares reshape_activations="
+            f"{RESHAPE_HOOK_Z!r}, which means it reads per-head attention "
+            f"output — [..., n_heads, d_head], flattened before the encoder. "
+            f"ModelMRI addresses the residual stream, whose vectors are "
+            f"[..., d_model]: the right shape and the wrong content. Ask for "
+            f"a hook_resid_pre or hook_resid_post release."
+        )
+    if reshape != RESHAPE_NONE:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares reshape_activations="
+            f"{reshape!r}, which is not a reshaping this knows. Something "
+            f"rearranges this SAE's input before its encoder and nothing here "
+            f"knows what."
+        )
+
+
+def _resolve_activation(
+    cfg: dict, schema: str, repo: str, hook: str
+) -> tuple[str, int | None, str]:
+    """cfg.json -> (activation, k, the sentence saying how that was decided).
+
+    The sentence travels with the release in `SAERelease.chosen_by`, because
+    "this file says topk" and "this file is old enough that standard is the
+    only thing it could be" are different facts and a reader of the panel has
+    to be able to tell them apart. Same discipline as `_pick_width` and
+    `_pick_l0`, one layer further in.
+    """
+    architecture = cfg.get("architecture")
+    if architecture is None:
+        if schema == SCHEMA_MODERN:
+            raise Refusal(
+                f"The SAE at {hook} in {repo} was written by SAELens 6 or "
+                f"later, which always records an architecture, and this "
+                f"cfg.json has no architecture key. Defaulting it would be "
+                f"the same mistake as reading an absent apply_b_dec_to_input "
+                f"as false: a claim the file never made, resolved in favour "
+                f"of the gate that does nothing. Re-download the release, or "
+                f"load it through sae-lens."
+            )
+        architecture = "standard"
+        why = (
+            f"read: this cfg.json names no architecture and its schema "
+            f"({schema}) predates the key. Standard was the only inference "
+            f"architecture SAELens had when files of this shape were written, "
+            f"and standard is what SAELens's own migration resolves an absent "
+            f"key to."
+        )
+    else:
+        why = f"declared: cfg.json says architecture {architecture!r}."
+
+    if architecture in ARCHITECTURES_TRAINING_ONLY:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares architecture "
+            f"{architecture!r}, which SAELens registers for TRAINING only — "
+            f"it has no inference class, and SAELens's own lookup raises on "
+            f"it. Its gate ranks activations across a whole batch, so a "
+            f"feature's activation would depend on which other tokens were in "
+            f"the request. A RELEASED SAE of this kind is saved as "
+            f"{ACT_JUMPRELU!r} with the distilled threshold that gate becomes "
+            f"at inference, and that one loads here; a cfg.json literally "
+            f"saying {architecture!r} is a training checkpoint."
+        )
+    if architecture in ARCHITECTURES_TRANSCODER:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares architecture "
+            f"{architecture!r}. A transcoder maps between TWO hook points — "
+            f"it reads one and writes another — so it does not reconstruct "
+            f"the stream it was read from, and the reconstruction quality "
+            f"every number in this panel is scaled against cannot be asked of "
+            f"it at all. Load a release trained to reconstruct the hook it "
+            f"reads."
+        )
+    activation = ARCHITECTURE_ACTIVATION.get(architecture)
+    if activation is None:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares architecture "
+            f"{architecture!r}, which ModelMRI cannot encode with. It reads "
+            f"{', '.join(sorted(ARCHITECTURE_ACTIVATION))}. Refused rather "
+            f"than approximated, because the nearest gate to an architecture "
+            f"nobody here has read is a plain ReLU — and a plain ReLU is "
+            f"exactly the wrong answer for every architecture that has a gate."
+        )
+
+    # The pre-6.0 spelling. v3-v5 wrote the activation function as a string
+    # beside `architecture` rather than as the architecture itself, and TopK
+    # lived there: `activation_fn_str: "topk"` with the k in
+    # `activation_fn_kwargs`. SAELens's own migration promotes exactly that
+    # pair, and a release written by v5 is not a rarity — reading only the
+    # modern key would load every one of them wide open.
+    kwargs = cfg.get("activation_fn_kwargs") or {}
+    fn = cfg.get("activation_fn_str", cfg.get("activation_fn"))
+    if fn is not None and fn != ACT_RELU:
+        if fn == ACT_TOPK:
+            if kwargs.get("k") is None:
+                raise Refusal(
+                    f"The SAE at {hook} in {repo} declares activation_fn_str "
+                    f"{ACT_TOPK!r} and no k in its activation_fn_kwargs, so "
+                    f"it names a gate and withholds the one number that gate "
+                    f"is. SAELens leaves this file as a standard SAE and "
+                    f"drops the activation function, which loads it as a "
+                    f"plain ReLU; this refuses instead."
+                )
+            activation = ACT_TOPK
+            why += (
+                f" Its activation_fn_str is {ACT_TOPK!r} with a k, which is "
+                f"how v3-v5 spelled the TopK architecture, so the gate is "
+                f"top-k whatever the architecture key says."
+            )
+        elif fn == "tanh-relu":
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares activation_fn_str "
+                f"{fn!r}, and the two versions of SAELens disagree about what "
+                f"that means: v5 computed tanh(relu(pre)), and v6 drops the "
+                f"value and computes relu(pre). Neither answer can be trusted "
+                f"without knowing which version trained this release, so this "
+                f"names the disagreement rather than picking a side."
+            )
+        else:
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares activation_fn_str "
+                f"{fn!r}, which is not an activation function SAELens ever "
+                f"defined. Its encoder ends in something nothing here can "
+                f"reproduce."
+            )
+
+    k = None
+    if activation == ACT_TOPK:
+        k = cfg.get("k", kwargs.get("k"))
+        if k is None:
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares architecture "
+                f"{architecture!r} and names no k. k IS the gate — it is how "
+                f"many of the d_sae features may fire at each token — and "
+                f"there is no defensible default for it: SAELens's dataclass "
+                f"default of 100 is a placeholder, not a property of "
+                f"anybody's release."
+            )
+        # `isinstance(True, int)` is True, so a stray boolean would sail
+        # through as a top-1 gate and be reported as a published sparsity.
+        if isinstance(k, bool) or not isinstance(k, int):
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares k={k!r}, which is not "
+                f"a count of features. k is how many of this SAE's features "
+                f"may fire at each token, so it is a whole number."
+            )
+
+    trained_as = None
+    if isinstance(cfg.get("metadata"), dict):
+        trained_as = cfg["metadata"].get("training_architecture")
+    if trained_as and trained_as != architecture:
+        why += (
+            f" Its metadata records that it was TRAINED as {trained_as!r} and "
+            f"saved for inference as {architecture!r}, so the threshold it "
+            f"ships was distilled at save time out of a gate that ranked "
+            f"activations — one number every feature shares, rather than a "
+            f"per-feature learned bar. A flat threshold span on this release "
+            f"is the shape of the release and not a fault."
+        )
+    return activation, k, why
+
+
+def _refuse_impossible_k(k: int, d_sae: int, repo: str, hook: str) -> None:
+    """k against the weight file it shipped beside, not against the cfg alone.
+
+    Both bounds are silent otherwise: `torch.topk` answers a k of zero without
+    complaining, and the shapes come from the tensors here, so a k that
+    describes a wider dictionary than the one on disk would simply raise
+    somewhere deeper with a message about tensor sizes.
+    """
+    if k < 1:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares k={k}, and a gate that "
+            f"lets {k} features fire is not a sparsity — it is an SAE that "
+            f"emits nothing at all. torch.topk would answer that question "
+            f"without complaining, which is why this asks it first."
+        )
+    if k > d_sae:
+        raise Refusal(
+            f"The SAE at {hook} in {repo} declares k={k}, and the weight file "
+            f"beside that cfg.json holds {d_sae} features. k is how many of "
+            f"them may fire at each token, so a k above {d_sae} describes a "
+            f"different weight file than the one that shipped here."
+        )
+
+
+def _declared(cfg: dict, *names: str) -> object | None:
+    """The first of these keys, looked for at the top level and in `metadata`.
+
+    The three cfg generations moved a release's account of itself between
+    those two places without renaming anything: SAELens 6 pushed `hook_name`
+    and `model_name` down into the nested `metadata` and left `d_in` and
+    `d_sae` flat, v3-v5 kept all four flat, and pre-v3 spelled the hook
+    `hook_point`. A reader that looks in one place reads half the file and
+    concludes the declaration is absent — which is the one answer that must
+    not be invented here, because an absent declaration and a contradicted one
+    get opposite treatment below.
+    """
+    metadata = cfg.get("metadata")
+    for name in names:
+        if name in cfg:
+            return cfg[name]
+        if isinstance(metadata, dict) and name in metadata:
+            return metadata[name]
+    return None
+
+
+def _refuse_a_cfg_that_describes_another_release(
+    cfg: dict, W_enc: torch.Tensor, repo: str, hook: str, layer: int, point: str
+) -> None:
+    """The cfg's own account of itself, against the file it was read beside.
+
+    These checks are free and none of them was being made. cfg.json states the
+    hook it reads and the two dimensions of the dictionary it describes; this
+    function has the hook it asked the Hub for and the tensors that came back.
+    So a directory whose cfg.json describes a DIFFERENT release loaded without
+    a word, and every number after it — the convention search, the FVU, the
+    ranked features — described weights that were never at that address.
+
+    The hook is the dangerous one, and specifically resid_pre against
+    resid_post: those two streams differ by one block's output, so an SAE fed
+    the wrong side still reconstructs well enough to sit under `FVU_UNUSABLE`
+    and be plotted. `_parse_hook` already refuses a hook name it cannot place;
+    this is the same refusal one level in, about the name the release chose
+    for itself rather than the name the caller asked by.
+
+    Only a declaration that PARSES is compared, and only a dimension that is
+    an integer. A cfg naming its hook in a spelling this module's regex cannot
+    read is a shape nobody here understands, and refusing on it would reject
+    releases for being written unfamiliarly rather than for being wrong.
+    """
+    for name, got in (("d_in", int(W_enc.shape[0])), ("d_sae", int(W_enc.shape[1]))):
+        said = _declared(cfg, name)
+        # `isinstance(True, int)` is True, and a bool is not a width.
+        if isinstance(said, bool) or not isinstance(said, int):
+            continue
+        if said != got:
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares {name}={said}, and the "
+                f"weight file beside that cfg.json holds {name}={got}. One of "
+                f"those two files belongs to another release and there is no "
+                f"way to tell which from here: every number this panel "
+                f"reports is measured on the tensors, and every gate it "
+                f"applies is read off the cfg, so a disagreement between them "
+                f"is a disagreement about what was measured."
+            )
+
+    said_hook = _declared(cfg, "hook_name", "hook_point")
+    if not isinstance(said_hook, str):
+        return
+    m = re.search(r"blocks\.(\d+)\.hook_(\w+)", said_hook)
+    if m is not None and (int(m.group(1)), m.group(2)) != (layer, point):
+        raise Refusal(
+            f"The SAE at {hook} in {repo} says in its own cfg.json that it "
+            f"reads {said_hook!r}, and it was fetched from — and would be "
+            f"attached at — {hook!r}. A release addressed one block or one "
+            f"side of a block away from where it was trained reconstructs "
+            f"well enough to look calibrated, which is why nothing "
+            f"downstream would have caught this. Ask for {said_hook!r}, or "
+            f"use a repo whose directories are the hooks they name."
+        )
+
+
 def _read_sae_lens(repo: str, hook: str, layer: int, point: str) -> _Loaded | None:
     """SAELens layout: `{hook}/cfg.json` + `{hook}/sae_weights.safetensors`.
 
@@ -364,6 +849,11 @@ def _read_sae_lens(repo: str, hook: str, layer: int, point: str) -> _Loaded | No
     hook, because "this is not that layout" is an ordinary answer that `load`
     handles by trying the other reader. A missing file and a Hub that cannot
     be reached are different events and only the first one gets to be None.
+
+    A cfg.json that EXISTS and names something unencodable is neither of
+    those, and refuses. Returning None for it would send `load` on to the
+    Gemma Scope reader, which would end in "this repo publishes no SAE this
+    can open" — about a release that was found, read and understood.
     """
     try:
         cfg_path = hf_hub_download(repo, f"{hook}/cfg.json")
@@ -381,31 +871,225 @@ def _read_sae_lens(repo: str, hook: str, layer: int, point: str) -> _Loaded | No
     # to the garbage collector, which is fine on CPython and not guaranteed
     # anywhere else.
     cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))
+    schema = _cfg_schema(cfg)
+    _refuse_unencodable_preprocessing(cfg, repo, hook)
+    activation, k, chose_architecture = _resolve_activation(cfg, schema, repo, hook)
+
     tensors = load_file(weights_path)
-    try:
-        W_enc, b_enc = tensors["W_enc"], tensors["b_enc"]
-        W_dec, b_dec = tensors["W_dec"], tensors["b_dec"]
-    except KeyError as err:
+    # Asked for by ARCHITECTURE rather than by "the four everybody has", which
+    # is what let a gated release load as a broken standard SAE. Gated is the
+    # case to read twice: it ships no b_enc at all, so a reader that demanded
+    # one would refuse every gated release and a reader that defaulted one to
+    # zeros would load one wrong.
+    needed = _WEIGHT_KEYS[activation]
+    missing = [key for key in needed if key not in tensors]
+    if missing:
         raise Refusal(
-            f"The SAE at {hook} in {repo} is missing {err.args[0]}, so it is "
-            f"not a weight file this can encode with."
-        ) from err
+            f"The SAE at {hook} in {repo} declares a {activation} "
+            f"architecture, whose weights are {', '.join(needed)}, and its "
+            f"weight file is missing {', '.join(missing)}. It is not a weight "
+            f"file this can encode with, and encoding it through the tensors "
+            f"it does have would apply a gate the publisher did not train."
+        )
+
+    # Only ABSENT keys were checked, and a weight file can also carry a key
+    # this does not read. One of the ones it can carry is load-bearing:
+    # `scaling_factor` is a per-feature finetuning scale that older releases
+    # shipped, and SAELens's own `read_sae_components_from_disk` deletes it
+    # when it is all ones and otherwise renames it to
+    # `finetuning_scaling_factor` and applies it — raising outright when the
+    # cfg says there is none. Dropping a non-ones one here would report every
+    # feature magnitude, every L0 and every reconstruction error for a decoder
+    # the publisher did not ship: the same silence as reading a TopK release
+    # as a ReLU, one file further down.
+    #
+    # Refused rather than folded, and the distinction is the usual one. What
+    # is established is that SAELens applies this factor and that it renames
+    # it first; the arithmetic it applies it WITH is not, and a per-feature
+    # scale folded into the wrong side of the decoder is a wrong answer that
+    # looks exactly like a right one.
+    scale = tensors.get("scaling_factor")
+    if scale is not None:
+        scale = scale.float()
+        if not bool(torch.allclose(scale, torch.ones_like(scale))):
+            raise Refusal(
+                f"The SAE at {hook} in {repo} ships a scaling_factor tensor "
+                f"that is not all ones. It is a per-feature finetuning scale: "
+                f"SAELens deletes an all-ones one and folds a real one in "
+                f"before the decoder, and this loader applies neither. "
+                f"Ignoring it would leave every feature magnitude off by a "
+                f"factor the publisher trained, with nothing in the panel "
+                f"saying so. Load this one through sae-lens, or pick a "
+                f"release whose weight file carries only "
+                f"{', '.join(needed)}."
+            )
+
+    # Anything else the file carries is dropped, and dropped tensors are said
+    # out loud rather than left as nothing — the same rule as an unmeasured
+    # coordinate. Recorded only when there IS something extra: a sentence
+    # saying "no surprises" on every ordinary release is noise, and the
+    # architecture sentence already names what was read.
+    extra = sorted(set(tensors) - set(needed))
+    chose_weights = None
+    if extra:
+        chose_weights = (
+            f"read {', '.join(needed)}, which is what a {activation} release "
+            f"ships. This weight file also carries {', '.join(extra)}, which "
+            f"nothing here applies."
+        )
+        if "scaling_factor" in extra:
+            chose_weights += (
+                " Its scaling_factor is all ones, which is the one value "
+                "SAELens itself deletes rather than folds, so dropping it "
+                "changes no number; one that was not all ones is refused."
+            )
+
+    W_enc = tensors["W_enc"].float()
+    W_dec = tensors["W_dec"].float()
+    b_dec = tensors["b_dec"].float()
+    # `.float()` on every one of them, not only on the four that were always
+    # read: a float16 threshold compared against float32 pre-activations
+    # promotes silently and gates at a slightly different bar than the one the
+    # publisher trained, and `status` quotes that number as measured.
+    b_enc = tensors["b_enc"].float() if "b_enc" in needed else None
+    threshold = tensors["threshold"].float() if "threshold" in needed else None
+    b_gate = tensors["b_gate"].float() if "b_gate" in needed else None
+    r_mag = tensors["r_mag"].float() if "r_mag" in needed else None
+    b_mag = tensors["b_mag"].float() if "b_mag" in needed else None
+
+    _refuse_a_cfg_that_describes_another_release(cfg, W_enc, repo, hook, layer, point)
+
+    chose_rescale = None
+    if activation == ACT_TOPK:
+        _refuse_impossible_k(k, W_enc.shape[1], repo, hook)
+        # `rescale_acts_by_decoder_norm` multiplies the pre-activations by the
+        # decoder row norms BEFORE the selection, so it decides which features
+        # win and not only how big they are. Folded into the weights here,
+        # exactly as SAELens folds it when it saves an inference model —
+        # W_enc and b_enc multiplied by the norms, W_dec divided by them —
+        # rather than carried as a flag and applied at encode time. After the
+        # fold the plain arithmetic IS the rescaled arithmetic, so nothing
+        # downstream has to know the flag existed: `feature_ablate`
+        # subtracting act x W_dec[f], the feature corpus reading W_dec[f] as a
+        # direction, and `steering_vector` all keep working on one convention
+        # instead of two.
+        #
+        # Type-checked rather than coerced with `bool(...)`, for the same
+        # reason k is a few lines up: `bool("false")` is True, so a string a
+        # person reads as "off" would switch on a fold that rewrites three
+        # tensors and moves which features win the selection. Every other
+        # value this module takes out of cfg.json is checked before it is
+        # believed; this one was the exception.
+        rescale = cfg.get("rescale_acts_by_decoder_norm", False)
+        if not isinstance(rescale, bool):
+            raise Refusal(
+                f"The SAE at {hook} in {repo} declares "
+                f"rescale_acts_by_decoder_norm={rescale!r}, which is not true "
+                f"or false. That flag multiplies the pre-activations by the "
+                f"decoder row norms BEFORE the selection, so it decides which "
+                f"features fire and not only how large they are — too much to "
+                f"settle on whether a value happens to be truthy."
+            )
+        if rescale:
+            norms = W_dec.norm(dim=-1)
+            if bool((norms == 0).any()):
+                raise Refusal(
+                    f"The SAE at {hook} in {repo} asks for its activations to "
+                    f"be rescaled by the decoder norms, and "
+                    f"{int((norms == 0).sum())} of its {W_dec.shape[0]} "
+                    f"decoder rows are exactly zero. The rescale divides by "
+                    f"those norms, so folding it in would put infinities in "
+                    f"the decoder and NaNs in every reconstruction. Load this "
+                    f"one through sae-lens, which reads the flag at encode "
+                    f"time."
+                )
+            W_enc = W_enc * norms
+            b_enc = b_enc * norms
+            W_dec = W_dec / norms.unsqueeze(-1)
+            # Said out loud, because after this line the tensors held here are
+            # not the tensors the publisher uploaded. The arithmetic is
+            # invariant — a feature's activation times its decoder row is
+            # unchanged, which is what `feature_ablate` subtracts — but a
+            # reader comparing `W_dec[f].norm()` against the published file
+            # would find every row unit-norm and no sentence explaining why.
+            chose_rescale = (
+                "folded at load: cfg.json sets rescale_acts_by_decoder_norm, "
+                "which multiplies the pre-activations by the decoder row "
+                "norms BEFORE the top-k selection and so decides which "
+                "features fire. Folded into the weights exactly as SAELens "
+                "folds it when it saves an inference model — W_enc and b_enc "
+                "multiplied by the norms, W_dec divided by them — so the "
+                "plain arithmetic downstream IS the rescaled arithmetic, and "
+                "the loaded tensors are not the published ones."
+            )
+
+    # None when absent. `cfg.get(key, False)` is what made an undeclared SAE
+    # look like one that had declined the subtraction, and the fix is that
+    # absent stays a third answer — NOT that it acquires SAELens's default.
+    # SAELens defaults an absent key to TRUE in every schema it has written,
+    # which is worth telling the reader, so it is said in the sentence below
+    # rather than substituted for the missing declaration.
+    declared_b_dec = (
+        bool(cfg["apply_b_dec_to_input"]) if "apply_b_dec_to_input" in cfg else None
+    )
+    if declared_b_dec is None:
+        chose_b_dec = (
+            "not declared: this cfg.json has no apply_b_dec_to_input key. "
+            "SAELens defaults an absent one to true in every schema it has "
+            "written, so the release behaves as though it said true — but it "
+            "did not say it, and the convention that actually runs is the "
+            "measured one."
+        )
+    else:
+        chose_b_dec = (
+            f"declared: cfg.json says apply_b_dec_to_input is "
+            f"{str(declared_b_dec).lower()}. The convention that actually "
+            f"runs is the measured one, and the two are worth reading side by "
+            f"side."
+        )
+
+    # The one declaration this module can repeat and cannot check. An SAE is
+    # attached to whichever model the session has loaded, and nothing anywhere
+    # compares that against the model it was trained on — `runtime` checks
+    # d_in and d_in alone, which two unrelated models of the same width share.
+    # So the name is carried through as a fact the release stated, in both of
+    # its states, because "this cfg does not say" and "this cfg says gpt2" are
+    # different things to know when the features look wrong.
+    said_model = _declared(cfg, "model_name")
+    chosen_by = {
+        "hook": "caller",
+        "architecture": chose_architecture,
+        "apply_b_dec_to_input": chose_b_dec,
+        "model": (
+            f"declared: cfg.json says this SAE was trained on {said_model!r}. "
+            f"Nothing here checks it against the loaded model — only that the "
+            f"widths agree — so read it against what the session has open."
+            if isinstance(said_model, str)
+            else "not declared: this cfg.json names no model_name, so which "
+            "model these features describe is unrecorded rather than assumed."
+        ),
+    }
+    if chose_weights is not None:
+        chosen_by["weights"] = chose_weights
+    if chose_rescale is not None:
+        chosen_by["rescale_acts_by_decoder_norm"] = chose_rescale
 
     return _Loaded(
-        W_enc=W_enc.float(),
-        b_enc=b_enc.float(),
-        W_dec=W_dec.float(),
-        b_dec=b_dec.float(),
-        # SAELens releases are plain ReLU. None rather than a zero vector: a
-        # threshold of zero is a gate that is always open, which is what ReLU
-        # already does, and materialising d_sae zeros to say so would cost
-        # megabytes to express nothing.
-        threshold=None,
-        # None when absent. `cfg.get(key, False)` is what made an undeclared
-        # SAE look like one that had declined the subtraction.
-        declared_b_dec=(
-            bool(cfg["apply_b_dec_to_input"]) if "apply_b_dec_to_input" in cfg else None
-        ),
+        W_enc=W_enc,
+        b_enc=b_enc,
+        W_dec=W_dec,
+        b_dec=b_dec,
+        activation=activation,
+        # None for every architecture that ships no thresholds, rather than a
+        # zero vector: a threshold of zero is a gate that is always open,
+        # which is what ReLU already does, and materialising d_sae zeros to
+        # say so would cost megabytes to express nothing.
+        threshold=threshold,
+        declared_b_dec=declared_b_dec,
+        k=k,
+        b_gate=b_gate,
+        r_mag=r_mag,
+        b_mag=b_mag,
         release=SAERelease(
             repo=repo,
             layout=LAYOUT_SAE_LENS,
@@ -414,7 +1098,7 @@ def _read_sae_lens(repo: str, hook: str, layer: int, point: str) -> _Loaded | No
             point=point,
             width=None,
             advertised_l0=None,
-            chosen_by={"hook": "caller"},
+            chosen_by=chosen_by,
             available=None,
         ),
     )
@@ -533,6 +1217,12 @@ def _read_gemma_scope(
         b_enc=tensors["b_enc"],
         W_dec=tensors["W_dec"],
         b_dec=tensors["b_dec"],
+        # Named, not implied by the presence of the fifth array. Gemma Scope
+        # publishes JumpReLU SAEs and always has, so this reader has always
+        # known the answer — it just used to say it by handing over a tensor
+        # and letting `_activate` infer the rest, which is the habit that made
+        # every SAELens release a plain ReLU.
+        activation=ACT_JUMPRELU,
         threshold=tensors["threshold"],
         # Gemma Scope ships no config declaring the input convention, so there
         # is nothing to declare — which is None, not False. `calibrate`
@@ -596,20 +1286,70 @@ def _read_npz(path: str, repo: str, name: str) -> dict[str, torch.Tensor]:
     return out
 
 
-def _activate(pre: torch.Tensor, threshold: torch.Tensor | None) -> torch.Tensor:
+def _activate(
+    pre: torch.Tensor,
+    activation: str,
+    *,
+    threshold: torch.Tensor | None = None,
+    k: int | None = None,
+    gate_pre: torch.Tensor | None = None,
+) -> torch.Tensor:
     """Pre-activations -> feature activations. The one place the gate lives.
 
-    ReLU when there is no threshold, JumpReLU when there is: the feature keeps
-    its pre-activation if it clears its own learned threshold and is zero
-    otherwise. The `relu` is redundant on every Gemma Scope release measured
-    (every threshold is positive, so clearing one implies being positive) and
-    is kept because it is what makes the two branches the same function of
-    `threshold` — a release with a negative threshold would otherwise emit
-    negative "activations" through this line alone.
+    Dispatches on the NAME of the activation, which the release declared, and
+    never on which tensors turned up. That distinction is the whole fix: a
+    TopK release ships exactly the tensors a standard one ships, so "no
+    threshold, therefore ReLU" answered "plain ReLU" for a gate that keeps two
+    features out of sixteen thousand.
+
+    The four rules, each verbatim from the SAELens class that owns it:
+
+    relu      relu(pre). What a standard release does, and what a JumpReLU
+              whose bar is below every pre-activation degenerates to — the
+              branches below are one function of the gate rather than two
+              implementations that happen to agree.
+    jumprelu  relu(pre) * (pre > threshold), the comparison STRICTLY greater
+              and the threshold per feature. The relu is redundant on every
+              release measured (every threshold is positive, so clearing one
+              implies being positive) and is kept so a release with a negative
+              threshold cannot emit negative "activations" through this line.
+    topk      the k largest PRE-activations of each token survive and the relu
+              is applied to those alone, so a selected feature whose
+              pre-activation is negative is written as exactly zero and L0 can
+              be less than k. Selection is per token, over the whole feature
+              axis — which is why it is the one rule here that is not a
+              function of one feature at a time.
+    gated     a separate gating pre-activation decides IF a feature fires and
+              the magnitude pre-activation decides how much. Both come from
+              the same W_enc — the magnitude path scales it per feature by
+              exp(r_mag) — and the caller computes them, because this is the
+              one architecture whose rule needs two.
     """
-    if threshold is None:
+    if activation == ACT_RELU:
         return torch.relu(pre)
-    return torch.relu(pre) * (pre > threshold)
+    if activation == ACT_JUMPRELU:
+        return torch.relu(pre) * (pre > threshold)
+    if activation == ACT_TOPK:
+        # `sorted=False` because the scatter writes each winner to its own
+        # column, so the order they come back in cannot reach the result.
+        # Ties at the k-th place are therefore harmless here in a way worth
+        # stating: torch does not specify which of two exactly equal values it
+        # keeps, but whichever loses is left as the zero it was initialised to
+        # and whichever wins carries the same value, so the returned
+        # activations are the same either way.
+        values, indices = torch.topk(pre, k, dim=-1, sorted=False)
+        # A freshly allocated buffer, scattered into. Not `pre.scatter_`: the
+        # pre-activations can be a view of a captured forward pass — the
+        # splice in `ce_recovered` runs this inside a live model — and an
+        # in-place write there would corrupt the run being measured.
+        return torch.zeros_like(pre).scatter_(-1, indices, torch.relu(values))
+    if activation == ACT_GATED:
+        return (gate_pre > 0).to(pre.dtype) * torch.relu(pre)
+    # Unreachable through `load`, which refuses an architecture it cannot name
+    # before any tensor is read. A plain ValueError rather than a Refusal
+    # because reaching it means this module handed itself a name it does not
+    # implement, which is a bug here and not a fact about anybody's release.
+    raise ValueError(f"No gate implemented for activation {activation!r}")
 
 
 @dataclass
@@ -650,13 +1390,18 @@ class SAEStatus:
     # Absent until the first encode, because calibration needs real activations
     # from the model the SAE is attached to.
     calibration: SAECalibration | None = None
-    #: "relu" or "jumprelu". None when nothing is loaded — an unloaded panel
-    #: does not have a plain-ReLU SAE, it has no SAE.
+    #: "relu", "jumprelu", "topk" or "gated" — the rule the release named,
+    #: not one inferred from its tensors. None when nothing is loaded: an
+    #: unloaded panel does not have a plain-ReLU SAE, it has no SAE.
     activation: str | None = None
-    #: [min, max] of the JumpReLU thresholds. None for a ReLU SAE, which has
-    #: no thresholds at all rather than thresholds of zero. Two measured
+    #: [min, max] of the JumpReLU thresholds. None for every architecture that
+    #: has no thresholds at all, rather than thresholds of zero. Two measured
     #: numbers so the gate is visible as a fact about the loaded weights.
     threshold_span: list[float] | None = None
+    #: How many features a top-k gate lets fire per token. None for every
+    #: other architecture, which have no such number — not 0, which would read
+    #: as a gate that fires nothing.
+    k: int | None = None
     #: Which published release this is, and which coordinates were defaulted.
     release: SAERelease | None = None
 
@@ -671,22 +1416,46 @@ class SAEHandle:
         point: str,
         layer: int,
         W_enc: torch.Tensor,
-        b_enc: torch.Tensor,
+        # None for a Gated release, which registers no b_enc at all — the same
+        # answer `_Loaded.b_enc` carries. Annotated as optional because it IS
+        # optional: a signature promising a tensor for the one architecture
+        # that never ships one is a claim the loader contradicts on every
+        # gated load, and the None-discipline this module is built on is worth
+        # exactly as much as its weakest statement of it.
+        b_enc: torch.Tensor | None,
         W_dec: torch.Tensor,
         b_dec: torch.Tensor,
         apply_b_dec_to_input: bool | None,
         threshold: torch.Tensor | None = None,
         release: SAERelease | None = None,
+        activation: str = ACT_RELU,
+        k: int | None = None,
+        b_gate: torch.Tensor | None = None,
+        r_mag: torch.Tensor | None = None,
+        b_mag: torch.Tensor | None = None,
     ) -> None:
         self.repo, self.hook, self.layer = repo, hook, layer
         self.point = point  # resid_pre | resid_post
         self.W_enc, self.b_enc = W_enc, b_enc
         self.W_dec, self.b_dec = W_dec, b_dec
-        # Per-feature JumpReLU gate, or None for a plain-ReLU SAE. Not a zero
-        # vector for the ReLU case: "no gate" and "a gate that never closes"
-        # are the same arithmetic but different facts, and only one of them is
-        # true of a SAELens release.
+        # Which rule turns pre-activations into activations, by name. Defaults
+        # to ReLU rather than to "whatever the tensors suggest", and that is
+        # deliberate even though it means handing this a `threshold` without
+        # naming JumpReLU gets a ReLU: the gate is a fact about the release,
+        # `load` is the only constructor that reads a release, and inferring
+        # it from which arguments arrived is the exact habit that made every
+        # modern SAELens SAE load wide open.
+        self.activation = activation
+        # Per-feature JumpReLU gate, or None for an architecture that has no
+        # thresholds. Not a zero vector for the ReLU case: "no gate" and "a
+        # gate that never closes" are the same arithmetic but different facts.
         self.threshold = threshold
+        #: How many features a top-k gate may fire per token. None elsewhere.
+        self.k = k
+        # The three tensors only a gated release carries. Its `b_enc` is None
+        # rather than zeros — SAELens never registers one for this
+        # architecture, so a zero vector would be a tensor nobody published.
+        self.b_gate, self.r_mag, self.b_mag = b_gate, r_mag, b_mag
         self.release = release
         # What cfg.json declared. None means the key was absent — which is not
         # the same as "False", and treating it as False is the bug this class
@@ -740,6 +1509,11 @@ class SAEHandle:
             apply_b_dec_to_input=got.declared_b_dec,
             threshold=got.threshold,
             release=got.release,
+            activation=got.activation,
+            k=got.k,
+            b_gate=got.b_gate,
+            r_mag=got.r_mag,
+            b_mag=got.b_mag,
         )
 
     def status(self) -> SAEStatus:
@@ -751,7 +1525,8 @@ class SAEHandle:
             d_in=self.d_in,
             d_sae=self.d_sae,
             calibration=self.calibration,
-            activation="relu" if self.threshold is None else "jumprelu",
+            activation=self.activation,
+            k=self.k,
             threshold_span=(
                 None
                 if self.threshold is None
@@ -769,6 +1544,33 @@ class SAEHandle:
         if subtract:
             x = x - self.b_dec
         return x
+
+    def _encode_prepared(self, prepared: torch.Tensor) -> torch.Tensor:
+        """Prepared activations -> features. The encoder, once, for everyone.
+
+        `calibrate` and `encode` both end here, so the four conventions are
+        scored through exactly the arithmetic that will run afterwards. The
+        gate itself lives in `_activate`; what this adds is the ONE thing that
+        differs before it, which is that a gated release has two encoder
+        passes rather than one.
+
+        Both of a gated SAE's pre-activations come from the same W_enc — the
+        magnitude path scales it per feature by exp(r_mag) and adds b_mag, the
+        gating path adds b_gate — so this is one matrix read twice and not two
+        encoders.
+        """
+        if self.activation == ACT_GATED:
+            return _activate(
+                prepared @ (self.W_enc * self.r_mag.exp()) + self.b_mag,
+                self.activation,
+                gate_pre=prepared @ self.W_enc + self.b_gate,
+            )
+        return _activate(
+            prepared @ self.W_enc + self.b_enc,
+            self.activation,
+            threshold=self.threshold,
+            k=self.k,
+        )
 
     @torch.no_grad()
     def calibrate(self, x: torch.Tensor) -> SAECalibration:
@@ -808,10 +1610,7 @@ class SAEHandle:
         scored: list[tuple[str, float, bool, bool, float, float]] = []
         for name, center, subtract in CONVENTIONS:
             target = x - x.mean(-1, keepdim=True) if center else x
-            feats = _activate(
-                self._prepare(x, center, subtract) @ self.W_enc + self.b_enc,
-                self.threshold,
-            )
+            feats = self._encode_prepared(self._prepare(x, center, subtract))
             recon = feats @ self.W_dec + self.b_dec
             resid = target - recon
             denom = (target - target.mean(0)).pow(2).sum()
@@ -856,10 +1655,7 @@ class SAEHandle:
             self.calibrate(x)
         cal = self.calibration
         assert cal is not None
-        return _activate(
-            self._prepare(x, cal.center, cal.subtract_b_dec) @ self.W_enc + self.b_enc,
-            self.threshold,
-        )
+        return self._encode_prepared(self._prepare(x, cal.center, cal.subtract_b_dec))
 
     @torch.no_grad()
     def encode_feature(self, x: torch.Tensor, feature_id: int) -> torch.Tensor:
@@ -874,6 +1670,24 @@ class SAEHandle:
         Requires an existing calibration and does not create one: a single
         feature's activation is not enough to choose a convention, and silently
         calibrating from it would pick one on evidence nobody asked for.
+
+        THE COLUMN TRICK DOES NOT WORK FOR TOP-K, and the saving is given up
+        rather than the answer. ReLU, JumpReLU and Gated are elementwise in
+        the feature index — every operation on feature f reads only f's
+        column, f's biases and f's threshold — so one column really is one
+        column and the equality with `encode(x)[:, f]` is exact. A top-k gate
+        is a RANK STATISTIC over the whole row: feature f fires if its
+        pre-activation is among the k largest of all d_sae, which is a
+        question about the other d_sae - 1 features and cannot be answered
+        from f's column at any price. There is no per-feature threshold
+        standing in for it either, because the effective cutoff is the k-th
+        largest pre-activation and that is a different number at every token.
+        So top-k pays for the full row and takes its column, and the caller in
+        `feature_ablate` pays 19 million multiply-adds a row instead of 768
+        for that architecture alone. The alternative was returning a positive
+        number for a feature the full encode zeroed, which would put a feature
+        the SAE does not read into the honesty column that exists to say
+        whether it reads it.
         """
         cal = self.calibration
         if cal is None:
@@ -883,13 +1697,28 @@ class SAEHandle:
                 "them rather than on one feature."
             )
         prepared = self._prepare(x.float(), cal.center, cal.subtract_b_dec)
+        if self.activation == ACT_TOPK:
+            return self._encode_prepared(prepared)[..., feature_id]
+        column = self.W_enc[:, feature_id]
+        if self.activation == ACT_GATED:
+            # BOTH paths restricted, or the gate would be read off one feature
+            # and the magnitude off another. Each is elementwise in the
+            # feature index, so this is the same arithmetic as the full encode
+            # with everything but column f left uncomputed.
+            return _activate(
+                prepared @ (column * self.r_mag[feature_id].exp())
+                + self.b_mag[feature_id],
+                self.activation,
+                gate_pre=prepared @ column + self.b_gate[feature_id],
+            )
         return _activate(
-            prepared @ self.W_enc[:, feature_id] + self.b_enc[feature_id],
+            prepared @ column + self.b_enc[feature_id],
+            self.activation,
             # One scalar, not the whole [d_sae] vector: the gate is per
             # feature, so restricting the encoder to one column has to
             # restrict the threshold to the same one or the column would be
             # judged against 16,384 other features' thresholds.
-            None if self.threshold is None else self.threshold[feature_id],
+            threshold=None if self.threshold is None else self.threshold[feature_id],
         )
 
     @torch.no_grad()

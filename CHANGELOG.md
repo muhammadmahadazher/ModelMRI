@@ -86,6 +86,64 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **A TopK SAE ships exactly the tensors a ReLU one ships, and loaded as one.**
+  `_read_sae_lens` returned `threshold=None` on the stated assumption that
+  *"SAELens releases are plain ReLU"*. That was true once. SAELens now
+  registers four inference architectures — standard, gated, topk, jumprelu —
+  and **a TopK release's weight file is indistinguishable from a standard
+  one**: same four tensors, same shapes. The entire gate is one `cfg.json` key,
+  and that file was parsed for exactly one boolean and otherwise discarded. So
+  every modern release loaded wide open, and the failure looks like the two
+  input-convention bugs above it — right shape, plausible magnitudes, a rule
+  that was never applied — with feature activations, steering directions and
+  `ce_recovered` all silently wrong downstream.
+
+  `_activate` now dispatches on the architecture the release **declared**,
+  never on which tensors turned up, and what cannot be encoded is refused BY
+  NAME. Checked against SAELens 6.50.0's own source rather than from memory:
+  `cfg.json` has been written by **three** schemas, not two, and which one a
+  file is decides what an absent `architecture` key means — in the modern
+  schema it is always written, so its absence is a broken file; in the two
+  older ones it did not exist yet, and standard is what SAELens's own
+  migration resolves it to. Absence is therefore never defaulted blindly,
+  which was the same mistake as the `cfg.get("apply_b_dec_to_input", False)`
+  this module was rewritten around.
+
+  **`batchtopk` is refused rather than approximated.** SAELens registers it for
+  training only — `get_sae_class("batchtopk")` is a bare dict lookup that
+  raises — so a cfg naming it is a training checkpoint, not a release, and its
+  gate ranks across a whole batch, which would make one token's features depend
+  on which other tokens shared the request. A *released* BatchTopK SAE says
+  `jumprelu` and ships the distilled threshold; that one loads, through the
+  JumpReLU path, because at inference it **is** JumpReLU. Transcoders get their
+  own reason (they map between two hook points, so "how much of the variance
+  comes back" is not a question that can be asked of them), and
+  `normalize_activations: expected_average_only_in` is refused because the
+  scaling factor it needs lives in SAELens's bundled table rather than in the
+  release — unrecoverable from a repo path, and without it every magnitude is
+  off by an unknown constant.
+
+  **`apply_b_dec_to_input` was read with the wrong default.** It defaults to
+  `true` in every SAELens generation and this read it as `false`, so the
+  `declared` value shown beside the measured one was wrong for every pre-v3
+  release — including the GPT-2 one this module's own docstring is about. It
+  now defaults to nothing: absent stays `None`, declared and measured stay
+  separate, and SAELens's default is recorded as prose so "undeclared" cannot
+  be misread as "declined".
+
+  `encode_feature` — one column of `W_enc`, which `feature_ablate` calls once
+  per scored row — **cannot answer a TopK gate**, because whether a feature
+  fires depends on the other 16,383 pre-activations at that position. It falls
+  back to a full encode and takes the column for TopK only, and the docstring
+  carries the cost. The alternative returns a positive number for a feature the
+  full encode zeroed, into the column that exists to say whether the SAE reads
+  that feature at all.
+
+  Nine mutations, nine caught. Two of the new refusal tests were passing
+  against the catch-all before that check — the unknown-architecture sentence
+  lists the four readable architectures, so it contains the word it was being
+  searched for. Found by mutation, not by reading.
+
 - **A full progress bar over a load that had not started.** Reported from the
   browser: 21 minutes on **"Moving to the accelerator"** under a bar drawn full
   reading *"2.5 GB / 2.5 GB · 0 bytes left · ~0s left"*. Every number there
