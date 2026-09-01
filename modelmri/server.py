@@ -4810,6 +4810,7 @@ def create_app(
         wanted, stride = vla_actions.plan_frames(match.length, stride=req.stride)
 
         rows = []
+        chunks = []
         for t in wanted:
             sample = reader.frame(req.episode, t)
             answer = _policy.act(
@@ -4824,14 +4825,26 @@ def create_app(
                     f"the sidecar returned an empty action chunk at frame "
                     f"{t}, so there is nothing to compare there."
                 )
-            # The FIRST step of the chunk, and only that one. Later steps are
+            # The FIRST step of the chunk, and only that one, is what gets
+            # compared against the RECORDED action. Later steps are
             # predictions about frames the demonstrator had not reached yet,
             # so pairing step 5 with frame t would compare a claim about the
             # future against the present and call the difference an error.
+            #
+            # THAT RULE IS UNCHANGED, and `chunks` below does not bend it.
+            # Chunk consistency never pairs a chunk step with `sample.action`
+            # at all: it pairs step dt+k of the chunk from frame t against
+            # step k of the chunk from frame t+dt, which are two PREDICTIONS
+            # of one absolute timestep. No recorded action is on either side
+            # of that subtraction, which is why it is a separate block with
+            # its own sentence rather than another column here. The whole
+            # chunk travels for that comparison and for nothing else.
             rows.append((t, chunk[0], sample.action))
+            chunks.append((t, chunk))
 
         return vla_actions.compare(
             frames=rows,
+            chunks=chunks,
             joint_names=reader.action_names(),
             stride=stride,
             total_frames=match.length,

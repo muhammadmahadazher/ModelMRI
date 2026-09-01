@@ -5250,6 +5250,84 @@ export interface VLADivergence {
   distance: number;
 }
 
+/** One `steps_ahead` bucket: chunks this far apart, and how far the
+ *  predictions they SHARE disagreed. */
+export interface VLAChunkStepsAhead {
+  steps_ahead: number;
+  /** Chunk pairs at this distance that overlapped at all. */
+  pairs: number;
+  /** `n`. A median over one shared timestep and a median over eighty are
+   *  different claims, so the count travels beside every median here. */
+  overlapping_steps: number;
+  median: number;
+  p25: number;
+  p75: number;
+}
+
+/** Which joint the policy keeps changing its mind about. */
+export interface VLAChunkDimension {
+  dimension: number;
+  /** `null` when the dataset named no dimensions, or named a count that
+   *  disagreed with the policy's width — the server drops the whole list
+   *  rather than mislabelling one joint. Not an empty label. */
+  name: string | null;
+  /** Signed mean of the revision: which WAY the later chunk moves this joint.
+   *  "It consistently reaches further" and "it jitters" are different
+   *  findings and an absolute value erases the first. */
+  revision_bias: number;
+  /** Median absolute revision — how far, either way. */
+  disagreement: number;
+}
+
+/** The single widest disagreement, and the two chunks it came from. */
+export interface VLAChunkWorstPair {
+  t_earlier: number;
+  t_later: number;
+  steps_ahead: number;
+  /** Which step of the LATER chunk. The absolute frame both chunks are
+   *  talking about is `t_later + step`. */
+  step: number;
+  distance: number;
+}
+
+/** How far the policy's own successive chunks disagree about frames they
+ *  share — action-chunk consistency, from the chunks the comparison above
+ *  already paid for.
+ *
+ *  Both operands are PREDICTIONS. The recorded action is on neither side, so
+ *  a policy that predicts the same wrong action every time scores perfectly
+ *  here; this is not a second opinion on the error above it. */
+export interface VLAChunkConsistency {
+  /** FALSE is a state, not a failure: the stride was past the horizon, the
+   *  chunks were one step long, or one frame was sampled. Every number below
+   *  is then `null` and NOT 0 — 0.0 is what a policy that agreed with itself
+   *  perfectly scores, which is the opposite reading. */
+  measurable: boolean;
+  /** Always present, in both states, and the whole answer in the false one. */
+  means: string;
+  /** `null` when the chunks were not all the same length; the range beside it
+   *  is then the honest report and a single number would be a lie. */
+  horizon: number | null;
+  horizon_min: number | null;
+  horizon_max: number | null;
+  /** Duplicated from the response around it on purpose: the strip that draws
+   *  this has to read standalone, and a refusal naming a stride the reader
+   *  has to scroll for is a refusal they will not check. */
+  stride: number;
+  pairs: number | null;
+  overlapping_steps: number | null;
+  median: number | null;
+  p25: number | null;
+  p75: number | null;
+  worst_pair: VLAChunkWorstPair | null;
+  by_steps_ahead: VLAChunkStepsAhead[];
+  by_dimension: VLAChunkDimension[];
+  /** Chunk pairs predicted at the IDENTICAL frame, which differ by sampling
+   *  noise rather than by hindsight. Skipped, and counted rather than
+   *  silently dropped. */
+  pairs_skipped_same_frame: number | null;
+}
+
 export interface VLACompare {
   rows: VLADivergence[];
   /** EMPTY when the dataset named no dimensions, or named a count that
@@ -5269,6 +5347,10 @@ export interface VLACompare {
   revision: string;
   /** `null` means no seed was fixed, so re-running gives a different curve. */
   seed: number | null;
+  /** The overlap between SUCCESSIVE predictions, from the same chunks the
+   *  rows above are step 0 of. Free measurement: zero extra forward passes,
+   *  and never mixed into the vs-recorded error. */
+  chunk_consistency: VLAChunkConsistency;
   means: string;
 }
 

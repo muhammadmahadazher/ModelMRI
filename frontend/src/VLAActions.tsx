@@ -5,6 +5,7 @@ import {
   getPolicy,
   PolicyStatus,
   VLAActionCost,
+  VLAChunkConsistency,
   VLACompare,
   vlaActionCost,
   vlaCompareActions,
@@ -13,6 +14,7 @@ import {
   VLASwap,
   vlaSwapInstruction,
 } from "./api";
+import { measured, signed } from "./measured";
 
 /**
  * What the policy would DO, next to what the human actually did.
@@ -66,6 +68,234 @@ function vec(xs: number[]): string {
  *  with no denominator is not a bar that tied with the noise. */
 function ratio(v: number | null): string {
   return v === null ? "no denominator" : `${v.toFixed(2)}× noise`;
+}
+
+/**
+ * The picture the chunk-consistency numbers are of: one chunk, the chunk
+ * predicted `ahead` frames later, and the timesteps both of them describe.
+ *
+ * DRAWN FROM THE MEASUREMENT, not from constants. `horizon` is how many steps
+ * this policy actually returned and `ahead` is the nearest gap between two
+ * frames this run sampled, so the shaded region is the real overlap rather
+ * than an illustration of a typical one. A legend with a baked-in H would be a
+ * picture of some other policy sitting above these numbers.
+ *
+ * The bar length is a fixed 200 user units across `ahead + horizon` frames, so
+ * a 50-step chunk and a 3-step chunk draw at the same size — this says WHICH
+ * PART overlaps, and a diagram that grew with H would be unreadable for the
+ * ACT-shaped policies that are the common case.
+ */
+function OverlapLegend({
+  horizon,
+  ahead,
+}: {
+  horizon: number;
+  ahead: number;
+}) {
+  const span = ahead + horizon;
+  const unit = 200 / span;
+  const gutter = 78;
+  const at = (frame: number) => gutter + frame * unit;
+  const shared = Math.max(0, horizon - ahead);
+  return (
+    <svg
+      className="vla-legend"
+      viewBox={`0 0 ${gutter + 200 + 4} 52`}
+      role="img"
+      aria-label={
+        `The chunk predicted at a frame covers ${horizon} steps. The chunk ` +
+        `predicted ${ahead} frame${ahead === 1 ? "" : "s"} later starts ` +
+        `${ahead} step${ahead === 1 ? "" : "s"} into it, so the two describe ` +
+        `${shared} of the same timestep${shared === 1 ? "" : "s"}.`
+      }
+    >
+      {shared > 0 && (
+        <rect
+          className="vla-legend-shared"
+          x={at(ahead)}
+          y={10}
+          width={at(horizon) - at(ahead)}
+          height={36}
+          rx="2"
+        />
+      )}
+      <text className="vla-legend-tag" x={at(ahead)} y={8}>
+        {shared} shared
+      </text>
+      <text x={gutter - 6} y={24} textAnchor="end">
+        chunk at t
+      </text>
+      <rect
+        className="vla-legend-a"
+        x={at(0)}
+        y={16}
+        width={horizon * unit}
+        height={9}
+        rx="2"
+      />
+      <text x={gutter - 6} y={42} textAnchor="end">
+        chunk at t+{ahead}
+      </text>
+      <rect
+        className="vla-legend-b"
+        x={at(ahead)}
+        y={34}
+        width={horizon * unit}
+        height={9}
+        rx="2"
+      />
+    </svg>
+  );
+}
+
+/**
+ * How far the policy's own successive chunks disagree about frames they share.
+ *
+ * A SEPARATE measurement from the one above it, and not a second opinion on
+ * it. Both operands here are predictions — step `dt+k` of the chunk from frame
+ * `t` against step `k` of the chunk from frame `t+dt`, two claims about ONE
+ * absolute timestep made an observation apart — and the recorded action is on
+ * neither side. A policy that predicts the same wrong action every time scores
+ * perfectly here, which is why the block carries its own sentence rather than
+ * borrowing the "NOT GROUND TRUTH" one above.
+ *
+ * `measurable: false` is a STATE, drawn as the server's sentence verbatim. It
+ * names the stride, the horizon and the stride that would have worked, and
+ * paraphrasing it into "not available" would throw away the only actionable
+ * half. A zero would be worse still: 0.0 is what a policy that agreed with
+ * itself perfectly scores.
+ */
+function ChunkConsistency({ block }: { block: VLAChunkConsistency }) {
+  if (!block.measurable) {
+    return (
+      <div className="vla-consist">
+        <span className="judge-tag">chunk consistency</span>
+        <div className="vla-refusal">
+          <p>{block.means}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = block.by_steps_ahead;
+  // ONE scale across every small multiple. Scaling each row to its own widest
+  // value would draw the tightest bucket and the loosest identically, which is
+  // exactly the comparison this strip exists to make.
+  const widest = rows.reduce((m, r) => Math.max(m, r.p75, r.median), 0) || 1;
+  // `horizon` is null when the chunks were not all the same length; the legend
+  // then draws the longest of them, and the sentence below says it varied.
+  const horizon = block.horizon ?? block.horizon_max ?? 0;
+  const nearest = rows[0]?.steps_ahead ?? block.stride;
+
+  return (
+    <div className="vla-consist">
+      <span className="judge-tag">chunk consistency</span>
+      <p className="meta">
+        The same policy, one observation later, about a frame it had already
+        committed to. Free: these chunks were computed for the rows above and
+        everything past their first step used to be discarded.
+      </p>
+      <div className="vla-consist-key">
+        {horizon > 0 && nearest > 0 && (
+          <OverlapLegend horizon={horizon} ahead={nearest} />
+        )}
+        <p className="meta">
+          {/* `measured`, not `toFixed`. A near-consistent policy diverges by
+              3e-7 and four fixed places print that as 0.0000 — the reading of
+              a policy that never revised anything, on one that just did. */}
+          median <b>{measured(block.median, 4)}</b> over{" "}
+          <b>{block.overlapping_steps}</b> shared timestep
+          {block.overlapping_steps === 1 ? "" : "s"} from <b>{block.pairs}</b>{" "}
+          chunk pair{block.pairs === 1 ? "" : "s"} · middle half{" "}
+          {measured(block.p25, 4)}–{measured(block.p75, 4)} · stride{" "}
+          {block.stride} ·{" "}
+          {block.horizon === null ? (
+            <span className="aud-unknown">
+              horizon varied, {block.horizon_min}–{block.horizon_max} steps
+            </span>
+          ) : (
+            <>{block.horizon}-step horizon</>
+          )}
+        </p>
+      </div>
+      {/* The band is the middle half and the rule is the median: one line on
+          its own would be a median pretending to be a distribution. The same
+          two primitives the model-diff panel draws its per-layer spread with. */}
+      <ol className="vla-ahead stagger">
+        {rows.map((r, i) => (
+          <li key={r.steps_ahead} style={{ "--i": i } as CSSProperties}>
+            <span className="mid">
+              +{r.steps_ahead} frame{r.steps_ahead === 1 ? "" : "s"}
+            </span>
+            <span className="vla-track">
+              <span
+                className="vla-band"
+                style={{
+                  left: `${Math.min(100, (r.p25 / widest) * 100)}%`,
+                  width: `${Math.max(1, Math.min(100, ((r.p75 - r.p25) / widest) * 100))}%`,
+                }}
+              />
+              <span
+                className="vla-median"
+                style={{ left: `${Math.min(100, (r.median / widest) * 100)}%` }}
+              />
+            </span>
+            <span className="mid">{measured(r.median, 4)}</span>
+            {/* `n` beside every median. A median over one shared timestep and
+                a median over eighty are different claims. */}
+            <span className="meta">
+              {r.overlapping_steps} shared · {r.pairs} pair
+              {r.pairs === 1 ? "" : "s"}
+            </span>
+          </li>
+        ))}
+      </ol>
+      {rows.length > 1 && nearest > 0 && (
+        <p className="meta vla-cap">
+          Rows past +{nearest} compare NON-ADJACENT chunks. The published
+          detectors compare consecutive inference steps only, so that part of
+          this curve is this project&rsquo;s extension of them rather than
+          something borrowed.
+        </p>
+      )}
+      <ul className="vla-bias">
+        {block.by_dimension.map((d) => (
+          <li key={d.dimension}>
+            <span className="mid">{d.name ?? `dim ${d.dimension}`}</span>
+            {/* Signed, because "it keeps revising this joint upward" and "this
+                joint jitters" are different findings and the absolute value
+                beside it cannot tell them apart on its own. */}
+            <span className="mid">{signed(d.revision_bias, 4)}</span>
+            <span className="meta">±{measured(d.disagreement, 4)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="meta">
+        Signed mean of the revision per dimension, with the median absolute
+        beside it. A policy that keeps pulling one joint the same way as it
+        gets closer looks nothing like one that jitters around it, and only the
+        sign tells them apart.
+      </p>
+      {block.worst_pair && (
+        <p className="meta">
+          widest single disagreement{" "}
+          <b>{measured(block.worst_pair.distance, 4)}</b> — the chunk from frame{" "}
+          {block.worst_pair.t_earlier} against the chunk from frame{" "}
+          {block.worst_pair.t_later}, both about frame{" "}
+          <b>{block.worst_pair.t_later + block.worst_pair.step}</b>
+        </p>
+      )}
+      {block.pairs_skipped_same_frame ? (
+        <p className="meta vla-cap">
+          <b>{block.pairs_skipped_same_frame}</b> chunk pair
+          {block.pairs_skipped_same_frame === 1 ? " was" : "s were"} predicted
+          at the identical frame and skipped. Two chunks at one frame differ by
+          sampling noise, which the instruction swap measures and this does not.
+        </p>
+      ) : null}
+      <p className="meta vla-means">{block.means}</p>
+    </div>
+  );
 }
 
 export default function VLAActions({
@@ -336,6 +566,13 @@ export default function VLAActions({
             exactly like this; one that is randomly wrong in both directions
             averages to nothing here.
           </p>
+          {/* Under the per-dimension chart, and deliberately not inside it.
+              Everything above this line differences a PREDICTION against a
+              RECORDING; everything below it differences two predictions
+              against each other and never touches the demonstrator. Mixing
+              them into one table would be the exact reading the comment in
+              `_run_compare` exists to prevent, one section over. */}
+          <ChunkConsistency block={cmp.data.chunk_consistency} />
           <ol className="vla-rank stagger">
             {shownRows.map((r, i) => (
               <li key={r.t} style={{ "--i": i } as CSSProperties}>

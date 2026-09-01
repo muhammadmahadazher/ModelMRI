@@ -8,6 +8,39 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **Action-chunk consistency, out of the overlap `/api/vla/actions/compare` was
+  already computing and throwing away.** The policy returns a whole action chunk
+  at each sampled frame — a prediction for `t … t+H-1` — and the route kept
+  `chunk[0]` and dropped the rest. But the chunk at frame `t` and the chunk at
+  `t+s` both describe the same absolute timesteps wherever they overlap, and how
+  far they disagree is a published failure signal. **Zero extra forward passes:
+  the numbers were already in memory.**
+
+  It is reported as its own block and never mixed into the vs-recorded error.
+  The existing comment — that only step 0 may meet a recorded action, because
+  pairing step 5 with frame `t` compares a claim about the future against the
+  present — is still correct and now says explicitly that consistency asks a
+  different question: it compares two *predictions*, and never touches
+  `sample.action`.
+
+  What it will not do is report a zero it did not measure. When the stride is
+  wide enough that no two chunks overlap, the block refuses with the numbers in
+  it — *"the closest two sampled frames here are 5 frames apart and the longest
+  chunk this policy returned is 2 steps … **this is not a consistency of zero**,
+  which is what a policy that agreed with itself perfectly would score"* — and
+  names a stride that would work. Nine further refusals cover one-step chunks, a
+  single sampled frame, ragged widths, non-finite later steps, and chunks that
+  never arrived. When the block is not measurable every number is `None` and
+  every list empty.
+
+  The distance is this module's own unsquared L2, matching `Divergence.distance`
+  next to it, and the per-steps-ahead curve is declared as ours rather than
+  attributed to a paper — no published detector publishes that curve. Two
+  candidate definitions from the literature were rejected in place: one squares
+  its L2 (breaking comparability with the divergence in the same response) and
+  one divides by a velocity clamped at an unspecified constant.
+
+
 - **`/v1/chat/completions` honours `response_format`, through the grammar
   machinery that was already here.** `openai_api.UNSUPPORTED` refused it with
   *"no constrained decoding on this path"* while `modelmri/grammar.py` — a

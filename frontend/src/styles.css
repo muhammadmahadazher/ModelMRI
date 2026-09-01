@@ -8145,6 +8145,116 @@ button:disabled,
   .vla-arms > li > .meta { grid-column: 1 / -1; }
 }
 
+/* ── chunk consistency ───────────────────────────────────────────────────
+   Boxed rather than flowed in, because it is a different measurement from
+   the rows above it and not a summary of them: everything above differences
+   a prediction against a RECORDING, everything in here differences two
+   predictions against each other. The panel's own hue at low strength says
+   "same panel, separate claim" — the amber `.vla-cap` treatment would say
+   "worry about this", which is the one thing the block refuses to imply. */
+.vla-consist {
+  margin: 4px 0 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--color-vla) 26%, transparent);
+  background: color-mix(in oklab, var(--color-vla) 4%, transparent);
+  display: grid;
+  gap: 6px;
+}
+.vla-consist > p { margin: 0; }
+.vla-consist-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  align-items: center;
+}
+.vla-consist-key > p { margin: 0; flex: 1 1 16rem; }
+
+/* The diagram of what is being differenced. Its geometry comes from the
+   measurement -- see `OverlapLegend` -- so the sheet only says what the
+   shapes MEAN: the earlier chunk in the panel's hue, the later one neutral,
+   and the timesteps they share behind both. */
+/* A WIDTH and `height: auto`, not the reverse. The viewBox fixes the aspect
+   ratio, so sizing the height and letting `max-width` clamp the width would
+   squash the diagram on a narrow panel -- and a diagram whose two bars have
+   drifted out of proportion is saying something about the overlap that the
+   numbers beside it do not. */
+.vla-legend {
+  display: block;
+  width: 18rem;
+  height: auto;
+  max-width: 100%;
+  flex: 0 1 18rem;
+}
+.vla-legend text {
+  fill: var(--ink-3);
+  font: 400 9px/1 var(--font-sans);
+}
+.vla-legend .vla-legend-tag {
+  fill: var(--color-vla);
+  font-weight: 600;
+}
+.vla-legend .vla-legend-shared {
+  fill: color-mix(in oklab, var(--color-vla) 15%, transparent);
+}
+.vla-legend .vla-legend-a {
+  fill: color-mix(in oklab, var(--color-vla) 50%, transparent);
+  stroke: var(--color-vla);
+  vector-effect: non-scaling-stroke;
+}
+.vla-legend .vla-legend-b {
+  fill: color-mix(in oklab, var(--ink-4) 26%, transparent);
+  stroke: var(--ink-3);
+  vector-effect: non-scaling-stroke;
+}
+
+.vla-ahead {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+.vla-ahead > li {
+  display: grid;
+  grid-template-columns: 6.2rem minmax(0, 1fr) 4.8rem 9.5rem;
+  gap: 8px;
+  align-items: center;
+  font-size: var(--t-xs);
+}
+@media (max-width: 720px) {
+  .vla-ahead > li { grid-template-columns: 6.2rem minmax(0, 1fr) 4.8rem; }
+  .vla-ahead > li > :last-child { grid-column: 1 / -1; }
+}
+/* A BAND and a rule, not a bar. The band is the middle half of the
+   disagreements at that distance and the rule is their median; a single bar
+   would be a median pretending to be a distribution, which is the same
+   mistake `.mdiff-band` was written to avoid one panel over.
+
+   Both edges are measurements, so both take `--dur-travel` and the standard
+   curve -- and that duration is `calc(320ms * var(--motion-scale))`, which
+   reduced motion already collapses to a hundredth. */
+.vla-band {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  min-width: 1px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--color-vla) 30%, transparent);
+  transition: width var(--dur-travel) var(--ease-standard),
+              left var(--dur-travel) var(--ease-standard);
+}
+.vla-median {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-vla);
+  transform: translateX(-1px);
+  transition: left var(--dur-travel) var(--ease-standard);
+}
+
 
 /* MEASURED: the typed-path source rendered its last paragraph outside the
    sheet's rounded edge, on the page behind it. `.sheet` is a fixed-height
