@@ -134,6 +134,67 @@ comparison gets read as a green build.
 deciding in advance how much breakage is acceptable, which is a decision worth
 making out loud in the workflow file rather than inheriting from a default.
 
+### Bringing an Inspect eval in as a run
+
+A UK AISI Inspect `.eval` log already holds everything an experiment needs —
+one row per sample, with what each scorer gave it. `modelmri eval-import`
+reads one into the pair of files the gate above compares.
+
+```bash
+# Look first. With no --out this writes nothing and prints what the log scored.
+modelmri eval-import logs/2026-08-15_arc-easy.eval
+
+# Then convert.
+modelmri eval-import logs/before.eval --out before.jsonl --dataset-out cases.jsonl
+modelmri eval-import logs/after.eval  --out after.jsonl
+
+modelmri experiments before.jsonl after.jsonl \
+  --metric match_correct --higher-is-better --dataset cases.jsonl
+```
+
+Same promise as the rest of this page: no torch, no accelerator, no network. An
+`.eval` is a zip of JSON and the reader is `zipfile` plus `json`.
+
+**`match_correct`, not `match`.** Inspect's canonical score value is the string
+`"C"` or `"I"` — its correct/incorrect markers — and a string cannot be ordered
+against another, so a comparison over `match` reports every row as
+`unmeasurable`. The import writes the marker through **unchanged** and adds a
+separately named numeric column beside it, `C` → `1.0` and `I` → `0.0`, with
+that mapping recorded in the experiment file's own `meta.score_markers` and
+`meta.derived_scores`. Rewriting `match` from `"C"` to `1.0` in place would
+make the file claim a number the log never wrote. Inspect's `P` (partial) and
+`N` (no answer) get no number: deciding what partial credit is worth is a
+judgement, and one invented here would be indistinguishable from one you made.
+
+**A scorer in the log that already owns `<name>_correct` keeps it**, on every
+row, even the rows it did not score. The column is then the log's, not this
+converter's, and no derived number is written into any of it — the marker is
+left exactly as the log wrote it and `meta.markers_not_derived` names which
+marker got no number and why. Filling in only the rows that scorer missed
+would put a value nobody measured in a column somebody did, with nothing on
+the row saying which was which.
+
+**A sample the eval never scored is not a sample that scored zero.** It lands
+as a row with no metrics and the sentence saying so, and a comparison reports
+it `unmeasurable` rather than folding a `0` into the distribution. A sample
+the log marks **errored** says that instead, quoting what the log recorded;
+one that is errored *and* scored keeps its scores, stays measured, and the
+error is kept under `meta.sample_errors`.
+
+**A log that states no time is not dated to the import.** `started_at` and the
+dataset's `created_at` stay empty rather than being filled with the moment you
+happened to read the file, and the printout says the log stated none.
+
+**Every row carries a receipt** naming the log's own sha256, its filename, the
+task, the model and the sample id and epoch it came from — so an experiment
+file forwarded to somebody else says which log it came out of. The case id is
+`<sample_id>:<epoch>`, because a multi-epoch eval runs every sample more than
+once and one case id cannot carry two rows.
+
+The `--metric` you want is in the printout, and `experiments` names the others
+it found on its second line — a run's metrics are read off the files rather
+than guessed at.
+
 ### Turning a failure you watched into a case
 
 A run you saw go wrong can become a row in the set rather than leaving the

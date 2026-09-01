@@ -70,6 +70,82 @@ def compare_experiments(
     return 0
 
 
+def import_eval(
+    log,
+    *,
+    out: str | None = None,
+    dataset_out: str | None = None,
+    name: str = "",
+    label: str = "",
+    as_json: bool = False,
+) -> int:
+    """An Inspect `.eval` log, as an experiment `modelmri experiments` can read.
+
+    The step that was missing. `inspect_io` has always parsed the per-sample
+    scores out of an eval log and the import path dropped them one call before
+    `datasets.Experiment`, so the one thing an eval produces never reached the
+    only thing in this tool that compares runs.
+
+    Pays for NO torch, like `experiments` and `diff`: an `.eval` is a zip of
+    JSON and an experiment is JSONL, so the whole conversion is arithmetic and
+    parsing, on a machine with no accelerator.
+
+    Omitting `--out` READS without writing. Somebody pointing this at a log
+    wants to know what is in it — which scorers ran, on how many samples,
+    which of them are numbers — before deciding where it goes, and a converter
+    whose only mode is "convert" makes that a two-step guess.
+    """
+    from . import datasets, inspect_io
+    from .errors import BadRequest, Refusal
+
+    try:
+        run = inspect_io.read_scores(log)
+        experiment, dataset = datasets.from_inspect(run, name=name, label=label)
+        summary = datasets.score_summary(experiment)
+        # Written only after BOTH have been built and summarised. A converter
+        # that half-writes and then refuses leaves a file whose header claims
+        # rows that are not under it -- and `_truncation` would then correctly
+        # but confusingly report it as a run that was killed.
+        if out:
+            datasets.write_experiment(experiment, out)
+        if dataset_out:
+            datasets.write_dataset(dataset, dataset_out)
+    except (BadRequest, Refusal) as err:
+        # 2, not 1, and the same rule `compare_experiments` states: a
+        # conversion that did not happen is not one that produced an empty
+        # file, and a CI step must not read the two the same way.
+        print(f"modelmri eval-import: {err}", file=sys.stderr)
+        return 2
+
+    if as_json:
+        print(json.dumps(summary, indent=2, allow_nan=False))
+        return 0
+
+    print(datasets.render_scores(experiment))
+    # The reconciliation, printed and not only written. `render_scores` is a
+    # general reader over any experiment and must not learn Inspect's
+    # vocabulary; this sentence is the converter's own and it is the only
+    # place a score entry that was skipped on a row that kept its OTHER
+    # scores is visible — that row is measured, so it never appears among the
+    # unmeasured reasons above and would otherwise be reported nowhere.
+    said = str(experiment.meta.get("means") or "")
+    if said:
+        print(f"\n  {said}")
+    if out:
+        print(f"\n  wrote {len(experiment.results)} row(s) to {out}")
+    if dataset_out:
+        print(
+            f"  wrote {len(dataset.cases)} case(s) to {dataset_out} "
+            f"(fingerprint {dataset.fingerprint()})"
+        )
+    if not out and not dataset_out:
+        print(
+            "\n  nothing was written. Pass --out PATH to save this as an "
+            "experiment, and --dataset-out PATH to save what each case asked."
+        )
+    return 0
+
+
 def diff_sessions(
     path_a, path_b, *, fail_over: float | None = None, as_json: bool = False
 ) -> int:
@@ -1872,6 +1948,47 @@ def main() -> None:
     )
     experiments.add_argument("--json", action="store_true", help="emit JSON")
 
+    # A sibling of `experiments` rather than a flag on it: this one takes a
+    # log and produces files, that one takes two files and produces a verdict.
+    # Folding them together would mean making `before`/`after` optional, and
+    # the argparse error a caller gets for forgetting them is worth more than
+    # the shared name.
+    evals = sub.add_parser(
+        "eval-import",
+        help="Read a UK AISI Inspect .eval log into an experiment file its "
+        "per-sample scores can be compared from",
+    )
+    evals.add_argument("log", help="the Inspect .eval log (a zip of JSON)")
+    evals.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help="write the experiment here as JSONL. Omitted, this reads the log "
+        "and prints what it scored without writing anything.",
+    )
+    evals.add_argument(
+        "--dataset-out",
+        dest="dataset_out",
+        default=None,
+        metavar="PATH",
+        help="write what each case asked, and the target the log states as "
+        "its answer, here. `experiments --dataset` reads it, and two runs "
+        "are only compared when they record the same fingerprint.",
+    )
+    evals.add_argument(
+        "--name",
+        default="",
+        help="what to call this run in a comparison. Defaults to the log's "
+        "own task name.",
+    )
+    evals.add_argument(
+        "--label",
+        default="",
+        help="what was under test — a model id, a commit, a prompt version. "
+        "Defaults to the model the log names.",
+    )
+    evals.add_argument("--json", action="store_true", help="emit JSON")
+
     sweeper = sub.add_parser(
         "sweep",
         help="Run one measurement over many prompts and report the "
@@ -2216,6 +2333,17 @@ def main() -> None:
                 dataset=args.dataset,
                 floor=args.floor,
                 fail_on_worse=args.fail_on_worse,
+                as_json=args.json,
+            )
+        )
+    elif args.command == "eval-import":
+        raise SystemExit(
+            import_eval(
+                args.log,
+                out=args.out,
+                dataset_out=args.dataset_out,
+                name=args.name,
+                label=args.label,
                 as_json=args.json,
             )
         )

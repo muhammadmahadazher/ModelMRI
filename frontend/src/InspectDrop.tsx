@@ -16,6 +16,11 @@ import { errorText, importInspect, InspectImport } from "./api";
  *   - **WHY THIS SAMPLE.** The reader opens the FAILING sample by default, and
  *     the banner says that is why it is on screen — otherwise the reader is
  *     looking at one row of a 4,000-row eval with no idea how it was chosen.
+ *   - **WHAT IT SCORED.** An eval log's whole output is its scores, and this
+ *     panel drew the timeline without them: `out.scores` arrived in the
+ *     payload, typed in `api.ts`, and nothing read it. The unscored state is
+ *     a sentence rather than a blank or a zero, because a sample nobody
+ *     scored and a sample scored zero are different facts.
  *
  * Reader only. There is no writer and there will not be one: tracking an
  * unfrozen schema in both directions forever is not solo-maintainer work, and
@@ -56,6 +61,26 @@ export default function InspectDrop({
   }
 
   const dropped = out ? Object.entries(out.mapping.dropped) : [];
+  const scores = out ? Object.entries(out.scores) : [];
+  const unreadable = out ? Object.entries(out.skipped_scores) : [];
+
+  // ONE entry per sample id, not one per (id, epoch).
+  //
+  // The import route takes a `sample_id` and nothing else, and the reader
+  // answers with the LOWEST epoch of that id. So an option labelled
+  // "a (epoch 3)" opened epoch 1 and said nothing — a cosmetic timeline swap
+  // while the panel drew only steps, and a wrong measurement now that it
+  // draws the scores: epoch 1's `match=I` on screen under the epoch 3 the
+  // reader chose. Offering only what can actually be opened is the honest
+  // half of that; the other half is a route that takes an epoch, and it is
+  // in a file this lane does not own.
+  const pickable: { id: string; epochs: number[] }[] = [];
+  for (const s of out?.samples ?? []) {
+    const seen = pickable.find((p) => p.id === s.id);
+    if (seen) seen.epochs.push(s.epoch);
+    else pickable.push({ id: s.id, epochs: [s.epoch] });
+  }
+  for (const p of pickable) p.epochs.sort((a, b) => a - b);
 
   return (
     <div
@@ -107,13 +132,14 @@ export default function InspectDrop({
             {/* `samples_total`, not `samples.length`. The list is capped
                 server-side, and printing its length stated the cap as a fact
                 about the reader's own file: a 6,000-sample log read "5000
-                samples". The dropdown below holds the listed subset, so when
-                the two differ that has to be said rather than left to be
-                discovered by a sample being unselectable. */}
+                samples". "were read", not "are listed below": the dropdown
+                holds one entry per sample ID and the listed subset counts
+                epochs, so the two numbers differ on a multi-epoch eval and
+                only the first is a fact about the reader's file. */}
             {out.samples_truncated && (
               <>
                 {" "}
-                — the first {out.samples.length} are listed below
+                — the first {out.samples.length} were read
               </>
             )}
           </div>
@@ -135,6 +161,69 @@ export default function InspectDrop({
             )}
           </div>
 
+          {/* WHAT THE EVAL SCORED — the one thing an eval produces, and the
+              thing this panel used to leave on the floor. Never a table of
+              numbers: Inspect's canonical value is the string "C" or "I", and
+              a panel that coerced those to 1 and 0 would be showing a number
+              the log never wrote. */}
+          <div className="ins-scores">
+            <div className="meta">
+              <b>scored</b>
+            </div>
+            {scores.length > 0 ? (
+              <ul className="ins-facts">
+                {scores.map(([name, value], i) => {
+                  const marker = String(value).trim().toUpperCase();
+                  // Only C and I, Inspect's own correct/incorrect markers,
+                  // get a colour. Tinting a rubric's 7 would be this panel
+                  // deciding what a good score is.
+                  const tone =
+                    marker === "C" ? "ok" : marker === "I" ? "no" : "";
+                  return (
+                    <li
+                      key={name}
+                      className={`ins-score ${tone}`}
+                      // Staggered so several scorers read as a row arriving
+                      // rather than a block appearing. Capped, so a sample
+                      // with twenty scorers does not animate for a second.
+                      style={{ animationDelay: `${Math.min(i, 8) * 28}ms` }}
+                      title={
+                        tone === "ok"
+                          ? "C — Inspect's marker for a correct answer"
+                          : tone === "no"
+                            ? "I — Inspect's marker for an incorrect answer"
+                            : `${name}, as the log recorded it`
+                      }
+                    >
+                      <b>{name}</b>
+                      <span className="mid">{String(value)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              // NOT a blank and not a 0. House rule: an unknown is not a
+              // zero, and "this sample scored nothing" is a claim about the
+              // sample that would be false.
+              <p className="meta" style={{ margin: "3px 0 0" }}>
+                this log records no score for this sample — which is not a
+                score of zero, it is nobody having measured it
+              </p>
+            )}
+            {unreadable.length > 0 && (
+              // Counted rather than dropped, the same discipline the event
+              // mapping keeps. A rubric whose value is a nested object used
+              // to disappear and read as a sample with no rubric.
+              <ul className="ins-kinds" style={{ marginTop: 6 }}>
+                {unreadable.map(([name, why]) => (
+                  <li key={name} className="meta">
+                    <b className="mid">{name}</b> not read — {why}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           {/* What was NOT mapped. The sentence is authored server-side beside
               the mapping, so the panel cannot claim coverage it did not have. */}
           {dropped.length > 0 && (
@@ -151,9 +240,19 @@ export default function InspectDrop({
               </ul>
             </div>
           )}
+          {/* `out.mapping.means`, deliberately, and NOT `out.means`.
+              `Imported.means()` is one sentence covering the mapping AND the
+              scores AND the unreadable entries AND why this sample is on
+              screen — which is right for the terminal and for an API caller
+              with no panel, and wrong here, because this panel now renders
+              every one of those clauses itself, above. Rendering both put
+              each of them on screen twice: the no-score sentence, the
+              NOT-SCORED-HERE list, and "this sample is marked as failed",
+              which the banner at the top already says. The mapping's own
+              sentence is the one clause nothing else here draws. */}
           <p className="meta ins-means">{out.mapping.means}</p>
 
-          {out.samples.length > 1 && (
+          {pickable.length > 1 && (
             <div className="row ins-pick">
               <label className="meta" htmlFor="ins-sample">
                 open another sample
@@ -167,10 +266,20 @@ export default function InspectDrop({
                 disabled={busy || !file}
                 title="read a different sample from the same log"
               >
-                {out.samples.map((s) => (
-                  <option key={`${s.id}-${s.epoch}`} value={s.id}>
-                    {s.id}
-                    {s.epoch > 1 ? ` (epoch ${s.epoch})` : ""}
+                {pickable.map(({ id, epochs }) => (
+                  <option
+                    key={id}
+                    value={id}
+                    title={
+                      epochs.length > 1
+                        ? `${epochs.length} epochs of this sample are in the log; this reader opens the lowest`
+                        : `sample ${id}`
+                    }
+                  >
+                    {id}
+                    {epochs.length > 1
+                      ? ` (epoch ${epochs[0]} of ${epochs.length} listed)`
+                      : ""}
                   </option>
                 ))}
               </select>

@@ -6052,6 +6052,63 @@ main > [id^="sec-"] {
   list-style: none; margin: 5px 0 0; padding: 0;
   display: flex; flex-wrap: wrap; gap: 4px 14px;
 }
+/* WHAT THE EVAL SCORED. The panel drew the timeline and the dropped-event
+   count and left this out entirely — so an eval log rendered without the one
+   thing an eval produces, while `out.scores` sat in the payload, typed, and
+   unread. The empty case is a SENTENCE, never a 0 and never a blank row: a
+   sample nobody scored and a sample scored zero are different facts. */
+.ins-scores {
+  padding: 7px 10px; border-radius: 7px;
+  border: 1px solid var(--line);
+  background: color-mix(in oklab, var(--sem-base) 6%, transparent);
+}
+.ins-facts {
+  list-style: none; margin: 5px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 5px 7px;
+}
+/* The scorer's NAME in the reader's own register and the value in the mono
+   face beside it: the value is the measurement and it lines up column-wise
+   when several samples are read one after another. */
+.ins-score {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 2px 9px; border-radius: 99px;
+  border: 1px solid var(--hair); background: var(--color-card);
+  font: 400 var(--t-2xs)/1.5 var(--font-sans);
+  animation: ins-score-in var(--dur-small) var(--ease-out) both;
+}
+/* C and I are Inspect's own correct/incorrect markers, so they are the one
+   pair this may tint. Every other value — a rubric number, a string, a
+   boolean — keeps the neutral chip, because colouring one would be this
+   panel deciding what a good score is. */
+.ins-score.ok {
+  border-color: color-mix(in oklab, var(--sem-vla) 40%, transparent);
+  background: color-mix(in oklab, var(--sem-vla) 10%, transparent);
+}
+.ins-score.no {
+  border-color: color-mix(in oklab, var(--sem-error) 40%, transparent);
+  background: color-mix(in oklab, var(--sem-error) 9%, transparent);
+}
+.ins-score b { font-weight: 600; color: var(--color-ink); }
+.ins-score span { color: var(--color-mute); }
+.ins-score.ok span { color: var(--color-vla); }
+.ins-score.no span { color: var(--color-pop); }
+@keyframes ins-score-in {
+  from { opacity: 0; transform: translate3d(0, 3px, 0); }
+  to   { opacity: 1; transform: none; }
+}
+/* The rise, dropped; the fade, kept. `animation: none` was what stood here
+   under a comment promising "opacity only", and it removes the whole
+   keyframe — so the setting that asks for less motion silently removed the
+   fade as well and the comment described a behaviour the rule did not have.
+   Swapping the NAME keeps the stagger reading as arrival without the
+   translate that is the part reduced-motion is actually about. */
+@keyframes ins-score-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ins-score { animation-name: ins-score-fade; }
+}
 .ins-means { margin: 0; }
 .ins-pick { gap: 8px; align-items: baseline; }
 

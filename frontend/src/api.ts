@@ -3057,7 +3057,17 @@ export interface InspectImport {
     dropped: Record<string, number>;
     means: string;
   };
+  /** What the eval scored this sample, keyed by the scorer's name. Inspect's
+   *  canonical value is the STRING "C" or "I" — its correct/incorrect
+   *  markers — so this is not a number map and must not be rendered as one.
+   *  An empty object means the log recorded no score for this sample, which
+   *  is not a score of zero. */
   scores: Record<string, string | number | boolean>;
+  /** Score entries whose value this reader could not take, keyed by the
+   *  scorer's name, each with the sentence saying what was there instead.
+   *  A rubric whose value is a nested object used to vanish here and read as
+   *  a sample that carried no rubric at all. */
+  skipped_scores: Record<string, string>;
   failed: boolean;
   error: string;
   header: {

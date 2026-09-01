@@ -917,3 +917,99 @@ def test_rows_past_the_terminal_limit_are_counted_rather_than_dropped_quietly():
     )
     assert "15 more rows" in text
     assert "carries all 20" in text
+
+
+# ------------------------------------------ what ONE run recorded, counted
+
+
+def test_a_boolean_score_is_summarised_by_its_values_and_never_by_a_median():
+    """`bool` is an `int`, so a metric of True/False would take a median and
+    print "0.5" — a number for a thing this project refuses to rank. Every
+    other reader here already refuses a boolean; this one has to as well."""
+    data = _dataset(2)
+    exp = _experiment("run", data, {"c0": {"passed": True}, "c1": {"passed": False}})
+    summary = ds.score_summary(exp)
+    metric = summary["metrics"][0]
+    assert metric["numbers"] is False
+    assert metric["median"] is None, "no median, not a median of zero"
+    assert metric["values"] == {"false": 1, "true": 1}
+    assert "none can be ordered against another run" in summary["means"]
+
+
+def test_a_metric_only_some_rows_carry_says_how_many_do_not():
+    """A metric on 1 of 3 rows read as a metric on 3 is how a scorer that
+    crashed two thirds of the way through looks like a complete one."""
+    data = _dataset(3)
+    exp = _experiment(
+        "run",
+        data,
+        {"c0": {"f": 1.0, "rubric": 7.0}, "c1": {"f": 2.0}, "c2": {"f": 3.0}},
+    )
+    summary = ds.score_summary(exp)
+    by_name = {m["metric"]: m for m in summary["metrics"]}
+    assert by_name["rubric"]["n"] == 1
+    assert by_name["rubric"]["n_missing"] == 2
+    assert by_name["f"]["n_missing"] == 0
+    assert "2 row(s) do not carry it" in ds.render_scores(exp)
+
+
+def test_a_run_with_more_metrics_than_the_table_shows_says_how_many_are_hidden():
+    """The same rule the comparison table keeps: a list that stops and says
+    nothing reads as the whole list."""
+    data = _dataset(1)
+    exp = _experiment("run", data, {"c0": {f"m{i}": float(i) for i in range(9)}})
+    text = ds.render_scores(exp, limit=4)
+    assert "5 more metric(s), not shown" in text
+    assert "summary itself carries all of them" in text
+
+
+def test_a_run_that_scored_nothing_is_not_rendered_as_a_run_that_scored_zero():
+    data = _dataset(2)
+    exp = _experiment("run", data, {}, refused={"c0": "the SAE was not loaded"})
+    text = ds.render_scores(exp)
+    assert "no metric was recorded" in text
+    assert "the SAE was not loaded" in text
+
+
+# ------------------------------------- times the file does not get to invent
+
+
+def test_an_experiment_with_no_start_time_is_not_dated_to_the_write(tmp_path):
+    """`started_at or _now()` dated an imported eval to the moment somebody
+    read it, which is a value that was not recorded sitting in the field a
+    reader trusts for "when did this happen". An unknown stays unknown."""
+    data = _dataset(1)
+    exp = _experiment("run", data, {"c0": {"f": 1.0}})
+    ds.write_experiment(exp, tmp_path / "e.jsonl")
+    assert ds.read_experiment(tmp_path / "e.jsonl").started_at == ""
+
+
+def test_a_dataset_with_no_creation_time_is_not_dated_to_the_write(tmp_path):
+    data = _dataset(1)
+    assert data.created_at == ""
+    ds.write_dataset(data, tmp_path / "d.jsonl")
+    assert ds.read_dataset(tmp_path / "d.jsonl").created_at == ""
+
+
+def test_a_start_time_that_really_was_recorded_survives_the_file(tmp_path):
+    """The other half: dropping the invented default must not drop a real
+    one."""
+    data = _dataset(1)
+    exp = _experiment("run", data, {"c0": {"f": 1.0}})
+    exp.started_at = "2026-03-04T09:00:00+00:00"
+    ds.write_experiment(exp, tmp_path / "e.jsonl")
+    assert ds.read_experiment(tmp_path / "e.jsonl").started_at == (
+        "2026-03-04T09:00:00+00:00"
+    )
+
+
+def test_a_gap_the_reader_left_behind_survives_the_file_it_is_written_into(tmp_path):
+    """`truncated` is set by every reader and was written by no writer, so a
+    run somebody had already been told was partial came back looking whole:
+    the header's `n_results` and the rows under it agree, and the recomputed
+    sentence is empty."""
+    data = _dataset(2)
+    exp = _experiment("run", data, {"c0": {"f": 1.0}, "c1": {"f": 2.0}})
+    exp.truncated = "only the first 2 of 40 cases were read."
+    ds.write_experiment(exp, tmp_path / "e.jsonl")
+    assert "first 2 of 40" in ds.read_experiment(tmp_path / "e.jsonl").truncated

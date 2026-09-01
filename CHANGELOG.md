@@ -8,6 +8,31 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **An Inspect eval log's per-sample scores now reach the `Experiment` it
+  becomes**, with `modelmri eval-import` to do it from a shell.
+  `inspect_io._scores` had been parsing them all along and the import path
+  dropped them before the dataset spine, so an imported eval arrived carrying
+  everything except the one thing an eval produces. The schema needed no
+  redesign to hold them — established by round-tripping through the shipped
+  writer and reader rather than by argument — so the scores travel as real rows
+  with the log's identity, task and model in the receipt, and
+  `score_summary`/`render_scores` give them a reader.
+
+  A log with no scores imports cleanly and says so; it does not import zeros.
+  Unreadable entries are counted and named rather than silently dropped, which
+  is what the module's docstring already promised and the one place it was not
+  keeping.
+
+  Three things it was quietly getting wrong, all found in review:
+  `write_experiment` filled an absent `started_at` with **the moment of import**
+  — a value nobody recorded, sitting in the field a reader trusts most, so the
+  writer is no longer allowed to invent one. A derived `_correct` companion
+  collided across rows, writing a fabricated `1.0` into a column for a scorer
+  that never ran on that sample. And the truncation warning died at the writer,
+  because the reader recomputed the field from numbers that agree when an import
+  is capped — the two gaps are different facts and are now joined rather than
+  one replacing the other.
+
 - **Action-chunk consistency, out of the overlap `/api/vla/actions/compare` was
   already computing and throwing away.** The policy returns a whole action chunk
   at each sampled frame — a prediction for `t … t+H-1` — and the route kept

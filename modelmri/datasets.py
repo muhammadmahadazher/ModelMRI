@@ -97,7 +97,6 @@ import json
 import math
 import statistics
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 from . import receipts
@@ -135,6 +134,35 @@ TOP_K = 5
 # How many names to print before "and N more". A sentence listing forty head
 # ids is not read by anybody.
 NAMED = 6
+
+# `meta["source"]` for an experiment converted out of somebody else's eval log.
+INSPECT = "inspect"
+
+# Inspect's own correct/incorrect markers, and the ONLY two string score values
+# this module has a number for.
+#
+# The problem they solve: Inspect's canonical score value is the string "C" or
+# "I", and `_score_of` refuses a string -- correctly, because there is no way
+# to order one against another. An experiment written straight out of an eval
+# log therefore compared as 100% `unmeasurable`, and it did not even refuse
+# early, because the metric-present gate checks score KEYS: `match` looked
+# present and every row then silently degraded.
+#
+# So the number arrives under its OWN name, `<scorer>_correct`, beside the
+# marker the log actually wrote. Rewriting `match` from "C" to 1.0 in place
+# would make the file claim a number nobody recorded, which is the fabrication
+# this project refuses everywhere else; adding a separately named column, with
+# this mapping stated in the file's own `meta`, is a transcription of a
+# marker Inspect defines and `inspect_io._failed` already reads in production.
+#
+# P (partial) and N (no answer) are deliberately absent. Deciding what partial
+# credit is worth is a judgement, and one invented here would be
+# indistinguishable from one somebody made.
+SCORE_MARKERS = {"C": 1.0, "I": 0.0}
+
+# The suffix that names a marker's number. A scorer in the log that already
+# owns the name keeps it -- see `_inspect_scores`.
+DERIVED_SUFFIX = "_correct"
 
 
 class DifferentDatasets(Refusal):
@@ -630,10 +658,6 @@ class Experiment:
 # ------------------------------------------------------------------ the files
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
 def _dump(obj: dict) -> str:
     """One JSON line, with NaN refused rather than written as `NaN`.
 
@@ -650,6 +674,14 @@ def write_dataset(dataset: Dataset, path: str | Path) -> Path:
 
     A header line rather than a version stamped on every row: one file has one
     schema, and repeating it per row invites a file that carries two.
+
+    `created_at` is written EXACTLY as the dataset states it, empty included.
+    It used to fall back to this machine's clock, which meant a set converted
+    out of somebody else's eval log -- the one caller that has a real date and
+    can fail to have one -- came back dated to the afternoon it was imported,
+    with nothing in the file saying the date was invented here. A writer is
+    not a producer: it does not know when the thing it is writing happened,
+    and an unknown that reads as a recorded value is worse than a blank.
     """
     from . import __version__
 
@@ -661,7 +693,7 @@ def write_dataset(dataset: Dataset, path: str | Path) -> Path:
         "kind": DATASET,
         "name": dataset.name,
         "description": dataset.description,
-        "created_at": dataset.created_at or _now(),
+        "created_at": dataset.created_at,
         "n_cases": len(dataset.cases),
         "n_references": dataset.n_references,
         "fingerprint": dataset.fingerprint(),
@@ -681,6 +713,22 @@ def write_experiment(experiment: Experiment, path: str | Path) -> Path:
     a run killed half way leaves a file whose complete lines still read. The
     header's `n_results` is what lets the reader SAY it was killed rather than
     hand back a shorter complete-looking run.
+
+    Two fields here are written exactly as the experiment states them, empty
+    included, and both used to be filled in by this function instead:
+
+    `started_at` no longer falls back to now. See `write_dataset` -- a writer
+    is not a producer and does not know when the run it is writing happened.
+
+    `truncated` is written at all. Every reader in this module SETS it and no
+    writer carried it, so a gap somebody had already been told about died in
+    the file: `read_experiment` recomputes the field from `n_results` against
+    the rows under it, and those agree -- 3 declared, 3 written -- so a run
+    three rows into a six-sample eval came back looking whole, and
+    `compare_experiments`, which builds its notes from `before.truncated` and
+    `after.truncated`, had nothing to say about it. The two gaps are
+    different facts and the reader below carries both: this one is what the
+    READER left behind, `_truncation` is what the WRITER never finished.
     """
     from . import __version__
 
@@ -694,11 +742,12 @@ def write_experiment(experiment: Experiment, path: str | Path) -> Path:
         "label": experiment.label,
         "dataset_name": experiment.dataset_name,
         "dataset_fingerprint": experiment.dataset_fingerprint,
-        "started_at": experiment.started_at or _now(),
+        "started_at": experiment.started_at,
         "n_results": len(experiment.results),
         "n_measured": experiment.n_measured,
         "metric_floors": dict(experiment.metric_floors),
         "meta": dict(experiment.meta),
+        "truncated": experiment.truncated,
         "tool_version": __version__,
     }
     with target.open("w", encoding="utf-8", newline="\n") as fh:
@@ -956,8 +1005,19 @@ def read_experiment(path: str | Path) -> Experiment:
         metric_floors=floors if isinstance(floors, dict) else {},
         meta=meta if isinstance(meta, dict) else {},
     ).validated()
-    experiment.truncated = _truncation(
-        p.name, header.get("n_results"), len(rows), "results"
+    # Both gaps, joined, never one replacing the other. What the WRITER of
+    # this file had already left out is in the header; what the file itself
+    # is missing is computed from the header's count against the rows read.
+    # Assigning only the second is how the first died: a capped import
+    # declares 3 and writes 3, so the recomputed sentence is empty and
+    # overwrote a warning somebody had authored.
+    experiment.truncated = " ".join(
+        said
+        for said in (
+            str(header.get("truncated") or ""),
+            _truncation(p.name, header.get("n_results"), len(rows), "results"),
+        )
+        if said
     )
     return experiment
 
@@ -1266,6 +1326,13 @@ class Comparison:
     # the dataset was read and has none. Different answers.
     references: int | None = None
     delta_distribution: dict | None = None
+    # Every metric name a measured row on either side carries, this one
+    # included. The gate that refuses an unrecorded metric already computes
+    # this set and then threw it away, so a caller who picked a metric that
+    # exists but is not orderable -- an Inspect log's "C"/"I" marker is the
+    # case that made this necessary -- got a table of unmeasurable rows and
+    # nowhere to read what else was in the file.
+    metrics_present: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -1286,6 +1353,7 @@ class Comparison:
             "floor_note": self.floor_note,
             "references": self.references,
             "delta_distribution": self.delta_distribution,
+            "metrics_present": list(self.metrics_present),
             "rows": [r.to_dict() for r in self.rows],
             "notes": list(self.notes),
             "means": self.means(),
@@ -1682,6 +1750,7 @@ def compare_experiments(
         delta_distribution=_distribution(
             [r.delta for r in rows if r.delta is not None]
         ),
+        metrics_present=sorted(present),
         notes=notes,
     )
 
@@ -1735,8 +1804,16 @@ def render(comparison: Comparison, *, limit: int = 12) -> str:
         f"  {counts[BETTER]} better · {counts[WORSE]} worse · "
         f"{counts[UNCHANGED]} unchanged · {counts[UNMEASURABLE]} could not be "
         f"measured · {comparison.n_cases} cases",
-        "",
     ]
+    # The other metrics, on the second line, because the commonest way to
+    # misread this table is to have picked a metric that exists and cannot be
+    # ordered -- an imported eval's "C"/"I" marker produces exactly that, a
+    # full page of `unmeasurable` with the reason repeated forty times. The
+    # names of what else is in the files are the next command to run.
+    others = [m for m in comparison.metrics_present if m != comparison.metric]
+    if others:
+        out.append(f"  also recorded: {', '.join(others)}")
+    out.append("")
     # Sized to the ids actually present rather than to a fixed guess, so
     # nothing is cut unless an id is genuinely enormous -- and when one is, it
     # is cut VISIBLY and counted at the bottom. A silently shortened id is a
@@ -1780,4 +1857,536 @@ def render(comparison: Comparison, *, limit: int = 12) -> str:
         )
     out.append("")
     out.append("  " + comparison.means().replace("\n\n", "\n  "))
+    return "\n".join(out)
+
+
+# ------------------------------------------------ an eval log, as a run
+
+
+def _score_names(run) -> set:
+    """Every metric name the LOG itself uses, anywhere in the run.
+
+    Computed once for the whole run and not per row, because ownership of a
+    name is a fact about the log and not about one sample. A scorer that ran
+    on sample `b` and errored on sample `a` still owns `match_correct` on
+    both -- and a per-row check sees a free name on `a`, writes a derived 1.0
+    into it, and produces one column holding two kinds of number: half
+    measured by somebody's scorer and half transcribed from a marker here,
+    with nothing on either row saying which. `--metric match_correct` then
+    ranks the two against each other, `derived_scores` calls the whole column
+    derived, and `score_summary` takes a median across the mixture.
+    """
+    return {
+        str(name)
+        for row in getattr(run, "rows", [])
+        for name in getattr(row, "scores", {})
+    }
+
+
+def _inspect_scores(row, owned: set) -> tuple[dict, dict, list, dict]:
+    """One sample's scores, what could not be recorded, and what was derived.
+
+    `owned` is every name the log uses anywhere in the run -- see
+    `_score_names`. Returns `(kept, dropped, derived, not_derived)`, the last
+    being marker names that got no numeric column, each with the sentence
+    saying why: "there is no `match_correct` to compare" is otherwise
+    indistinguishable from this converter having forgotten.
+
+    Three things happen here and each one is a decision:
+
+    1. A NON-FINITE value is dropped with a sentence. `write_experiment`
+       refuses a NaN anywhere in a row and its message says the row should
+       have carried `could_not_measure` instead -- so putting it there is this
+       converter's job, not the file writer's job to raise half way through a
+       file it has already begun.
+    2. Everything else survives BYTE FOR BYTE. A string stays a string.
+    3. Inspect's C/I marker gets a numeric companion under its own name, and
+       only when the log does not use that name ANYWHERE. A scorer literally
+       called `match_correct` owns it, and overwriting it would replace a
+       number somebody measured with one derived here.
+    """
+    kept: dict = {}
+    dropped: dict = dict(row.skipped_scores)
+    for name, value in row.scores.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            dropped[name] = (
+                "the log recorded a non-finite number (a NaN or an infinity), "
+                "which is a measurement that did not work rather than a value"
+            )
+            continue
+        kept[name] = value
+
+    derived: list[str] = []
+    not_derived: dict = {}
+    for name, value in list(kept.items()):
+        if not isinstance(value, str):
+            continue
+        number = SCORE_MARKERS.get(value.strip().upper())
+        if number is None:
+            continue
+        companion = f"{name}{DERIVED_SUFFIX}"
+        if companion in kept or companion in owned:
+            not_derived[name] = (
+                f"this log has its own `{companion}` scorer, so the marker "
+                f"was left as the log wrote it rather than given a number "
+                f"under a name somebody else's scorer already owns"
+            )
+            continue
+        kept[companion] = number
+        derived.append(companion)
+    return kept, dropped, derived, not_derived
+
+
+def _inspect_could_not_measure(row, kept: dict, dropped: dict) -> str:
+    """Why a row has no scores, or `""` when it has some.
+
+    `Result.could_not_measure` is documented as "the sentence saying why this
+    row has no scores. Empty when it does", and that contract is what decides
+    this: an unscored sample is not a measured row with an empty dict, it is a
+    row nothing measured. The alternative -- leaving it empty and letting
+    `_score_of` say "measured this case but recorded no `X` score" -- reads as
+    though a scorer ran and declined, and makes `n_measured` count samples the
+    eval never scored.
+    """
+    if kept:
+        return ""
+    if row.error:
+        return (
+            f"the log records this sample as errored and no score survived "
+            f"it: {row.error}"
+        )
+    if dropped:
+        named = "; ".join(f"`{k}` — {why}" for k, why in sorted(dropped.items()))
+        return (
+            f"no score on this sample could be recorded: {named}. An "
+            f"unreadable score is not a score of zero."
+        )
+    return (
+        "the log recorded no score for this sample at all, which is not a "
+        "score of zero — nothing measured it."
+    )
+
+
+def from_inspect(run, *, name: str = "", label: str = "") -> tuple[Experiment, Dataset]:
+    """An Inspect eval log's scores, as an experiment and the set it ran on.
+
+    `run` is an already-read `inspect_io.ScoredRun`. Taken rather than read,
+    for the reason `from_traces` takes already-fetched documents: this module
+    never opens somebody else's format, which is what lets both be tested
+    without one and keeps `inspect_io` a leaf the server can import lazily
+    inside its route.
+
+    Returns `(experiment, dataset)`. Both, because they are only useful
+    together: the experiment records this run's scores and the dataset records
+    what each case ASKED, and `compare_experiments` refuses to compare two
+    runs that do not record the same dataset fingerprint. Building only the
+    experiment would produce a file that cannot be compared to anything.
+
+    ## What it does not do
+
+    It does not decide whether the eval went well. Inspect's own markers are
+    transcribed (see `SCORE_MARKERS`), everything else is copied, and nothing
+    here invents a verdict, a threshold or a metric floor -- `metric_floors`
+    stays empty because a floor is a claim about a metric's precision that
+    only whoever computed it can make.
+    """
+    from . import __version__
+
+    head = run.header
+    task = str(getattr(head, "task", "") or "")
+    model = str(getattr(head, "model", "") or "")
+    log_name = str(getattr(run, "log_name", "") or "")
+    # The receipt writer's truncation, applied here rather than in the reader:
+    # `DIGEST_CHARS` is this side of the fence's rule about how short a
+    # provenance label gets to be, and `inspect_io` does not import receipts.
+    log_sha = str(getattr(run, "log_sha256", "") or "")[: receipts.DIGEST_CHARS]
+
+    rows: list[Result] = []
+    cases: list[Case] = []
+    skipped_scores: dict = {}
+    derived_names: set[str] = set()
+    not_derived: dict = {}
+    sample_errors: dict = {}
+    # Decided once for the whole run, before any row is converted: which names
+    # the log itself owns is a fact about the log, not about one sample.
+    owned = _score_names(run)
+
+    for row in run.rows:
+        kept, dropped, derived, left = _inspect_scores(row, owned)
+        derived_names.update(derived)
+        not_derived.update(left)
+        if dropped:
+            skipped_scores[row.case_id] = dropped
+        if row.error and kept:
+            # An Inspect sample can be errored AND scored -- a scorer that ran
+            # on a partial transcript. The scores are real, so the row stays
+            # measured and `could_not_measure` (which flips `measured`) is the
+            # wrong place for the error; without this the one thing the log
+            # recorded about a row somebody is about to compare reached
+            # nowhere in the experiment at all. `Result` has no per-row note
+            # field to put it on, which is the schema friction worth naming.
+            sample_errors[row.case_id] = row.error
+
+        rows.append(
+            Result(
+                case_id=row.case_id,
+                output=row.output,
+                scores=kept,
+                could_not_measure=_inspect_could_not_measure(row, kept, dropped),
+                receipt=receipts.Receipt(
+                    op="inspect_import",
+                    # Through the same sanitiser `stamp()` puts its request
+                    # block through. Nothing here should be able to carry a
+                    # path -- `log_name` is a bare filename by construction --
+                    # but this is the one receipt in the tree built without
+                    # `stamp`, and skipping the reduction would make it the one
+                    # the leak test's rule was never applied to.
+                    request=receipts._request(
+                        {
+                            "task": task,
+                            "log_name": log_name,
+                            "log_sha256": log_sha,
+                            "log_format_version": getattr(head, "version", 0),
+                            "sample_id": row.id,
+                            "epoch": row.epoch,
+                            "n_samples": getattr(head, "n_samples", 0),
+                        }
+                    ),
+                    tool_version=__version__,
+                    # `public_name` even though an Inspect model id is normally
+                    # `provider/model`: it can be a local path for a locally
+                    # served model, and a receipt is the part of a finding most
+                    # likely to be forwarded to a stranger.
+                    model=receipts.public_name(model) or None,
+                    prompt_sha256=(
+                        receipts.digest(row.input_text) if row.input_text else None
+                    ),
+                    # When the eval ran, from the log -- NOT now. Stamping the
+                    # import time here would date somebody else's measurement
+                    # to the moment this machine happened to read it.
+                    measured_at=str(getattr(head, "created", "") or ""),
+                ).to_dict(),
+            )
+        )
+        cases.append(
+            Case(
+                case_id=row.case_id,
+                input_text=row.input_text,
+                # Inspect's `target` is a real answer key, and absent stays
+                # absent: `None` and `""` serialise differently and the
+                # fingerprint is built to keep them apart.
+                reference=row.target,
+                meta={"sample_id": row.id, "epoch": row.epoch},
+            )
+        )
+
+    dataset = Dataset(
+        name=task or log_name or "inspect-log",
+        cases=cases,
+        description=(
+            f"Every sample in {log_name or 'an Inspect log'}, with the target "
+            f"the log states as its expected output."
+        ),
+        created_at=str(getattr(head, "created", "") or ""),
+    ).validated()
+
+    n_total = int(getattr(run, "n_total", len(run.rows)) or len(run.rows))
+    experiment = Experiment(
+        name=name or task or log_name or "inspect-import",
+        dataset_name=dataset.name,
+        dataset_fingerprint=dataset.fingerprint(),
+        results=rows,
+        label=label or model,
+        started_at=str(getattr(head, "created", "") or ""),
+        meta={
+            "source": INSPECT,
+            "task": task,
+            "model": model,
+            "log_name": log_name,
+            "log_sha256": log_sha,
+            "log_format_version": getattr(head, "version", 0),
+            "n_samples_total": n_total,
+            "n_samples_read": len(run.rows),
+            # Stated in the FILE, not only in this module, so a reader holding
+            # the .jsonl a year from now can see where a `_correct` column came
+            # from without this source in front of them.
+            "score_markers": dict(SCORE_MARKERS),
+            "derived_scores": sorted(derived_names),
+            "markers_not_derived": not_derived,
+            "skipped_scores": skipped_scores,
+            "sample_errors": sample_errors,
+            # The log's own creation time, recorded whether or not it has one.
+            # An empty string here is the file SAYING the log stated none,
+            # which is what separates it from a converter that lost it.
+            "log_created": str(getattr(head, "created", "") or ""),
+            "means": _from_inspect_means(
+                task,
+                model,
+                log_name,
+                rows,
+                n_total,
+                sorted(derived_names),
+                skipped_scores,
+                not_derived,
+                sample_errors,
+                str(getattr(head, "created", "") or ""),
+            ),
+        },
+    ).validated()
+
+    if getattr(run, "truncated", False):
+        # The same correction the listing path already carries. An experiment
+        # 5,000 rows into a 6,000-sample eval that says nothing about the gap
+        # is one somebody compares as though it were the whole run.
+        experiment.truncated = (
+            f"this log carries {n_total} samples and only the first "
+            f"{len(run.rows)} were read, so this run is "
+            f"{n_total - len(run.rows)} row(s) short of the eval it names."
+        )
+    return experiment, dataset
+
+
+def _from_inspect_means(
+    task: str,
+    model: str,
+    log_name: str,
+    rows: list,
+    n_total: int,
+    derived: list,
+    skipped: dict,
+    not_derived: dict,
+    sample_errors: dict,
+    created: str,
+) -> str:
+    measured = sum(1 for r in rows if r.measured)
+    where = f" ({task})" if task else ""
+    who = f" on {model}" if model else ""
+    head = (
+        f"{len(rows)} of {n_total} sample(s) from "
+        f"{log_name or 'an Inspect log'}{where}{who}: {measured} carry a score "
+        f"and {len(rows) - measured} do not, and each of those says why."
+    )
+    made = (
+        (
+            f" {len(derived)} column(s) were DERIVED here rather than read from "
+            f"the log — {', '.join(derived)} — each one Inspect's own C/I "
+            f"marker written as {SCORE_MARKERS['C']}/{SCORE_MARKERS['I']} under "
+            f"a new name, because a string cannot be ordered against another. "
+            f"The marker itself is still in the row exactly as the log wrote it."
+        )
+        if derived
+        else (
+            " No column was derived: nothing in this log used Inspect's C/I "
+            "marker, so every score here is one the log itself recorded."
+        )
+    )
+    left_alone = ", ".join(
+        f"{marker} (would have been {marker}{DERIVED_SUFFIX})"
+        for marker in sorted(not_derived)
+    )
+    kept_as_written = (
+        (
+            f" {len(not_derived)} marker(s) got NO derived number — "
+            f"{left_alone} — because this log has its own scorer under that "
+            f"name on some row, and a column somebody measured is not one to "
+            f"write into. Compare on the log's own column, not on a derived "
+            f"one that is not in this file."
+        )
+        if not_derived
+        else ""
+    )
+    lost = (
+        f" {len(skipped)} sample(s) carried a score entry this reader could not "
+        f"take a value from; they are listed under `skipped_scores` with the "
+        f"reason, rather than counted as unscored."
+        if skipped
+        else ""
+    )
+    errored = (
+        f" {len(sample_errors)} scored sample(s) are ALSO marked errored in the "
+        f"log — a scorer that ran on a transcript that crashed. Their scores "
+        f"are real and the rows are measured; what the log said went wrong is "
+        f"under `sample_errors`, keyed by case id."
+        if sample_errors
+        else ""
+    )
+    # An absent date is stated rather than left to be noticed. The file's own
+    # `started_at` is empty in this case, and a reader who finds a run with no
+    # date on it has to be able to tell "the log stated none" from "whatever
+    # wrote this dropped it".
+    when = (
+        ""
+        if created
+        else (
+            " This log states no time at which it ran, so this run carries no "
+            "start time either — an import moment is not when somebody else's "
+            "eval happened."
+        )
+    )
+    return (
+        f"{head}{made}{kept_as_written}{lost}{errored}{when} No verdict, no "
+        f"floor and no threshold is set here: what the eval measured is a "
+        f"fact, and what counts as a regression is a decision for whoever "
+        f"compares two of these."
+    )
+
+
+# ------------------------------------------------- what one run measured
+
+
+def score_summary(experiment: Experiment) -> dict:
+    """Every metric one run recorded, counted — the run's own table of scores.
+
+    `compare_experiments` answers "what moved between two runs". This answers
+    the question that comes before it and had no reader at all: what is IN
+    this file. A converted eval log is the case that needs it — somebody
+    holding a fresh experiment has no way to learn which metric to pass to
+    `--metric` without opening the JSONL by hand.
+
+    Never an aggregate ACROSS metrics, for the reason `Comparison.means`
+    gives: two collapsing and three improving average out to fine.
+    """
+    rows = experiment.results
+    values: dict[str, list] = {}
+    for row in rows:
+        if not row.measured:
+            continue
+        for metric, value in row.scores.items():
+            if isinstance(metric, str):
+                values.setdefault(metric, []).append(value)
+
+    metrics = []
+    for metric in sorted(values):
+        got = values[metric]
+        # bool is an int, and this project refuses to rank one — so a metric
+        # carrying a boolean is summarised by its VALUES, not by a median.
+        numbers = [
+            float(v)
+            for v in got
+            if not isinstance(v, bool) and isinstance(v, (int, float))
+        ]
+        all_numeric = len(numbers) == len(got) and bool(numbers)
+        metrics.append(
+            {
+                "metric": metric,
+                "n": len(got),
+                # Counted, not inferred: a metric on 3 of 40 rows is a
+                # different fact from one on all 40, and the gap is the story.
+                "n_missing": len(rows) - len(got),
+                "numbers": all_numeric,
+                # `None`, never 0, for a metric that is not a number. A median
+                # of zero and no median at all are different answers.
+                "median": statistics.median(numbers) if all_numeric else None,
+                "min": min(numbers) if all_numeric else None,
+                "max": max(numbers) if all_numeric else None,
+                "values": (
+                    None
+                    if all_numeric
+                    else _value_counts([_score_label(v) for v in got])
+                ),
+            }
+        )
+
+    unmeasured = [r for r in rows if not r.measured]
+    return {
+        "name": experiment.name,
+        "label": experiment.label,
+        "dataset_name": experiment.dataset_name,
+        "dataset_fingerprint": experiment.dataset_fingerprint,
+        "n_results": len(rows),
+        "n_measured": experiment.n_measured,
+        "n_unmeasured": len(unmeasured),
+        "metrics": metrics,
+        # The distinct REASONS, counted. Forty copies of one sentence is one
+        # finding, and printing it forty times buries the second one.
+        "why_unmeasured": _value_counts([r.could_not_measure for r in unmeasured]),
+        "truncated": experiment.truncated,
+        "means": _score_summary_means(experiment, metrics, len(unmeasured)),
+    }
+
+
+def _score_label(value) -> str:
+    """A score value as one short readable token."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:,.6g}"
+    return str(value)
+
+
+def _value_counts(labels: list) -> dict:
+    out: dict = {}
+    for label in labels:
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _score_summary_means(experiment: Experiment, metrics: list, unmeasured: int) -> str:
+    if not metrics:
+        return (
+            f"{experiment.name} carries {len(experiment.results)} row(s) and no "
+            f"metric at all — nothing in it was scored, which is not every case "
+            f"scoring zero. Each row says why it has none."
+        )
+    named = ", ".join(f"{m['metric']} ({m['n']})" for m in metrics)
+    orderable = [m["metric"] for m in metrics if m["numbers"]]
+    gate = (
+        f" {', '.join(orderable)} can be passed to `--metric`; the rest are not "
+        f"numbers and cannot be ordered against another run."
+        if orderable
+        else (
+            " None of these is a number, so none can be ordered against another "
+            "run — a comparison would report every row as unmeasurable."
+        )
+    )
+    return (
+        f"{experiment.name}: {len(experiment.results)} row(s), {unmeasured} of "
+        f"them with no score. Metrics recorded, with how many rows carry each: "
+        f"{named}.{gate}"
+    )
+
+
+def render_scores(experiment: Experiment, *, limit: int = 20) -> str:
+    """One run's metrics as a terminal table — the reader `score_summary` needs."""
+    summary = score_summary(experiment)
+    label = f" · {summary['label']}" if summary["label"] else ""
+    out = [
+        f"{summary['name']}{label} · {summary['dataset_name'] or 'no dataset named'}",
+        f"  {summary['n_results']} row(s) · {summary['n_measured']} scored · "
+        f"{summary['n_unmeasured']} with no score",
+        "",
+    ]
+    if not summary["metrics"]:
+        out.append("  no metric was recorded for any row in this run")
+    width = min(
+        MAX_ID_COLUMN, max((len(m["metric"]) for m in summary["metrics"]), default=8)
+    )
+    for metric in summary["metrics"][:limit]:
+        if metric["numbers"]:
+            shown = (
+                f"median {metric['median']:,.6g} "
+                f"(range {metric['min']:,.6g} to {metric['max']:,.6g})"
+            )
+        else:
+            shown = ", ".join(f"{v}x{n}" for v, n in metric["values"].items())
+        out.append(f"  {metric['metric']:<{width}} {metric['n']:>4} rows  {shown}")
+        if metric["n_missing"]:
+            # Named rather than implied. A metric on 3 of 40 rows read as a
+            # metric on 40 is how a partial scorer looks like a complete one.
+            blank = ""
+            out.append(
+                f"  {blank:<{width}}        {metric['n_missing']} row(s) do "
+                f"not carry it"
+            )
+    if len(summary["metrics"]) > limit:
+        out.append(
+            f"  … {len(summary['metrics']) - limit} more metric(s), not shown "
+            f"here — the summary itself carries all of them"
+        )
+    for why, n in summary["why_unmeasured"].items():
+        out.append(f"\n  {n} row(s): {why}")
+    if summary["truncated"]:
+        out.append(f"\n  {summary['truncated']}")
+    out.append("")
+    out.append("  " + summary["means"])
     return "\n".join(out)

@@ -98,6 +98,20 @@ def test_an_unrecognised_version_is_refused_with_the_version_named(tmp_path):
     assert "Refusing rather than guessing" in message
 
 
+def test_reading_a_sample_straight_out_is_gated_on_the_version_too(tmp_path):
+    """The gate held for `header()` and for the sample-not-found path and
+    NOWHERE ELSE. `read_sample` drew steps out of a log of any format version,
+    so a caller reaching straight for a sample — which is every caller that
+    already knows which sample it wants — got a full timeline of real-looking
+    steps out of a schema that had moved. That is precisely the failure the
+    version gate exists to prevent, arrived at through the front door."""
+    path = _log(tmp_path, version=7, samples=[_sample("a")])
+    with pytest.raises(BadRequest, match="version 7"):
+        inspect_io.read_sample(path, sample_id="a")
+    with pytest.raises(BadRequest, match="version 7"):
+        inspect_io.read_sample(path)  # and the default failing-sample path
+
+
 def test_a_log_with_no_version_is_refused(tmp_path):
     path = _log(tmp_path, samples=[_sample()], header={"version": None})
     with pytest.raises(BadRequest, match="does not state a format version"):
