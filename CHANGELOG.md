@@ -8,6 +8,40 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **`ce_recovered` is reachable at last — a route, a `modelmri sae fidelity`
+  verb, and a quality card beside the SAE picker.** It is the best SAE-quality
+  number this tool computes: CE-recovered with the ablation floor **named**, and
+  all three raw losses carried so a reader can undo the floor choice and redo it
+  under the other one. It had a cost estimator, a passes formula and a test
+  file, and no way to reach any of it — the README cited the capability.
+
+  `GET /api/sae/fidelity/estimate` is free arithmetic (`3n + 2`);
+  `POST /api/sae/fidelity/cost` is the measured projection and **says that it
+  spends three real passes to make it**; `POST /api/sae/fidelity` runs it. All
+  three sit under `/api/sae/` and not `/api/features/`, because
+  `/api/features/{feature_id}` has no path converter and would shadow them with
+  a 422 — and because the demo's `/api/features/` prefix answers 200 with a
+  single feature's payload, which would have rendered a fabricated fidelity
+  number as a measurement.
+
+  **`floor` still has no default, on any of the four surfaces that could have
+  reintroduced one** — no pydantic default, no query-string default, no
+  argparse `default=`, no pre-selected `<option>`. The same percentage under the
+  other floor is a different number and cannot be converted after the fact, so
+  the reader is asked. One threshold and one arithmetic function feed the route,
+  the estimate and the CLI, so no surface carries its own copy of the gate.
+
+  The card shows **"not measured" before the first run, never 0%**, names the
+  floor on the card itself, and puts the three losses in a disclosure under it.
+
+  Two defects in the first draft, both found in review: a stale pass count from
+  a previously pasted corpus could sit beside a button about to spend a *file's*
+  — and because the run sent `confirm: passes !== null`, **that false count was
+  the confirmation**, bypassing the budget gate for a corpus nobody had counted.
+  And `--max-sequences 0` exited with a traceback instead of a sentence; the
+  refusal it would have used blamed the corpus, when the corpus may hold plenty
+  and the flag is what emptied it.
+
 - **An Inspect eval log's per-sample scores now reach the `Experiment` it
   becomes**, with `modelmri eval-import` to do it from a shell.
   `inspect_io._scores` had been parsing them all along and the import path

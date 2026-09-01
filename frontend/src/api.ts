@@ -3814,6 +3814,166 @@ export const loadSAEFrom = (repo: string, hook: string) =>
     body: JSON.stringify({ repo, hook }),
   }).then((r) => json<SAEStatus>(r));
 
+// ------------------------------------ what the SAE costs the model's answers
+//
+// `SAECalibration` above is the ACTIVATION-space half: FVU and L0 ask whether
+// the reconstruction is close to the vector the SAE was handed. The model does
+// not care about that vector, it cares about the logits, and the directions
+// carrying the residual stream's variance are not the directions the next
+// token depends on — so an SAE can post an excellent FVU and still cost the
+// model most of its predictive loss. This is the output-space half, and the
+// two belong on one card.
+
+/** CE-recovered, the three losses under it, and what they are losses OF.
+ *
+ *  The ratio is not the first field on purpose. It is the only number here that
+ *  depends on a choice the reader did not make — the floor — and the three
+ *  losses it is built from are all present so that choice can be undone.
+ */
+export interface CEFidelity {
+  repo: string;
+  hook: string;
+  layer: number;
+  point: string;
+  /** "mean_ablate" or "zero_ablate", by name, because the percentage is not
+   *  interpretable without it. There is no default on either side of the wire. */
+  floor: string;
+  floor_means: string;
+  /** Tokens the mean floor vector was averaged over. `null` for the zero
+   *  floor, which is not averaged from anything — never 0, which would claim a
+   *  mean taken over an empty corpus. */
+  n_floor_tokens: number | null;
+  /** Nats per predicted token, all three, on the corpus named below. */
+  ce_clean: number;
+  ce_recon: number;
+  ce_ablate: number;
+  numerator: number;
+  denominator: number;
+  /** NOT clamped, in either direction. Below zero is a real answer and it means
+   *  the reconstruction predicts worse than destroying the activation does, so
+   *  a bar width or a `Math.max(0, x)` here would hide the one finding this
+   *  measurement exists to make. */
+  ce_recovered: number;
+  corpus_label: string;
+  corpus_sha256: string;
+  n_sequences: number;
+  n_sequences_given: number;
+  truncated: boolean;
+  /** The first token of a sequence is fed and never predicted, so this is
+   *  `sum(len - 1)` and not `n_tokens_seen` beside it. */
+  n_tokens: number;
+  n_tokens_seen: number;
+  calibration: SAECalibration;
+  calibrated_here: boolean;
+  replay_deviation_nats: number;
+  splice_deviation_nats: number;
+  passes: number;
+  elapsed_s: number;
+  means: string;
+  receipt?: Receipt | null;
+}
+
+/** `3n + 2`, and the gate the run is held behind.
+ *
+ *  `confirm_above` and `needs_confirmation` come from the server so the panel
+ *  never carries its own copy of the threshold — a copied threshold is one that
+ *  drifts from the thing it is supposed to describe.
+ */
+export interface CEFidelityPrice {
+  n_sequences: number;
+  passes: number;
+  confirm_above: number;
+  needs_confirmation: boolean;
+  means: string;
+}
+
+/** `budget.Estimate` — one measured pass scaled up to the whole loop.
+ *
+ *  Every nullable field here is UNKNOWN and never zero: Apple's unified memory
+ *  and Intel XPU report no free bytes at all, and a `?? 0` would say the
+ *  machine is out of memory when nobody asked it. `verdict: "unknown"` is what
+ *  says the projection could not be checked against anything.
+ */
+export interface BudgetEstimate {
+  passes: number;
+  seconds: number | null;
+  peak_bytes: number | null;
+  /** Declared by the caller from the real shapes, never inferred. */
+  retained_bytes: number;
+  free_bytes: number | null;
+  fraction_of_free: number | null;
+  verdict: "ok" | "tight" | "refuse" | "unknown";
+  basis: string;
+  unmeasured: string;
+  notes: string[];
+}
+
+/** The same pass count, plus what a pass costs on THIS machine. */
+export interface CEFidelityCost {
+  estimate: BudgetEstimate;
+  probe: {
+    seconds: number;
+    memory: {
+      peak_bytes: number | null;
+      free_bytes: number | null;
+      total_bytes: number | null;
+      source: string;
+      /** Filled exactly when something above is null. */
+      reason: string;
+    };
+    device_kind: string;
+  };
+  passes: number;
+  n_sequences: number;
+  /** A pass over 64 tokens does not price a pass over 512, so the length the
+   *  probe actually ran on travels with the projection. */
+  probed_sequence_length: number;
+  means: string;
+}
+
+export const saeFidelityPrice = (nSequences: number) =>
+  fetch(`/api/sae/fidelity/estimate?sequences=${nSequences}`).then((r) =>
+    json<CEFidelityPrice>(r),
+  );
+
+export const saeFidelityCost = (body: {
+  texts?: string[];
+  file?: string;
+  max_sequences?: number | null;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Timing this run means running the model three times — a warm-up, a " +
+          "capture and one probe pass — to find out what the 3n+2 of the real " +
+          "sweep would cost.",
+      )
+    : fetch("/api/sae/fidelity/cost", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<CEFidelityCost>(r));
+
+export const saeFidelity = (body: {
+  texts?: string[];
+  file?: string;
+  label?: string;
+  floor: string;
+  max_sequences?: number | null;
+  confirm?: boolean;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Scoring an SAE's reconstruction takes three forward passes per " +
+          "sequence of YOUR corpus plus two for the resolution — 32 of them " +
+          "for ten lines — each one against a live model, and the corpus is " +
+          "yours so nothing about it can be baked.",
+      )
+    : fetch("/api/sae/fidelity", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<CEFidelity>(r));
+
 export interface LensRow {
   layer: number;
   tokens: string[];

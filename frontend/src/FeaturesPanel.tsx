@@ -24,6 +24,7 @@ import {
 import ReceiptLine from "./ReceiptLine";
 import FeatureEvidencePanel from "./FeatureEvidence";
 import NeuronEvidencePanel from "./NeuronEvidencePanel";
+import SaeFidelityCard from "./SaeFidelity";
 import { DEMO } from "./demo";
 import { VIEWER } from "./viewer";
 
@@ -497,6 +498,22 @@ export default function FeaturesPanel({
           . The logit lens below asks a different question of the same residual
           stream and needs no SAE.
         </div>
+      )}
+
+      {/* The output-space half of the banner above, sited beside it because
+          they answer the same question in two spaces and disagreeing is the
+          interesting case: an SAE can reconstruct the activations beautifully
+          and still cost the model most of its predictive loss, because the
+          directions carrying the residual stream's variance are not the
+          directions the next token depends on.
+
+          `!DEMO && !VIEWER`, like the ranking below. Every pass here is
+          against a live model over a corpus the reader supplies, so there is
+          nothing to bake — and `/api/sae/fidelity` sits under `/api/sae/`
+          precisely so that a demo build cannot be answered 200 by demo.ts's
+          `/api/features/` prefix with a single feature's detail payload. */}
+      {!DEMO && !VIEWER && (
+        <SaeFidelityCard sae={sae} epoch={epoch} disabled={busy !== ""} />
       )}
 
       {summary && (!cal || cal.usable) && (

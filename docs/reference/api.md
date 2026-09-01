@@ -95,8 +95,11 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/features/{feature_id}` | Feature Detail |
 | `GET` | `/api/sae` | Sae Status |
 | `GET` | `/api/sae/available` | Sae Available |
+| `GET` | `/api/sae/fidelity/estimate` | Sae Fidelity Estimate |
 | `GET` | `/api/steer` | Steer Status |
 | `POST` | `/api/features/evidence` | Feature Evidence |
+| `POST` | `/api/sae/fidelity` | Sae Fidelity |
+| `POST` | `/api/sae/fidelity/cost` | Sae Fidelity Cost |
 | `POST` | `/api/sae/load` | Sae Load |
 | `POST` | `/api/steer` | Steer |
 
@@ -276,6 +279,78 @@ mostly made of.
 generated label would be the one thing on the page nothing measured. It also
 inherits `saes.py`'s calibration refusal, so unlike the dashboards it competes
 with it cannot show features from an SAE fed the wrong convention.
+
+## How good is this SAE, in the space the model actually uses?
+
+`POST /api/sae/fidelity` with `{"texts": [...]}` or `{"file": "corpus.txt"}`,
+**`floor`** (required), optional `label`, `max_sequences` and `confirm`.
+Priced by `GET /api/sae/fidelity/estimate?sequences=N` and, on this machine,
+by `POST /api/sae/fidelity/cost`.
+
+`GET /api/sae` already reports FVU and L0, and both are **activation-space**
+numbers: they ask whether the reconstruction is close to the vector the SAE was
+handed. The model does not care about that vector, it cares about the logits,
+and the directions carrying the residual stream's variance are not the
+directions the next token depends on. So an SAE can post an excellent FVU and
+still cost the model most of its predictive loss. This is the output-space
+half: the model's own cross-entropy on your text, again with the SAE's
+reconstruction spliced into the hook, and again with the activation replaced by
+a floor.
+
+| field | what it is |
+|---|---|
+| `ce_recovered` | `(ce_ablate - ce_recon) / (ce_ablate - ce_clean)` |
+| `ce_clean` / `ce_recon` / `ce_ablate` | the three losses it is built from, nats per predicted token |
+| `floor` / `floor_means` | which ablation the percentage is against, by name and in a sentence |
+| `n_floor_tokens` | tokens the mean floor was averaged over — `null` for the zero floor, never 0 |
+| `corpus_label` / `corpus_sha256` | what you call the text, and what actually ran |
+| `n_sequences` / `n_sequences_given` / `truncated` | what was scored against what was offered |
+| `calibration` | the activation-space half, whole, so `fvu` and `l0` sit beside the percentage |
+| `replay_deviation_nats` / `splice_deviation_nats` | the resolution every difference above is read against |
+| `passes` / `elapsed_s` | `3n + 2`, and what it took here |
+
+**`floor` has no default and never will.** Mean-ablation replaces the
+activation with the mean vector of *this corpus at this hook*; zero-ablation
+replaces it with the zero vector, which is a point the stream never visits. The
+two give different percentages for the same reconstruction and cannot be
+converted into each other after the fact, so a default would answer a question
+the reader has to be told the answer to. All three raw losses come back so the
+choice can be undone.
+
+**Nothing is clamped.** A `ce_recovered` below zero means the reconstruction
+predicts *worse* than destroying the activation does. That is a real answer and
+the one this measurement most exists to find; clamping it to 0 would report a
+broken SAE as a merely useless one.
+
+**It refuses rather than dividing by noise.** When the floor moves the model's
+loss by less than the run can resolve — measured, on the corpus in hand, from
+writing the model's own stream back through the same hook unchanged — the ratio
+would be a small difference over a smaller one. The three losses are real and
+they are in the refusal.
+
+**`3n + 2` forward passes**, three per sequence plus two taken once for that
+resolution. `GET /api/sae/fidelity/estimate?sequences=N` is arithmetic and
+answers with nothing loaded; it also publishes `confirm_above` and
+`needs_confirmation`, because above that many passes the run refuses without
+`confirm: true` rather than starting. `POST /api/sae/fidelity/cost` spends
+three real passes — a warm-up, a capture and a probe — to say what one costs
+here, and reports `probed_sequence_length`, because a pass over 64 tokens does
+not price a pass over 512.
+
+**A `file` is an id or a path, and either way the server opens it.** Ids come
+from `GET /api/corpus/available`; a typed path is descended to rather than
+constructed from. Both carry the not-from-this-machine guard, because a path in
+a body names a file on the *server's* disk.
+
+On the command line:
+
+```
+modelmri sae fidelity --model google/gemma-2-2b --corpus notes.txt \
+    --floor mean_ablate [--sae REPO --hook HOOK] [--max-sequences N] [--yes]
+```
+
+which prints the projection before it loads anything, and refuses past the same
+gate without `--yes`.
 
 ## Patchscopes — ask the model what it is holding
 

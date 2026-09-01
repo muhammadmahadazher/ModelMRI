@@ -171,6 +171,32 @@ EXEMPT = {
         "otherwise answer it 200 "
         "with a single feature's detail payload"
     ),
+    # Three routes, one card, and the same argument as the feature ranking
+    # above. CE-recovered is three forward passes per sequence of a corpus the
+    # VISITOR supplies plus two for the resolution — 32 of them for ten pasted
+    # lines — every one against a live model, so nothing about it can be baked;
+    # and a percentage is the shape of answer a visitor is most likely to
+    # believe without reading what produced it. The card is gated off at its
+    # mount in FeaturesPanel.tsx instead, which `sae_fidelity_is_not_offered`
+    # below keeps true, and api.ts refuses the two measuring calls through
+    # `noModelHere` as a second lock.
+    "/api/sae/fidelity": (
+        "scores what an SAE's reconstruction costs the model's own "
+        "predictions, three forward passes per sequence of the reader's own "
+        "corpus plus two for the resolution — 32 for ten lines — against a "
+        "live model; the card is gated off in demo and viewer builds instead"
+    ),
+    "/api/sae/fidelity/cost": (
+        "times one real iteration of that loop — a warm-up, a capture and a "
+        "probe pass — to say what it would cost on THIS machine, and there is "
+        "no machine behind this page to measure"
+    ),
+    "/api/sae/fidelity/estimate": (
+        "prices 3n+2 for the card above. Arithmetic, and it would answer "
+        "correctly, but the control that asks it is not built here — a price "
+        "quoted for a run this page cannot start describes a wait nobody is "
+        "going to have"
+    ),
     # --- the control, and two readers of a database this page does not have --
     "/api/attention/control": (
         "builds a SECOND model — the same architecture with random weights — "
@@ -460,6 +486,85 @@ def feature_ranking_is_not_offered() -> None:
         f"{dead} is in the demo bundle, which means the annotation is gated on "
         f"a runtime value instead of on !DEMO && !VIEWER and rollup could not "
         f"drop it",
+    )
+
+
+def sae_fidelity_is_not_offered() -> None:
+    """The CE-recovered card must be absent from the demo build.
+
+    Same argument as the two rankings above, and the same second reason the
+    feature one has. CE-recovered is a measurement — "this SAE's
+    reconstruction costs the model THIS much of its predictive loss on THIS
+    corpus" — so a control that can only answer with a failure teaches a
+    visitor that the measurement does not work rather than that the page has
+    no model behind it.
+
+    And the shape it answers with is a PERCENTAGE, which is the one a reader is
+    most likely to believe without reading what produced it. That is why the
+    route lives under `/api/sae/` rather than `/api/features/`: demo.ts answers
+    `/api/features/` as a prefix with the single-feature detail payload at 200,
+    and a fidelity card wired to a `/api/features/fidelity` would not get a
+    refusal it could report — it would render a fabricated percentage as a
+    measurement. This check keeps both halves true: the card is not built here,
+    and nothing in the page asks for fidelity under the swallowed prefix.
+    """
+    print("\ndemo — is the SAE fidelity card correctly not offered?")
+    panel = (SRC / "FeaturesPanel.tsx").read_text("utf-8")
+
+    at = panel.find("<SaeFidelityCard")
+    check(
+        "the panel still has a fidelity card to gate",
+        at >= 0,
+        "no <SaeFidelityCard> found in FeaturesPanel.tsx — if the card was "
+        "renamed or moved, this check went blind and must move with it",
+    )
+    at = max(at, 0)
+    guard = panel[max(0, at - 600) : at]
+    check(
+        "the fidelity card is gated on !DEMO && !VIEWER",
+        "!DEMO && !VIEWER" in guard,
+        "that guard is not in the 600 characters before the mount. The static "
+        "demo and the .mri viewer have no model and no corpus, and a "
+        "percentage is the answer shape a visitor is least likely to check",
+    )
+
+    # And the mount itself. `find` above takes the FIRST occurrence and reads
+    # the 600 characters in front of it, so a second `<SaeFidelityCard/>` added
+    # anywhere below — without the guard — would leave both checks above
+    # printing PASS while the demo shipped the card. The two rankings above are
+    # immune to that because they count their call sites; this counts mounts,
+    # for the same reason and in the same words.
+    mounts = re.findall(r"<SaeFidelityCard\b", panel)
+    check(
+        "the card is mounted from exactly one place",
+        len(mounts) == 1,
+        f"{len(mounts)} mounts of <SaeFidelityCard> — every one of them needs "
+        f"the same guard, and a second mount is how the gate stops being true",
+    )
+
+    api_ts = (SRC / "api.ts").read_text("utf-8")
+    check(
+        "the route is not under the swallowed /api/features/ prefix",
+        "/api/features/fidelity" not in api_ts,
+        "api.ts asks for fidelity under /api/features/, which demo.ts answers "
+        "as a prefix with a single feature's detail payload at 200",
+    )
+
+    built = sorted(DIST.glob("assets/*.js")) if DIST.is_dir() else []
+    if not built:
+        print(f"    (no demo bundle at {DIST.name}/ — run npm run build:demo)")
+        return
+    js = "\n".join(f.read_text("utf-8", errors="replace") for f in built)
+    leaked = [
+        s
+        for s in ("WHAT THIS SAE COSTS THE MODEL'S ANSWERS", "/api/sae/fidelity")
+        if s in js
+    ]
+    check(
+        "the built demo bundle carries neither the card nor its endpoints",
+        not leaked,
+        f"{leaked} survived into the published JavaScript, so the gate is a "
+        f"runtime one and the demo ships a control whose endpoints 404",
     )
 
 
@@ -983,6 +1088,7 @@ def main() -> int:
     static_coverage()
     token_ranking_is_not_offered()
     feature_ranking_is_not_offered()
+    sae_fidelity_is_not_offered()
     no_machine_leaks()
     payload_shapes()
     bundle_integrity()

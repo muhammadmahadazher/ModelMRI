@@ -244,6 +244,18 @@ and refuses to plot anything when no convention reconstructs. On the default SAE
 that is the difference between **60.5** features firing per token and **7,491**,
 and between an FVU of **0.0010** and **13,579**.
 
+**And then it asks the question FVU cannot.** A reconstruction close to the
+activations is not the same as a reconstruction the model can still predict
+through: the directions carrying the residual stream's variance are not the
+directions the next token depends on. So the panel also runs the model's own
+cross-entropy on text you choose, again with the SAE's reconstruction spliced
+in, and again with the activation replaced by a floor — and reports how much of
+the lost loss came back. The floor is named on the card, because mean-ablation
+and zero-ablation give different percentages for the same SAE, and all three
+raw losses come with it so the choice can be undone. `3n + 2` forward passes,
+quoted before the button runs. On the command line:
+`modelmri sae fidelity --model MODEL --corpus notes.txt --floor mean_ablate`.
+
 ### 6. Find the step where your agent died
 
 Two lines of `modelmri.record` around any agent run gives you a timeline: LLM calls, tool calls, subagents, each as a block. The failure glows. Click it for the exact input, output, tokens, and error.
@@ -568,6 +580,7 @@ The UI is a client of a plain HTTP API — script against it directly.
 | `WS /ws/generate` | stream tokens |
 | `GET /api/attention` | `?layer=&head=` → tokens + attention matrix |
 | `POST /api/sae/load` · `GET /api/features/summary` | SAE features per token |
+| `POST /api/sae/fidelity` | how much of the model's own loss survives that SAE |
 | `POST /api/steer` | `{feature_id, scale}` — clamp a concept during generation |
 | `POST /api/traces/import` · `GET /api/traces/{id}` | agent traces |
 | `POST /api/vla/analyse` · `GET /api/vla/attention` | robot-policy attention |

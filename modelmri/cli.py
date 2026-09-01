@@ -373,6 +373,199 @@ def run_sweep(
     return 0 if any(r.measured for r in rows) else 1
 
 
+def _sae_for(model: str, repo: str, hook: str) -> tuple[str, str]:
+    """Which SAE to load, and a refusal naming the alternative when there is none.
+
+    A separate sentence from the server's `_sae_for_current`, deliberately: the
+    next step differs by surface. There it is "the logit lens works on every
+    model and needs nothing extra", because the panel is right there; here it
+    is `--sae`, because somebody typing a command can name one directly.
+    """
+    from . import sae_registry
+    from .errors import Refusal
+
+    if repo and hook:
+        return repo, hook
+    usable = [e for e in sae_registry.for_model(model) if e["supported"]]
+    if not usable:
+        listed = sae_registry.for_model(model)
+        extra = (
+            f" {listed[0]['repo']} is registered for it but this build cannot "
+            f"open it: {listed[0]['note']}"
+            if listed
+            else ""
+        )
+        raise Refusal(
+            f"no sparse autoencoder is registered for {model}. They are "
+            f"trained per model and public ones exist for only a "
+            f"handful.{extra} Name one with --sae and --hook if you have it."
+        )
+    return repo or usable[0]["repo"], hook or usable[0]["default_hook"]
+
+
+def sae_fidelity(
+    corpus,
+    *,
+    model: str,
+    floor: str,
+    repo: str = "",
+    hook: str = "",
+    max_sequences: int | None = None,
+    yes: bool = False,
+    as_json: bool = False,
+) -> int:
+    """How much of the model's predictive loss survives its SAE, on YOUR text.
+
+    Prints the projected pass count BEFORE the model is loaded, which is
+    earlier than `run_sweep` manages: `ce_recovered_passes` is arithmetic and
+    needs nothing resident, so there is no reason to make somebody wait for a
+    multi-gigabyte load to find out the corpus is too big.
+
+    `--corpus` takes a PATH, and an id from `GET /api/corpus/available` if you
+    happen to have one. The path has no roots boundary and that is deliberate:
+    `corpus_index` guards routes because a path in an HTTP body names a file on
+    the SERVER's disk, and this is the person at the keyboard naming their own
+    file — the same asymmetry `modelmri sweep --prompts` already has.
+    """
+    from . import corpus_index, saes
+    from . import sweep as sweep_mod
+    from .errors import BadRequest, Refusal
+    from .runtime import ModelRuntime
+
+    try:
+        key = str(corpus).strip()
+        # A 32-hex id is a dictionary key the server minted by walking its own
+        # roots; anything else is a path this user typed. Ids first because
+        # they are unambiguous — nobody names a file with 32 hex characters.
+        if len(key) == 32 and all(c in "0123456789abcdef" for c in key.lower()):
+            target = corpus_index.resolve(key)
+        else:
+            target = Path(key).expanduser()
+        texts = sweep_mod.load_prompts(target)
+        label = Path(target).name
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+
+    if not texts:
+        print(f"{label} holds no text to take a loss on.", file=sys.stderr)
+        return 2
+
+    # A cap of nothing empties a corpus that may hold plenty, so what is wrong
+    # here is the FLAG rather than the file. `ce_recovered_passes` refuses it
+    # too, but in words about "a corpus of 0" -- and it refuses with a
+    # `BadRequest`, which is a `ValueError`, so it slips past the `Refusal` arm
+    # below and out of `main` as a traceback with this machine's paths in it.
+    # `CEFidelityRequest.max_sequences` says the same thing with `ge=1`.
+    if max_sequences is not None and max_sequences < 1:
+        print(
+            f"--max-sequences {max_sequences} caps this run at nothing to "
+            f"measure. CE-recovered is a loss ON some text, so it needs at "
+            f"least one sequence: pass 1 or more, or leave the flag out to "
+            f"score the whole of {label}.",
+            file=sys.stderr,
+        )
+        return 2
+
+    scored = len(texts) if max_sequences is None else min(len(texts), max_sequences)
+    try:
+        # The SAME gate the route uses, from the same function, and taken here
+        # rather than left to `runtime.sae_fidelity` so it fires before the
+        # model load rather than after it. Everything below therefore passes
+        # `confirm=True`: this call is the confirmation.
+        price = saes.confirm_ce_recovered(scored, confirm=yes)
+    except Refusal as err:
+        print(saes.ce_recovered_price(scored)["means"], file=sys.stderr)
+        print(f"  {err}", file=sys.stderr)
+        return 2
+    print(price["means"], file=sys.stderr)
+
+    runtime = ModelRuntime()
+    try:
+        runtime.load(model, confirm=True)
+        chosen_repo, chosen_hook = _sae_for(model, repo, hook)
+        print(f"  sae {chosen_repo} at {chosen_hook}", file=sys.stderr)
+        runtime.load_sae(chosen_repo, chosen_hook)
+        got = runtime.sae_fidelity(
+            texts,
+            floor=floor,
+            corpus_label=label,
+            max_sequences=max_sequences,
+            confirm=True,
+        )
+    except (BadRequest, Refusal) as err:
+        print(err, file=sys.stderr)
+        return 2
+    finally:
+        try:
+            runtime.unload()
+        except Exception:  # noqa: S110
+            # The number is already in hand; a model that would not unload is
+            # not a reason to throw it away.
+            pass
+
+    if as_json:
+        print(json.dumps(got, indent=2, allow_nan=False))
+        return 0
+
+    cal = got.get("calibration") or {}
+    print(f"\nCE-recovered {got['ce_recovered']:.4f}  vs the {got['floor']} floor")
+    print(f"  corpus    {got['corpus_label']} · {got['corpus_sha256'][:16]}")
+    print(
+        f"  scored    {got['n_sequences']:,} of {got['n_sequences_given']:,} "
+        f"sequences · {got['n_tokens']:,} predicted tokens"
+    )
+    print(
+        f"  losses    clean {got['ce_clean']:.6f} · reconstructed "
+        f"{got['ce_recon']:.6f} · floored {got['ce_ablate']:.6f}  nats/token"
+    )
+    # A count nobody took is not a count of zero. The zero floor is not
+    # averaged from anything, so it reports what it is instead of a number.
+    floor_tokens = got.get("n_floor_tokens")
+    print(
+        f"  floor     {got['floor']} · "
+        + (
+            f"averaged over {floor_tokens:,} activations"
+            if floor_tokens is not None
+            else "the zero vector, averaged over nothing"
+        )
+    )
+    if cal:
+        print(
+            f"  splice    {cal.get('convention')} convention · fvu "
+            f"{cal.get('fvu')} · l0 {cal.get('l0')}"
+        )
+    print(f"  cost      {got['passes']:,} passes in {got['elapsed_s']}s")
+    print(f"\n  {got['means']}")
+    return 0
+
+
+def sae_command(args) -> int:
+    """`modelmri sae …` — questions about the SAE itself rather than a feature.
+
+    Nested, like `policy`, because the SAE is a thing with several questions to
+    ask of it rather than one verb: what it reconstructs in activation space is
+    already on the panel, and this is what that reconstruction costs the model
+    in output space.
+    """
+    what = getattr(args, "sae_command", None)
+
+    if what == "fidelity":
+        return sae_fidelity(
+            args.corpus,
+            model=args.model,
+            floor=args.floor,
+            repo=args.sae,
+            hook=args.hook,
+            max_sequences=args.max_sequences,
+            yes=args.yes,
+            as_json=args.json,
+        )
+
+    print("modelmri sae: say fidelity", file=sys.stderr)
+    return 2
+
+
 def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     """Prove a robot dataset is intact, or say exactly where it is not.
 
@@ -2193,6 +2386,58 @@ def main() -> None:
     )
     policy_status.add_argument("--json", action="store_true", help="machine-readable")
 
+    # Nested for the same reason `policy` is: the SAE is one thing with several
+    # questions to ask of it, and `modelmri sae-fidelity` would hide that.
+    sae_parser = sub.add_parser(
+        "sae", help="Questions about a sparse autoencoder itself, not its features"
+    )
+    sae_sub = sae_parser.add_subparsers(dest="sae_command")
+
+    sae_fid = sae_sub.add_parser(
+        "fidelity",
+        help="How much of the model's own predictive loss survives its SAE",
+    )
+    sae_fid.add_argument("--model", required=True, help="which model to load")
+    sae_fid.add_argument(
+        "--corpus",
+        required=True,
+        help="a .txt (one sequence a line) or .jsonl, by path — or an id from "
+        "`GET /api/corpus/available`",
+    )
+    # NO DEFAULT, and `required` rather than one. Mean-ablation and
+    # zero-ablation give different percentages for the same reconstruction and
+    # cannot be converted after the fact, so a default here would answer a
+    # question the reader has to be told the answer to. The two names are in
+    # the help; `saes.ce_recovered` refuses anything else in its own words,
+    # which are better than argparse's.
+    sae_fid.add_argument(
+        "--floor",
+        required=True,
+        metavar="FLOOR",
+        help="what the reconstruction is scored against: mean_ablate replaces "
+        "the activation with this corpus's own mean vector, zero_ablate with "
+        "zeros. There is no default — the two give different percentages",
+    )
+    sae_fid.add_argument(
+        "--sae", default="", help="an SAE repo; omit to use the registered one"
+    )
+    sae_fid.add_argument(
+        "--hook",
+        default="",
+        help="the hook point inside that repo, e.g. blocks.8.hook_resid_pre",
+    )
+    sae_fid.add_argument(
+        "--max-sequences",
+        type=int,
+        default=None,
+        help="score only the first N sequences; the result says how many of "
+        "the corpus it covered",
+    )
+    sae_fid.add_argument(
+        "--yes", action="store_true", help="run even when the projection is large"
+    )
+    sae_fid.add_argument("--json", action="store_true", help="machine-readable")
+
     scanner = sub.add_parser(
         "scan",
         help="Look inside weights for anything that executes on load",
@@ -2386,6 +2631,8 @@ def main() -> None:
         raise SystemExit(audit_dataset(args.dataset, as_json=args.json))
     elif args.command == "policy":
         raise SystemExit(policy_command(args))
+    elif args.command == "sae":
+        raise SystemExit(sae_command(args))
     elif args.command == "scan":
         raise SystemExit(scan_weights(args.path, as_json=args.json, limit=args.limit))
     elif args.command == "models":

@@ -3043,6 +3043,218 @@ class ModelRuntime:
                 )
             return out
 
+    # ------------------------------------------------- how good is this SAE?
+    #
+    # `SAECalibration` already answers that in ACTIVATION space — FVU and L0,
+    # measured on real activations from the model the SAE is attached to. The
+    # three methods below answer it in OUTPUT space, which is a different
+    # question with a different answer: the directions carrying the residual
+    # stream's variance are not the directions the next token depends on, so an
+    # SAE can post an excellent FVU and still cost the model most of its
+    # predictive loss. `saes.ce_recovered` carries the argument in full.
+
+    def _tokenized_for_ce(self, texts) -> list[torch.Tensor]:
+        """One `[1, S]` id tensor per text, IN ORDER, on the model's device.
+
+        Two things here are load-bearing and neither is obvious.
+
+        NOTHING IS DROPPED. `saes._sequence_for_ce` refuses a sequence shorter
+        than two tokens by its POSITIONAL INDEX -- "sequence 2 is 1 token(s)
+        long" -- and that index is only useful while it still counts the lines
+        the reader typed. `head_corpus` skips an empty one (`if
+        ids.shape[-1] == 0: continue`), which is right for a sweep that reports
+        a total and wrong here: every index after the skip would name a
+        different line than the sentence claims.
+
+        A LIST, not a generator. `ce_recovered` reads `sequences` TWICE --
+        mean-ablation needs a vector averaged over the whole corpus, which is
+        not known until every sequence has been read once -- and a consumed
+        iterator makes the second sweep silently empty.
+
+        On `self.device` because `ce_recovered` never moves them: it derives
+        the device and dtype from the stream it CAPTURED, and moves only the
+        tensor it writes back.
+        """
+        return [
+            self.tokenizer(str(t), return_tensors="pt")["input_ids"].to(self.device)
+            for t in texts
+        ]
+
+    def sae_fidelity(
+        self,
+        texts: list[str],
+        *,
+        floor: str,
+        corpus_label: str = "",
+        max_sequences: int | None = None,
+        confirm: bool = False,
+    ) -> dict:
+        """How much of the model's predictive loss survives this SAE.
+
+        `floor` is `mean_ablate` or `zero_ablate`, by name, WITH NO DEFAULT.
+        The same reconstruction scores differently against the two, so a house
+        answer here would be this file deciding something the reader has to be
+        told; `saes.ce_recovered` makes the same argument at length and refuses
+        an unnamed floor before anything runs.
+
+        No dtype gate, and that is deliberate -- the one place this parts
+        company with `rank_features`, which refuses anything but float32.
+        `feature_ablate` ranks the causal effects of a decomposition, so a
+        decomposition of nothing ranks arbitrary directions; here a broken SAE
+        has a real answer, a CE-recovered at or below zero, and refusing to
+        print it would hide exactly the finding this measurement exists to
+        make.
+        """
+        from . import saes
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Scoring an SAE's reconstruction "
+                    "means running the model three times over your corpus, "
+                    "and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to reconstruct, and no per-token loss to compare. "
+                    "Load the model through HuggingFace."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.sae is None:
+                raise Refusal(
+                    "No SAE loaded, so there is no reconstruction to score. "
+                    "Load one against this model first — this measures what "
+                    "its reconstruction costs the model's own predictions, "
+                    "which the FVU beside it cannot say."
+                )
+            # Before anything installs a forward hook. The hooks go on the
+            # shared block modules, so a generation decoding on its own thread
+            # fills all three loss accumulators with one-token passes -- see
+            # `_refuse_if_decoding` and `patch.trace`.
+            self._refuse_if_decoding("a CE-recovered measurement")
+
+            sequences = self._tokenized_for_ce(texts)
+            # Priced against what will actually be SCORED. `max_sequences`
+            # caps the corpus inside `ce_recovered`, so pricing the whole list
+            # would refuse a capped run for a cost it was never going to pay --
+            # and the cap is the cheaper alternative the refusal names, so it
+            # has to be true.
+            scored = (
+                len(sequences)
+                if max_sequences is None
+                else min(len(sequences), max(1, int(max_sequences)))
+            )
+            saes.confirm_ce_recovered(scored, confirm=confirm)
+
+            layer = int(getattr(self.sae, "layer", 0) or 0)
+            block = self._block(layer)
+            got = saes.ce_recovered(
+                self.model,
+                block,
+                sequences,
+                self.sae,
+                floor=floor,
+                corpus_label=corpus_label,
+                max_sequences=max_sequences,
+            )
+            out = got.to_dict()
+            # The SAE is as much a part of this measurement as the model is,
+            # so it is named in the receipt beside it -- the same reason
+            # `rank_features` puts the repo and the layer in its own.
+            out["receipt"] = self.receipt(
+                "sae_fidelity",
+                floor=got.floor,
+                corpus=got.corpus_label,
+                corpus_sha256=got.corpus_sha256,
+                n_sequences=got.n_sequences,
+                n_tokens=got.n_tokens,
+                sae_repo=got.repo,
+                sae_hook=got.hook,
+                layer=got.layer,
+            )
+            return out
+
+    def sae_fidelity_passes(self, n_sequences: int) -> dict:
+        """What that will cost in forward passes, before any is spent.
+
+        Free, exact and portable, and it needs no model — which is what lets a
+        panel quote the price while the reader is still typing the corpus.
+        `sae_fidelity_cost` is the other half and is not free.
+        """
+        from . import saes
+
+        return saes.ce_recovered_price(n_sequences)
+
+    def sae_fidelity_cost(
+        self, texts: list[str], *, max_sequences: int | None = None
+    ) -> dict:
+        """The same pass count, plus what a pass costs ON THIS MACHINE.
+
+        SPENDS THREE REAL FORWARD PASSES of its own — a warm-up, a capture and
+        the probe — which is why it is a separate call from
+        `sae_fidelity_passes` rather than the same one with more fields. A
+        panel that asked for this on mount or on every keystroke would be
+        running the model to find out whether to run the model.
+
+        The probe is taken on the corpus's OWN first sequence rather than on
+        whatever was last generated, because representative here means the
+        LENGTH: a pass over 64 tokens does not price a pass over 512, and the
+        length that matters is the one about to be swept.
+        """
+        from . import saes
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Pricing this run means running the "
+                    "model once to time it, and a `.mri` does not carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no forward pass here "
+                    "to time. Load the model through HuggingFace."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if self.sae is None:
+                raise Refusal(
+                    "No SAE loaded, so there is no reconstruction to price. "
+                    "Load one against this model first."
+                )
+            self._refuse_if_decoding("a CE-recovered cost estimate")
+
+            if not texts:
+                raise BadRequest(
+                    "there is nothing here to price — CE-recovered needs at "
+                    "least one sequence to be a loss on."
+                )
+            # ONLY THE FIRST SEQUENCE IS TOKENIZED, because only the first is
+            # probed. `_tokenized_for_ce` puts every tensor it builds on the
+            # model's device, so tokenizing the rest would move a twenty
+            # thousand line corpus onto the accelerator to answer a question
+            # about one pass over one line of it -- and a preflight that can
+            # OOM ahead of the measurement it exists to price is not one. The
+            # count below still comes from the whole corpus, because that is
+            # the number the caller is about to spend.
+            probed = self._tokenized_for_ce(texts[:1])[0]
+            scored = (
+                len(texts)
+                if max_sequences is None
+                else min(len(texts), max(1, int(max_sequences)))
+            )
+            layer = int(getattr(self.sae, "layer", 0) or 0)
+            block = self._block(layer)
+            return saes.estimate_ce_recovered_cost(
+                self.model,
+                block,
+                probed,
+                self.sae,
+                n_sequences=scored,
+                device_kind=self.accel.kind,
+            )
+
     def diff_models(
         self,
         model_a: str,

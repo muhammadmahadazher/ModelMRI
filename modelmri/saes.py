@@ -1946,6 +1946,85 @@ def ce_recovered_passes(n_sequences: int) -> int:
     return 3 * n_sequences + 2
 
 
+# Above this many forward passes, a CE-recovered run is asked for rather than
+# started.
+#
+# The price is exact and free — `ce_recovered_passes` is arithmetic — so what
+# this guards is not a slow run, it is a corpus NOBODY COUNTED. A `.txt` is one
+# sequence per line and the picker that names one reports its size in bytes, so
+# a five-thousand-line file is 15,002 forward passes chosen by someone who was
+# never shown that number. A thousand passes is 332 sequences: comfortably more
+# than the pasted paragraph this is usually pointed at, and comfortably less
+# than a file that will outlast anybody's patience.
+#
+# One number, read by both surfaces — `POST /api/sae/fidelity` refuses without
+# `confirm`, `modelmri sae fidelity` without `--yes` — because a threshold
+# copied into two places is a threshold that drifts. It is a count of passes
+# rather than of sequences so that it stays true if the loop ever costs
+# something other than `3n + 2`.
+CE_CONFIRM_ABOVE_PASSES = 1_000
+
+
+def ce_recovered_price(n_sequences: int) -> dict:
+    """What a run over `n_sequences` costs, and whether it has to be confirmed.
+
+    The half of "what will this cost" that transfers between machines, and the
+    only half a caller can have before there is a model in the process:
+    `estimate_ce_recovered_cost` measures the seconds and needs one loaded,
+    three real passes and a representative sequence to do it.
+
+    `needs_confirmation` is published rather than left to be recomputed, so a
+    panel and a CLI cannot each carry their own copy of the threshold.
+    """
+    passes = ce_recovered_passes(n_sequences)
+    over = passes > CE_CONFIRM_ABOVE_PASSES
+    return {
+        "n_sequences": int(n_sequences),
+        "passes": passes,
+        "confirm_above": CE_CONFIRM_ABOVE_PASSES,
+        "needs_confirmation": over,
+        "means": (
+            f"{passes:,} forward passes over {int(n_sequences):,} sequences — "
+            f"three per sequence (the model's own, the reconstruction spliced "
+            f"in, the floor spliced in) plus two taken once for the "
+            f"resolution every difference is read against. The count is exact "
+            f"and it transfers; what a pass costs on this machine does not, "
+            f"and is measured separately."
+            + (
+                f" That is over the {CE_CONFIRM_ABOVE_PASSES:,} this will "
+                f"start without being asked, so it has to be confirmed or "
+                f"capped with max_sequences."
+                if over
+                else ""
+            )
+        ),
+    }
+
+
+def confirm_ce_recovered(n_sequences: int, *, confirm: bool = False) -> dict:
+    """The price, or a refusal naming it — the gate both surfaces share.
+
+    A `Refusal` rather than a `budget.TooCostly`: nothing here is a claim about
+    memory. `budget` refuses a projection that will not FIT on this accelerator,
+    measured from a probe pass; this refuses a run whose SIZE the caller has not
+    been shown, which is knowable without touching the model and true on every
+    machine.
+    """
+    priced = ce_recovered_price(n_sequences)
+    if priced["needs_confirmation"] and not confirm:
+        raise Refusal(
+            f"this corpus is {priced['n_sequences']:,} sequences, which is "
+            f"{priced['passes']:,} forward passes — three per sequence plus "
+            f"two for the resolution — and anything over "
+            f"{CE_CONFIRM_ABOVE_PASSES:,} is asked for rather than started. "
+            f"Say so explicitly — `confirm: true` on the route, `--yes` on the "
+            f"command line — or cap it with max_sequences, which reprices "
+            f"exactly: the payload says how many of the corpus were scored and "
+            f"marks itself truncated when some were not."
+        )
+    return priced
+
+
 def _sum_nll(
     logits: torch.Tensor, ids: torch.Tensor, *, chunk: int = NLL_CHUNK_TOKENS
 ) -> tuple[float, int]:

@@ -9730,3 +9730,107 @@ main > .panel[data-mri-group-label]::after {
   max-height: 18em;
   overflow-y: auto;
 }
+
+/* --------------------------------------------- what the SAE costs the answers
+
+   The output-space half of the calibration banner, folded under the same
+   panel. It gets no colours or metrics of its own beyond these: the dial row
+   reuses `.row`, the corpus box reuses `.corpus-box`, the result reuses
+   `.answer` and `.ov-readout`. A panel that styles its own inputs is how a
+   page comes to look almost-but-not-quite consistent with itself. */
+.sae-fidelity { margin-top: 4px; }
+
+/* `align-items: baseline` so the two labels sit on the select's own text line
+   rather than floating above a taller control. */
+.ce-dials {
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+/* Wide enough for "all", five digits and the spinner a number input draws
+   inside its own box, and no wider: a field that stretches invites a
+   paragraph. */
+.ce-cap {
+  width: 8ch;
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  font-feature-settings: var(--num);
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-2, 6px);
+  background: var(--color-card);
+  color: var(--color-ink);
+}
+
+.ce-sha { margin-top: 6px; }
+.ce-sha code { font-size: var(--t-xs); }
+
+/* THE THREE LOSSES ON ONE AXIS.
+
+   The percentage IS the position of the reconstruction between the floor and
+   the model's own loss, so the relationship is spatial and a picture of it is
+   shorter than the sentence. Drawn with `preserveAspectRatio="none"` because
+   only the horizontal positions carry information — the marks are strokes at
+   a fixed viewBox height, so stretching the box does not distort a shape
+   anybody reads.
+
+   No fill and no bar. A bar has a length, a length has to be clamped to its
+   box, and `ce_recovered` is not clamped in either direction: a reconstruction
+   that predicts WORSE than the floor lands outside the span, and it has to be
+   visible as exactly that rather than pinned to an end. */
+.ce-scale {
+  display: block;
+  width: 100%;
+  height: 22px;
+  margin: 6px 0 2px;
+  overflow: visible;
+}
+.ce-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+/* The span the ratio is taken over: floor to the model's own loss. */
+.ce-span {
+  stroke: var(--color-mute);
+  stroke-width: 3;
+  stroke-linecap: round;
+  opacity: 0.35;
+  vector-effect: non-scaling-stroke;
+}
+.ce-mark {
+  stroke-width: 2;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+.ce-mark.ce-clean { stroke: var(--color-feat); }
+.ce-mark.ce-recon { stroke: var(--color-ink); }
+.ce-mark.ce-ablate { stroke: var(--color-mute); }
+
+/* The key, in HTML rather than as `<text>` inside the drawing: the viewBox is
+   stretched horizontally and stretched type is unreadable at exactly the narrow
+   widths where a legend matters most. */
+.ce-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  margin: 0 0 6px;
+}
+.ce-key { display: inline-flex; align-items: center; gap: 5px; }
+.ce-swatch {
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+  background: currentColor;
+}
+.ce-swatch.ce-clean { background: var(--color-feat); }
+.ce-swatch.ce-recon { background: var(--color-ink); }
+.ce-swatch.ce-ablate { background: var(--color-mute); }
+
+/* Sized like the readout it stands in for, so the card does not jump when the
+   real answer lands. */
+.ce-skel { display: grid; gap: 8px; margin: 12px 0 6px; }
+.ce-skel-answer { height: 20px; width: 45%; }
+.ce-skel-line { height: 9px; width: 100%; }
+.ce-skel-short { height: 9px; width: 62%; }

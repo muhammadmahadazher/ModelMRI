@@ -577,6 +577,61 @@ class HeadEvidenceRequest(Body):
     top_k: int = Field(default=10, ge=1, le=100)
 
 
+class CEFidelityCostRequest(Body):
+    """A corpus, priced against the machine it would run on.
+
+    Separate from `CEFidelityRequest` rather than a flag on it, because this
+    call spends three forward passes to time one and the other spends
+    `3n + 2` to measure something. One body with a `dry_run` would have made
+    the expensive default the easy one to reach by accident.
+    """
+
+    #: The corpus, inline. Either this or `file`, and the route says so when
+    #: neither arrives.
+    texts: list[str] | None = None
+    #: An id from `GET /api/corpus/available`, or a path to a local `.txt` or
+    #: `.jsonl`. Both go through `corpus_index`, which never builds a path out
+    #: of this string — an id is a dictionary lookup and a typed path is
+    #: DESCENDED to, one `os.scandir` per component. Reading it carries the
+    #: not-from-this-machine guard either way, because a path in a body names
+    #: a file on the SERVER's disk. Named `file` and not `corpus_id` because
+    #: that is what the two sibling corpus routes call it and what
+    #: `CorpusPicker` fills in.
+    file: str | None = Field(default=None, max_length=4096)
+    #: Caps how much of the corpus is scored, and therefore what is priced.
+    #: `None` is the whole corpus. Optional rather than `ge=1` with a default,
+    #: so "the whole thing" is said by leaving it out.
+    max_sequences: int | None = Field(default=None, ge=1)
+
+
+class CEFidelityRequest(Body):
+    """How much of the model's own loss survives this SAE's reconstruction.
+
+    `floor` HAS NO DEFAULT, and that is the whole argument of the measurement
+    rather than an oversight: mean-ablation and zero-ablation give different
+    percentages for the same reconstruction, and the two cannot be converted
+    into each other after the fact. A default here — in this class, in a query
+    string, or as a pre-selected option in the panel — would answer a question
+    the reader has to be told the answer to. A missing one is a 422 naming the
+    field, which is the honest reply.
+    """
+
+    texts: list[str] | None = None
+    file: str | None = Field(default=None, max_length=4096)
+    #: What to call the corpus in the result. Filled from the filename when
+    #: `file` is used, because the file names its own text better than a
+    #: caller's word for it does.
+    label: str = Field(default="", max_length=200)
+    #: "mean_ablate" or "zero_ablate", by name. No default — see above.
+    floor: str = Field(max_length=64)
+    max_sequences: int | None = Field(default=None, ge=1)
+    #: Run a corpus whose price is over `saes.CE_CONFIRM_ABOVE_PASSES`. The
+    #: gate is in `runtime.sae_fidelity` so the CLI's `--yes` and this field
+    #: refuse in the same words; `GET /api/sae/fidelity/estimate` publishes
+    #: the threshold so a panel never has to carry a second copy of it.
+    confirm: bool = False
+
+
 class ScanRequest(Body):
     """A checkpoint or a directory of them.
 
@@ -1989,6 +2044,171 @@ def create_app(
             "usable": [m for m in matching if m["supported"]],
             "catalogue": sae_registry.catalogue(),
         }
+
+    # UNDER `/api/sae/`, NOT `/api/features/`, AND THAT IS LOAD-BEARING TWICE.
+    #
+    # `/api/features/{feature_id}` above has no converter in the path, so its
+    # regex accepts any single segment: a `/api/features/fidelity` declared
+    # after it is unreachable and answers 422 "Input should be a valid
+    # integer" for a request that was perfectly well formed. That is the same
+    # trap the comment above `/api/features/ablate` describes.
+    #
+    # The second reason is worse and only shows up on GitHub Pages. `demo.ts`
+    # answers `p.startsWith("/api/features/")` with the SINGLE-FEATURE DETAIL
+    # payload, at 200 — so a fidelity card in the demo build would not get a
+    # refusal it could report, it would get a 200 carrying the wrong shape and
+    # render a fabricated percentage as a measurement. `/api/sae/…` has only
+    # exact-match handlers in that shim and no prefix.
+    @app.get("/api/sae/fidelity/estimate")
+    def sae_fidelity_estimate(sequences: int = 0):
+        """Forward passes before any are spent: `3n + 2`, exactly.
+
+        Arithmetic, so it answers with nothing loaded and costs nothing to
+        ask — which is what lets a panel quote the price while the corpus is
+        still being typed. `POST /api/sae/fidelity/cost` is the other half and
+        spends three real passes to measure what one costs here.
+
+        `confirm_above` and `needs_confirmation` come back so the gate on
+        `POST /api/sae/fidelity` is published by the route that prices it,
+        rather than copied into every caller.
+        """
+        try:
+            return runtime.sae_fidelity_passes(sequences)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/sae/fidelity/estimate")
+
+    @app.post("/api/sae/fidelity/cost")
+    async def sae_fidelity_cost(req: CEFidelityCostRequest, request: Request):
+        """What the sweep would cost HERE, measured from one real iteration.
+
+        SPENDS THREE FORWARD PASSES — a warm-up, a capture and the probe — and
+        is a separate call for that reason. The probe runs on the corpus's own
+        first sequence, because representative means the length: a pass over
+        64 tokens does not price a pass over 512.
+        """
+        texts = req.texts
+        try:
+            if req.file:
+                refusal = _not_from_this_machine(
+                    request, "Reading a corpus off this machine's disk"
+                )
+                if refusal is not None:
+                    return refusal
+                from . import feature_corpus as fc
+
+                texts, _ = fc.load_corpus(req.file)
+            if not texts:
+                return JSONResponse(
+                    {
+                        "error": "there is nothing here to price. Pass `texts` "
+                        "(a list of strings) or `file` (a corpus id or a .txt "
+                        "or .jsonl). Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.sae_fidelity_cost(
+                    texts, max_sequences=req.max_sequences
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/sae/fidelity/cost")
+
+    @app.post("/api/sae/fidelity")
+    async def sae_fidelity(req: CEFidelityRequest, request: Request):
+        """How much of the model's predictive loss survives this SAE.
+
+        The FVU beside it is an activation-space number: it asks whether the
+        reconstruction is close to the vector the SAE was handed. The model
+        does not care about that vector, it cares about the logits, and the
+        directions carrying the residual stream's variance are not the
+        directions the next token depends on — so an SAE can post an excellent
+        FVU and still cost the model most of its predictive loss.
+
+        `floor` is required and is one of `mean_ablate`, `zero_ablate`. There
+        is no default because the two give different percentages for the same
+        reconstruction and cannot be converted after the fact; all three raw
+        losses come back so the choice can be undone.
+
+        `3n + 2` forward passes — three per sequence plus two taken once for
+        the resolution every difference is read against. Over
+        `saes.CE_CONFIRM_ABOVE_PASSES` of them this refuses without
+        `confirm: true`, naming the count and `max_sequences`.
+
+        409 when there is nothing to measure: a recording is open, the model is
+        served by Ollama, no model or no SAE is loaded, a generation is
+        decoding, the write-back does not land at this hook point, or the floor
+        costs the model less than this run can resolve. 422 when the floor is
+        unknown, the corpus is empty, or a sequence is too short to carry a
+        loss.
+        """
+        texts = req.texts
+        label = req.label
+        try:
+            if req.file:
+                # A path in the body names a file on the SERVER's disk. See
+                # `_not_from_this_machine`: loopback alone does not settle it.
+                refusal = _not_from_this_machine(
+                    request, "Reading a corpus off this machine's disk"
+                )
+                if refusal is not None:
+                    return refusal
+                from . import feature_corpus as fc
+
+                # The FILE names the corpus. Passing `label` through here would
+                # put the caller's word for it on somebody else's text, and
+                # `corpus_label` is what a reader checks the number against.
+                texts, label = fc.load_corpus(req.file)
+            if not texts:
+                return JSONResponse(
+                    {
+                        "error": "CE-recovered is a loss on some text, so "
+                        "there has to be some. Pass `texts` (a list of "
+                        "strings) or `file` (a corpus id or a .txt or "
+                        ".jsonl). Nothing is downloaded."
+                    },
+                    status_code=422,
+                )
+            if not str(label).strip():
+                # `ce_recovered` refuses an unnamed corpus too, in better words,
+                # but it names `corpus_label` — the Python parameter — and the
+                # field on the wire is `label`. A refusal that names a
+                # parameter the caller cannot see is one they cannot act on.
+                return JSONResponse(
+                    {
+                        "error": "name the corpus. Every number here is a loss "
+                        "ON some text, and a result that cannot say which text "
+                        "it is a loss on is not one anybody can check — pass "
+                        "`label`. A `file` names itself."
+                    },
+                    status_code=422,
+                )
+            return await asyncio.to_thread(
+                lambda: runtime.sae_fidelity(
+                    texts,
+                    floor=req.floor,
+                    corpus_label=label,
+                    max_sequences=req.max_sequences,
+                    confirm=req.confirm,
+                )
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            # No bare `except RuntimeError`. `ce_recovered` raises one when its
+            # capture hook never fires or the captured width disagrees with the
+            # SAE's, and both of those mean this package contradicted itself:
+            # the traceback belongs in the log rather than in front of a reader
+            # as though their input caused it.
+            return _internal(err, "/api/sae/fidelity")
 
     @app.get("/api/lens")
     async def lens(top_k: Annotated[int, Query(ge=1, le=100)] = 5, kind: str = "plain"):

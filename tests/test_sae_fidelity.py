@@ -587,6 +587,49 @@ def test_the_estimate_prices_a_real_iteration_on_this_machine():
     assert str(out["passes"]) in out["means"]
 
 
+def test_the_price_and_the_gate_come_from_the_same_arithmetic():
+    """One threshold, published beside the count it applies to.
+
+    A panel or a CLI that recomputed `needs_confirmation` would be a second
+    copy of the threshold, and the copy is what drifts from the thing it is
+    supposed to describe.
+    """
+    priced = saes.ce_recovered_price(10)
+    assert priced["passes"] == saes.ce_recovered_passes(10) == 32
+    assert priced["n_sequences"] == 10
+    assert priced["confirm_above"] == saes.CE_CONFIRM_ABOVE_PASSES
+    assert priced["needs_confirmation"] is False
+    assert "32" in priced["means"]
+
+    over = saes.ce_recovered_price(saes.CE_CONFIRM_ABOVE_PASSES)
+    assert over["passes"] > saes.CE_CONFIRM_ABOVE_PASSES
+    assert over["needs_confirmation"] is True
+    assert "max_sequences" in over["means"]
+
+
+def test_a_corpus_over_the_gate_is_refused_and_confirming_returns_the_price():
+    """The gate names the count, both flags, and the cheaper alternative.
+
+    A refusal that states the problem and no next step is a wall, and
+    `max_sequences` is the next step that reprices exactly — which is why the
+    same call with a cap under the gate has to come back rather than refuse.
+    """
+    n = saes.CE_CONFIRM_ABOVE_PASSES
+    with pytest.raises(Refusal) as caught:
+        saes.confirm_ce_recovered(n)
+    said = caught.value.sentence
+    assert "forward passes" in said
+    assert "`confirm: true`" in said and "--yes" in said
+    assert "max_sequences" in said
+
+    assert saes.confirm_ce_recovered(n, confirm=True)["passes"] == (
+        saes.ce_recovered_passes(n)
+    )
+    # Under the gate it never asks, which is what stops a ten-line paste
+    # needing a flag.
+    assert saes.confirm_ce_recovered(1)["needs_confirmation"] is False
+
+
 # ---------------------------------------------------------- the receipt itself
 
 
