@@ -317,3 +317,122 @@ def test_a_real_direction_is_still_found_after_the_p_value_change():
         if sv.fit_direction(separated(gap=4.0, seed=s), 0)[0].beats_null
     )
     assert found >= 27, f"only {found}/30"
+
+
+# ------------------------- the store learns to be read, not only written
+#
+# `catalogue()` sorted on `saved_at` and promised "newest first"; nothing ever
+# wrote that key, so every row sorted equal on an empty string and the order a
+# reader saw was whatever `glob` returned. `load()` and `save()` were the only
+# doors in and out, so a direction could be created and never removed. And
+# `store_dir()` created its directory on being ASKED, which is fine while the
+# only caller is a writer and is a rule violation the moment a GET reads it.
+
+
+def test_a_saved_direction_stamps_when_it_was_saved(store):
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("politeness", vec, META)
+    payload = json.loads((store / "politeness.json").read_text(encoding="utf-8"))
+    assert payload["saved_at"], "catalogue() sorts on this and promises an order"
+    assert payload["saved_at"].startswith("20")
+
+
+def test_the_catalogue_really_is_newest_first(store):
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("older", vec, dict(META, saved_at="2020-01-01T00:00:00+00:00"))
+    sv.save("newer", vec, dict(META, saved_at="2030-01-01T00:00:00+00:00"))
+    assert [r["name"] for r in sv.catalogue()] == ["newer", "older"]
+
+
+def test_a_caller_can_carry_an_original_timestamp_through(store):
+    """Re-saving an imported vector should not restamp it as new."""
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("imported", vec, dict(META, saved_at="2021-06-01T12:00:00+00:00"))
+    assert sv.catalogue()[0]["saved_at"] == "2021-06-01T12:00:00+00:00"
+
+
+def test_removing_a_direction_takes_it_out_of_the_catalogue(store):
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("politeness", vec, META)
+    out = sv.remove("politeness")
+    assert out["removed"] == "politeness"
+    assert sv.catalogue() == []
+    assert not (store / "politeness.json").exists()
+
+
+def test_removing_one_that_was_never_there_refuses_by_name(store):
+    with pytest.raises(Refusal, match="no saved direction called 'absent'"):
+        sv.remove("absent")
+
+
+def test_a_name_cannot_escape_the_store_on_the_way_out(tmp_path, monkeypatch):
+    """Same rule as `save`: the name arrives from a text field, and this one
+    unlinks files.
+
+    THE FILE IS REAL, and that is the whole point. Asserting only that a
+    Refusal came back proves nothing: `../passwd` names a path that is not in
+    the store either way, so the same Refusal is raised whether `_slug` strips
+    the separators or does nothing at all. A planted file outside the store is
+    the only assertion that can tell those two apart, and `remove` unlinks.
+    """
+    outside = tmp_path / "passwd.json"
+    outside.write_text("not a direction, and not yours to delete", encoding="utf-8")
+    inside = tmp_path / "vectors"
+    inside.mkdir()
+    monkeypatch.setattr(sv, "store_dir", lambda: inside)
+
+    with pytest.raises(Refusal, match="no saved direction"):
+        sv.remove("../passwd")
+    assert outside.exists(), "the name escaped the store and unlinked a file"
+    for separator in ("/", "\\", ".."):
+        assert separator not in sv._slug("../../etc/passwd")
+
+
+def test_asking_where_the_store_is_does_not_create_it(tmp_path, monkeypatch):
+    """`paths.py`: "nothing here creates a directory as a side effect of being
+    asked a question". The catalogue is a read, and a read that writes into
+    somebody's data folder is the thing that rule forbids."""
+    monkeypatch.setenv("MODELMRI_HOME", str(tmp_path))
+    assert not sv.store_dir().exists()
+    assert sv.catalogue() == []
+    assert not sv.store_dir().exists()
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("politeness", vec, META)
+    assert sv.store_dir().is_dir(), "writing DOES create it"
+
+
+def test_the_width_refusal_names_the_model_it_is_being_pushed_into(store):
+    """The old sentence said "this model's residual stream is 64" — which end
+    is wrong is exactly what a reader cannot work out from that."""
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("politeness", vec, META)
+    with pytest.raises(Refusal) as caught:
+        sv.load("politeness", hidden_size=D * 2, model="meta-llama/Llama-3.2-1B")
+    said = caught.value.sentence
+    assert "Qwen/Qwen3-1.7B" in said
+    assert "meta-llama/Llama-3.2-1B" in said
+
+
+def test_the_width_refusal_still_reads_when_no_model_was_named(store):
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("politeness", vec, META)
+    with pytest.raises(Refusal, match="this model's residual stream is 64"):
+        sv.load("politeness", hidden_size=D * 2)
+
+
+# ------------------------------------------------- the strength that travels
+
+
+def test_a_strength_is_reported_against_the_stream_it_is_added_to():
+    """The module's own rule: "0.5x the stream's own norm" travels and "5.0"
+    does not. One function, because this quotient is published in the status,
+    the receipt and the slider's label."""
+    assert sv.relative_strength(30.0, 60.0) == pytest.approx(0.5)
+    assert sv.relative_strength(-30.0, 60.0) == pytest.approx(-0.5)
+
+
+def test_an_unmeasured_norm_gives_no_relative_strength_rather_than_zero():
+    """0.0 says the push is negligible. That is the one thing an absent
+    measurement must never say."""
+    assert sv.relative_strength(30.0, None) is None
+    assert sv.relative_strength(30.0, 0.0) is None

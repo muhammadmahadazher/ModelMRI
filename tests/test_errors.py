@@ -161,6 +161,13 @@ def test_the_500_logs_the_traceback_rather_than_discarding_it(caplog):
         ("rank_features", "/api/features/ablate"),
         ("export_session", "/api/session/export"),
         ("set_steering", "/api/steer"),
+        # The steering store's three runtime-backed routes. Added WITH the
+        # routes rather than after them: the catalogue walks a directory and
+        # parses JSON, the fit runs 2n forward passes, and both are the kind
+        # of work that raises something nobody authored a sentence for.
+        ("direction_catalogue", "/api/steer/directions"),
+        ("set_steering_direction", "/api/steer/direction"),
+        ("fit_steering_direction", "/api/steer/fit"),
     ],
 )
 def test_no_runtime_endpoint_leaks_a_broken_exception(method, path):
@@ -179,7 +186,15 @@ def test_no_runtime_endpoint_leaks_a_broken_exception(method, path):
     was hiding are covered by the test below.
     """
     client = app_with(method, boom)
-    r = client.post(path, json={}) if path == "/api/steer" else client.get(path)
+    # The POST routes need a body their request model accepts before the
+    # handler is reached at all — a 422 from validation would pass the
+    # "not 200" half of this test while never running the arm it is about.
+    bodies = {
+        "/api/steer": {},
+        "/api/steer/direction": {"name": "anything"},
+        "/api/steer/fit": {"positive_texts": ["a"], "negative_texts": ["b"]},
+    }
+    r = client.post(path, json=bodies[path]) if path in bodies else client.get(path)
     assert r.status_code == 500, f"{path} answered {r.status_code}"
     assert BROKE not in r.text
     assert "blobs" not in r.text

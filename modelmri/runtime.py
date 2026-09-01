@@ -22,7 +22,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -627,6 +627,103 @@ class ModelStatus:
         return asdict(self)
 
 
+@dataclass
+class DirectionSteer:
+    """A saved contrastive direction, installed on the live model.
+
+    THE SECOND ARM OF A TAGGED UNION. `_steer` holds the SAE-feature form and
+    has since steering existed; this holds the form that needs no SAE, which
+    is almost every model. They are mutually exclusive on purpose — two live
+    interventions at once would each be reported without the other, and the
+    A/B beside them would name one of the two.
+
+    Kept as its own object rather than squeezed into `_steer`'s tuple because
+    `_capture`'s cache key is built from whatever is here, and a key that does
+    not carry everything the answer depends on is exactly the defect
+    `tests/test_steered_attention_cache.py` exists to pin.
+
+    `vector` is UNIT NORM and already on the model's device — `steer_vectors.load`
+    returns a CPU float32 tensor and does no device work, unlike
+    `SAEHandle.steering_vector`, so the move happens once here rather than
+    inside a forward hook.
+
+    `residual_norm` is what the stream measured at `layer` when this was
+    applied, or None when there was no generation to measure it on. None is
+    an unknown, never a zero: a relative strength of 0.0 says the push is
+    negligible, which is the one thing an absent measurement must not say.
+
+    `measured_on` is the `last_ids` tensor that norm was taken on, held so
+    `strength_report` can tell whether it still describes the generation in
+    front of the reader. THE IDENTITY, NOT A COPY OR A COUNTER: every path
+    that sets `ModelRuntime.last_ids` builds a fresh tensor (`generate_stream`
+    detaches one, `adopt` constructs one), so `is` answers exactly the
+    question being asked and cannot be forgotten by a future assignment site
+    the way a serial number could.
+    """
+
+    name: str
+    layer: int
+    strength: float
+    vector: Any
+    origin_model: str
+    residual_norm: float | None
+    #: How the norm above was taken, or "" when it was not taken at all.
+    measured: str
+    #: Why it was not taken, or "" when it was.
+    unmeasured: str
+    warnings: list[str] = field(default_factory=list)
+    #: The generation `residual_norm` was measured on, or None when it was not
+    #: measured at all.
+    measured_on: Any = None
+
+    def strength_report(self, current_ids: Any) -> dict:
+        """The published strength, and where its denominator came from.
+
+        `current_ids` is REQUIRED and has no default. A default of None would
+        read as "no generation" against a `measured_on` that holds one, so a
+        caller who simply forgot the argument would be told the number is old
+        — quietly, and in a sentence that sounds authored. There is one caller
+        and it has `last_ids` in its hand; making it say so costs nothing.
+
+        THE NORM IS MEASURED ONCE, AT APPLY TIME, and the direction outlives
+        the generation it was applied during on purpose — generating under it
+        is the point of applying it. So the number stays true and the SENTENCE
+        beside it expires: `residual_norm_at` writes "the current generation
+        ... just now", and this is re-read and re-rendered on every generation.
+
+        A real measurement wearing a fresh prompt's provenance is worse than
+        no measurement, because nothing on screen says to distrust it. So the
+        number is kept — it was genuinely taken, on this model, at this layer
+        — and the sentence is replaced by one that names which generation it
+        belongs to and what to do about it. Re-measuring here instead would
+        put a forward pass behind every status poll, which is precisely what
+        `residual_norm_at` refuses to do.
+        """
+        from . import steer_vectors
+
+        measured = self.measured
+        if self.residual_norm is not None and current_ids is not self.measured_on:
+            measured = (
+                f"the mean L2 norm of the residual stream entering layer "
+                f"{self.layer}, measured on this machine at the last token of "
+                f"the generation that was in front of you when this direction "
+                f"was applied. A newer generation has replaced that one, so "
+                f"this describes the earlier prompt rather than the one on "
+                f"screen now — re-apply the direction to measure it against "
+                f"this generation."
+            )
+        return {
+            "alpha": self.strength,
+            "relative": steer_vectors.relative_strength(
+                self.strength, self.residual_norm
+            ),
+            "residual_norm": self.residual_norm,
+            "layer": self.layer,
+            "measured": measured,
+            "unmeasured": self.unmeasured,
+        }
+
+
 def text_config(cfg):
     """The sub-config describing the LANGUAGE tower.
 
@@ -738,6 +835,16 @@ def _recorded_patch(recorded: dict) -> dict:
 class ModelRuntime:
     """Owns the loaded model; thread-safe load, streaming generate, attention."""
 
+    # DECLARED ON THE CLASS, and that is deliberate rather than tidy. The
+    # second arm of the steering union is read by `_capture` and
+    # `generate_stream`, and `tests/test_steered_attention_cache.py` builds a
+    # runtime with `ModelRuntime.__new__` and six hand-set attributes — a
+    # weightless fixture that runs in milliseconds and is the reason the
+    # cache-key regression stays caught. An instance-only attribute would make
+    # every read in that fixture an AttributeError, and the fix would have
+    # been to teach the fixture about a field it has nothing to do with.
+    _steer_dir: DirectionSteer | None = None
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         # NOT the lock. Generation streams, so it decodes on a daemon thread
@@ -846,6 +953,10 @@ class ModelRuntime:
         self.sae: SAEHandle | None = None
         self._feats: torch.Tensor | None = None  # [S, d_sae] fp16, last generation
         self._steer: tuple[int, float] | None = None  # (feature_id, scale)
+        # The union's other arm: a saved contrastive direction, which needs no
+        # SAE. See `DirectionSteer` for why it is a second slot rather than a
+        # widened tuple.
+        self._steer_dir: DirectionSteer | None = None
 
     @property
     def loaded(self) -> bool:
@@ -936,6 +1047,7 @@ class ModelRuntime:
             self.sae = None
             self._feats = None
             self._steer = None
+            self._steer_dir = None
 
             gc.collect()
             self._empty_accel_cache()
@@ -1215,6 +1327,7 @@ class ModelRuntime:
                 self.sae = None
                 self._feats = None
                 self._steer = None
+                self._steer_dir = None
                 self._tuned = {}
                 self._tuned_info = {}
                 self._last_types = {}
@@ -1405,6 +1518,7 @@ class ModelRuntime:
             self.sae = None
             self._feats = None
             self._steer = None
+            self._steer_dir = None
             return self.status()
 
     def _prefetch_weights(self, hf_id: str) -> None:
@@ -1914,7 +2028,9 @@ class ModelRuntime:
         # "what steering does" would eventually disagree, and the comparison
         # would then be between a real run and an approximation of one.
         steer_handle = None
-        if self._steer is not None and self.sae is not None:
+        if self._steer_dir is not None or (
+            self._steer is not None and self.sae is not None
+        ):
             steer_handle = self._steer_handle()
 
         # Timed around the loop rather than inside `generate`, because the
@@ -2111,13 +2227,23 @@ class ModelRuntime:
             # exists for: once a steered map had been cached, switching
             # steering OFF could no longer reach it, and the route kept
             # serving a steered map for a model that was no longer steered.
-            if self._steer is None or self.sae is None:
+            #
+            # Two arms, two keys, and the direction's key carries name, layer
+            # AND strength for the same reason the feature's carries id and
+            # scale: anything the answer depends on that is not in the key is
+            # a stale map served under a fresh label.
+            if self._steer_dir is not None:
+                steer = self._steer_dir
+                key = f"steered:dir:{steer.name}:{steer.layer}:{steer.strength!r}"
+            elif self._steer is None or self.sae is None:
                 raise Refusal(
                     "Nothing is being steered, so there is no steered run "
-                    "to compare against. Set a feature and a scale first."
+                    "to compare against. Set a feature and a scale, or apply "
+                    "a saved direction, first."
                 )
-            fid, scale = self._steer
-            key = f"steered:{fid}:{scale!r}"
+            else:
+                fid, scale = self._steer
+                key = f"steered:{fid}:{scale!r}"
 
         cached = self._attn_variants.get(key)
         if cached is not None:
@@ -2309,7 +2435,34 @@ class ModelRuntime:
         exactly the same intervention. Two implementations of "what steering
         does" would eventually disagree, and the comparison would be between
         a real run and an approximation of one.
+
+        Both arms of the union install through here for that same reason —
+        one place that knows what steering does, whichever kind is live.
         """
+        if self._steer_dir is not None:
+            # A PRE-HOOK, ALWAYS, and at the block whose input is the stream
+            # the direction was fitted in. `steer_vectors._last_token_states`
+            # captures at `register_forward_pre_hook` on block L, so "layer L"
+            # in a saved direction means the residual stream ENTERING L —
+            # applying it anywhere else would push a vector through a basis it
+            # was not measured in and report the saved layer for it.
+            #
+            # Constant alpha, on every position, matching the feature arm
+            # exactly. The relative figure is a REPORT (see
+            # `DirectionSteer.strength_report`), not a rescaling: rescaling
+            # per layer would make two runs at "the same strength"
+            # incomparable, which is the opposite of what the honesty rule
+            # asks for.
+            steer = self._steer_dir
+            block = self._block(steer.layer)
+            direction, strength = steer.vector, steer.strength
+
+            def _direction_pre(module, args):
+                hidden = args[0]
+                return (hidden + strength * direction.to(hidden.dtype),) + args[1:]
+
+            return block.register_forward_pre_hook(_direction_pre)
+
         fid, scale = self._steer
         direction = self.sae.steering_vector(fid).to(self.device)
         block = self._block(self.sae.layer)
@@ -3780,6 +3933,23 @@ class ModelRuntime:
                         "accuracy": out["layers"][best]["accuracy"],
                         "null_high": out["layers"][best]["null_high"],
                         "majority": out["majority"],
+                        # WRITTEN, because `steer_vectors.load` checks
+                        # `payload.get("beats_null") is False` and a missing
+                        # key is not False — so for every direction this
+                        # product could produce, the failed-null warning was
+                        # unreachable code. The refusal above means this is
+                        # always True here; writing it anyway is what makes
+                        # the check honest rather than vacuous, and a future
+                        # writer that saves a weaker direction inherits a
+                        # reader for it.
+                        "beats_null": True,
+                        # So the steering panel can report a strength relative
+                        # to something for a probe-fitted direction too. Same
+                        # definition as `fit_direction`'s: the mean L2 norm of
+                        # the last-token states this layer was fitted from.
+                        "residual_norm": round(
+                            float(states[best].norm(dim=-1).mean()), 3
+                        ),
                         "note": (
                             "fitted by a layer-sweep probe. READABLE IS NOT "
                             "USED: this direction was linearly decodable, "
@@ -5440,6 +5610,7 @@ class ModelRuntime:
             self.sae = None
             self._feats = None
             self._steer = None
+            self._steer_dir = None
             self._ollama_instruct = None
             return self.status()
 
@@ -5478,6 +5649,7 @@ class ModelRuntime:
                 self.sae = None
                 self._feats = None
                 self._steer = None
+                self._steer_dir = None
                 gc.collect()
                 self._empty_accel_cache()
 
@@ -5538,6 +5710,7 @@ class ModelRuntime:
         self.sae = sae
         self._feats = None
         self._steer = None
+        self._steer_dir = None
         return sae.status()
 
     def _compute_features(self) -> torch.Tensor:
@@ -5666,19 +5839,521 @@ class ModelRuntime:
         }
 
     def set_steering(self, feature_id: int | None, scale: float = 0.0) -> dict:
-        """Set (or clear, with feature_id=None) single-feature steering."""
+        """Set (or clear, with feature_id=None) single-feature steering.
+
+        SIGNATURE AND BEHAVIOUR UNCHANGED. The only addition is that both
+        arms of the union now drop the other one — setting a feature replaces
+        a direction and `feature_id=None` clears whichever was live.
+        `FeaturesPanel.onSteerTest` calls this with None three times per A/B,
+        including in its catch arm, on the promise that it "always leaves the
+        model clean"; a direction it could not see would survive that and the
+        next generation would come back steered with nothing on screen saying
+        so.
+
+        The None arm still short-circuits BEFORE the `self.sae is None`
+        refusal, and that ordering is load-bearing —
+        `tests/test_smoke.py::test_steer_clear_is_ok_without_sae` pins it.
+        """
         if feature_id is None:
             self._steer = None
+            self._steer_dir = None
         else:
             if self.sae is None:
                 raise Refusal("No SAE loaded.")
             if not 0 <= feature_id < self.sae.d_sae:
                 raise BadRequest(f"feature_id must be in [0,{self.sae.d_sae})")
             self._steer = (feature_id, float(scale))
+            self._steer_dir = None
         return self.steering_status()
 
+    def clear_steering(self) -> dict:
+        """Take off whichever intervention is installed. Named, so `DELETE
+        /api/steer` reads as what it does rather than as a POST of a null."""
+        self._steer = None
+        self._steer_dir = None
+        return self.steering_status()
+
+    def set_steering_direction(self, name: str, strength: float = 0.0) -> dict:
+        """Install a SAVED direction from the vector store, or refuse by name.
+
+        The second arm, and the one that works on the models nobody trains an
+        SAE for. Everything that makes it safe happens in `steer_vectors.load`
+        — which refuses a width this model's residual stream cannot be, naming
+        both checkpoints — and everything that makes it honest happens in
+        `residual_norm_at`, which measures the stream this coefficient is
+        being added to so the strength can be reported relative to it.
+
+        WARNINGS ARE CARRIED, NOT SWALLOWED. `load` warns rather than refuses
+        for a direction fitted on a different model of the same width, because
+        lifting one onto a finetune is a real experiment — but it must never
+        be silent, so the sentences ride on the status and the panel prints
+        them on the card.
+        """
+        from . import steer_vectors
+
+        with self._lock:
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Steering means running the model "
+                    "with a vector added to its residual stream, and a `.mri` "
+                    "holds activations rather than weights."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to add a direction to."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+
+            hidden_size = int(text_config(self.model.config).hidden_size)
+            vector, payload, warnings = steer_vectors.load(
+                name, hidden_size=hidden_size, model=self.hf_id or ""
+            )
+            layer = payload.get("layer")
+            if not isinstance(layer, int) or isinstance(layer, bool):
+                raise Refusal(
+                    f"{name!r} does not record which layer it was fitted at, "
+                    "so there is nowhere to put it. A direction without its "
+                    "layer is a vector without a basis."
+                )
+            # Bounds and architecture, in the module that owns both. Raises
+            # BadRequest naming this model's layer count.
+            self._block(layer)
+
+            norm = float(vector.norm())
+            if norm == 0.0:
+                raise Refusal(
+                    f"{name!r} is all zeros, so there is no direction in it "
+                    "to push along."
+                )
+            # Unit norm at install, so `strength` is in the residual stream's
+            # own units and `relative_strength` is the quotient it says it is.
+            # Everything that writes into this store already normalises; doing
+            # it again costs one division and closes the gap for a file that
+            # arrived some other way.
+            unit = (vector / norm).to(self.device)
+
+            residual_norm, measured, unmeasured = self.residual_norm_at(layer)
+            self._steer = None
+            self._steer_dir = DirectionSteer(
+                name=str(payload.get("name") or name),
+                layer=layer,
+                strength=float(strength),
+                vector=unit,
+                origin_model=str(payload.get("model") or ""),
+                residual_norm=residual_norm,
+                measured=measured,
+                unmeasured=unmeasured,
+                warnings=list(warnings),
+                # The generation the norm above describes. None when there was
+                # nothing to measure on, so an absent measurement is never
+                # reported as a stale one.
+                measured_on=self.last_ids if residual_norm is not None else None,
+            )
+            # `receipt` files it under its own op as well as returning it, so
+            # `export_session` carries how the strength beside a steered run
+            # was arrived at rather than only the number.
+            self.receipt(
+                "steer_direction",
+                name=name,
+                layer=layer,
+                strength=float(strength),
+                relative_strength=steer_vectors.relative_strength(
+                    float(strength), residual_norm
+                ),
+                residual_norm=residual_norm,
+                residual_norm_basis=measured or unmeasured,
+                fitted_on=str(payload.get("model") or ""),
+            )
+            return self.steering_status()
+
+    def residual_norm_at(self, layer: int) -> tuple[float | None, str, str]:
+        """`(norm, how it was measured, why it was not)` at one layer.
+
+        CALL THIS WITH `self._lock` HELD, for the reason
+        `_require_live_generation` gives in capitals: it runs a forward pass,
+        and a norm measured outside the lock can describe a model that has
+        since been swapped out.
+
+        ONE DEFINITION, shared with the fit. `steer_vectors.fit_direction`
+        records `torch.cat([pos, neg]).norm(dim=-1).mean()` — the mean L2 norm
+        of the last-token residual vectors entering that layer — and this is
+        the same statistic taken on the current prompt instead of on the
+        contrast pairs. Two definitions of "the stream's own norm" is exactly
+        the failure `_steer_handle`'s docstring warns about for interventions,
+        and it would be worse here because both numbers would look right.
+
+        Costs ONE forward pass, which is why it happens at apply time and not
+        on every status poll. Returns `None` and a sentence when there is no
+        generation to measure on — an unknown, never a zero.
+        """
+        from . import steer_vectors
+
+        if self.last_ids is None:
+            return (
+                None,
+                "",
+                "nothing has been generated yet, so there is no prompt to "
+                "measure this model's residual norm on — the strength below "
+                "is the raw coefficient with nothing to compare it against.",
+            )
+        if self.last_ids_epoch != self.epoch:
+            return (
+                None,
+                "",
+                "the last generation was produced by a different model, so "
+                "its residual norm would not describe the stream this "
+                "direction is being added to. Generate again to measure it.",
+            )
+
+        states = steer_vectors._last_token_states(
+            self.model,
+            self._block,
+            [self.last_ids.unsqueeze(0).to(self.device)],
+            [layer],
+        )
+        norm = float(states[layer].norm(dim=-1).mean())
+        return (
+            round(norm, 3),
+            f"the mean L2 norm of the residual stream entering layer {layer} "
+            f"at the last token of the current generation, measured on this "
+            f"machine just now — the same statistic `fit_direction` records "
+            f"at fit time",
+            "",
+        )
+
     def steering_status(self) -> dict:
+        """What is installed, if anything.
+
+        ADDITIVE ONLY. `{"active": False}` still has exactly one key, because
+        `demo.ts` mirrors that shape offline with nothing type-checking it
+        against this, and `test_smoke.py` and `e2e_check.py` both read
+        `active` straight off the top. The feature arm keeps `feature_id` and
+        `scale` where they were and gains `kind` and `layer` beside them.
+
+        The relative strength is published for the DIRECTION arm only. It
+        costs a forward pass to measure and it is measured once, at apply
+        time; making the SAE-feature route pay for one would change what an
+        existing call costs, which is not a thing to do quietly.
+        """
+        if self._steer_dir is not None:
+            steer = self._steer_dir
+            return {
+                "active": True,
+                "kind": "direction",
+                "name": steer.name,
+                "layer": steer.layer,
+                "scale": steer.strength,
+                "fitted_on": steer.origin_model,
+                "warnings": list(steer.warnings),
+                "strength": steer.strength_report(self.last_ids),
+            }
         if self._steer is None:
             return {"active": False}
         fid, scale = self._steer
-        return {"active": True, "feature_id": fid, "scale": scale}
+        return {
+            "active": True,
+            "kind": "feature",
+            "feature_id": fid,
+            "scale": scale,
+            "layer": self.sae.layer if self.sae is not None else None,
+        }
+
+    def direction_catalogue(self) -> dict:
+        """Every saved direction, judged against the model loaded right now.
+
+        NO LOCK, deliberately. `load` holds `self._lock` across a whole model
+        load, and a catalogue that blocked for the length of a download would
+        be a list of files behind a progress bar. What it does instead is
+        publish WHAT it judged against — `model` and `hidden_size` are in the
+        payload beside the rows, so a reader can see which model each
+        `compatible` was decided against rather than trusting that it was the
+        one on screen.
+
+        `compatible` is a THREE-state field. `False` is the positive claim
+        "this cannot be applied here", and it comes with the exact sentence
+        `steer_vectors.load` would refuse with. `None` is "nothing is loaded,
+        so there is nothing to be compatible with" — which is not the same
+        claim and must not render as a red cross.
+        """
+        from . import steer_vectors
+
+        rows = steer_vectors.catalogue()
+        hidden_size: int | None = None
+        current = ""
+        # BOUND ONCE. Without the lock, a load or an unload can land between
+        # the guard and the config read, and `self.model` re-read on the
+        # second line would be the None the first line just ruled out —
+        # `AttributeError` and a 500 on the one route whose whole contract is
+        # to answer with a list rather than a refusal. The local makes the two
+        # statements describe the same model or no model at all, which is the
+        # atomicity this needs and the only kind it can have without blocking.
+        model = self.model
+        if model is not None:
+            hidden_size = int(text_config(model.config).hidden_size)
+            current = self.hf_id or ""
+
+        for row in rows:
+            row["compatible"] = None
+            row["mismatch"] = ""
+            row["warnings"] = []
+            if row.get("unreadable"):
+                row["compatible"] = False
+                row["mismatch"] = (
+                    f"{row.get('name', 'this file')!r} is not a direction "
+                    "this version can read, so nothing here knows what model "
+                    "it belongs to."
+                )
+                continue
+            if hidden_size is None:
+                continue
+            dims = row.get("hidden_size")
+            if not isinstance(dims, int) or isinstance(dims, bool):
+                row["compatible"] = False
+                row["mismatch"] = (
+                    "this direction does not record its own width, so it "
+                    "cannot be checked against a model before being applied."
+                )
+                continue
+            if dims != hidden_size:
+                row["compatible"] = False
+                row["mismatch"] = (
+                    f"{row.get('name')!r} is a {dims}-dimensional direction "
+                    f"and {current or 'this model'}'s residual stream is "
+                    f"{hidden_size}. It was fitted on "
+                    f"{row.get('model') or 'another model'}. Refusing rather "
+                    "than reshaping it into something that would steer, "
+                    "plausibly, at random."
+                )
+                continue
+            row["compatible"] = True
+            origin = row.get("model") or ""
+            if current and origin and origin != current:
+                row["warnings"].append(
+                    f"this direction was fitted on {origin} and you are "
+                    f"steering {current}. The hidden sizes match, but equal "
+                    "size is not equal basis — the result may be confident "
+                    "and meaningless."
+                )
+            if row.get("beats_null") is False:
+                row["warnings"].append(
+                    "this direction did not beat its own label-shuffled null "
+                    "when it was fitted, so it was never evidence of anything."
+                )
+
+        return {
+            "directions": rows,
+            "model": current or None,
+            "hidden_size": hidden_size,
+            "means": (
+                "Directions fitted from contrast pairs, or exported from a "
+                "layer sweep by the probe panel. Each is only meaningful "
+                "against the model it was fitted on: `compatible` is judged "
+                "against the model named here, and `null` means nothing is "
+                "loaded to judge against."
+            ),
+        }
+
+    def fit_steering_direction(
+        self,
+        positive_texts: list[str],
+        negative_texts: list[str],
+        *,
+        layers: list[int] | None = None,
+        method: str = "caa",
+        save_as: str = "",
+        confirm: bool = False,
+        estimate_only: bool = False,
+    ) -> dict:
+        """Fit a direction from contrast pairs, with its null at every layer.
+
+        The reader-side twin of `probe_layers`: same capture point, same
+        refusal order, same "what this cost" receipt. What is different is the
+        estimator — `steer_vectors.fit_direction` scores on held-out pairs
+        against label-shuffled refits, and the whole per-layer table comes back
+        rather than a verdict, because the honest numbers ARE the product.
+
+        TWO CALLS, ONE ROUTE. `estimate_only=True` spends one warm-up and one
+        probe pass to say what the rest would cost ON THIS MACHINE and returns
+        without fitting; the panel renders that, and the confirm runs it for
+        real. Quoting somebody else's milliseconds is what `budget.py` exists
+        to stop.
+        """
+        from . import budget, steer_vectors
+
+        with self._lock:
+            self._refuse_if_decoding("fitting a steering direction")
+            if self.replay is not None:
+                raise Refusal(
+                    "This is a recording. Fitting a direction means running "
+                    "the model on your contrast pairs, and a `.mri` does not "
+                    "carry one."
+                )
+            if self.backend == "ollama":
+                raise Refusal(
+                    "Ollama serves text only — there is no residual stream "
+                    "here to fit a direction in."
+                )
+            if self.model is None:
+                raise Refusal("No model loaded — pick one first.")
+            if method not in steer_vectors.METHODS:
+                raise BadRequest(
+                    f"unknown method {method!r} — use one of "
+                    f"{', '.join(steer_vectors.METHODS)}"
+                )
+
+            positive = [
+                t for t in (positive_texts or []) if isinstance(t, str) and t.strip()
+            ]
+            negative = [
+                t for t in (negative_texts or []) if isinstance(t, str) and t.strip()
+            ]
+
+            # EVERY CHECK BEFORE A SINGLE FORWARD PASS. `probe_layers` learned
+            # this the expensive way: its per-row validation was thorough and
+            # never ran, because an empty list reached `torch.stack([])` and
+            # answered 500 with a sentence about a tensor library. A sweep is
+            # worse — the refusals below would arrive after 2n passes.
+            if not positive or not negative:
+                raise BadRequest(
+                    "a direction is fitted from YOUR contrast pairs and one "
+                    "of the two sets is empty. Give it matched lists — the "
+                    "same sentence written two ways, one line each — and it "
+                    "will report where in the network they come apart."
+                )
+            if len(positive) != len(negative):
+                raise BadRequest(
+                    f"{len(positive)} positive prompts against "
+                    f"{len(negative)} negative ones — contrastive pairs must "
+                    "be matched, because the direction is fitted from their "
+                    "differences."
+                )
+            if len(positive) < steer_vectors.MIN_PAIRS:
+                raise Refusal(
+                    f"{len(positive)} pairs is not enough to fit a direction "
+                    f"that can be checked. This needs at least "
+                    f"{steer_vectors.MIN_PAIRS}, because half are held out "
+                    "for scoring and a direction scored on its own fitting "
+                    "set separates it by construction."
+                )
+
+            n_layers = int(text_config(self.model.config).num_hidden_layers)
+            chosen = list(range(n_layers)) if not layers else [int(x) for x in layers]
+            for layer in chosen:
+                self._block(layer)  # bounds and architecture, in words
+
+            ids_list = [
+                self.tokenizer(t, return_tensors="pt")["input_ids"].to(self.device)
+                for t in positive + negative
+            ]
+            passes = len(ids_list)
+
+            # ONE REAL ITERATION of the loop being projected, hooks and all —
+            # `budget.probe_pass`'s docstring is emphatic that a probe doing
+            # less work than the body is wrong in the direction that approves
+            # a run which then falls over. The warm-up first, because the
+            # first pass after a load measured 3-4x the steady rate.
+            def one_prompt() -> None:
+                steer_vectors._last_token_states(
+                    self.model, self._block, ids_list[:1], chosen
+                )
+
+            with torch.no_grad():
+                self.model(ids_list[0])
+            probe = budget.probe_pass(one_prompt, self.accel.kind)
+            estimate = budget.project(probe, passes)
+
+            out: dict = {
+                "ran": False,
+                "method": method,
+                "n_pairs": len(positive),
+                "passes": passes,
+                "layers": [],
+                "best_layer": None,
+                "survived": 0,
+                "estimate": estimate.to_dict(),
+                "probe": probe.to_dict(),
+                "means": (
+                    "One forward pass per prompt, twice over: the two sets "
+                    "are captured separately and every layer is fitted from "
+                    "the same capture."
+                ),
+            }
+            # THE QUOTE COMES BACK BEFORE THE GUARD RUNS. `budget.check`
+            # raises `TooCostly`, and a price that refuses to be quoted
+            # because it is high answers "how much would this cost?" with a
+            # 409 — in exactly the case the panel asked for a number. The
+            # estimate carries its own `verdict`, so a caller pricing a sweep
+            # can see "refuse" and offer the override; `estimate_ablation`,
+            # the other route of this shape, likewise leaves the check to the
+            # run path. Pricing is not permission.
+            if estimate_only:
+                return out
+
+            budget.check(
+                estimate,
+                label=f"fitting a direction over {len(chosen)} layers",
+                confirm=confirm,
+            )
+
+            report, vectors = steer_vectors.sweep(
+                self.model,
+                self._block,
+                ids_list[: len(positive)],
+                ids_list[len(positive) :],
+                chosen,
+                method=method,
+            )
+            out.update(report)
+            out["ran"] = True
+            out["receipt"] = self.receipt(
+                "fit_direction",
+                method=method,
+                n_pairs=len(positive),
+                layers=len(chosen),
+                passes=passes,
+                positive_sha256=receipts.digest("\n".join(positive)),
+                negative_sha256=receipts.digest("\n".join(negative)),
+            )
+
+            if save_as:
+                best = report["best_layer"]
+                if best is None:
+                    # The same rule `probe_layers` keeps at its own save arm:
+                    # the store is the one place this direction would later be
+                    # picked up with none of the table beside it.
+                    raise Refusal(
+                        "no layer beat its own label-shuffled null, so there "
+                        "is no direction here worth saving. A vector fitted "
+                        "where the estimator produces the same separation "
+                        "from shuffled labels is fitted to noise, and the "
+                        "store is the one place it would later be used "
+                        "without any of this beside it."
+                    )
+                row = next(r for r in report["layers"] if r["layer"] == best)
+                out["saved"] = steer_vectors.save(
+                    save_as,
+                    vectors[best],
+                    {
+                        "model": self.hf_id or "",
+                        "layer": best,
+                        "hidden_size": int(vectors[best].shape[0]),
+                        "method": method,
+                        "dtype": str(next(self.model.parameters()).dtype).removeprefix(
+                            "torch."
+                        ),
+                        "beats_null": row["beats_null"],
+                        "p_value": row["p_value"],
+                        "effect": row["effect"],
+                        "null_max": row["null_max"],
+                        "residual_norm": row["residual_norm"],
+                        "n_pairs": row["n_pairs"],
+                        "note": (
+                            "fitted from contrast pairs by "
+                            f"steer_vectors.{method}, scored on the held-out "
+                            "half against label-shuffled refits."
+                        ),
+                    },
+                )
+            return out

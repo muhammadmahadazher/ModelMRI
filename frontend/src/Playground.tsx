@@ -21,6 +21,7 @@ import FeaturesPanel from "./FeaturesPanel";
 import GroundPanel from "./GroundPanel";
 import LensPanel from "./LensPanel";
 import ProbePanel from "./ProbePanel";
+import SteeringPanel from "./SteeringPanel";
 import PatchscopePanel from "./PatchscopePanel";
 import PatchGraphPanel from "./PatchGraphPanel";
 import PatchPanel from "./PatchPanel";
@@ -696,6 +697,29 @@ export default function Playground({
           is a different kind of evidence entirely: the lens reads a state
           through the unembedding, this hands the state back to the model. */}
       {introspectable && !replay && <ProbePanel epoch={epoch} />}
+      {/* Beside the probe because they share a store: the probe's "save the
+          best layer's direction as" field writes into the same directory this
+          panel lists, and a reader who has just saved one should not have to
+          go looking for where it went.
+
+          NOT OFFERED in the demo or viewer builds, for the reason
+          `PatchGraphPanel` above is not: every control here needs either a
+          live residual stream or a directory on the reader's own disk, and a
+          panel whose buttons can only apologise reads as a broken measurement
+          rather than as a page with nothing behind it. `api.ts` refuses each
+          of its calls as the second lock, and `tests/demo_check.py` records
+          both. */}
+      {introspectable && !replay && !DEMO && !VIEWER && (
+        <SteeringPanel
+          epoch={epoch}
+          prompt={lastPrompt}
+          /* Raised only around this panel's own A/B, which turns steering off
+             and on again underneath whatever else is on screen. A direction
+             the reader applied deliberately does NOT raise it: generating
+             under one is the point of applying it. */
+          onSteering={setSteering}
+        />
+      )}
       {introspectable && !replay && <PatchscopePanel epoch={epoch} />}
       {/* Grounding runs its own document and question, so like the two above
           it needs no generation — but it masks passages out of an attention

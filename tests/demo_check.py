@@ -227,6 +227,39 @@ EXEMPT = {
         "api.ts refuses it here through `refusedHere` rather than "
         "`noModelHere`, because what is missing is the run, not a checkpoint"
     ),
+    # --- the steering vector store, which is a directory on your disk ------
+    #
+    # Four routes over one directory of JSON files under the reader's own data
+    # folder. A static bundle has no filesystem, so any list here would be
+    # somebody else's directions and any "apply" would be a control whose only
+    # outcome is a refusal — the thing that teaches a visitor the measurement
+    # is broken. The panel is gated off at its mount in Playground.tsx for
+    # demo and viewer builds and api.ts refuses each call as a second lock,
+    # through `refusedHere` rather than `noModelHere` for the three that read
+    # the store: what is missing there is the disk, not a checkpoint.
+    "/api/steer/directions": (
+        "lists the steering directions saved on your own machine. A static "
+        "page has no vector store, so any row here would be somebody else's "
+        "fit under our provenance"
+    ),
+    "/api/steer/directions/": (
+        "deletes one of those files. There is no file to delete behind a "
+        "static page, and a delete button that can only ever apologise is "
+        "worse than no button"
+    ),
+    "/api/steer/direction": (
+        "installs a saved direction on the live model's residual stream at "
+        "the layer it was fitted at, and reports the strength against a "
+        "residual norm measured on the current prompt — three things this "
+        "page has none of"
+    ),
+    "/api/steer/fit": (
+        "fits a direction from the reader's own contrast pairs: one forward "
+        "pass per prompt against a live model, then eight label-shuffled "
+        "refits at every layer. The pairs are typed on the day, so nothing "
+        "about the answer can be baked; api.ts refuses it through "
+        "`noModelHere` because what is missing for this one IS a checkpoint"
+    ),
     "/api/patterns/across": (
         "counts one structural finding over every run recorded on a machine. "
         "This page carries a single recording, so any answer would be a "

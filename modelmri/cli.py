@@ -566,6 +566,199 @@ def sae_command(args) -> int:
     return 2
 
 
+def steer_command(args) -> int:
+    """`modelmri steer …` — the vector store, from a terminal.
+
+    LIST AND REMOVE ONLY, and that is a decision rather than an unfinished
+    half. Applying a direction is runtime state: it lives on a loaded model
+    inside a running server, and a CLI `apply` with no server would be a write
+    that nothing reads — the exact defect this whole workstream exists to
+    close. Fitting one is the same argument plus a GPU. Both are server and
+    panel operations; what a terminal is good for is seeing what is on this
+    machine and taking something off it.
+    """
+    what = getattr(args, "steer_command", None)
+
+    if what == "list":
+        return steer_list(model=args.model, as_json=args.json)
+
+    if what == "rm":
+        return steer_remove(args.name, yes=args.yes)
+
+    print("modelmri steer: say list or rm", file=sys.stderr)
+    return 2
+
+
+def _hidden_size_of(model: str) -> tuple[int | None, str]:
+    """`(hidden size, why not)` for a model named on the command line.
+
+    THE CONFIG ONLY. `AutoConfig.from_pretrained` reads one small JSON, so
+    `modelmri steer list --model X` costs a config fetch rather than a
+    checkpoint — and a compatibility column that needed 3 GB of weights to
+    draw would not get drawn.
+
+    Returns a reason rather than raising, because a model that cannot be
+    resolved is a fact about this machine's cache or its network, not a
+    failure of the listing. The rows are still worth printing.
+    """
+    try:
+        import transformers
+
+        from .runtime import text_config
+
+        cfg = text_config(transformers.AutoConfig.from_pretrained(model))
+        size = getattr(cfg, "hidden_size", None)
+        if not isinstance(size, int):
+            return None, f"{model} does not publish a hidden_size in its config"
+        return size, ""
+    except Exception as err:
+        return None, f"{model}'s config could not be read here ({type(err).__name__})"
+
+
+def steer_list(*, model: str = "", as_json: bool = False) -> int:
+    """Every saved direction on this machine, and what judges it.
+
+    `--model` is what makes the compatibility column real rather than a
+    guess: without a model there is nothing for a direction to be compatible
+    WITH, so the column says that instead of inventing a verdict. Same rule
+    the panel keeps — `compatible: null` is "nothing loaded", not "no".
+    """
+    from . import steer_vectors
+
+    rows = steer_vectors.catalogue()
+    hidden_size, why_not = _hidden_size_of(model) if model else (None, "")
+
+    if as_json:
+        for row in rows:
+            row["compatible"] = (
+                None if hidden_size is None else row.get("hidden_size") == hidden_size
+            )
+        # `unjudged` is the reason every `compatible` above is null, and it is
+        # here because a null with no reason beside it is the one thing this
+        # tool does not publish anywhere else. Two different situations reach
+        # it — no model was named, or the named model's config could not be
+        # read on this machine — and the human listing prints the second one
+        # while this form used to swallow it, leaving a script unable to tell
+        # "nothing was asked" from "it was asked and could not be answered".
+        # Empty string, not null: absent-and-fine is not the same as unknown.
+        print(
+            json.dumps(
+                {"directions": rows, "model": model or None, "unjudged": why_not},
+                indent=2,
+            )
+        )
+        return 0
+
+    print(f"ModelMRI {__version__} — steering directions on this machine\n", flush=True)
+    if not rows:
+        # Not an error, and not an empty screen either. This is the ordinary
+        # first state, and the useful thing to say is where they come from.
+        print(f"  none saved yet, in {steer_vectors.store_dir()}", flush=True)
+        print(
+            "\n  Directions are fitted from contrast pairs in the Steering "
+            "panel, or\n  exported from a layer sweep by the Probe panel's "
+            '"save the best layer\'s\n  direction as" field.',
+            flush=True,
+        )
+        return 0
+
+    if model and hidden_size is None:
+        print(f"  {why_not},\n  so the fit column below is all this can say.\n")
+
+    header = f"  {'NAME':<24} {'MODEL':<28} {'LAYER':>5} {'DIMS':>6}  NULL"
+    print(header, flush=True)
+    for row in rows:
+        if row.get("unreadable"):
+            print(f"  {row.get('name', '?'):<24} damaged — this version cannot read it")
+            continue
+        name = str(row.get("name", "?"))[:24]
+        origin = str(row.get("model") or "not recorded")[:28]
+        layer = row.get("layer")
+        dims = row.get("hidden_size")
+        beats = row.get("beats_null")
+        p = row.get("p_value")
+        # Three states, printed as three things. `beats_null` absent is a
+        # direction saved before the store recorded one, which is not the
+        # same as one that failed.
+        verdict = (
+            "not recorded"
+            if beats is None
+            else ("beat its null" if beats else "did NOT beat its null")
+        )
+        if isinstance(p, (int, float)):
+            verdict += f" (p={p})"
+        print(
+            f"  {name:<24} {origin:<28} "
+            f"{'?' if layer is None else layer:>5} {'?' if dims is None else dims:>6}"
+            f"  {verdict}",
+            flush=True,
+        )
+        if row.get("saved_at"):
+            print(f"  {'':<24} saved {row['saved_at']}", flush=True)
+        if hidden_size is not None:
+            fits = row.get("hidden_size") == hidden_size
+            print(
+                f"  {'':<24} "
+                + (
+                    f"fits {model}"
+                    if fits
+                    else f"does NOT fit {model} — its residual stream is {hidden_size}"
+                ),
+                flush=True,
+            )
+
+    if not model:
+        print(
+            "\n  A direction only means anything against the model it was "
+            "fitted on.\n  Pass --model to check these against one, or open "
+            "the Steering panel,\n  which judges every row against whatever "
+            "is loaded.",
+            flush=True,
+        )
+    return 0
+
+
+def steer_remove(name: str, *, yes: bool = False) -> int:
+    """`modelmri steer rm` — delete one, after showing what it is.
+
+    Follows `uninstall`'s shape: print what would go, ask, and exit non-zero
+    on a decline so a script can tell "said no" from "did it". The file is
+    the only copy — nothing else in the package writes a direction anywhere
+    else — so the confirmation is not ceremony.
+    """
+    from . import steer_vectors
+    from .errors import BadRequest, Refusal
+
+    print(f"ModelMRI {__version__} — remove a steering direction\n", flush=True)
+    row = next(
+        (r for r in steer_vectors.catalogue() if r.get("name") == name),
+        None,
+    )
+    try:
+        if not yes:
+            if row is not None:
+                print(
+                    f"  {name}  fitted on {row.get('model') or 'an unrecorded model'} "
+                    f"at layer {row.get('layer', '?')}",
+                    flush=True,
+                )
+            print(f"  {steer_vectors.store_dir()}", flush=True)
+            print(flush=True)
+            try:
+                reply = input(f"Delete {name!r}? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                reply = ""
+            if reply not in ("y", "yes"):
+                print("nothing deleted.", flush=True)
+                return 1
+        steer_vectors.remove(name)
+    except (Refusal, BadRequest) as err:
+        print(f"modelmri: {err.sentence}", file=sys.stderr)
+        return 2
+    print(f"deleted {name!r}.", flush=True)
+    return 0
+
+
 def audit_dataset(repo_id: str = "", *, as_json: bool = False) -> int:
     """Prove a robot dataset is intact, or say exactly where it is not.
 
@@ -2339,10 +2532,11 @@ def main() -> None:
         help="Report what this machine can and cannot run, and why",
     )
 
-    # Nested subcommands, and the only place in this CLI that has them. The
-    # action expert is a second environment with its own lifecycle — build it,
-    # run it, ask about it — and flattening that into `modelmri policy-install`
-    # would hide that these three act on one thing.
+    # Nested subcommands, the first of three groups in this CLI (`sae` and
+    # `steer` below are the others). The action expert is a second environment
+    # with its own lifecycle — build it, run it, ask about it — and flattening
+    # that into `modelmri policy-install` would hide that these three act on
+    # one thing.
     policy_parser = sub.add_parser(
         "policy",
         help="The robot action expert: its own environment and its own process",
@@ -2437,6 +2631,32 @@ def main() -> None:
         "--yes", action="store_true", help="run even when the projection is large"
     )
     sae_fid.add_argument("--json", action="store_true", help="machine-readable")
+
+    # Nested for the same reason the two above are: the vector store is one
+    # thing with two verbs, and `modelmri steer-list` would hide that they act
+    # on the same directory. Apply and fit are deliberately absent — see
+    # `steer_command` for why a CLI apply would be a write nothing reads.
+    steer_parser = sub.add_parser(
+        "steer", help="Saved steering directions: what is on this machine"
+    )
+    steer_sub = steer_parser.add_subparsers(dest="steer_command")
+
+    steer_ls = steer_sub.add_parser(
+        "list", help="Every saved direction, with the null it was judged against"
+    )
+    steer_ls.add_argument(
+        "--model",
+        default="",
+        help="check each row against this model's residual stream, e.g. "
+        "Qwen/Qwen3-1.7B. Reads the config only, not the weights",
+    )
+    steer_ls.add_argument("--json", action="store_true", help="machine-readable")
+
+    steer_rm = steer_sub.add_parser("rm", help="Delete one saved direction")
+    steer_rm.add_argument("name", help="the direction's name, as `steer list` shows it")
+    steer_rm.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
 
     scanner = sub.add_parser(
         "scan",
@@ -2633,6 +2853,8 @@ def main() -> None:
         raise SystemExit(policy_command(args))
     elif args.command == "sae":
         raise SystemExit(sae_command(args))
+    elif args.command == "steer":
+        raise SystemExit(steer_command(args))
     elif args.command == "scan":
         raise SystemExit(scan_weights(args.path, as_json=args.json, limit=args.limit))
     elif args.command == "models":

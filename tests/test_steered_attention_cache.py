@@ -24,7 +24,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from modelmri.errors import Refusal  # noqa: E402
-from modelmri.runtime import ModelRuntime  # noqa: E402
+from modelmri.runtime import DirectionSteer, ModelRuntime  # noqa: E402
 
 N_TOKENS = 4
 N_HEADS = 2
@@ -63,10 +63,29 @@ def _runtime() -> ModelRuntime:
     # called -- so the lambda was a wrapper around a callable that already did
     # the job.
     rt._steer_handle = Handle
+    # The union's second arm reports its STRENGTH, so a direction's stale map
+    # is identifiable the same way a feature's is. `_steer_dir` is a class
+    # attribute defaulting to None, which is why this fixture does not have to
+    # know about a field it has nothing to do with.
     rt.model = lambda ids, output_attentions=False: Out(
-        float(rt._steer[0]) if rt._steer else -1.0
+        float(rt._steer_dir.strength)
+        if rt._steer_dir
+        else (float(rt._steer[0]) if rt._steer else -1.0)
     )
     return rt
+
+
+def _direction(name: str = "politeness", layer: int = 1, strength: float = 2.0):
+    return DirectionSteer(
+        name=name,
+        layer=layer,
+        strength=strength,
+        vector=torch.zeros(4),
+        origin_model="tiny/gpt2-under-test",
+        residual_norm=None,
+        measured="",
+        unmeasured="nothing has been generated yet",
+    )
 
 
 def _fill(maps) -> float:
@@ -121,3 +140,58 @@ def test_live_is_untouched():
     first = rt._capture("live")
     assert rt._capture("live") is first
     assert "live" in rt._attn_variants
+
+
+# ------------------------------------------- and the same rule for directions
+#
+# A saved direction is the union's other arm, and it arrived after the defect
+# above was fixed. Everything the cached answer depends on lives in
+# `_steer_dir` — the name, the layer and the strength — so all three are in
+# the key, for the reason the feature id and the scale are in the other one.
+
+
+def test_changing_the_direction_gives_a_map_measured_under_it():
+    rt = _runtime()
+    rt._steer_dir = _direction(strength=2.0)
+    assert _fill(rt._capture("steered")) == 2.0
+    rt._steer_dir = _direction(strength=7.0)
+    assert _fill(rt._capture("steered")) == 7.0
+
+
+def test_the_key_carries_the_name_and_the_layer_as_well_as_the_strength():
+    """Two directions applied at the same strength are two different
+    interventions, and so are the same direction at two layers."""
+    rt = _runtime()
+    rt._steer_dir = _direction(name="politeness", layer=1, strength=2.0)
+    rt._capture("steered")
+    rt._steer_dir = _direction(name="formality", layer=1, strength=2.0)
+    rt._capture("steered")
+    rt._steer_dir = _direction(name="politeness", layer=3, strength=2.0)
+    rt._capture("steered")
+    assert "steered:dir:politeness:1:2.0" in rt._attn_variants
+    assert "steered:dir:formality:1:2.0" in rt._attn_variants
+    assert "steered:dir:politeness:3:2.0" in rt._attn_variants
+
+
+def test_a_direction_cannot_collide_with_a_feature():
+    """`steered:100:5.0` and a direction NAMED "100" at scale 5.0 have to be
+    different keys, or one arm serves the other arm's map."""
+    rt = _runtime()
+    rt._steer = (100, 5.0)
+    rt._capture("steered")
+    rt._steer = None
+    rt._steer_dir = _direction(name="100", layer=0, strength=5.0)
+    assert _fill(rt._capture("steered")) == 5.0
+    assert "steered:100:5.0" in rt._attn_variants
+    assert "steered:dir:100:0:5.0" in rt._attn_variants
+
+
+def test_turning_a_direction_off_refuses_even_after_a_map_was_cached():
+    rt = _runtime()
+    rt._steer_dir = _direction()
+    rt._capture("steered")
+    rt._steer_dir = None
+    with pytest.raises(Refusal) as caught:
+        rt._capture("steered")
+    assert "Nothing is being steered" in caught.value.sentence
+    assert "saved direction" in caught.value.sentence

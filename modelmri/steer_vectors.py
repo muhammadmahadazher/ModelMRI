@@ -384,12 +384,20 @@ def sweep(model, blocks, positive_ids, negative_ids, layers, *, method: str = "c
 
 
 def store_dir():
-    """Where saved directions live. Same platform discipline as the trace db."""
+    """Where saved directions live. Same platform discipline as the trace db.
+
+    ASKING DOES NOT CREATE IT. `paths.py` states the rule in its own module
+    docstring — "nothing here creates a directory as a side effect of being
+    asked a question" — and this function used to break it, which mattered
+    the moment `catalogue()` got a route: opening the steering panel on a
+    machine that has never fitted a vector would have written a directory
+    into the user's data folder merely by looking. `save()` calls
+    `paths.ensure` at the point of writing, which is where the rule says the
+    creation belongs.
+    """
     from . import paths
 
-    directory = paths.data_dir() / "vectors"
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
+    return paths.data_dir() / "vectors"
 
 
 def _slug(name: str) -> str:
@@ -414,6 +422,9 @@ def save(name: str, direction, meta: dict) -> dict:
     bytes saved.
     """
     import json
+    from datetime import datetime, timezone
+
+    from . import paths
 
     required = ("model", "layer", "hidden_size", "method", "dtype")
     missing = [k for k in required if meta.get(k) in (None, "")]
@@ -424,14 +435,39 @@ def save(name: str, direction, meta: dict) -> dict:
             "steering with the wrong one produces plausible nonsense."
         )
 
-    path = store_dir() / f"{_slug(name)}.json"
+    path = paths.ensure(store_dir()) / f"{_slug(name)}.json"
     payload = {
         "name": name,
+        # STAMPED HERE, because `catalogue()` sorts on it and promises
+        # "newest first". Nothing wrote this key for the first two versions of
+        # the store, so every row sorted equal on an empty string and the
+        # order a reader saw was whatever `glob` returned — a false claim in a
+        # tool whose whole discipline is not making them. Before `**meta` so a
+        # caller re-saving an imported vector can carry its original date
+        # through rather than restamping it as new.
+        "saved_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "values": [float(x) for x in direction.detach().float().cpu().tolist()],
         **meta,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {"name": name, "path": str(path), "dims": len(payload["values"])}
+
+
+def remove(name: str) -> dict:
+    """Delete one saved direction, or refuse by name.
+
+    The store is the only place these live, so this is the only way to take
+    one out — and a delete that silently succeeds on a name that was never
+    there teaches a reader their typo worked.
+    """
+    path = store_dir() / f"{_slug(name)}.json"
+    if not path.is_file():
+        raise Refusal(
+            f"there is no saved direction called {name!r}, so there is "
+            "nothing here to delete."
+        )
+    path.unlink()
+    return {"removed": name, "path": str(path)}
 
 
 def load(name: str, *, hidden_size: int, model: str = ""):
@@ -458,11 +494,18 @@ def load(name: str, *, hidden_size: int, model: str = ""):
         raise Refusal(f"{path.name} is not a direction this version can read.") from err
 
     if len(values) != hidden_size:
+        # BOTH MODELS BY NAME. "shapes disagree" is a sentence about tensors
+        # and this is a question about provenance: the reader has to be able
+        # to see which end is the wrong one, and the only way to see that is
+        # to be told what the direction came from and what it is being pushed
+        # into. `model` falls back to "this model" for a caller that did not
+        # name one, which is still better than a bare number.
         raise Refusal(
-            f"{name!r} is a {len(values)}-dimensional direction and this model's "
-            f"residual stream is {hidden_size}. It was fitted on "
-            f"{payload.get('model', 'another model')}. Refusing rather than "
-            "reshaping it into something that would steer, plausibly, at random."
+            f"{name!r} is a {len(values)}-dimensional direction and "
+            f"{model or 'this model'}'s residual stream is {hidden_size}. It "
+            f"was fitted on {payload.get('model') or 'another model'}. "
+            "Refusing rather than reshaping it into something that would "
+            "steer, plausibly, at random."
         )
 
     warnings = []
@@ -481,12 +524,40 @@ def load(name: str, *, hidden_size: int, model: str = ""):
     return torch.tensor(values), payload, warnings
 
 
+def relative_strength(alpha: float, residual_norm: float | None) -> float | None:
+    """`alpha` as a multiple of the stream's own norm, or None when unknown.
+
+    One function, because this arithmetic is published in three places — the
+    status, the receipt and the slider's own label — and three copies of a
+    division is three chances for the panel to say one thing while the receipt
+    says another.
+
+    Every direction in this package is unit norm (`_fit` divides by it,
+    `probe.direction_at` divides by it, `saes.SAEHandle.steering_vector`
+    divides by it), so the applied coefficient IS in raw residual-stream
+    units and the honest relative figure is exactly this quotient.
+
+    `None` in, `None` out, and `None` for a norm of zero — an unmeasured
+    strength is not a small one, and 4.0 / 0 is not infinite push, it is a
+    measurement that did not happen.
+    """
+    if residual_norm is None or residual_norm == 0.0:
+        return None
+    return alpha / residual_norm
+
+
 def catalogue() -> list[dict]:
     """Every saved direction, without its values. Newest first."""
     import json
 
+    directory = store_dir()
+    # A store that was never written to is an empty catalogue, not an error
+    # and not a directory this call creates. See `store_dir`.
+    if not directory.is_dir():
+        return []
+
     rows = []
-    for path in store_dir().glob("*.json"):
+    for path in directory.glob("*.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError):

@@ -1705,6 +1705,14 @@ html[data-theme="dark"] .panel {
    as foreign in the first place. */
 .h-vision { color: var(--sem-base); } .d-vision { background: var(--sem-base); }
 
+/* Steering BORROWS the features hue rather than inventing a ninth. The
+   remaining arcs of the wheel are indistinguishable on a 10px dot, and violet
+   already means "steered" everywhere else in this file - `.card.steered` and
+   `button.violet` are both the feature panel's A/B. Two surfaces that do the
+   same thing sharing a colour is honest; a new hue that reads as a different
+   kind of measurement is not. */
+.h-steer { color: var(--color-feat); } .d-steer { background: var(--color-feat); }
+
 /* ---------- VLA ---------- */
 .pill.vla { color: var(--color-vla); border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent); }
 button.green {
@@ -2658,7 +2666,8 @@ footer .spacer { flex: 1; }
   .feat-bar,                                  /* grow: scaleX(0)            */
   .theme-panel,                               /* theme-panel-in: translateY */
   .loadbar-track.indeterminate .loadbar-fill, /* sweep: infinite pan        */
-  .pill.accel.gpu .accel-dot {                /* livepulse: infinite ring   */
+  .pill.accel.gpu .accel-dot,                 /* livepulse: infinite ring   */
+  .st-live .st-pulse {                        /* stPulse: infinite ring     */
     animation-name: none !important;
   }
 
@@ -4082,6 +4091,7 @@ footer {
 .panel:has(.d-scope)  { --panel-accent: var(--color-scope); }
 .panel:has(.d-ground) { --panel-accent: var(--color-ground); }
 .panel:has(.d-image)  { --panel-accent: var(--color-image); }
+.panel:has(.d-steer)  { --panel-accent: var(--color-feat); }
 
 /* THE BAND. A 4px edge of the panel's own colour across its top, inside the
    radius. One declaration, and the stack of identical white cards becomes a
@@ -9834,3 +9844,297 @@ main > .panel[data-mri-group-label]::after {
 .ce-skel-answer { height: 20px; width: 45%; }
 .ce-skel-line { height: 9px; width: 100%; }
 .ce-skel-short { height: 9px; width: 62%; }
+
+
+/* ==========================================================================
+   STEERING - the vector store, the push, and the null it was judged against
+   ==========================================================================
+
+   Three things this layout has to do, in the order a reader meets them.
+
+   THE CATALOGUE IS A RACK OF INSTRUMENTS, not a list of filenames. Each card
+   carries the four facts that decide whether a direction is worth applying -
+   the model it came from, the layer, when it was fitted, and whether it beat
+   its own shuffled null - and a card that CANNOT be applied here stays on the
+   page, dimmed, with the server's exact refusal sentence under it. Hiding it
+   would leave a reader wondering where their vector went; a tooltip would put
+   the one sentence that explains the whole thing behind a hover.
+
+   THE NULL BADGE IS NOT A PASS/FAIL LIGHT. `.st-notbeat` is deliberately not
+   red. Difference-of-means always returns a vector, so "did not beat its
+   shuffled null" is the ordinary outcome and an honest one - the same
+   argument `.cf-notfinding` makes further up this file: a panel that alarms
+   on the ordinary outcome teaches people to ignore it.
+
+   THE CHART IS SIGNED AND CENTRED. `effect` is a standardised separation that
+   can point either way, and `null_max` is the worst shuffle in ABSOLUTE
+   value - so the band is symmetric about zero and the bar grows out from the
+   centre line. A bar that ends inside the band is the whole reading, and it
+   has to be visible at a glance without reading a single number.
+
+   Everything below reuses the file's own tokens. No bare `var(--x)` without a
+   definition - `tests/test_css_vars.py` fails the build for one, and the
+   deeper trap it guards is that an undefined custom property invalidates the
+   WHOLE declaration at computed-value time, silently. */
+
+/* ---------- the empty state ---------- */
+
+.st-empty {
+  display: flex;
+  gap: var(--sp-5);
+  align-items: center;
+  margin: var(--sp-5) 0;
+  padding: var(--sp-5);
+  border: 1px solid var(--hair-soft);
+  border-radius: var(--r-panel);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+}
+.st-empty .hint { margin-top: 0; }
+.st-sketch { flex: none; width: 160px; }
+.st-sketch svg { width: 100%; height: auto; display: block; }
+/* Classes rather than fills, so both palettes and all four contrast tiers
+   follow from the tokens above without a second definition. */
+.st-sk-rail {
+  stroke: var(--hair);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.st-sk-tok {
+  fill: color-mix(in oklab, var(--color-ink) 8%, transparent);
+  stroke: var(--hair);
+  stroke-width: 1;
+}
+.st-sk-tok.moved {
+  fill: color-mix(in oklab, var(--color-feat) 26%, transparent);
+  stroke: var(--color-feat);
+}
+.st-sk-arrow {
+  stroke: var(--color-feat);
+  stroke-width: 1.5;
+  fill: none;
+}
+.st-sk-head { fill: var(--color-feat); stroke: none; }
+
+/* ---------- the persistent indicator ---------- */
+
+/* A steered runtime is global state, and a generation that comes back changed
+   with nothing on screen saying why is the failure this exists to prevent. It
+   is a band rather than a badge for that reason: it has to be findable from
+   the top of the panel, and it carries the clear button so turning it off is
+   never more than one click from noticing it. */
+.st-live {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  margin: var(--sp-4) 0;
+  padding: var(--sp-3) var(--sp-4);
+  border-radius: var(--r-ctrl);
+  border: 1px solid color-mix(in oklab, var(--color-feat) 40%, transparent);
+  background: color-mix(in oklab, var(--color-feat) 8%, transparent);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+}
+.st-live > span:nth-child(2) { flex: 1; min-width: 0; }
+.st-pulse {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--color-feat);
+  animation: stPulse 2.4s var(--ease-standard) infinite;
+}
+@keyframes stPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-feat) 55%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in oklab, var(--color-feat) 0%, transparent); }
+}
+
+/* ---------- the catalogue ---------- */
+
+.st-cards {
+  list-style: none;
+  padding: 0;
+  margin: var(--sp-4) 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+  gap: var(--sp-3);
+}
+.st-card {
+  position: relative;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-well);
+  background: var(--color-card);
+  padding: var(--sp-3);
+  transition:
+    border-color var(--dur-small) var(--ease-hover),
+    box-shadow var(--dur-small) var(--ease-hover);
+}
+.st-card:hover { box-shadow: var(--shadow); }
+.st-card.st-picked {
+  border-color: color-mix(in oklab, var(--color-feat) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-feat) 35%, transparent);
+}
+/* Dimmed, and still completely readable. An incompatible direction is
+   information about the model that is loaded, so its own sentence stays at
+   full contrast underneath. */
+.st-card.st-incompatible { opacity: 0.72; }
+.st-card.st-incompatible .st-mismatch { opacity: 1; }
+
+.st-pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.st-pick:disabled { cursor: default; }
+.st-name { font-size: var(--t-base); display: block; overflow-wrap: anywhere; }
+.st-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+.st-chip {
+  font-family: var(--font-mono);
+  font-size: var(--t-3xs);
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: var(--r-chip);
+  border: 1px solid var(--hair);
+  color: var(--color-mute);
+}
+.st-origin { display: block; overflow-wrap: anywhere; }
+.st-note { margin-top: 6px; }
+.st-mismatch { margin-top: 8px; }
+.st-rm { margin-top: var(--sp-3); }
+
+.st-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 3px 8px;
+  border-radius: var(--r-pill);
+  font-family: var(--font-sans);
+  font-size: var(--t-3xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.st-beat {
+  color: var(--sem-vla);
+  border-color: color-mix(in oklab, var(--sem-vla) 45%, transparent);
+  background: color-mix(in oklab, var(--sem-vla) 10%, transparent);
+}
+/* NEUTRAL, and that is the design rule rather than a shortage of colours.
+   See the block comment at the top of this section. */
+.st-notbeat,
+.st-unjudged {
+  color: var(--color-mute);
+  border-color: var(--hair);
+}
+
+/* ---------- applying one ---------- */
+
+.st-apply { margin-top: var(--sp-5); }
+.st-apply input[type="range"] { flex: 1; min-width: 9rem; max-width: 22rem; }
+.st-strength { display: flex; flex-direction: column; line-height: 1.35; }
+.st-strength b { font-size: var(--t-sm); }
+/* The absolute coefficient, kept underneath rather than dropped: it is what
+   was actually added to the stream, and a reader reproducing this run needs
+   it even though it means nothing on its own. */
+.st-strength .meta { font-size: var(--t-2xs); }
+.st-basis { margin-top: 6px; }
+.st-ab { margin-top: var(--sp-4); }
+/* The prefix the two completions share. Dimmed rather than hidden, because
+   where they come apart is the reading and the part before it is context. */
+.st-shared { color: var(--color-mute); }
+
+/* ---------- the fit, and its chart ---------- */
+
+.st-fitrow { margin: var(--sp-3) 0; }
+.st-fitrow select {
+  padding: 5px 7px;
+  border-radius: var(--r-ctrl);
+  border: 1px solid var(--hair);
+  background: var(--color-card);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: var(--t-sm);
+}
+.st-price { margin-top: var(--sp-3); }
+
+.st-verdict {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 3px solid var(--color-feat);
+  background: color-mix(in oklab, var(--color-feat) 6%, transparent);
+  font-size: var(--t-sm);
+  line-height: 1.6;
+}
+/* "Nothing cleared" is a RESULT, and this is what it looks like when the
+   estimator does its job. Grey rather than red for the same reason the badge
+   is. */
+.st-verdict.none {
+  border-left-color: var(--color-mute);
+  background: color-mix(in oklab, var(--color-ink) 3%, transparent);
+}
+
+.st-scale,
+.st-rows li {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr 3.4rem 8rem;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.st-scale { margin: var(--sp-4) 0 4px; }
+.st-axis { display: flex; justify-content: space-between; }
+.st-axis-mid { opacity: 0.8; }
+
+.st-rows { list-style: none; padding: 0; margin: 0; }
+.st-rows li { padding: 2px 0; }
+.st-track {
+  position: relative;
+  height: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-chip);
+  background: color-mix(in oklab, var(--color-ink) 2%, transparent);
+  overflow: hidden;
+}
+/* Drawn first and behind: the band is the thing the bar has to clear, so it
+   is scenery the bar sits in rather than an annotation beside it. */
+.st-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in oklab, var(--color-mute) 26%, transparent);
+}
+.st-zero {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  margin-left: -0.5px;
+  background: var(--hair);
+}
+.st-bar {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  border-radius: 2px;
+  background: var(--color-mute);
+}
+.st-rows li.st-clears .st-bar { background: var(--color-feat); }
+.st-rows li.st-best .st-bar { background: var(--color-feat); }
+.st-rows li.st-best .st-l { color: var(--color-feat); font-weight: 700; }
+.st-rows li.st-best .st-track {
+  border-color: color-mix(in oklab, var(--color-feat) 50%, transparent);
+}
+.st-eff { text-align: right; font-size: var(--t-xs); }
+.st-verd { overflow-wrap: anywhere; }
+
+@media (max-width: 720px) {
+  .st-empty { flex-direction: column; align-items: flex-start; }
+  .st-cards { grid-template-columns: 1fr; }
+  .st-scale,
+  .st-rows li { grid-template-columns: 2.6rem 1fr 3rem; }
+  .st-verd { grid-column: 1 / -1; }
+}

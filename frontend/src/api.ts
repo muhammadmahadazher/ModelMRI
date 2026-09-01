@@ -1102,6 +1102,220 @@ export const promptOnce = (
     body: JSON.stringify({ prompt, max_new_tokens, temperature, commit }),
   }).then((r) => json<{ generation: string }>(r));
 
+/* ═══════════════════════════ steering directions ═══════════════════════════
+   The second arm of steering, and the one that works on the models nobody
+   trains a sparse autoencoder for. `modelmri/steer_vectors.py` has fitted,
+   scored and persisted contrastive directions since it was written and
+   `runtime.probe_layers(save_as=)` has been filling that store from the probe
+   panel — with nothing anywhere that could list, apply or delete one. These
+   are the readers.
+
+   What is missing on a static page here is the STORE on your own disk, not a
+   checkpoint, so the refusals below go through `refusedHere` rather than
+   `noModelHere` — the same distinction `/api/patterns/across` and
+   `/api/vla/export` already draw.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** One saved direction, without its values — `catalogue()` strips them.
+ *
+ *  Almost everything is optional because the store holds files written by two
+ *  different fitters (the probe sweep and the contrast-pair fit) and by older
+ *  versions of both. A row that carries no `beats_null` was never judged,
+ *  which is NOT the same as one that failed; rendering the two the same way
+ *  would be inventing a verdict.
+ */
+export interface SavedDirection {
+  name: string;
+  /** The model it was fitted on. A direction is only meaningful against it. */
+  model?: string;
+  layer?: number;
+  hidden_size?: number;
+  /** `= hidden_size`, added by `catalogue()`. */
+  dims?: number;
+  /** "caa" | "repe" | "probe" — the estimator that produced it. */
+  method?: string;
+  dtype?: string;
+  /** ISO 8601 as the store wrote it, or absent for a row that carries none.
+   *  An absent value is UNKNOWN and must not be rendered as an epoch date. */
+  saved_at?: string;
+  /** Absent means it was never judged. `false` means it was, and did not. */
+  beats_null?: boolean;
+  p_value?: number;
+  effect?: number;
+  null_max?: number;
+  /** The stream's own norm where it was fitted, so a strength can be read
+   *  relative to something. */
+  residual_norm?: number;
+  n_pairs?: number;
+  /** Probe-fitted rows carry the probe's evidence instead. */
+  accuracy?: number;
+  null_high?: number;
+  majority?: number;
+  note?: string;
+  /** A file this version cannot parse. LISTED, never dropped — a vector
+   *  silently missing from its own catalogue is worse than one that says it
+   *  is damaged. */
+  unreadable?: boolean;
+  /** THREE STATES. `false` is the claim "this cannot be applied here" and
+   *  comes with `mismatch`; `null` is "nothing is loaded to judge against",
+   *  which is a different statement and must not render as a red cross. */
+  compatible: boolean | null;
+  /** The exact refusal sentence when `compatible` is false, else "". */
+  mismatch: string;
+  /** Applying would work and there is still something to know — a different
+   *  checkpoint of the same width, or a direction that failed its null. */
+  warnings: string[];
+}
+
+export interface SteerCatalogue {
+  directions: SavedDirection[];
+  /** The model every `compatible` above was judged against, or null. */
+  model: string | null;
+  hidden_size: number | null;
+  means: string;
+}
+
+/** What an applied coefficient means, which a bare number cannot say.
+ *
+ *  `steer_vectors.py`: "a scale of 5 means nothing across models or even
+ *  across layers". The push applied is constant alpha — standard CAA, so two
+ *  runs stay comparable — and `relative` is that alpha over the residual norm
+ *  measured at that layer when it was applied. `null` there is UNKNOWN, never
+ *  a small push, and `unmeasured` says why.
+ */
+export interface SteerStrength {
+  alpha: number;
+  relative: number | null;
+  residual_norm: number | null;
+  layer: number;
+  /** How the norm was taken. "" exactly when it was not taken. */
+  measured: string;
+  /** Why it was not. "" exactly when it was. */
+  unmeasured: string;
+}
+
+/** `GET /api/steer`. Additive: the inactive answer is still `{active:false}`
+ *  and the feature arm still carries `feature_id` and `scale` where they
+ *  were. */
+export interface SteerStatus {
+  active: boolean;
+  /** "feature" | "direction". Absent when nothing is installed. */
+  kind?: string;
+  name?: string;
+  layer?: number | null;
+  scale?: number;
+  feature_id?: number;
+  fitted_on?: string;
+  warnings?: string[];
+  strength?: SteerStrength;
+}
+
+/** One layer's judgement out of a fit. `steer_vectors.Direction`. */
+export interface DirectionLayer {
+  layer: number;
+  method: string;
+  /** Standardised separation on the HELD-OUT half. */
+  effect: number;
+  null_mean: number;
+  /** The worst of the label-shuffled refits. `effect` has to clear it. */
+  null_max: number;
+  beats_null: boolean;
+  /** `(1 + #{null >= |effect|}) / (1 + draws)`, so its FLOOR is 1/(K+1) =
+   *  0.111 at eight refits. It is a screen and not a significance test — the
+   *  measured false-positive rate on structureless data is 16% for caa. */
+  p_value: number;
+  n_pairs: number;
+  n_fit: number;
+  n_score: number;
+  residual_norm: number;
+  notes: string[];
+}
+
+export interface DirectionFit {
+  /** False for an estimate-only reply: the price, with nothing fitted. */
+  ran: boolean;
+  method: string;
+  n_pairs: number;
+  passes: number;
+  layers: DirectionLayer[];
+  /** null when no layer beat its own null anywhere, which is a result. */
+  best_layer: number | null;
+  survived: number;
+  estimate: BudgetEstimate;
+  probe: {
+    seconds: number;
+    memory: {
+      peak_bytes: number | null;
+      free_bytes: number | null;
+      total_bytes: number | null;
+      source: string;
+      reason: string;
+    };
+    device_kind: string;
+  };
+  means: string;
+  saved?: { name: string; path: string; dims: number };
+  receipt?: Receipt | null;
+}
+
+const NO_STORE_HERE =
+  "Saved steering directions live in a directory on your own machine — this " +
+  "page is a static bundle with no filesystem behind it, so there is no " +
+  "store to read. `pip install modelmri` and the Steering panel lists, " +
+  "applies and deletes the directions on your disk.";
+
+export const steerDirections = () =>
+  DEMO || VIEWER
+    ? refusedHere(NO_STORE_HERE)
+    : fetch("/api/steer/directions").then((r) => json<SteerCatalogue>(r));
+
+export const steerStatus = () =>
+  fetch("/api/steer").then((r) => json<SteerStatus>(r));
+
+export const applySteerDirection = (name: string, strength: number) =>
+  DEMO || VIEWER
+    ? refusedHere(NO_STORE_HERE)
+    : fetch("/api/steer/direction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, strength }),
+      }).then((r) => json<SteerStatus>(r));
+
+export const clearSteer = () =>
+  fetch("/api/steer", { method: "DELETE" }).then((r) => json<SteerStatus>(r));
+
+export const removeSteerDirection = (name: string) =>
+  DEMO || VIEWER
+    ? refusedHere(NO_STORE_HERE)
+    : fetch(`/api/steer/directions/${encodeURIComponent(name)}`, {
+        method: "DELETE",
+      }).then((r) => json<{ removed: string }>(r));
+
+export const fitSteerDirection = (body: {
+  positive_texts: string[];
+  negative_texts: string[];
+  layers?: number[];
+  method?: string;
+  save_as?: string;
+  /** Price it and return, spending one warm-up and one probe pass. */
+  estimate_only?: boolean;
+  /** Run it even though the projection says this accelerator will not hold
+   *  it — "I will close something else" is a real answer. */
+  confirm?: boolean;
+}) =>
+  DEMO || VIEWER
+    ? noModelHere(
+        "Fitting a direction reads the residual stream at the last token of " +
+          "every one of your contrast pairs — one forward pass each, so 20 " +
+          "passes for ten pairs — and then scores it against eight " +
+          "label-shuffled refits at every layer.",
+      )
+    : fetch("/api/steer/fit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then((r) => json<DirectionFit>(r));
+
 export interface VLAStatus {
   loaded: boolean;
   /** "unavailable" until a tower is loaded, "perception" after. The Python

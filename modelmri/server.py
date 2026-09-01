@@ -370,6 +370,19 @@ class SteerRequest(Body):
     scale: float = Field(default=0.0, ge=-100.0, le=100.0)
 
 
+class SteerDirectionRequest(Body):
+    """Apply one direction out of the vector store.
+
+    Bounded on the same interval as `SteerRequest.scale` and for the same
+    reason — the coefficient is added straight into the residual stream, and
+    the panel reports it relative to the norm measured there, so the raw
+    number is a guard rail rather than a unit anybody reads.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    strength: float = Field(default=0.0, ge=-100.0, le=100.0)
+
+
 class HubSignInRequest(Body):
     token: str = Field(min_length=1, max_length=400)
 
@@ -602,6 +615,37 @@ class CEFidelityCostRequest(Body):
     #: `None` is the whole corpus. Optional rather than `ge=1` with a default,
     #: so "the whole thing" is said by leaving it out.
     max_sequences: int | None = Field(default=None, ge=1)
+
+
+class SteerFitRequest(Body):
+    """Contrast pairs in, a direction and the null that judged it out.
+
+    Raw-bodied when it landed, which meant `Body`'s unknown-key refusal did
+    not apply to it and `test_no_new_route_takes_a_raw_body_without_saying_why`
+    caught it. That test is not bookkeeping here: this route's fields are
+    exactly the ones whose misspelling is invisible. A `save_as` typed as
+    `saveas` would fit a direction, publish its p-value, and save nothing —
+    and a `confirm` that never arrived would refuse a run the caller believed
+    they had authorised. Both come back as a named 422 now.
+
+    `layers` stays a hand-check rather than a bare `list[int]` for one reason
+    pydantic will not cover: `isinstance(True, int)` is True in Python, so
+    `[true]` would arrive as layer 1 and be fitted at without complaint.
+    """
+
+    positive_texts: list[str] = Field(default_factory=list)
+    negative_texts: list[str] = Field(default_factory=list)
+    #: Absent sweeps every layer. Typed loosely so the route can answer a
+    #: malformed one with a sentence about the field.
+    layers: list[object] | None = None
+    method: str = Field(default="caa", max_length=64)
+    save_as: str = Field(default="", max_length=200)
+    #: Price the fit without running it — one warm-up and one probe pass,
+    #: projected over the real count.
+    estimate_only: bool = False
+    #: Run one the accelerator is projected not to hold. "I will close
+    #: something else" is a real answer, so it is the caller's to give.
+    confirm: bool = False
 
 
 class CEFidelityRequest(Body):
@@ -2012,6 +2056,138 @@ def create_app(
     @app.get("/api/steer")
     def steer_status() -> dict:
         return runtime.steering_status()
+
+    # THE STEERING VECTOR STORE, AND THE LITERAL SEGMENTS COME FIRST.
+    #
+    # `/api/steer/directions/{name}` has no converter in its path, so its
+    # regex accepts any single segment. Declared before them, it would shadow
+    # `/api/steer/directions` for a DELETE and, worse, `/api/steer/direction`
+    # would be indistinguishable from a name. That is the same trap the
+    # comment above `/api/features/ablate` sets out at length; the ordering
+    # here is the fix, and the 404 test in tests/test_steering_routes.py is
+    # what pins it, because a shadowed route cannot answer one.
+    #
+    # The existing `/api/steer` GET and POST above are untouched: they are the
+    # SAE-feature arm, `FeaturesPanel` drives them on every A/B, and
+    # `demo.ts` mirrors their payload offline with nothing checking the two
+    # against each other.
+    @app.get("/api/steer/directions")
+    async def steer_directions():
+        """Every saved direction, judged against the model loaded now.
+
+        Answers with an empty list rather than a refusal when nothing has
+        been fitted — an empty store is the ordinary first state of this
+        panel, and a 409 there would teach a reader the measurement is
+        broken before they have done anything wrong.
+        """
+        try:
+            return await asyncio.to_thread(runtime.direction_catalogue)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/steer/directions")
+
+    @app.post("/api/steer/direction")
+    async def steer_direction(req: SteerDirectionRequest):
+        try:
+            return await asyncio.to_thread(
+                runtime.set_steering_direction, req.name, req.strength
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/steer/direction")
+
+    @app.delete("/api/steer")
+    def steer_clear() -> dict:
+        """Take off whichever arm is installed.
+
+        A DELETE rather than a second meaning for POST-with-a-null, because
+        the union has two arms now and `{"feature_id": null}` reads as a
+        statement about features. The old spelling still works and still
+        clears both — `FeaturesPanel` sends it three times per A/B.
+        """
+        return runtime.clear_steering()
+
+    @app.delete("/api/steer/directions/{name}")
+    def steer_direction_remove(name: str):
+        """Delete one direction from the store on this machine.
+
+        404, not 409, and that is the one place in this file where a Refusal
+        does not become a conflict: the request named a thing, the thing is
+        not there, and the sentence says so. Every other refusal here is
+        about state — no model, no generation, a recording — which is what
+        409 is for.
+        """
+        from . import steer_vectors
+
+        try:
+            return steer_vectors.remove(name)
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=404)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/steer/directions/{name}")
+
+    @app.post("/api/steer/fit")
+    async def steer_fit(req: SteerFitRequest):
+        """Fit a direction from contrast pairs, with the null at every layer.
+
+        `estimate_only` is how the panel prices this before spending it: one
+        warm-up and one probe pass, projected over the real count, measured
+        on the machine the run would happen on. `confirm` is the other half —
+        an estimate that says the accelerator will not hold it refuses, and
+        "I will close something else" is a real answer.
+        """
+        # Checked here rather than with a bare `int()` inside the call. A
+        # `layers` of ["seven"] is a malformed request and gets a sentence
+        # about the field; reaching CPython's own ValueError would answer a
+        # typo with a 500 and the words "invalid literal for int()", which is
+        # the failure `_whole` exists to stop for scalar fields.
+        #
+        # It stays a hand-check after the model rather than moving into it,
+        # because `list[int]` would NOT catch the case worth catching:
+        # `isinstance(True, int)` is True, so `[true]` would be accepted and
+        # fitted at layer 1 as though somebody had asked for it.
+        chosen: list[int] | None = None
+        if req.layers is not None:
+            malformed = JSONResponse(
+                {
+                    "error": (
+                        "`layers` must be a list of whole numbers — the "
+                        "layers to fit at — or absent to sweep every one of "
+                        "them."
+                    )
+                },
+                status_code=422,
+            )
+            for value in req.layers:
+                if isinstance(value, bool) or not isinstance(value, int):
+                    return malformed
+            chosen = [int(v) for v in req.layers]
+
+        try:
+            return await asyncio.to_thread(
+                runtime.fit_steering_direction,
+                req.positive_texts,
+                req.negative_texts,
+                layers=chosen,
+                method=req.method or "caa",
+                save_as=req.save_as,
+                confirm=req.confirm,
+                estimate_only=req.estimate_only,
+            )
+        except Refusal as err:
+            return JSONResponse({"error": err.sentence}, status_code=409)
+        except BadRequest as err:
+            return JSONResponse({"error": err.sentence}, status_code=422)
+        except Exception as err:
+            return _internal(err, "/api/steer/fit")
 
     # ---------------- VLA (robot policy) ----------------
 

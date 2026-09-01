@@ -76,6 +76,9 @@ const CATEGORY_BY_DOT: Record<string, string> = {
   "d-patch": "text",
   "d-scope": "text",
   "d-probe": "text",
+  // Steering is a text-to-text intervention like the rest of them: you push a
+  // direction into a language model and read what comes out.
+  "d-steer": "text",
   "d-ground": "text",
   "d-base": "text",
   "d-custom": "text",
@@ -121,6 +124,10 @@ const SUB_BY_DOT: Record<string, string> = {
   "d-probe": "concepts",
   "d-patch": "causal",
   "d-scope": "causal",
+  // "Causal" and not "concepts", which is the honest bucket: the probe and
+  // the lens READ a property out of the stream, and this one changes the
+  // stream and looks at what that did.
+  "d-steer": "causal",
   "d-ground": "ground",
   "d-mdiff": "compare",
 };

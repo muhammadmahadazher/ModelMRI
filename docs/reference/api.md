@@ -90,6 +90,8 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 
 | method | path | notes |
 |---|---|---|
+| `DELETE` | `/api/steer` | Steer Clear |
+| `DELETE` | `/api/steer/directions/{name}` | Steer Direction Remove |
 | `GET` | `/api/features/ablate` | Ablate Features |
 | `GET` | `/api/features/summary` | Features Summary |
 | `GET` | `/api/features/{feature_id}` | Feature Detail |
@@ -97,11 +99,14 @@ Base URL: `http://127.0.0.1:5900`. Interactive docs: `/docs`.
 | `GET` | `/api/sae/available` | Sae Available |
 | `GET` | `/api/sae/fidelity/estimate` | Sae Fidelity Estimate |
 | `GET` | `/api/steer` | Steer Status |
+| `GET` | `/api/steer/directions` | Steer Directions |
 | `POST` | `/api/features/evidence` | Feature Evidence |
 | `POST` | `/api/sae/fidelity` | Sae Fidelity |
 | `POST` | `/api/sae/fidelity/cost` | Sae Fidelity Cost |
 | `POST` | `/api/sae/load` | Sae Load |
 | `POST` | `/api/steer` | Steer |
+| `POST` | `/api/steer/direction` | Steer Direction |
+| `POST` | `/api/steer/fit` | Steer Fit |
 
 
 ## Custom models
@@ -644,6 +649,75 @@ in the answer. `save_as` exports the fitted direction into the same store the
 steering harness reads so it can be ablated — and it is **refused** when no
 layer beat its null, because a vector fitted there is fitted to noise and the
 store is where it would later be picked up with none of this context attached.
+
+## Steering directions — the store, the push, and the null
+
+A contrastive direction needs no sparse autoencoder, which is what makes it the
+steering that works on almost every model. Five routes read and write the store
+under your data directory, beside the two that already existed for SAE-feature
+steering. **The `/api/steer` GET and POST contract is unchanged.**
+
+| route | what it does |
+|---|---|
+| `GET /api/steer/directions` | every saved direction, judged against the model loaded now |
+| `POST /api/steer/direction` `{name, strength}` | install one on the live model |
+| `DELETE /api/steer` | take off whichever kind is installed |
+| `DELETE /api/steer/directions/{name}` | delete one from this machine |
+| `POST /api/steer/fit` | fit a new one from contrast pairs |
+
+**`compatible` has three states, and `null` is not `false`.** A row is `false`
+only when it cannot be applied here, and it carries `mismatch` — the exact
+sentence the apply route would refuse with, naming both the model it was fitted
+on and the one that is loaded. `null` means nothing is loaded to judge against,
+which is a different claim; the payload names the `model` and `hidden_size` every
+verdict was taken against so a reader can see what decided them. `warnings` is
+for a direction that WILL apply and still has something to say — a different
+checkpoint of the same width, or one that failed its own null when it was
+fitted.
+
+**A coefficient is not portable, so the status reports it against the stream.**
+What is applied is constant alpha at every position, which is what CAA does and
+what keeps two runs comparable. What is *reported* is `strength.relative` —
+alpha divided by `strength.residual_norm`, the mean L2 norm of the residual
+stream entering that layer at the last token of the generation that was current
+when the direction was applied, measured on this machine. `strength.measured`
+says exactly that; when there is no generation to measure on, `relative` and
+`residual_norm` are **null** and `strength.unmeasured` says why. A relative
+strength of `0.0` would claim the push is negligible, so an unmeasured one is
+never rendered as one.
+
+**That measurement is taken once, and it says so once it is old.** The norm
+costs a forward pass, so it is taken at apply time and not on every `GET
+/api/steer`; the direction meanwhile outlives the generation it was applied
+during, because generating under it is the point. So after the next generation
+the number is still a real measurement and `strength.measured` stops calling it
+a current one — it names the generation it belongs to and says to re-apply the
+direction to measure against this one. The value never changes silently
+underneath its own sentence.
+
+**`POST /api/steer/fit` is two calls to one route.** `estimate_only: true`
+spends one warm-up and one probe pass, returns `estimate` and `probe` measured
+on this machine, and fits nothing (`ran: false`). The confirm runs it. A
+projection that says this accelerator will not hold it refuses with both numbers
+named; `confirm: true` overrides, because unlike free disk, free VRAM can be
+made by closing something. **Pricing is not permission:** `estimate_only` always
+answers with the quote, including when `estimate.verdict` is `"refuse"` — a
+price that refuses to be quoted because it is high answers the wrong question.
+The guard runs on the call that would actually spend it.
+
+The reply carries the **whole** per-layer table — `effect` on the held-out half,
+`null_mean`, `null_max`, `beats_null`, `p_value` — because those are the
+product. With `NULL_REFITS = 8` the smallest attainable p-value is `1/(K+1)` =
+0.111, so this is a screen and not a significance test: measured on structureless
+data with no direction in it, 16.0% of what `caa` reports as real is noise and
+13.0% of what `repe` does. `best_layer` is **null** when no layer beat its own
+shuffled refits, and `save_as` is then refused rather than saved with a caveat —
+the store is the one place a direction is later picked up with none of this
+beside it.
+
+`POST /api/probe` with `save_as` writes into this same store, so a direction
+found by a layer sweep and one fitted from contrast pairs are listed, applied
+and deleted through the routes above without either knowing about the other.
 
 ## Head type labels
 
