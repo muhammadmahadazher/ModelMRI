@@ -24,8 +24,11 @@ dictionary width and average L0).
 
 There is no default repo. Loading with none named asks
 `modelmri/sae_registry.py` which release belongs to the model you have
-resident — `google/gemma-2-2b` resolves to `google/gemma-scope-2b-pt-res`,
-verified end to end on this project's own hardware. Gemma Scope publishes many
+resident — `gpt2` resolves to `jbloom/GPT2-Small-SAEs-Reformatted` at
+`blocks.8.hook_resid_pre`, and `google/gemma-2-2b` to
+`google/gemma-scope-2b-pt-res`, both verified end to end on this project's own
+hardware. Each row's note carries the figures that verification produced, so
+"supported" is a measurement rather than a claim. Gemma Scope publishes many
 releases per layer, so a width and sparsity you did not name are CHOSEN by
 rule and the answer says which rule, in `release.chosen_by`.
 

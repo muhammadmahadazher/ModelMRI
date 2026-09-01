@@ -8,6 +8,63 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **The SAE behind this project's own published numbers is in the registry at
+  last** — `jbloom/GPT2-Small-SAEs-Reformatted`, `supported=True`, because that
+  flag means *"a release from this repo has been loaded and run here"* and it
+  was. Measured on the 4060, `blocks.8.hook_resid_pre` against gpt2: d_in 768,
+  d_sae 24576, a pre-6.0 cfg.json naming no architecture at all — so standard
+  ReLU, no threshold, no k. Calibrated on the prompt `saes.py`'s own convention
+  table names, it reproduces that table to the digit (FVU 0.000984, 60.55
+  features per token). Spliced back in, it recovers **0.878486** of what the
+  `mean_ablate` floor costs — and **0.937484** against `zero_ablate`, which is
+  why the note names its floor.
+
+  Every figure names the text it was taken on. An earlier draft gave the token
+  counts alone while its own closing sentence said the figures move with the
+  corpus; both were true, and together they described a measurement nobody
+  could repeat. A receipt that cannot be redeemed is not a receipt.
+
+  The row also carries `default_layer=8` rather than accepting the derived
+  midpoint. Every number this project publishes for this SAE was measured at
+  layer 8, and a one-click button offering layer 6 would download 151 MB of a
+  release nothing here describes — which an earlier version of this row did.
+
+  **A second defect fell out of it.** Both Gemma Scope rows ship `.npz` files
+  and neither declared `layout="gemma_scope"`, so
+  `test_the_registry_does_not_bake_in_a_sparsity` skipped every row in the
+  table and asserted nothing at all. Fixed together with `indexed_by`, and a
+  new test decides each row's layout from the **filenames on disk** rather than
+  from the field, so a vacuous pass cannot come back.
+
+- **Steering directions have readers.** `steer_vectors.py` was a complete,
+  tested CAA/RepE toolkit — `fit_direction` with shuffled-null p-values and
+  measured false-positive rates, `sweep`, and a persisted catalogue — whose only
+  production caller **wrote** to it. `runtime.probe_layers(save_as=)` saved
+  directions that nothing could list, apply, or delete. `grep -rn steer_vectors`
+  now finds readers.
+
+  `GET /api/steer/directions` lists every saved direction judged against the
+  model loaded *now*; `POST /api/steer/direction` installs one;
+  `DELETE /api/steer` takes off whichever kind is on;
+  `DELETE /api/steer/directions/{name}` removes one; `POST /api/steer/fit` fits
+  from contrast pairs behind a cost preflight and returns **the whole per-layer
+  null and p-value table**, because the honest numbers are the product. Plus
+  `modelmri steer list` and `modelmri steer rm`. The existing
+  `{feature_id, scale}` contract is untouched and its tests are unmodified.
+
+  **Strength is reported against a measured norm.** The module's own rule is
+  that "a scale of 5 means nothing across models or even across layers", so an
+  applied alpha is divided by the mean L2 norm of the residual stream at that
+  layer — the same statistic `fit_direction` records, taken on the current
+  prompt, once, at apply time. When the generation it was measured on is gone
+  the number is kept and the sentence says which run it belongs to; when there
+  is no generation at all it is an unknown, never a zero.
+
+  A new Steering panel lists directions as cards with the p-value shown as
+  information rather than a grade — *"did not beat its shuffled null (p=0.31)"*
+  is a result, not a failure — and renders an incompatible direction dimmed with
+  its exact mismatch sentence on the card rather than hiding it.
+
 - **`ce_recovered` is reachable at last — a route, a `modelmri sae fidelity`
   verb, and a quality card beside the SAE picker.** It is the best SAE-quality
   number this tool computes: CE-recovered with the ablation floor **named**, and

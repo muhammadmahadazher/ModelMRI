@@ -815,10 +815,34 @@ def test_the_registry_does_not_bake_in_a_sparsity():
     The table may say a release is indexed by width and average L0; it may not
     say which. Those come off the Hub at load time so they cannot go stale in
     a source file, and so nobody's sparsity is chosen by this repository.
+
+    THE FIRST ASSERTION IS THE TEST'S OWN SAFETY CATCH, and it is here because
+    the loop below is a filter over a hand-written table: for a stretch of this
+    project's history every row inherited the default `layout="sae_lens"` —
+    including the two Gemma Scope rows, which ship `.npz` files addressed by
+    width and average L0 — so the `continue` skipped every entry and this test
+    passed while asserting nothing at all. A green test that examines no data
+    is worse than no test, because it also tells a reader the rule is covered.
     """
     from modelmri import sae_registry
 
-    for entry in sae_registry.catalogue():
+    catalogue = sae_registry.catalogue()
+    assert [e for e in catalogue if e["layout"] == "gemma_scope"], (
+        "no row declares the gemma_scope layout, so the loop below examines "
+        "nothing — the two google/gemma-scope-* rows publish params.npz per "
+        "(layer, width, average L0) and must say so"
+    )
+    for entry in catalogue:
+        # The other direction, because the two fields are one statement: the
+        # layout says the hook name is not the whole address, and `indexed_by`
+        # says what the rest of it is. A row carrying coordinates under a
+        # layout that has none describes a release nobody can address.
+        if entry["indexed_by"]:
+            assert entry["layout"] == "gemma_scope", (
+                f"{entry['repo']} lists coordinates {entry['indexed_by']} "
+                f"under the {entry['layout']} layout, which addresses a "
+                f"release by its hook name and nothing else"
+            )
         if entry["layout"] != "gemma_scope":
             continue
         assert entry["indexed_by"] == ["width", "average_l0"]
@@ -826,6 +850,315 @@ def test_the_registry_does_not_bake_in_a_sparsity():
             assert "average_l0_" not in str(value), (
                 f"{entry['repo']} pins a release in {key}"
             )
+
+
+def test_the_sae_every_published_number_was_measured_on_is_registered():
+    """The demo model's SAE, in the table that answers "which one for this".
+
+    README's demo block, `saes.py`'s module docstring, `feature_ablate.py` and
+    the CHANGELOG all quote figures taken from
+    `jbloom/GPT2-Small-SAEs-Reformatted` against gpt2 — and for a while the
+    registry, which is the only thing `/api/sae/available` and `modelmri
+    features` consult, did not list it. The panel therefore answered "no
+    sparse autoencoder exists for gpt2" about the one release this project's
+    own numbers come from, and the CLI refused without it.
+    """
+    from modelmri import sae_registry
+
+    repos = [e["repo"] for e in sae_registry.for_model("gpt2")]
+    assert repos == ["jbloom/GPT2-Small-SAEs-Reformatted"]
+
+    row = sae_registry.for_model("gpt2")[0]
+    assert row["supported"] is True
+    assert row["d_in"] == 768
+    assert row["point"] == "resid_pre"
+    # SAELens layout, not Gemma Scope: this repo ships `{hook}/cfg.json` beside
+    # `{hook}/sae_weights.safetensors`, so the hook name is the whole address
+    # and there is no width or sparsity coordinate to pick.
+    assert row["layout"] == "sae_lens"
+    assert row["indexed_by"] == []
+
+
+def test_the_gpt2_row_answers_to_every_spelling_of_the_id():
+    """gpt2, openai-community/gpt2, and the same in any case.
+
+    `for_model` lowercases and then matches either the whole id or its last
+    path segment, because a model arrives here as whatever the reader typed
+    into the load box or whatever `runtime.hf_id` recorded — and the canonical
+    id for this model gained an owner prefix years after the bare name did.
+
+    `distilgpt2` is the other half of the same rule: the short-name arm
+    compares segments whole, so a name that merely CONTAINS another model's
+    name must not match. A row claiming distilgpt2 would be claiming a 6-layer
+    model's SAE exists, and the panel would offer a download that
+    `SAEHandle.load` then refuses on d_in.
+    """
+    from modelmri import sae_registry
+
+    for spelling in ("gpt2", "openai-community/gpt2", "GPT2", "OpenAI-Community/GPT2"):
+        got = sae_registry.for_model(spelling)
+        assert [e["repo"] for e in got] == ["jbloom/GPT2-Small-SAEs-Reformatted"], (
+            f"{spelling} did not resolve to the GPT-2 SAE"
+        )
+    assert sae_registry.for_model("distilgpt2") == []
+
+
+def test_the_one_click_hook_is_the_layer_every_published_number_names():
+    """The picker's button must download blocks.8, not the middle of the range.
+
+    `to_dict` derives `default_hook`, and the panel's one-click Load button
+    passes exactly that string to `/api/sae/load`. Every figure this project
+    publishes for this SAE — the README demo line, the convention table in
+    `saes.py`, `feature_ablate.py`'s example, the CHANGELOG entry — was
+    measured at layer 8. A default that resolved to the middle of `layers`
+    would hand the reader a 151 MB download of layer 6, whose reconstruction
+    no number here describes, under a button labelled with this row's name.
+
+    That is not hypothetical: the previous version of this row shipped
+    `layers=tuple(range(12))` with no override, and layer 6 is sitting in this
+    machine's HuggingFace cache as a result.
+    """
+    from modelmri import sae_registry
+
+    assert (
+        sae_registry.for_model("gpt2")[0]["default_hook"] == "blocks.8.hook_resid_pre"
+    )
+
+
+def test_a_note_quoting_a_ce_recovered_figure_names_the_floor_it_used():
+    """A percentage without its floor is two different numbers wearing one label.
+
+    `ce_recovered` refuses an unnamed floor, `CEFidelity` carries `floor` as a
+    field, and `CEFidelity.means()` spells it out in the sentence it hands the
+    panel — three places, because the same reconstruction of the same stream
+    scores 0.878486 against `mean_ablate` and 0.937484 against `zero_ablate`,
+    measured here on one corpus in one run. The registry's notes are the one
+    surface that quotes such a figure as free prose, with no dataclass to
+    carry the floor beside it, so the floor has to be IN the prose.
+
+    Asserted against `saes.CE_FLOORS` rather than against a literal, so a
+    third floor added there is a floor these notes may name.
+    """
+    from modelmri import sae_registry
+    from modelmri.saes import CE_FLOORS
+
+    quoting = [e for e in sae_registry.catalogue() if "recovers 0." in e["note"]]
+    # The same safety catch as the sparsity test above, and for the same
+    # reason: this is a filter over hand-written prose, so a note that stopped
+    # quoting a CE-recovered figure — or started quoting it in other words —
+    # would empty the loop and leave this passing while examining nothing.
+    assert quoting, (
+        "no row's note quotes a CE-recovered figure, so the loop below "
+        "examines nothing — the jbloom row records one, in the form "
+        "'recovers 0.878486 of what the mean_ablate floor costs'"
+    )
+    for entry in quoting:
+        named = [floor for floor in CE_FLOORS if floor in entry["note"]]
+        assert named, (
+            f"{entry['repo']} quotes a CE-recovered figure and names none of "
+            f"{list(CE_FLOORS)}, so the reader cannot tell which of the two "
+            f"percentages that reconstruction actually scored"
+        )
+
+
+def test_no_model_id_resolves_to_two_rows():
+    """One model, one recommendation — because both callers take the first.
+
+    `server._sae_for_current` and `cli._sae_for` both read `usable[0]` and
+    never mention that there was a choice. Two rows claiming one model would
+    make the answer depend on REGISTRY order, which is a silent decision of
+    exactly the kind this table's docstring disclaims. The short-name arm of
+    `for_model` makes it easy to do by accident: a second row naming
+    `someone-else/gpt2` would match every gpt2 the first row matches.
+    """
+    from modelmri import sae_registry
+
+    for entry in sae_registry.catalogue():
+        for model in entry["models"]:
+            matched = sae_registry.for_model(model)
+            assert len(matched) == 1, (
+                f"{model} matches {[m['repo'] for m in matched]}; the callers "
+                f"take the first and say nothing about the rest"
+            )
+
+
+def test_every_unverified_row_records_why():
+    """`supported=False` with an empty note is a dead end in two surfaces.
+
+    `server._sae_for_current` splices the note into its 409 ("... is
+    registered for it but this build cannot open it: {note}") and
+    `FeaturesPanel` prints it per row with the fallback string "no reason was
+    recorded." A row that leaves it empty turns both into a shrug — and the
+    flag does not mean "unreadable", it means "nobody has run a release from
+    this repo here", so the sentence is the only place the difference lives.
+    """
+    from modelmri import sae_registry
+
+    for entry in sae_registry.catalogue():
+        if entry["supported"]:
+            continue
+        assert entry["note"].strip(), (
+            f"{entry['repo']} is marked unsupported and records no reason"
+        )
+
+
+def test_a_row_cannot_default_to_a_layer_it_does_not_publish():
+    """The default is a download URL, so it has to name a release that exists.
+
+    `default_layer` overrides the middle-of-the-range rule precisely so a row
+    can point at the layer its numbers were taken at. Nothing stops that
+    override naming a layer the repo never published, and the result would be
+    the one-click button 404ing on a hook the table itself invented — so the
+    row refuses to exist instead. ValueError rather than Refusal: this is a
+    maintainer's typo in a source file, not a reader's request.
+    """
+    from modelmri.sae_registry import SAEEntry
+
+    with pytest.raises(ValueError) as caught:
+        SAEEntry(
+            repo="someone/sae",
+            models=("someone/model",),
+            d_in=8,
+            layers=(0, 1, 2),
+            point="resid_pre",
+            label="a row that points nowhere",
+            default_layer=7,
+        )
+    assert "does not list it among the layers it publishes" in str(caught.value)
+
+
+def test_a_row_cannot_name_its_models_with_capitals():
+    """`for_model` lowercases the QUESTION and not the table.
+
+    So a model id written with capitals here is a row that matches nothing at
+    all — silently, because "no SAE exists for this model" is an ordinary
+    answer this table gives all day and looks identical to a typo.
+    """
+    from modelmri.sae_registry import SAEEntry
+
+    with pytest.raises(ValueError) as caught:
+        SAEEntry(
+            repo="someone/sae",
+            models=("openai-community/GPT2",),
+            d_in=8,
+            layers=(0,),
+            point="resid_pre",
+            label="a row that can never match",
+        )
+    assert "can never match anything" in str(caught.value)
+
+
+def _cached_layout(repo: str) -> str | None:
+    """Which layout that repo's files on this machine ARE, or None if absent.
+
+    Read off the filenames rather than off the repo id, for the same reason
+    `saes` names its two layouts instead of sniffing them: a repo called
+    gemma-scope-something that shipped safetensors is a thing that could
+    exist, and matching on the name would open the wrong reader for it.
+    """
+    slug = "models--" + repo.replace("/", "--")
+    home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+    roots = [Path(home)] if home else []
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    for root in roots:
+        for base in (root / slug, root / "hub" / slug):
+            for snapshot in sorted(base.glob("snapshots/*")):
+                names = {p.name for p in snapshot.rglob("*")}
+                if "params.npz" in names:
+                    return "gemma_scope"
+                if {"cfg.json", "sae_weights.safetensors"} <= names:
+                    return "sae_lens"
+    return None
+
+
+def test_every_layout_this_machine_can_check_matches_the_files_on_disk():
+    """`layout` is advisory, which is exactly why nothing else catches it wrong.
+
+    `SAEHandle.load` detects the real layout from the repo, so a wrong value
+    in the table cannot open the wrong reader — and therefore nothing fails
+    when it is wrong. It is still READ: the picker keys on it, and
+    `test_the_registry_does_not_bake_in_a_sparsity` filters on it, which is
+    how both Gemma Scope rows spent a release inheriting the `sae_lens`
+    default while that test quietly examined nothing.
+
+    Only repos already in this machine's cache are checked, so nothing is
+    downloaded. That covers the rows that claim to have been run here, which
+    are the rows whose layout anyone acts on.
+    """
+    from modelmri import sae_registry
+
+    checked = []
+    for entry in sae_registry.catalogue():
+        on_disk = _cached_layout(entry["repo"])
+        if on_disk is None:
+            continue
+        checked.append(entry["repo"])
+        assert entry["layout"] == on_disk, (
+            f"{entry['repo']} declares the {entry['layout']} layout, and the "
+            f"copy of it in this machine's HuggingFace cache is "
+            f"{on_disk} on disk"
+        )
+    if not checked:
+        pytest.skip("no repo this registry names is in the local HF cache")
+
+
+def _cached_hidden_size(hf_id: str) -> int | None:
+    """That model's hidden size if this machine already has its config, else None.
+
+    None is an ordinary answer: the table names models nobody here can fit,
+    and downloading a config to check an integer would put the test suite on
+    the network. The probe walks the same two cache roots as
+    `_default_sae_is_cached` above and for the same reason — `HF_HOME` points
+    one level ABOVE `hub/` while `HF_HUB_CACHE` points at it, so both shapes
+    are tried under both spellings.
+    """
+    slug = "models--" + hf_id.replace("/", "--")
+    home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+    roots = [Path(home)] if home else []
+    roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+    for root in roots:
+        for base in (root / slug, root / "hub" / slug):
+            for path in sorted(base.glob("snapshots/*/config.json")):
+                cfg = json.loads(path.read_text(encoding="utf-8"))
+                # GPT-2's config predates the `hidden_size` spelling and calls
+                # it `n_embd`; transformers routes both to the same attribute,
+                # and `runtime.load_sae` compares d_in against whichever one
+                # the published config actually carries.
+                size = cfg.get("hidden_size", cfg.get("n_embd"))
+                if isinstance(size, int):
+                    return size
+    return None
+
+
+def test_every_row_d_in_is_the_hidden_size_of_the_models_it_names():
+    """The one field in this hand-written table a machine can check.
+
+    `runtime.load_sae` already refuses an SAE whose `d_in` does not equal the
+    loaded model's `hidden_size`, which is what makes it safe to ship a
+    hand-maintained list at all — but that check fires in front of the reader,
+    in the panel, after a download the table invited. This one fires where the
+    number was typed.
+
+    Only models already in this machine's cache are checked, so nothing is
+    downloaded; a run on a bare box skips rather than passing vacuously, which
+    is the same distinction the sparsity test above learned the hard way.
+    """
+    from modelmri import sae_registry
+
+    checked = []
+    for entry in sae_registry.catalogue():
+        for model in entry["models"]:
+            hidden = _cached_hidden_size(model)
+            if hidden is None:
+                continue
+            checked.append(f"{entry['repo']} vs {model}")
+            assert entry["d_in"] == hidden, (
+                f"{entry['repo']} declares d_in {entry['d_in']}, but {model} "
+                f"publishes a hidden size of {hidden} in the config already "
+                f"on this machine"
+            )
+    if not checked:
+        pytest.skip("no model this registry names has a config in the HF cache")
 
 
 # ======================================== the gate the cfg.json declares
