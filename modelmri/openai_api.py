@@ -19,9 +19,41 @@ handle and a silently-wrong completion is not.
 
 ## The claimed surface is the implemented surface
 
-`SUPPORTED` and `UNSUPPORTED` below are the whole contract, and `/v1/models`
-carries them. Half-supporting a long tail is how compatibility layers become
-untrustworthy.
+`SUPPORTED`, `UNSUPPORTED` and `CHAT_ONLY` below are the whole contract, and
+`/v1/models` carries all three. Half-supporting a long tail is how
+compatibility layers become untrustworthy.
+
+`CHAT_ONLY` exists because `response_format` is honoured on
+`/v1/chat/completions` and refused on `/v1/completions`, which is where
+OpenAI's own contract puts it. A parameter that is real on one route and not
+the other cannot be described by two dicts, and the answer to that is a third
+dict rather than a caveat in prose nobody publishes.
+
+## Structured output is enforced, and what it cost is returned
+
+`response_format` runs the completion under a token-level mask built by
+`lm-format-enforcer` (see `grammar.py`). Every other runner ships this as a
+black box: valid JSON out, no idea what it cost. Here the `modelmri` block
+carries the per-step receipt — how much of the vocabulary was legal, how much
+probability the mask deleted, and every step where the token the model most
+wanted was forbidden — and it rides along without being asked for, because it
+is the receipt for the answer that was just handed over.
+
+Two combinations are refused rather than approximated. `logprobs` beside a
+schema, because the logprobs here come from a second teacher-forced pass and
+are therefore the model's FREE-RUNNING probabilities, which describe a choice
+the model was not free to make. And a schema on the Ollama backend, which
+returns finished text rather than a forward pass there is anything to mask.
+
+"Enforced token by token" is not the same as "the whole schema was applied",
+and the difference is published rather than glossed. The grammar compiler
+reads sixteen schema keywords and no others, so `minimum`, `format`,
+`patternProperties` and their kin are accepted and dropped — each one named in
+the receipt's `notes` at the pointer where it was written. `json_schema.strict`
+is there too: `strict: false` asks for a completion the model may deviate from
+and there is no such path here, so the receipt says the schema was enforced
+anyway. A silently-ignored schema keyword is the same failure as a
+silently-ignored `logit_bias`, one level down.
 
 ## The internals cost time, and the time is measured
 
@@ -46,6 +78,7 @@ import uuid
 from pathlib import Path
 
 from .errors import BadRequest, Refusal
+from .grammar import ANY_JSON_OBJECT
 
 # What this actually implements. Enumerated because the alternative — claiming
 # "OpenAI-compatible" and discovering the gaps in production — is what makes
@@ -60,8 +93,64 @@ SUPPORTED = (
     "stream",
     "logprobs",
     "top_logprobs",
+    "response_format",
     "modelmri",
 )
+
+# The `response_format.type` values this understands, and what each one asks
+# for. Enumerated for the same reason `SUPPORTED` is: an unrecognised type
+# that fell through to an unconstrained completion would answer a request for
+# structured output with free text and say nothing about it.
+RESPONSE_FORMATS = {
+    "text": "the ordinary completion, with no grammar over it",
+    "json_object": "any JSON object, enforced token by token",
+    "json_schema": "the schema at 'json_schema.schema', enforced token by "
+    "token; any keyword the grammar compiler does not read is named in the "
+    "mask receipt rather than silently dropped",
+}
+
+#: What `json_schema.strict` can and cannot change here, said in the receipt.
+#:
+#: There is one constrained-decoding path in this server and it is a hard
+#: token-level mask. OpenAI's `strict: false` asks for a completion the model
+#: may deviate from, and this cannot produce one — a run that could not deviate
+#: is a DIFFERENT completion, not a better one, so it is disclosed rather than
+#: substituted. Not a refusal: refusing would turn away a legal request this
+#: server can answer, and answering it silently is the failure this module is
+#: about. `strict: true` needs no note; it is exactly what happens.
+STRICT_IS_UNCONDITIONAL = (
+    "THE REQUEST SENT 'json_schema.strict' AS FALSE, AND THIS SERVER ENFORCED "
+    "THE SCHEMA ANYWAY: there is one constrained-decoding path here and it is "
+    "a hard token-level mask. What came back could not deviate from the "
+    "schema, which is a different completion from the one 'strict': false "
+    "asks for — said here rather than silently substituted."
+)
+
+
+def strict_was_overruled(body: dict) -> bool:
+    """Whether this request asked for enforcement it does not get to skip.
+
+    Shape only, like `schema_from_response_format` beside it, and it answers
+    False for every request that did not send the key: an absent `strict` is
+    OpenAI's own default and asks for nothing this contradicts.
+    """
+    fmt = body.get("response_format")
+    if not isinstance(fmt, dict) or fmt.get("type") != "json_schema":
+        return False
+    block = fmt.get("json_schema")
+    if not isinstance(block, dict) or "strict" not in block:
+        return False
+    return not block["strict"]
+
+
+# Real on `/v1/chat/completions`, refused on `/v1/completions`. Not a gap —
+# OpenAI's own contract puts `response_format` on chat completions only, and
+# the legacy text endpoint never had it. Published beside SUPPORTED and
+# UNSUPPORTED so a client reads the route split rather than discovering it.
+CHAT_ONLY = {
+    "response_format": "constrained decoding is wired into "
+    "/v1/chat/completions, which is the route OpenAI's own contract gives it",
+}
 
 # The keys the `modelmri` block itself understands. Enumerated for the same
 # reason `SUPPORTED` is, one level down: `{"modelmri": {"lense": true}}` used
@@ -92,7 +181,6 @@ UNSUPPORTED = {
     "returned under one would not be reproducible by it",
     "tools": "no tool-calling surface",
     "functions": "no tool-calling surface",
-    "response_format": "no constrained decoding on this path",
     "stop": "no stop-sequence handling on this path",
     # In NEITHER dict until now, which this module's own docstring says is
     # impossible: "SUPPORTED and UNSUPPORTED below are the whole contract".
@@ -238,13 +326,72 @@ def _rid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:24]}"
 
 
-def check_parameters(body: dict) -> None:
+def schema_from_response_format(body: dict) -> dict | None:
+    """The JSON schema this request asks to be decoded under, or None.
+
+    None means "no grammar", and it is a real answer rather than a fallback:
+    an absent `response_format` and an explicit `{"type": "text"}` both mean
+    the ordinary completion. Everything else either names a schema or is
+    refused by name — there is no path from here to "asked for structure,
+    received free text".
+
+    The `json_schema` nesting is OpenAI's:
+    `{"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}`.
+    The schema itself is NOT compiled here. Whether a schema can be turned
+    into a token-level mask is a question for `grammar.validate_schema`, which
+    needs the enforcer installed; this is shape-checking, and it runs on every
+    request including the ones with no model loaded.
+    """
+    fmt = body.get("response_format")
+    if fmt is None:
+        return None
+    if not isinstance(fmt, dict):
+        raise BadRequest(
+            f"'response_format' is an object naming a type, and this request "
+            f"sent {type(fmt).__name__}. For example "
+            f'{{"response_format": {{"type": "json_object"}}}}.'
+        )
+    kind = fmt.get("type")
+    if kind not in RESPONSE_FORMATS:
+        known = ", ".join(sorted(RESPONSE_FORMATS))
+        raise BadRequest(
+            f"this server does not understand a 'response_format' of type "
+            f"{kind!r}. It honours: {known}. Refusing rather than falling back "
+            f"to an unconstrained completion — which is what a client asking "
+            f"for structured output would otherwise receive, with nothing "
+            f"saying so."
+        )
+    if kind == "text":
+        return None
+    if kind == "json_object":
+        # Not `{}` and not None. Both of those mean "any JSON VALUE" to the
+        # enforcer, so a bare string would satisfy them — see
+        # `grammar.ANY_JSON_OBJECT`, where that is measured.
+        return dict(ANY_JSON_OBJECT)
+
+    block = fmt.get("json_schema")
+    if not isinstance(block, dict) or not isinstance(block.get("schema"), dict):
+        raise BadRequest(
+            "a 'response_format' of type 'json_schema' carries the schema at "
+            "'json_schema.schema', and this request sent none. For example "
+            '{"response_format": {"type": "json_schema", "json_schema": '
+            '{"name": "person", "schema": {"type": "object", "properties": '
+            '{"name": {"type": "string"}}}}}}.'
+        )
+    return block["schema"]
+
+
+def check_parameters(body: dict, *, chat: bool = True) -> None:
     """Refuse, by name, anything this cannot honour.
 
     Only values that would CHANGE something are refused: `n=1` is what this
     does anyway, and a client that sends it should not be turned away.
+
+    `chat` picks the route's contract. `response_format` is honoured on
+    `/v1/chat/completions` and refused on `/v1/completions` — see `CHAT_ONLY`.
     """
-    for name, why in UNSUPPORTED.items():
+    refuse = dict(UNSUPPORTED) if chat else {**UNSUPPORTED, **CHAT_ONLY}
+    for name, why in refuse.items():
         if name not in body:
             continue
         value = body[name]
@@ -348,6 +495,25 @@ def check_parameters(body: dict) -> None:
             raise BadRequest(
                 f"'top_logprobs' must be between 0 and {MAX_TOP_LOGPROBS}."
             )
+
+    # RESPONSE FORMAT, and the one combination it cannot be in.
+    #
+    # Shape only — whether the schema compiles is `grammar.validate_schema`'s
+    # question and needs the optional extra. Called for its refusals here; the
+    # route calls it again for the schema itself, which is pure.
+    schema = schema_from_response_format(body) if chat else None
+    if schema is not None and body.get("logprobs"):
+        raise BadRequest(
+            "'logprobs' and 'response_format' cannot both be honoured. The "
+            "logprobs this server returns come from a second teacher-forced "
+            "pass over the finished completion, so they are the model's own "
+            "free-running probabilities — but under a schema every token was "
+            "drawn from a distribution the grammar had already masked, and "
+            "nothing in the response would say so. Those numbers would "
+            "describe a choice the model was not free to make. Send one or the "
+            "other; the per-step mask receipt in the 'modelmri' block reports "
+            "what the schema cost instead."
+        )
 
 
 def build_prompt(runtime, body: dict) -> str:
@@ -619,6 +785,12 @@ def models_payload(runtime) -> dict:
         "modelmri": {
             "supported": list(SUPPORTED),
             "unsupported": dict(UNSUPPORTED),
+            # Real on one route and refused on the other, which neither of the
+            # two dicts above can say.
+            "chat_only": dict(CHAT_ONLY),
+            # What `response_format` accepts, so an unrecognised type is a
+            # thing a client can look up rather than discover.
+            "response_formats": dict(RESPONSE_FORMATS),
             # The extension's own keys, for the same reason: a client should
             # not have to read the source to learn what it may ask for.
             "extension_keys": dict(MODELMRI_KEYS),
@@ -626,6 +798,51 @@ def models_payload(runtime) -> dict:
             "not silently ignored. That applies inside 'modelmri' too.",
         },
     }
+
+
+def mask_block(trace, text: str) -> dict:
+    """The receipt for a constrained completion, and whether it finished.
+
+    `trace` carries what the mask cost per step. The second half is not a
+    formality: a schema-constrained run that reaches `max_tokens` mid-object
+    returns a fragment, and a fragment handed back under `finish_reason:
+    "stop"` beside a mask receipt reads as a structured answer. So the
+    completion is parsed, once, and the answer is stated — an unparseable one
+    says so IN the sentence a reader actually reads, not only in a boolean
+    they might not.
+    """
+    doc = trace.to_dict()
+    try:
+        json.loads(text)
+    except ValueError:
+        doc["output_parses_as_json"] = False
+        # THE CAUSE IS READ OFF THE TRACE, not guessed at.
+        #
+        # This used to state two causes — "the token budget ran out mid-object,
+        # or generation was cut short" — and exclude the one the trace itself
+        # had already recorded. MEASURED, on a schema whose `additionalProperties`
+        # was `true`: generation ended at step 2 because the mask permitted
+        # nothing but end-of-sequence, `eos_only` was True in the same dict this
+        # sentence is being written into, and the receipt blamed the budget. A
+        # receipt asserting a cause it did not check is the failure this module
+        # exists against, one level down.
+        collapsed = trace.collapsed
+        if collapsed:
+            why = (
+                f"the grammar ran out of anything to permit at step "
+                f"{collapsed[0].step}, so the enforcement failed rather than "
+                f"the budget."
+            )
+        else:
+            why = "the token budget ran out mid-object, or generation was cut short."
+        doc["means"] = (
+            f"{doc['means']} THE COMPLETION DOES NOT PARSE AS JSON, so the "
+            f"grammar never reached the end of a value: {why} What came back "
+            f"is a fragment, not an answer in the shape that was asked for."
+        )
+    else:
+        doc["output_parses_as_json"] = True
+    return doc
 
 
 def completion_payload(

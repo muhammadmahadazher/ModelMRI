@@ -29,7 +29,6 @@ from modelmri.errors import BadRequest
         {"seed": 42},
         {"tools": [{"type": "function"}]},
         {"functions": [{"name": "f"}]},
-        {"response_format": {"type": "json_object"}},
         {"stop": ["\n"]},
     ],
 )
@@ -71,7 +70,10 @@ def test_top_logprobs_is_bounded_like_openai_bounds_it():
 
 
 def test_every_unsupported_parameter_says_what_it_would_have_changed():
-    for name, why in openai_api.UNSUPPORTED.items():
+    """`CHAT_ONLY` goes through the same message template, so the same rule
+    applies to it: the reason is interpolated mid-sentence, and one ending in
+    a full stop reads as a fragment where it lands."""
+    for name, why in {**openai_api.UNSUPPORTED, **openai_api.CHAT_ONLY}.items():
         assert why.strip(), name
         assert not why.endswith("."), f"{name}: reads as a sentence fragment"
 

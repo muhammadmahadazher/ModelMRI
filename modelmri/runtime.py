@@ -37,6 +37,7 @@ from . import (
     corpus,
     devices,
     feature_ablate,
+    grammar,
     nullmodel,
     ollama,
     patch,
@@ -821,6 +822,15 @@ class ModelRuntime:
         # None until something has been generated -- a telemetry bar with
         # zeros in it is a claim about a run that never happened.
         self.last_telemetry: telemetry.Telemetry | None = None
+        # The grammar enforcer's vocabulary table for the CURRENT model, built
+        # once. `grammar.tokenizer_data` walks the whole vocabulary -- 50,257
+        # tokens on gpt2, two decodes each -- and rebuilding it per request
+        # would cost more than the generation it is measuring. Keyed on
+        # `epoch`, which is the counter that moves on load and unload and
+        # deliberately not on generation, so a model swap invalidates it and
+        # nothing else does.
+        self._grammar_data = None
+        self._grammar_data_epoch = -1
         # One entry per intervention: "live", "steered", "ablate:L.H".
         # Comparing two runs means holding two, and they must all be dropped
         # together — a stale "live" beside a fresh "steered" would render a
@@ -1689,12 +1699,125 @@ class ModelRuntime:
             log.exception("could not count tokens")
             return None
 
+    def _no_grammar_on_ollama(self) -> Refusal:
+        return Refusal(
+            "Constrained decoding needs the logits of every step, and the "
+            "Ollama backend hands this server finished text rather than a "
+            "forward pass there is anything to mask. Load this model through "
+            "the 'hf' source to enforce a schema, or drop 'response_format' — "
+            "this refuses rather than answering a request for structured "
+            "output with unconstrained text and saying nothing about it."
+        )
+
+    def _tokenizer_data(self):
+        """The grammar enforcer's vocabulary table for the loaded model.
+
+        Built once per model, not once per request — see `_grammar_data` in
+        `__init__` for what the walk costs. Read and written only from the
+        thread that is about to generate; the epoch check is what makes a
+        stale table impossible rather than unlikely.
+        """
+        if self._grammar_data is None or self._grammar_data_epoch != self.epoch:
+            self._grammar_data = grammar.tokenizer_data(self.tokenizer)
+            self._grammar_data_epoch = self.epoch
+        return self._grammar_data
+
+    def mask_recorder(self, schema: dict, temperature: float = 0.0):
+        """A `MaskRecorder` enforcing `schema` against the loaded model.
+
+        Separate from `generate_stream` on purpose, and the separation is the
+        fix. Every way constrained decoding can say no — no model, the wrong
+        backend, an absent optional extra, a schema that cannot be compiled —
+        has to be findable BEFORE a caller decides to stream. A Refusal raised
+        inside an SSE generator arrives as 200 with a zero-byte body, which an
+        OpenAI client reads as a successful empty completion; the same comment
+        sits over the `loaded` check in `server._v1_complete` for the same
+        measured reason.
+
+        Blocking on first use for a given model: it builds the vocabulary
+        table. Cached after that.
+        """
+        if not self.loaded:
+            raise Refusal("No model loaded. POST /api/model/load first.")
+        if self.backend == "ollama":
+            raise self._no_grammar_on_ollama()
+        # Before the vocabulary walk, so an unenforceable schema costs nothing.
+        grammar.validate_schema(schema)
+        return grammar.MaskRecorder(
+            self.tokenizer,
+            schema,
+            data=self._tokenizer_data(),
+            temperature=temperature,
+        )
+
+    def _install_grammar(self, gen_kwargs: dict, recorder) -> None:
+        """Make the recorder the LAST thing that touches the logits.
+
+        `generate` merges custom processors first and then appends its own
+        sampling warpers after them, and says so in a `# TODO (joao): find a
+        strategy to specify the order of the processors` right above the
+        merge. There is no way to ask for another position, so the only way to
+        be last is for nothing else to be there. Three things follow, and all
+        three are load-bearing rather than tidy:
+
+        * `top_k` DEFAULTS TO 50 in transformers even when nobody asked for
+          it, and a checkpoint's own `generation_config.json` can set `top_p`
+          or `typical_p`. Left alone they would truncate the distribution
+          after the mask had already been measured against the untruncated
+          one, so the receipt would describe a step that did not happen.
+        * temperature moves to the recorder (see `grammar.MaskRecorder`), so
+          HF's own is neutralised here or it would be applied twice.
+        * beams and extra return sequences are forced off: the recorder masks
+          and reads row 0, so any other row would come back unmasked and
+          unrecorded — several sequences, one of them enforced.
+
+        Which knobs EXIST is asked of the installed transformers rather than
+        listed from memory: `top_h` is 5.x-only and `min_p` arrived in 4.45,
+        and passing a keyword this version has never heard of is an error on
+        the generation, not a warning.
+        """
+        from transformers import LogitsProcessorList, StoppingCriteriaList
+
+        gen_kwargs["logits_processor"] = LogitsProcessorList([recorder])
+        gen_kwargs["stopping_criteria"] = StoppingCriteriaList(
+            [grammar.ChoiceTap(recorder)]
+        )
+        gen_kwargs["num_beams"] = 1
+        gen_kwargs["num_return_sequences"] = 1
+
+        # Warpers only run under sampling; greedy decoding has none to
+        # neutralise, and setting `temperature` beside `do_sample=False` earns
+        # a warning from transformers for no gain.
+        if not gen_kwargs.get("do_sample"):
+            return
+
+        neutral = {
+            "temperature": 1.0,
+            "top_k": 0,
+            "top_p": 1.0,
+            "min_p": None,
+            "top_h": None,
+            "typical_p": 1.0,
+            "epsilon_cutoff": 0.0,
+            "eta_cutoff": 0.0,
+        }
+        cfg = getattr(self.model, "generation_config", None)
+        if cfg is None:
+            from transformers import GenerationConfig
+
+            cfg = GenerationConfig()
+        for name, value in neutral.items():
+            if hasattr(cfg, name):
+                gen_kwargs[name] = value
+
     def generate_stream(
         self,
         prompt: str,
         max_new_tokens: int = 256,
         temperature: float = 0.7,
         commit: bool = True,
+        *,
+        recorder=None,
     ) -> Iterator[str]:
         """Yield generated text pieces. Blocking iterator — consume off the event loop.
 
@@ -1704,12 +1827,24 @@ class ModelRuntime:
         sequence while the panels are still showing a 260-token one. Nothing
         errors; the heat map just starts describing a different generation
         than the token strip above it.
+
+        `recorder` is a `grammar.MaskRecorder`, from `mask_recorder` above. It
+        both enforces the schema and records what the mask cost, and it must
+        see every step in order — which is exactly how a logits processor is
+        called, and why nothing here offers a cheaper hook.
         """
         if not self.loaded:
             raise Refusal("No model loaded. POST /api/model/load first.")
         epoch = self.epoch
 
         if self.backend == "ollama":
+            # `mask_recorder` refuses this already, and this is the second
+            # gate rather than a duplicate one: `generate_stream` is public,
+            # and a caller that built a recorder against an HF model and then
+            # reached a runtime that had since been pointed at Ollama would
+            # otherwise get unconstrained text under a schema.
+            if recorder is not None:
+                raise self._no_grammar_on_ollama()
             # No translating wrap. There used to be an `except RuntimeError:
             # raise Refusal(str(err))` here, justified by "ollama.py has not
             # adopted Refusal yet" — and by the time it was read, ollama.py's
@@ -1756,6 +1891,9 @@ class ModelRuntime:
             gen_kwargs.update(do_sample=True, temperature=temperature)
         else:
             gen_kwargs["do_sample"] = False
+
+        if recorder is not None:
+            self._install_grammar(gen_kwargs, recorder)
 
         result: dict = {}
 

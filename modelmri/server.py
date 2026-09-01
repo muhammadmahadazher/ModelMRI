@@ -6018,7 +6018,7 @@ def create_app(
     async def _v1_complete(body: dict, *, chat: bool):
         from . import openai_api
 
-        openai_api.check_parameters(body)
+        openai_api.check_parameters(body, chat=chat)
         # BEFORE the stream branch, and that placement is the fix.
         #
         # `runtime.generate_stream` raises this same Refusal, but on the
@@ -6050,10 +6050,50 @@ def create_app(
         want_logprobs = bool(body.get("logprobs"))
         ask = body.get("modelmri") if isinstance(body.get("modelmri"), dict) else None
 
+        # CONSTRUCTED HERE, above the stream branch, for the same measured
+        # reason the `runtime.loaded` check above sits where it does: every
+        # way constrained decoding refuses — no enforcer installed, an Ollama
+        # backend with no forward pass, a schema that cannot be compiled into
+        # a mask — must reach the client as a status and a sentence. Built
+        # inside `pump()` instead, all three would arrive as 200 with an empty
+        # body. `schema_from_response_format` is pure and `check_parameters`
+        # has already raised on anything malformed, so this only picks it up.
+        schema = openai_api.schema_from_response_format(body) if chat else None
+        recorder = (
+            await asyncio.to_thread(runtime.mask_recorder, schema, temperature)
+            if schema is not None
+            else None
+        )
+        # `strict: false` asks for a completion the model may deviate from, and
+        # there is no such path here — see `openai_api.STRICT_IS_UNCONDITIONAL`.
+        # It rides in the receipt's own notes rather than becoming a refusal,
+        # beside the other places where what the grammar enforces and what the
+        # schema says are not the same thing.
+        if recorder is not None and openai_api.strict_was_overruled(body):
+            recorder.trace.notes.append(openai_api.STRICT_IS_UNCONDITIONAL)
+
         def generate() -> str:
             return "".join(
-                runtime.generate_stream(prompt, max_tokens, temperature, commit=True)
+                runtime.generate_stream(
+                    prompt, max_tokens, temperature, commit=True, recorder=recorder
+                )
             )
+
+        def with_mask(extension: dict | None, text: str) -> dict | None:
+            """The mask receipt, beside whatever else the block carries.
+
+            Unlike `internals`, this is NOT opt-in. Nobody asked for it; they
+            asked for structured output, and what the schema cost is the
+            receipt for the answer they were handed. Merged rather than
+            replacing, so `{"modelmri": {"lens": true}}` beside a schema
+            returns both.
+            """
+            if recorder is None:
+                return extension
+            return {
+                **(extension or {}),
+                "mask": openai_api.mask_block(recorder.trace, text),
+            }
 
         if not body.get("stream"):
             text = await asyncio.to_thread(generate)
@@ -6080,7 +6120,7 @@ def create_app(
                         getattr(telemetry, "generated_tokens", 0) or 0
                     ),
                     logprobs=logprobs,
-                    extension=extension,
+                    extension=with_mask(extension, text),
                 )
             )
 
@@ -6091,6 +6131,10 @@ def create_app(
             queue: asyncio.Queue = asyncio.Queue()
             loop = asyncio.get_running_loop()
             done = object()
+            # Kept so the mask receipt can say whether what was streamed is
+            # actually JSON. The frames go out one at a time and nothing else
+            # here ever holds the whole completion.
+            pieces: list[str] = []
 
             def pump():
                 # `generate_stream` is a BLOCKING iterator; consuming it on
@@ -6100,7 +6144,7 @@ def create_app(
                 # stream instead of hanging the client forever.
                 try:
                     for piece in runtime.generate_stream(
-                        prompt, max_tokens, temperature, commit=True
+                        prompt, max_tokens, temperature, commit=True, recorder=recorder
                     ):
                         loop.call_soon_threadsafe(queue.put_nowait, piece)
                 finally:
@@ -6111,6 +6155,7 @@ def create_app(
                 piece = await queue.get()
                 if piece is done:
                     break
+                pieces.append(piece)
                 yield openai_api.chunk_payload(
                     piece, model_name, chat=chat, first=first
                 )
@@ -6125,7 +6170,11 @@ def create_app(
                 if ask
                 else None
             )
-            yield openai_api.final_chunk(model_name, chat=chat, extension=extension)
+            yield openai_api.final_chunk(
+                model_name,
+                chat=chat,
+                extension=with_mask(extension, "".join(pieces)),
+            )
 
         return StreamingResponse(frames(), media_type="text/event-stream")
 
@@ -6133,10 +6182,17 @@ def create_app(
     async def v1_chat(body: dict):
         try:
             return await _v1_complete(body, chat=True)
+        # `err.sentence`, not `str(err)` -- the house rule the other 218 sites
+        # in this file already keep, and every grammar refusal now flows
+        # through here. Identical output today, which is the point: the
+        # attribute is the authored half NAMED, so a reader (and an analyser
+        # looking for the stack-trace-leak signature) can see that what reaches
+        # the client is prose somebody wrote rather than whatever `str()` on a
+        # caught exception happens to produce.
         except Refusal as err:
-            return JSONResponse({"error": {"message": str(err)}}, status_code=409)
+            return JSONResponse({"error": {"message": err.sentence}}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": {"message": str(err)}}, status_code=400)
+            return JSONResponse({"error": {"message": err.sentence}}, status_code=400)
         except Exception as err:
             return _internal(err, "/v1/chat/completions")
 
@@ -6145,9 +6201,9 @@ def create_app(
         try:
             return await _v1_complete(body, chat=False)
         except Refusal as err:
-            return JSONResponse({"error": {"message": str(err)}}, status_code=409)
+            return JSONResponse({"error": {"message": err.sentence}}, status_code=409)
         except BadRequest as err:
-            return JSONResponse({"error": {"message": str(err)}}, status_code=400)
+            return JSONResponse({"error": {"message": err.sentence}}, status_code=400)
         except Exception as err:
             return _internal(err, "/v1/completions")
 

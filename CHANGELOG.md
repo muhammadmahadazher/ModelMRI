@@ -8,6 +8,48 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **`/v1/chat/completions` honours `response_format`, through the grammar
+  machinery that was already here.** `openai_api.UNSUPPORTED` refused it with
+  *"no constrained decoding on this path"* while `modelmri/grammar.py` — a
+  per-step mask recorder built on lm-format-enforcer, shipped as the `grammar`
+  extra — existed to do exactly that. Both `{"type": "json_object"}` and
+  `{"type": "json_schema"}` now work, streaming and not, and the `modelmri`
+  extension block carries the mask receipt: how many tokens the grammar
+  permitted at each step, and what that cost.
+
+  Everything else in `UNSUPPORTED` keeps refusing, and a test pins that — the
+  module's contract line says `SUPPORTED` and `UNSUPPORTED` **are** the whole
+  contract, so exactly one key moved.
+
+  The honesty constraints are the substance here, because each is a way to
+  return unconstrained output dressed as constrained. A missing
+  `lm-format-enforcer` refuses by naming the extra. The Ollama backend has no
+  forward pass at all, so it refuses rather than quietly returning free text.
+  And four defects came out of building it:
+
+  - **A boolean sub-schema passed validation and then collapsed the mask to
+    `{EOS}`.** JSON Schema allows `true` where a schema goes, the pre-flight
+    only walked dicts, and the enforcer then raised inside its own blanket
+    `except` — leaving `[eos_token_id]` as the entire allowed set. Measured on
+    real GPT-2: `{"type":"object","additionalProperties":true}` returned **HTTP
+    200 with the four characters `' { "'`** and `finish_reason: stop`. Four
+    positions were affected, and `additionalProperties: true` is not exotic.
+  - **Constraints the compiler never reads were neither enforced nor
+    disclosed** while the surface advertised "enforced token by token".
+    `minimum`, `maximum`, `multipleOf`, `uniqueItems`, `format` and
+    `patternProperties` are not compiled — measured, a schema bounding an
+    integer to `0..5` happily returned `30`. Each dropped keyword is now
+    disclosed per JSON pointer in the trace notes, the same way the array cap
+    already was. This is the more misleading direction of the two: the caller
+    wrote the constraint and believes it was applied.
+  - **The non-parsing diagnosis named two causes and excluded the recorded
+    one** — it blamed the token budget when the trace itself showed the grammar
+    had collapsed. `Step.eos_only` was written and read by nothing; it now has
+    a reader.
+  - **A schema over 2000 characters was published truncated, under a field
+    called `schema`**, so a reader comparing the receipt against what they sent
+    found a mismatch with nothing explaining it. The cut is now declared.
+
 - **Four trace step kinds the platforms already speak: `retrieval`, `embedding`,
   `rerank`, `guardrail`.** `VALID_KINDS` had six, none of which could describe a
   RAG pipeline, so a retrieval step had to arrive as a `tool_call` and every
