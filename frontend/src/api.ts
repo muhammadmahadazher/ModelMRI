@@ -2874,7 +2874,22 @@ export interface TraceSummary {
 export interface TraceStep {
   id: string;
   parent_id: string | null;
-  kind: "llm_call" | "tool_call" | "subagent" | "mcp_call" | "user_turn" | "error";
+  /** Every kind `modelmri/step_kinds.py` accepts, and it has to be all of
+   *  them: nothing in this file fails to compile when the union is short — no
+   *  exhaustive switch reads it — so a stale one is an under-specified type
+   *  that keeps working while quietly making four real kinds unrepresentable.
+   *  `tests/test_step_kinds.py` parses this line against `VALID_KINDS`. */
+  kind:
+    | "llm_call"
+    | "tool_call"
+    | "subagent"
+    | "mcp_call"
+    | "user_turn"
+    | "error"
+    | "retrieval"
+    | "embedding"
+    | "rerank"
+    | "guardrail";
   name: string;
   started_ms: number;
   /** Null when the step was recorded without one. Not 0 — "not recorded" and

@@ -2450,6 +2450,13 @@ input[type="range"]:focus-visible {
   opacity: 0.9;
   transition: opacity 0.15s var(--ease), outline-color 0.15s var(--ease);
   outline: 2px solid transparent;
+  /* So the glyph below can ask THIS BAR how wide it ended up. Nothing here
+     assumes a panel width, a zoom level or a run duration -- the bar's width
+     is a percentage of a run whose length is only known at render time, and a
+     threshold in pixels guessed against an imagined layout would be exactly
+     the hardcoded assumption this project does not make. Declared after
+     `all: unset`, which resets it. */
+  container-type: inline-size;
 }
 .tl-block:hover { opacity: 1; }
 .tl-block.sel { opacity: 1; outline-color: var(--color-ink); }
@@ -2470,15 +2477,68 @@ input[type="range"]:focus-visible {
   outline-color: color-mix(in oklab, var(--color-ink) 35%, transparent);
 }
 .tl-block.no-dur:hover { opacity: 0.95; }
+/* A kind THIS BUILD HAS NO COLOUR FOR. `stepKinds.tsx` falls back to
+   `--color-mute`, which stopped the bar being invisible -- and `--color-mute`
+   is the token `user_turn` already owns, with its own row in the legend. The
+   glyph that carries the difference is hidden on any bar under 22px (see
+   below), so a narrow unrecognised bar was pixel-identical to a narrow user
+   turn and the legend confirmed the misreading. Reachable exactly where the
+   fallback was written for: a `.mri` bundle does not validate kinds, so an
+   older viewer opening a newer bundle draws one of these.
+
+   Hatched rather than re-hued -- there is no ninth hue to spend, and a hatch
+   survives at any width. Same recipe as `.no-dur` above and mirrored, so it
+   is theme-safe by construction (`--color-paper` is the ground both sit on)
+   and reads as the same family of "this is not what it looks like". A step
+   that is BOTH unrecognised and undurated shows this hatch rather than that
+   one -- source order -- and keeps `.no-dur`'s dimming and outline, which is
+   where the rest of that signal lives. */
+.tl-block.unknown-kind {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0 2px,
+    color-mix(in oklab, var(--color-paper) 65%, transparent) 2px 4px
+  );
+}
 
 .tl-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; }
-.tl-legend i {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  margin-right: 5px;
-  vertical-align: -1px;
+
+/* ONE SHAPE PER STEP KIND, and the reason it exists is arithmetic: this
+   palette has eight hues on purpose (see the token block -- a ninth would sit
+   within a difference nobody can tell apart at this size), six were already
+   spoken for by the original six kinds, and there are now ten kinds. Retrieval
+   and rerank share moss, and a shared colour is only honest if the difference
+   is carried somewhere. Here.
+
+   `currentColor` throughout, so one drawing serves three grounds -- the legend
+   paints it in the kind's hue, the inspector chip in the chip's, the timeline
+   bar knocks it out in the panel's paper -- and both themes come free, because
+   every one of those is already a theme-aware token. */
+.kind-glyph {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  vertical-align: -2px;
+}
+.tl-legend .kind-glyph,
+.lbl-chip .kind-glyph { margin-right: 4px; }
+
+/* On the bar, knocked out of the fill. Hidden by default and shown only once
+   the bar is wide enough for a whole one: a clipped glyph is a DIFFERENT
+   SHAPE, and a different shape here means a different kind. The threshold is
+   the glyph plus a little air on each side.
+
+   Opacity rather than `display`, so nothing about the bar's own layout can
+   depend on whether the shape is showing. */
+.tl-block .kind-glyph {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  color: var(--color-paper);
+  opacity: 0;
+}
+@container (min-width: 22px) {
+  .tl-block .kind-glyph { opacity: 1; }
 }
 
 .inspector {

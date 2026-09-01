@@ -8,6 +8,10 @@ import InspectDrop from "./InspectDrop";
 import PatternsAcross from "./PatternsAcross";
 import RubricPanel from "./RubricPanel";
 import JudgePanel from "./JudgePanel";
+// The kind list, its hues and its glyphs live in their own leaf module — the
+// rubric editor's step-kind picker needs the same list, and the copy it used
+// to keep had already gone stale once.
+import { KindGlyph, kindColor, isKnownKind, STEP_KINDS } from "./stepKinds";
 import {
   Adopted,
   adoptStep,
@@ -25,15 +29,6 @@ import {
   TraceStep,
   TraceSummary,
 } from "./api";
-
-const KIND_COLOR: Record<TraceStep["kind"], string> = {
-  llm_call: "var(--color-agent)",
-  tool_call: "var(--color-attn)",
-  subagent: "var(--color-feat)",
-  mcp_call: "var(--color-vla)",
-  user_turn: "var(--color-mute)",
-  error: "var(--color-pop)",
-};
 
 interface Props {
   /**
@@ -511,6 +506,12 @@ with trace("my-agent"):
                       onClick={() => void openHit(h.trace_id, h.step_id)}
                       title="Open this run with that step selected"
                     >
+                      {/* The same shape the timeline draws, in the same hue.
+                          A search across runs is where you are least likely
+                          to have the legend in view, so the kind carries its
+                          own identification here rather than being a word
+                          that happens to be first in the line. */}
+                      <KindGlyph kind={h.kind} color={kindColor(h.kind)} />{" "}
                       {h.kind} · {h.name || "unnamed"}
                     </button>
                     <span className="mid">
@@ -827,14 +828,22 @@ with trace("my-agent"):
                 // rather than as a fact nobody wrote down". Two views of one
                 // step disagreeing about what is known is the defect, not the
                 // width.
+                // `unknown-kind` for the same reason `no-dur` is here: the
+                // bar would otherwise be drawn in exactly the colour the
+                // legend gives `user_turn`, because that is the token
+                // `kindColor` falls back to. Reachable — a `.mri` bundle does
+                // not validate kinds, so this build opens a newer one and
+                // draws steps it has never heard of.
                 className={`tl-block ${step.error ? "err" : ""} ${
                   sel?.id === step.id ? "sel" : ""
-                } ${step.duration_ms == null ? "no-dur" : ""}`}
+                } ${step.duration_ms == null ? "no-dur" : ""} ${
+                  isKnownKind(step.kind) ? "" : "unknown-kind"
+                }`}
                 style={{
                   left: `${(step.started_ms / maxMs) * 100}%`,
                   width: `${Math.max(((step.duration_ms ?? 0) / maxMs) * 100, 0.8)}%`,
                   top: lane * 36 + 4,
-                  background: KIND_COLOR[step.kind],
+                  background: kindColor(step.kind),
                 }}
                 title={
                   `${step.kind} · ${step.name} · ` +
@@ -848,13 +857,23 @@ with trace("my-agent"):
                   setAdopted(null);
                   setAdoptErr("");
                 }}
-              />
+              >
+                {/* Ten kinds and eight hues in this palette, so retrieval and
+                    rerank share one — see stepKinds.tsx. The shape is what
+                    tells them apart, and it has to be HERE and not only in the
+                    legend, because the timeline is where two bars of one
+                    colour actually sit side by side. It is knocked out of the
+                    bar and hidden by CSS on any bar too narrow to hold a whole
+                    one; half a glyph is a different shape, which would be a
+                    different claim. */}
+                <KindGlyph kind={step.kind} />
+              </button>
             ))}
           </div>
           <div className="tl-legend meta">
-            {(Object.keys(KIND_COLOR) as TraceStep["kind"][]).map((k) => (
+            {STEP_KINDS.map((k) => (
               <span key={k}>
-                <i style={{ background: KIND_COLOR[k] }} /> {k}
+                <KindGlyph kind={k} color={kindColor(k)} /> {k}
               </span>
             ))}
           </div>
@@ -892,8 +911,14 @@ with trace("my-agent"):
           {sel && (
             <div className={`inspector ${sel.error ? "err" : ""}`}>
               <div className="row" style={{ marginBottom: 8 }}>
-                <span className="lbl-chip" style={{ borderColor: KIND_COLOR[sel.kind], color: KIND_COLOR[sel.kind] }}>
-                  {sel.kind}
+                <span
+                  className="lbl-chip"
+                  style={{
+                    borderColor: kindColor(sel.kind),
+                    color: kindColor(sel.kind),
+                  }}
+                >
+                  <KindGlyph kind={sel.kind} /> {sel.kind}
                 </span>
                 <span className="meta">
                   {sel.name} · step {sel.seq} ·{" "}

@@ -1,9 +1,11 @@
 """Agent trace storage: SQLite-backed, stdlib only.
 
-A Trace is a tree of Steps (llm_call / tool_call / subagent / user_turn /
-error). Traces arrive as one JSON document (imported from a .mri bundle or
-posted by modelmri-record) and are stored denormalized enough to render a
-timeline without joins at query time.
+A Trace is a tree of Steps, each of one of the kinds in `step_kinds.py` — that
+module, and not a list here, because a list here was already wrong: it named
+five of the six kinds that existed when it was written. Traces arrive as one
+JSON document (imported from a .mri bundle or posted by modelmri-record) and
+are stored denormalized enough to render a timeline without joins at query
+time.
 
 SQLite on purpose: ModelMRI is pip-install local-first — the store must
 ship embedded, zero-config. (A hosted/team edition would be the moment for
@@ -520,7 +522,7 @@ class TraceStore:
                 # in an error message is a different sentence every run.
                 raise BadRequest(
                     f"invalid step kind: {s.get('kind')!r} — "
-                    f"use one of {', '.join(sorted(VALID_KINDS))}"
+                    f"use one of {', '.join(sorted(VALID_KINDS))}" + _wrote_this(meta)
                 )
             parent = s.get("parent_id")
             if parent is not None and not isinstance(parent, (str, int)):
@@ -966,6 +968,40 @@ def record_generation(
         # process instead of being logged as a failed recording.
         log.exception("could not record this generation as a trace")
         return None
+
+
+def _wrote_this(meta: object) -> str:
+    """The version-skew half of an unknown-kind refusal, when it can be told.
+
+    `modelmri-record` has stamped `meta.recorder` on every document it has ever
+    delivered and nothing has ever read it. Here is the one place it is worth
+    reading: a recorder NEWER than this viewer writes kinds this viewer has not
+    heard of, and "invalid step kind: 'retrieval'" then sends somebody hunting
+    for a typo they did not make, in a run that recorded perfectly.
+
+    Says nothing at all when the stamp is absent or is not a string — most
+    documents through this route are hand-written or come from another tool,
+    and inventing a version story about one of those would be worse than the
+    plainer sentence.
+    """
+    if not isinstance(meta, dict):
+        return ""
+    stamp = meta.get("recorder")
+    if not isinstance(stamp, str) or not stamp.strip():
+        return ""
+    # CLIPPED, because this is the only part of the sentence that came from
+    # the document rather than from us. `meta` is stored verbatim and is not
+    # length-checked on the way in, so a `recorder` of ten million characters
+    # would become a ten-million-character refusal body — returned to whoever
+    # sent it, logged, and rendered. Every other borrowed value that reaches a
+    # reader through this module goes through `_clip`; this one had been
+    # missed. 120 is far longer than any real stamp — "modelmri-record/0.1.4"
+    # is 21 — and short enough that the sentence around it still reads.
+    return (
+        f". This run was recorded by {_clip(stamp.strip(), 120)} — if that is "
+        f"newer than this viewer, upgrade modelmri rather than renaming the "
+        f"step."
+    )
 
 
 def _ms(step: dict, field: str, index: int) -> int:

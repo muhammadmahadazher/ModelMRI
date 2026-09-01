@@ -49,6 +49,14 @@ from .step_kinds import VALID_KINDS
 # kind name that does not exist matches no step, so the rollup reports zero
 # LLM calls — which reads exactly like a run that made none. The first draft
 # of this module said `("llm",)` and would have done that on every real trace.
+#
+# `embedding` is DELIBERATELY not here, and it is the one that keeps asking.
+# Embedding providers do report input token counts, so the tuple is not wrong
+# about the data — it is a decision about the field this feeds. Everything
+# downstream is named `n_llm_steps`, and quietly making that number include
+# embeddings would restate every stored run's history: a RAG agent's 40
+# embeddings and 2 completions would read as 42 LLM calls, in a field whose
+# name says otherwise. Adding it is a rename first and a tuple entry second.
 TOKEN_KINDS = ("llm_call",)
 assert set(TOKEN_KINDS) <= VALID_KINDS, "a token kind that no step can have"
 

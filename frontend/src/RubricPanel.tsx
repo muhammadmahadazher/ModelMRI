@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { errorText, RubricReport, RubricRow, RubricRule, scoreRubric } from "./api";
 import { howLong } from "./measured";
+import { STEP_KINDS } from "./stepKinds";
 
 /**
  * Score every recorded run against exact predicates.
@@ -172,13 +173,17 @@ export default function RubricPanel({
                 aria-label="step kind"
                 onChange={(e) => edit(i, { step_kind: e.target.value })}
               >
-                {["llm_call", "tool_call", "subagent", "mcp_call", "user_turn", "error"].map(
-                  (k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ),
-                )}
+                {/* Was a hand-written array of the six kinds that existed when
+                    this picker was built. A plain literal, so TypeScript could
+                    not see it go stale, and it went stale the first time the
+                    list grew: a rule counting `retrieval` steps was
+                    unreachable from the editor while being perfectly valid on
+                    the server. Derived now, from the one list. */}
+                {STEP_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
               </select>
             )}
             {rule.kind !== "has_error" && !rule.kind.endsWith("_matches") && (

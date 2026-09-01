@@ -8,6 +8,32 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **Four trace step kinds the platforms already speak: `retrieval`, `embedding`,
+  `rerank`, `guardrail`.** `VALID_KINDS` had six, none of which could describe a
+  RAG pipeline, so a retrieval step had to arrive as a `tool_call` and every
+  metric that would group by kind grouped it wrong. Each new kind gets its own
+  inline SVG glyph and its own colour, in both palettes.
+
+  Chasing the consumers turned up **a writer with no reader, which is the rule
+  this whole release is about**: `modelmri-record` has stamped `meta.recorder`
+  on every document it has ever produced and nothing had ever read it. Now it is
+  read in exactly one place — when a kind is not recognised. A recorder newer
+  than the viewer writes kinds the viewer has not heard of, and
+  *"invalid step kind: 'retrieval'"* sends somebody hunting for a typo they did
+  not make in a run that recorded perfectly. It now says which recorder wrote
+  the run and to upgrade `modelmri` rather than rename the step. It stays silent
+  when the stamp is absent or is not a string, because most documents through
+  that route are hand-written or come from another tool and inventing a version
+  story about one of those is worse than the plainer sentence. The borrowed
+  stamp is clipped, since `meta` is stored verbatim and a 10 MB `recorder` value
+  was a 10 MB refusal body.
+
+  An unknown kind's timeline bar had also been drawn in exactly `user_turn`'s
+  colour — `kindColor()` fell back to the same token — and the glyph that would
+  have separated them is invisible under 22px. Unknown bars now carry a hatched
+  fill built from the existing `.no-dur` recipe, so it costs no new hue and is
+  theme-safe by construction.
+
 - **`modelmri diff` reads the two graph sections it was blind to.** The differ
   compared six sections — generation, attention, ranking, ground, patch, lens —
   while every `.mri` that ran a circuit walk also carries `graph` and

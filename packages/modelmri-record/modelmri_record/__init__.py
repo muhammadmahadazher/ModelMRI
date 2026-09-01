@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Iterator
@@ -45,6 +46,33 @@ from .redact import Redactor, default_redactor, redact_document
 __version__ = "0.1.4"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
+
+# The kinds a viewer accepts. A SECOND COPY of `modelmri.step_kinds`, and it
+# has to be: this package is stdlib-only by contract, a test spawns a fresh
+# interpreter to prove `import modelmri_record` pulls nothing heavy, and an
+# import of the viewer would break both. `tests/test_step_kinds.py` in the
+# ModelMRI repo asserts the two sets are equal, comparing the VALUES rather
+# than the source text, because the drift that matters is a kind present on
+# one side and absent on the other.
+#
+# This is not a whitelist. `step()` records whatever it is handed — see the
+# complaint there — because a tracing library that raises is one nobody leaves
+# switched on, and refusing a step would also mean refusing to record the run
+# that a newer viewer would have accepted perfectly well.
+KINDS = frozenset(
+    {
+        "llm_call",
+        "tool_call",
+        "subagent",
+        "mcp_call",
+        "user_turn",
+        "error",
+        "retrieval",
+        "embedding",
+        "rerank",
+        "guardrail",
+    }
+)
 
 # What the recorder keeps of a captured payload. NAMED rather than written
 # inline five times, because these are now REPORTED and a cap nobody can see is
@@ -101,6 +129,12 @@ class _Trace:
         self.t0 = time.monotonic()
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.steps: list[dict] = []
+        # Which unrecognised kinds this run has already complained about. Per
+        # trace and per kind, because the complaint is about the SPELLING and
+        # an agent loop hits the same `step("retreival", ...)` line five
+        # hundred times — five hundred identical lines on stderr is not a
+        # warning, it is the reason people turn warnings off.
+        self.unknown_kinds: set[str] = set()
         # NOT a plain list. Concurrent asyncio tasks share the trace, and a
         # shared stack means task B's step becomes a child of task A's open
         # step purely because A happened to be inside a `with` at that moment.
@@ -304,6 +338,24 @@ def step(
     t = _current.get()
     if t is None:
         return _NO_STEP
+    if kind not in KINDS and kind not in t.unknown_kinds:
+        # SAID, not raised, and the step is kept either way. Raising would
+        # break the one promise this package makes; dropping the step would
+        # lose data over a spelling. But staying quiet is the worst of the
+        # three: the viewer refuses a document containing a kind it does not
+        # know, and it refuses the whole document, so the run reaches the disk
+        # fallback and the person who typed the typo sees an empty timeline
+        # and no reason for it. This is the moment that costs one line and is
+        # the difference between a lost run and a mystery.
+        t.unknown_kinds.add(kind)
+        _complain(
+            f"modelmri-record: {kind!r} is not a step kind a viewer knows "
+            f"({', '.join(sorted(KINDS))}). The step is recorded, but a viewer "
+            f"refuses the whole document rather than the step, so this run "
+            f"will land in the undelivered directory instead of on the "
+            f"timeline. Rename it, or upgrade both ends if the kind is newer "
+            f"than this recorder."
+        )
     record = {
         "id": uuid.uuid4().hex[:10],
         "parent_id": (t.parents.get() or (None,))[-1],
@@ -623,6 +675,28 @@ def _complain(message: str) -> None:
         pass  # there is no third place to report to, and raising is worse
 
 
+def _why(err: urllib.error.HTTPError) -> str:
+    """A refused delivery, in the words the viewer used.
+
+    ModelMRI answers every bad request with a complete sentence naming what is
+    wrong and what to do — that is a house rule over there — so quoting it is
+    strictly better than anything this side could compose about a document it
+    evidently thinks is fine. Both key spellings are tried because the status
+    is worth reporting even from something that is not a ModelMRI viewer at
+    all, and so is a body this cannot parse.
+    """
+    detail = ""
+    try:
+        body = err.read().decode("utf-8", "replace")[:MAX_ERROR_CHARS]
+        parsed = json.loads(body)
+        if isinstance(parsed, dict):
+            detail = str(parsed.get("error") or parsed.get("detail") or "")
+        detail = detail or body.strip()
+    except Exception:  # noqa: S110 - a body nobody can read is not a reason
+        pass  # to throw away the status, which is the half that always exists
+    return f"HTTP {err.code}: {detail}" if detail else f"HTTP {err.code}"
+
+
 def _deliver(t: _Trace) -> None:
     if t.delivered:
         return
@@ -641,6 +715,21 @@ def _deliver(t: _Trace) -> None:
         urllib.request.urlopen(req, timeout=3)
         _deliver_otlp(t, doc)
         return
+    except urllib.error.HTTPError as err:
+        # THE ONE FAILURE THAT IS NOT "no viewer running". Every other
+        # exception here means nobody was listening, which is the ordinary
+        # offline case the disk fallback exists for and which must stay
+        # silent — a recorder that prints a line every time you run your
+        # agent without the viewer open is a recorder people uninstall.
+        #
+        # A response, though, means a viewer read this document and turned it
+        # down: an unknown step kind (it refuses the whole document for one),
+        # a malformed field, a version older than the recorder that wrote the
+        # run. The status and the server's own sentence are the only two facts
+        # that can tell those apart, and they were being discarded — the trace
+        # went quietly to disk and the reason it was not on the timeline
+        # existed for the length of one `except`.
+        _complain(f"modelmri-record: the viewer refused this run — {_why(err)}")
     except Exception:  # noqa: S110 - the disk fallback below is the handling
         # Not narrowed to OSError: `endpoint` is caller-supplied, so a typo in
         # the scheme is a ValueError from urllib rather than a network error.

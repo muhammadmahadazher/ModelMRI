@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .errors import BadRequest, Refusal
+from .step_kinds import VALID_KINDS
 
 # The generation of the GenAI semantic conventions these attribute names were
 # written against, stamped on every span and printed by the CLI.
@@ -72,7 +73,32 @@ OPERATION = {
     "mcp_call": ("execute_tool", SPAN_KIND_CLIENT),
     "user_turn": ("chat", SPAN_KIND_INTERNAL),
     "error": ("chat", SPAN_KIND_INTERNAL),
+    # The retrieval-shaped four. `embeddings` is the one of them that IS a
+    # settled `gen_ai.operation.name`, and it is already the spelling this
+    # file recognises on the way back in — so the round trip closes for it.
+    #
+    # The other three have no agreed operation name, and the rule above says
+    # what to do about that: they keep their own. Filing `rerank` under
+    # `execute_tool` would be true only in the sense that everything is a
+    # tool call, and it would lose the one fact worth exporting.
+    #
+    # They are here rather than left to `.get`'s default because the default
+    # also picks SPAN_KIND_INTERNAL, and that is a claim: INTERNAL says the
+    # work happened in this process. A vector-store query and a hosted
+    # reranker are both a call out over a socket, and a waterfall that draws
+    # them as in-process time is wrong about where the latency lives.
+    "retrieval": ("retrieval", SPAN_KIND_CLIENT),
+    "embedding": ("embeddings", SPAN_KIND_CLIENT),
+    "rerank": ("rerank", SPAN_KIND_CLIENT),
+    "guardrail": ("guardrail", SPAN_KIND_INTERNAL),
 }
+
+# Every kind a step may be has a deliberate row above. Not a subset check like
+# the ones in `inspect_io` and `ledger`: this table's `.get` default silently
+# swallows an omission -- the span still exports, as INTERNAL -- so an absence
+# here has no symptom to notice, which is exactly the shape of defect an
+# import-time assert is for.
+assert set(OPERATION) == VALID_KINDS, "a step kind with no OTLP operation"
 
 
 @dataclass(frozen=True)
@@ -638,10 +664,25 @@ OPERATION_TO_KIND = {
     "chat": "llm_call",
     "text_completion": "llm_call",
     "generate_content": "llm_call",
-    "embeddings": "tool_call",
+    # Was `tool_call`, which was the closest kind that existed. `embedding`
+    # exists now, and this row is the reason it had to: a producer emitting
+    # the settled `embeddings` operation was already telling us exactly what
+    # the span was, and we were throwing that away at the door.
+    "embeddings": "embedding",
     "execute_tool": "tool_call",
     "invoke_agent": "subagent",
     "create_agent": "subagent",
+    # The three names OUR exporter writes for kinds with no semconv operation
+    # (see OPERATION). Only ours: `rerank_documents`, `retrieve_context` and
+    # the rest of the spellings a person can imagine are not here, because
+    # nobody has verified that any producer emits them and a mapping built on
+    # a guess files somebody's span under a claim they never made. An
+    # unrecognised operation still lands as `tool_call` with its own name kept
+    # in `meta.otel_operation` and reported in the trace's notes, which is the
+    # honest answer for a vocabulary we have not read.
+    "retrieval": "retrieval",
+    "rerank": "rerank",
+    "guardrail": "guardrail",
 }
 
 # Where other producers put the prompt, the completion and the token counts.

@@ -54,7 +54,29 @@ inside it, and its duration is measured for you. Used bare, it records a single
 event.
 
 `kind` is one of `llm_call`, `tool_call`, `subagent`, `mcp_call`, `user_turn`,
-`error`. The viewer colours and groups by it.
+`error`, `retrieval`, `embedding`, `rerank`, `guardrail`. The viewer gives each
+one a colour and a shape, groups by it, and lets you filter on it —
+`kind:retrieval` in the search box, or a rubric rule that counts steps of one
+kind.
+
+The last four are what a retrieval pipeline is made of, and they are separate
+kinds rather than four flavours of `tool_call` because the questions worth
+asking about a RAG agent are all phrased in them: how much of the wall clock is
+retrieval, how often a rerank changed the top document, whether a guardrail
+fired. A `guardrail` step is deliberately not an `error` — a guardrail that
+fires did its job.
+
+The list is closed. A kind the viewer does not know is refused **on import**,
+and refused for the whole document rather than the step: a run missing exactly
+the step you were looking for is a worse answer than a run that did not import,
+and it is one you would not notice.
+
+A run carried inside a shared `.mri` bundle is the one exception, deliberately:
+it is shown with the kind it was given, drawn grey and hatched instead of in a
+colour, because refusing to open a file somebody sent you is worse than saying
+"recorded, and this build does not know what it is". So a bundle written by a
+newer ModelMRI opens here, and the steps this build has never heard of are
+still on the timeline and still clickable.
 
 ### Auto-instrument an SDK
 

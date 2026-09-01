@@ -1,7 +1,7 @@
 # modelmri-record
 
-Record what your agent actually did — LLM calls, tool calls, subagents, errors —
-and look at it on a timeline instead of scrolling logs.
+Record what your agent actually did — LLM calls, tool calls, subagents,
+retrieval, errors — and look at it on a timeline instead of scrolling logs.
 
 ```bash
 pip install modelmri-record
@@ -25,6 +25,31 @@ with trace("fix-failing-tests"):
 
 Nesting is automatic — a `step` used as a context manager becomes the parent of
 everything recorded inside it, and its duration is measured for you.
+
+### The kinds
+
+The first argument is the kind, and it is a closed list — a viewer refuses a
+whole document containing a kind it does not know, so this is the one argument
+worth checking against the page. `modelmri_record.KINDS` is the same list at
+runtime.
+
+| kind | what it is |
+|---|---|
+| `llm_call` | a call to a model |
+| `tool_call` | a tool, a shell command, a function |
+| `subagent` | a nested agent; use it as a context manager and everything inside becomes its children |
+| `mcp_call` | a tool reached over MCP, kept apart from `tool_call` because the transport is the thing that fails |
+| `user_turn` | a person said something |
+| `error` | a failure worth its own step; also synthesised for you when an exception escapes the `trace()` block |
+| `retrieval` | fetching candidate documents — a vector store, a search index, a grep |
+| `embedding` | text to vector |
+| `rerank` | reordering candidates against the query |
+| `guardrail` | a policy check on the way in or out — **not** `error`, since a guardrail that fires did its job |
+
+A kind this recorder does not recognise is still recorded, and it prints one
+line saying so. It does not raise, and it does not drop the step: your agent
+must not fall over because a step was named wrong, and a run you cannot see is
+still a run worth keeping.
 
 Auto-instrument an SDK instead:
 
@@ -71,6 +96,12 @@ red = make_redactor([r"ACME-[0-9]{6}"])
 Recording is best-effort by contract. If the viewer is unreachable, the disk is
 read-only, or the payload won't serialise, it gives up quietly. A tracing
 library that can raise is one nobody leaves switched on.
+
+Quietly is not the same as secretly. A viewer that answers and *refuses* the
+document — an unknown step kind, a malformed field, a version older than the
+recorder that wrote the run — is a different thing from one that was never
+running, and that one prints the refusal in the viewer's own words before the
+run goes to disk.
 
 Traces still open when the process exits are flushed by an `atexit` hook —
 a crash or a `SIGTERM` is exactly the run you most wanted to look at.

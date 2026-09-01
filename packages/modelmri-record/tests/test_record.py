@@ -306,9 +306,17 @@ def test_import_costs_nothing_heavy():
     full run, proving nothing either way."""
     import subprocess
 
+    # `modelmri` is in the set, and it is the one that matters most: the
+    # viewer is what pulls torch in, and the tempting way to keep this
+    # package's kind list in agreement with `modelmri.step_kinds` is to import
+    # it. The two source-text checks below cannot see every spelling of that
+    # import — `from modelmri import step_kinds` matched neither — and CI runs
+    # these tests inside the main venv, where `modelmri` is importable, so
+    # this subprocess is the only thing standing between the two.
     code = (
         "import sys, modelmri_record;"
-        "heavy={'torch','transformers','numpy','fastapi','pydantic','anthropic'};"
+        "heavy={'modelmri','torch','transformers','numpy','fastapi','pydantic',"
+        "'anthropic'};"
         "print(sorted(heavy & set(sys.modules)))"
     )
     out = subprocess.run(
@@ -432,3 +440,110 @@ def test_the_recorders_marker_is_the_one_the_store_parses():
     found = clipped.search(marked)
     assert found is not None, "the store's regex has to match this"
     assert int(found.group(1)) == 5_000 - rec.MAX_PREVIEW_CHARS
+
+
+# ---------------------------------------------------------------------------
+# step kinds: a second copy of a list, and what happens when it is wrong
+# ---------------------------------------------------------------------------
+
+
+def test_the_kind_list_is_here_and_is_not_an_import():
+    """The obvious way to keep this in agreement with the viewer is to import
+    `modelmri.step_kinds`, and it is the one thing this package may not do —
+    `test_import_costs_nothing_heavy` above spawns a fresh interpreter to
+    prove it. So the list is a literal, and the ModelMRI repo's
+    `tests/test_step_kinds.py` asserts the two sets are equal."""
+    src = (Path(rec.__file__)).read_text(encoding="utf-8")
+    assert "from modelmri.step_kinds" not in src
+    assert "import modelmri.step_kinds" not in src
+    assert {"retrieval", "embedding", "rerank", "guardrail"} <= rec.KINDS
+
+
+def test_an_unknown_kind_is_recorded_and_said(offline, capsys):
+    """Said, not raised, and the step is kept.
+
+    Raising would break the one promise this package makes. Dropping the step
+    would lose data over a spelling. Silence is the worst of the three: the
+    viewer refuses the WHOLE document for one unknown kind, so the run lands
+    on disk and the person who typed it sees an empty timeline and no reason.
+    """
+    with rec.trace("typo"):
+        rec.step("retreival", name="vector-store", duration_ms=3)
+
+    said = capsys.readouterr()
+    assert "retreival" in (said.err + said.out)
+    assert "retrieval" in (said.err + said.out), "the complaint does not say what is"
+
+    doc = json.loads(next((offline / "modelmri-traces").glob("*.json")).read_text())
+    assert [s["kind"] for s in doc["steps"]] == ["retreival"]
+
+
+def test_the_same_typo_in_a_loop_is_said_once(offline, capsys):
+    """An agent hits the same line five hundred times. Five hundred identical
+    lines on stderr is not a warning, it is the reason people turn warnings
+    off."""
+    with rec.trace("loop"):
+        for _ in range(20):
+            rec.step("retreival", name="vector-store", duration_ms=1)
+
+    seen = capsys.readouterr()
+    assert (seen.err + seen.out).count("retreival") == 1
+
+
+def test_a_known_kind_says_nothing(offline, capsys):
+    """So the complaint cannot become a line every run carries."""
+    with rec.trace("clean"):
+        for kind in sorted(rec.KINDS):
+            rec.step(kind, name=kind, duration_ms=1)
+
+    said = capsys.readouterr()
+    assert (said.err + said.out).strip() == ""
+
+
+def test_a_viewer_that_refuses_the_run_is_not_filed_as_no_viewer(
+    offline, capsys, monkeypatch
+):
+    """A 4xx means a viewer READ this document and turned it down — an unknown
+    step kind, a bad field, a version older than the recorder. Every other
+    exception here means nobody was listening, which is the ordinary offline
+    case and must stay silent. Both used to be the same `except`, so the
+    reason a run was not on the timeline existed for one statement and was
+    then discarded."""
+    import io
+    import urllib.error
+
+    def refuse(*a, **k):
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:5900/api/traces/import",
+            422,
+            "Unprocessable Entity",
+            {},
+            io.BytesIO(b'{"error": "invalid step kind: \'retreival\'"}'),
+        )
+
+    monkeypatch.setattr(rec.urllib.request, "urlopen", refuse)
+    with rec.trace("refused"):
+        rec.step("llm_call", name="x", duration_ms=1)
+
+    seen = capsys.readouterr()
+    said = seen.err + seen.out
+    assert "422" in said
+    assert "invalid step kind" in said, "the viewer's own sentence is not quoted"
+    # And the run still reached the disk, INTACT — saying so must not cost the
+    # trace. A truthiness check on the glob would pass on a half-written file
+    # or on two of them, which is the failure a new `except` branch above this
+    # one could plausibly cause.
+    parked = list((offline / "modelmri-traces").glob("*.json"))
+    assert len(parked) == 1
+    doc = json.loads(parked[0].read_text(encoding="utf-8"))
+    assert [s["kind"] for s in doc["steps"]] == ["llm_call"]
+
+
+def test_an_unreachable_viewer_still_says_nothing(offline, capsys):
+    """The ordinary case: no viewer running. The `offline` fixture makes
+    urlopen raise OSError, which is what that looks like."""
+    with rec.trace("quiet"):
+        rec.step("llm_call", name="x", duration_ms=1)
+
+    said = capsys.readouterr()
+    assert (said.err + said.out).strip() == ""

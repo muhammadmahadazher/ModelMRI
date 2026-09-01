@@ -32,7 +32,7 @@ inside it underneath.
 
 | argument | type | notes |
 |---|---|---|
-| `kind` | str | `llm_call`, `tool_call`, `subagent`, `mcp_call`, `user_turn`, `error` |
+| `kind` | str | one of the ten below |
 | `name` | str | free text; shown on the timeline |
 | `input` / `output` | any | non-strings are JSON-encoded, falling back to `repr` |
 | `duration_ms` | int | measured for you when used as a context manager |
@@ -42,6 +42,28 @@ inside it underneath.
 Outside a `trace()` it returns a falsy no-op that still supports `with`, so
 instrumentation left in library code costs nothing for callers who never opted
 in — including callers on worker threads, where contextvars do not reach.
+
+### `kind`
+
+A closed list, mirrored at runtime as `modelmri_record.KINDS`. The viewer gives
+each kind a colour and a shape, groups the timeline by it, and refuses a
+document containing one it does not know — the whole document, not the step.
+
+| kind | what it is |
+|---|---|
+| `llm_call` | a call to a model |
+| `tool_call` | a tool, a shell command, a function |
+| `subagent` | a nested agent; used as a context manager, everything inside becomes its children |
+| `mcp_call` | a tool reached over MCP, kept apart from `tool_call` because the transport is its own failure |
+| `user_turn` | a person said something |
+| `error` | a failure worth its own step; also synthesised when an exception escapes `trace()` |
+| `retrieval` | fetching candidate documents — a vector store, a search index, a grep |
+| `embedding` | text to vector |
+| `rerank` | reordering candidates against the query |
+| `guardrail` | a policy check on the way in or out — not `error`, since one that fires did its job |
+
+The recorder records a kind it does not recognise anyway, and prints one line
+saying so. It will not raise, and it will not drop the step.
 
 ## `instrument_anthropic()`
 
