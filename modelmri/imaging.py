@@ -75,6 +75,91 @@ _DENOISER_CLASSES = {
     "SanaTransformer2DModel": DIT_DIFFUSION,
 }
 
+# HOW the denoiser reaches the prompt, which decides whether a word-to-pixel
+# map can be read out of it at all. `_DENOISER_CLASSES` above answers "what
+# shape is this"; both SD 1.5 and Flux answer the same way there, and they are
+# not the same on this question.
+#
+#   cross       a separate cross-attention block whose KEYS are the prompt.
+#               diffusers names it `attn2`, `image_attention` captures there,
+#               and the map has one column per prompt token.
+#   joint       MM-DiT. The prompt and the image are concatenated into ONE
+#               sequence and the model attends over the pair, so there is no
+#               separate word-to-pixel matrix — a map read out of the joint
+#               one has a column per image patch as well as per word.
+#   none        the conditioning does not enter through attention at all:
+#               an unconditional UNet, or a class-conditioned DiT steered by
+#               ada-norm from a label embedding.
+#   unverified  a class this build has not checked. NOT a synonym for any of
+#               the three: it keeps the offer and lets the runtime check on
+#               the loaded pipeline settle it, because withholding on a guess
+#               removes a measurement that may work perfectly.
+ATTENTION_CROSS = "cross"
+ATTENTION_JOINT = "joint"
+ATTENTION_NONE = "none"
+ATTENTION_UNVERIFIED = "unverified"
+
+# VERIFIED PER CLASS, against the diffusers actually installed here rather
+# than against anybody's memory of it. Two checks, and both are recorded
+# because they answer different halves:
+#
+#   (a) `<Class>(<toy config>).attn_processors` was built and its keys read.
+#       `AttentionMixin.attn_processors` walks `named_children` and keys every
+#       module carrying `get_processor` as `<path>.processor`, so those keys
+#       ARE the block names, and `image_attention.is_capture_site` is the same
+#       predicate the capture installs on. Under diffusers 0.39.0:
+#         UNet2DConditionModel            -> `...attn1.processor`, `...attn2.processor`   CROSS
+#         UNet3DConditionModel            -> the same, plus `temp_attentions.*`           CROSS
+#         UNetSpatioTemporalConditionModel-> the same, plus `temporal_transformer_blocks` CROSS
+#         PixArtTransformer2DModel        -> `transformer_blocks.N.attn2.processor`       CROSS
+#         HunyuanDiT2DModel               -> `blocks.N.attn2.processor`                   CROSS
+#         SanaTransformer2DModel          -> `transformer_blocks.N.attn2.processor`       CROSS
+#         SD3Transformer2DModel           -> `transformer_blocks.N.attn.processor` ONLY   JOINT
+#         FluxTransformer2DModel          -> `(single_)transformer_blocks.N.attn.proc.`   JOINT
+#         AuraFlowTransformer2DModel      -> `joint_/single_transformer_blocks.N.attn.`   JOINT
+#         CogVideoXTransformer3DModel     -> `transformer_blocks.N.attn1.processor` ONLY  JOINT
+#
+#   (b) the class's own module source, for the four classes that expose no
+#       processors at all to walk (`issubclass(cls, AttentionMixin)` is False,
+#       so they are already refused for want of `set_attn_processor` — but a
+#       style is still a fact about them and "unverified" would understate it):
+#         UNet2DModel            no cross-attention anywhere; unconditional    NONE
+#         DiTTransformer2DModel  BasicTransformerBlock built with no
+#                                `cross_attention_dim`, so `attn2` is None;
+#                                class-conditioned through ada-norm            NONE
+#         Transformer2DModel     BasicTransformerBlock WITH `cross_attention_dim`
+#                                when the config states one — PixArt-Alpha's
+#                                older checkpoints are exactly this            CROSS
+#         LuminaNextDiT2DModel   `LuminaNextDiTBlock.attn2` is built with
+#                                `cross_attention_dim=` and called with
+#                                `encoder_hidden_states`                       CROSS
+#
+# `tests/test_image_joint_attention.py::test_the_verified_table_still_matches_diffusers`
+# builds three of these for real and re-checks (a) on every run, so a rename
+# in a future diffusers fails here rather than in somebody's generation.
+_ATTENTION_STYLES = {
+    "UNet2DConditionModel": ATTENTION_CROSS,
+    "UNet2DModel": ATTENTION_NONE,
+    "UNet3DConditionModel": ATTENTION_CROSS,
+    "UNetSpatioTemporalConditionModel": ATTENTION_CROSS,
+    "Transformer2DModel": ATTENTION_CROSS,
+    "DiTTransformer2DModel": ATTENTION_NONE,
+    "PixArtTransformer2DModel": ATTENTION_CROSS,
+    "SD3Transformer2DModel": ATTENTION_JOINT,
+    "FluxTransformer2DModel": ATTENTION_JOINT,
+    "HunyuanDiT2DModel": ATTENTION_CROSS,
+    "AuraFlowTransformer2DModel": ATTENTION_JOINT,
+    "LuminaNextDiT2DModel": ATTENTION_CROSS,
+    "CogVideoXTransformer3DModel": ATTENTION_JOINT,
+    "SanaTransformer2DModel": ATTENTION_CROSS,
+}
+
+#: The styles that have no separate word-to-pixel matrix to read. Named
+#: rather than written as a comparison at the one call site, because the
+#: interesting half is which styles are NOT here: `unverified` keeps the
+#: offer on purpose, and the loaded pipeline is what settles it.
+_NO_WORD_MAPS = frozenset({ATTENTION_JOINT, ATTENTION_NONE})
+
 # transformers `model_type` → family. Only entries whose family genuinely
 # changes which panels apply; a model type this does not list is `unknown`
 # with its type reported, which is more useful than a guess.
@@ -215,6 +300,17 @@ class ImageModel:
     #: How many classes, when it is class-conditioned. The reader needs the
     #: list to pick from; "class-conditioned" alone tells them nothing to do.
     n_classes: int | None = None
+    #: HOW the denoiser reaches the prompt — see `_ATTENTION_STYLES`. Empty
+    #: when the question does not apply: a ViT, a detector and a CLIP have no
+    #: denoiser, and an answer about theirs would be an answer to a question
+    #: nobody asked of them.
+    #:
+    #: This is the PRE-LOAD half of the claim, made from a class name in
+    #: `model_index.json` and nothing else, so that the picker can say what
+    #: a checkpoint offers before a download is spent on it. The loaded
+    #: pipeline's own `attn_processors` is the authority and overrides it —
+    #: see `image_attention.capture_sites`.
+    attention_style: str = ""
     # Set when nothing here could be read.
     reason: str = ""
 
@@ -242,6 +338,18 @@ class ImageModel:
             # measurements are unaffected — a class-conditioned run still has
             # steps and still has a latent.
             caps = tuple(c for c in caps if c not in _WORD_CAPABILITIES)
+        if self.attention_style in _NO_WORD_MAPS:
+            # THE MAP ONLY, and `token_knockout` deliberately survives.
+            #
+            # MEASURED on the MM-DiT families: `image_attention.knockout`
+            # removes one word, regenerates at the identical seed and
+            # RMS-differences the images. It never touches an attention
+            # processor, so it is unaffected by where the prompt enters — and
+            # it is the CAUSAL half of this section, which this module's own
+            # standard says is the stronger of the two. Withholding the strong
+            # measurement because the weak one is unreadable would be
+            # backwards.
+            caps = tuple(c for c in caps if c != "cross_attention")
         return caps
 
     def to_dict(self) -> dict:
@@ -256,6 +364,7 @@ class ImageModel:
             "image_size": self.image_size,
             "conditioning": self.conditioning,
             "n_classes": self.n_classes,
+            "attention_style": self.attention_style,
             "capabilities": list(self.capabilities),
             "known": self.known,
             "reason": self.reason,
@@ -285,6 +394,21 @@ class ImageModel:
                     " It is UNCONDITIONAL — no cross-attention to a prompt — "
                     "so there are no word-to-pixel maps to draw, and drawing "
                     "any would be inventing them."
+                )
+            elif self.attention_style == ATTENTION_JOINT:
+                # SAID BEFORE THE DOWNLOAD, which is the whole point of this
+                # field. The old answer to this question was a full generation
+                # followed by "this denoiser may attend to its conditioning
+                # somewhere this does not reach" — a sentence about the model,
+                # for a model that attends to the prompt perfectly well.
+                detail = (
+                    " It attends to the prompt in JOINT attention blocks: the "
+                    "text and the image go into ONE sequence and it attends "
+                    "over the pair, so there is no separate word-to-pixel "
+                    "matrix to average and no map is offered. Nothing is "
+                    "wrong with it — a denoiser that keeps a separate "
+                    "cross-attention block answers that question, and the "
+                    "knockout below answers the causal version of it here."
                 )
             elif self.conditioning == "class":
                 # SAID HERE TOO, not only after loading. This sentence is what
@@ -395,6 +519,15 @@ def _detect_pipeline(root: Path, index: dict, found: ImageModel) -> ImageModel:
 
     found.architecture = denoiser_class or found.pipeline
     found.family = _DENOISER_CLASSES.get(denoiser_class, UNKNOWN)
+    # SET FOR ANY DENOISER CLASS, including one the family table does not
+    # know. `unverified` is the honest answer for a name nobody has checked,
+    # and it is a different answer from "there is no denoiser here" (the
+    # empty string a ViT keeps) — the two would be indistinguishable if this
+    # only ran on classes the table recognises.
+    if denoiser_class:
+        found.attention_style = _ATTENTION_STYLES.get(
+            denoiser_class, ATTENTION_UNVERIFIED
+        )
     if found.family == UNKNOWN and denoiser_class:
         # A class this does not know, in the denoiser slot. The slot itself is
         # evidence -- `transformer` means DiT-shaped -- but evidence is not

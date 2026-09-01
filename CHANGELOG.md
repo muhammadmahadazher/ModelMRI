@@ -143,6 +143,45 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Fixed
 
+- **MM-DiT models charged you for a generation and then blamed themselves for
+  it.** `_DENOISER_CLASSES` advertised SD3, Flux, AuraFlow and CogVideoX as
+  cross-attention-readable, while the capture only ever wrapped processors named
+  `.attn2.` — diffusers' cross-attention slot, which **joint-attention
+  architectures do not have**. So the run completed, the store came back empty,
+  and the refusal read as though the checkpoint were at fault.
+
+  Two halves, and the runtime one is authoritative. A static `attention_style`
+  per class — verified against the installed diffusers source, class by class,
+  with a test that fails if a class listed as verified ever grows
+  `attn_processors` — surfaces an honest badge in the picker **before anything
+  is spent**. Then, before the denoising loop, the loaded pipeline's real
+  `attn_processors` are walked; if no capture site exists the run refuses
+  preflight, naming the architecture and the number of attention blocks actually
+  read, with **zero passes spent**.
+
+  It is deliberately three-valued: *could not look* keeps the capability rather
+  than withholding it, because a two-valued answer would silently deny working
+  measurements to pipelines this build simply cannot introspect. The filter was
+  **not** widened to `.attn.` — joint blocks attend over `[text ; image]`
+  concatenated, so the key axis is not the prompt, and a map drawn from one
+  would be confidently wrong rather than absent.
+
+  Four of these were found only by mutating the tests that were supposed to
+  cover them: **the "zero passes" assertions could not fail**, because the fake
+  pipeline had no tokenizer, so capture refused earlier and the generation path
+  was dead code in every test in the file. The fixtures now include a working
+  control that really does spend a pass. Twelve of thirteen mutations were
+  uncaught before this pass.
+
+  Separately, the HTTP refusal for any withheld image capability was a claim
+  about an architecture *family*: *"this model is dit_diffusion, which has no
+  cross attention to measure."* PixArt, Sana and Hunyuan are all `dit_diffusion`
+  and all three carry `attn2`, so the sentence was stated as fact and false for
+  half its family — and it opened with the repo id, which reads as an accusation
+  against a checkpoint that is behaving correctly. The route now publishes the
+  sentence the loaded checkpoint earned, and names the architecture rather than
+  the download.
+
 - **A TopK SAE ships exactly the tensors a ReLU one ships, and loaded as one.**
   `_read_sae_lens` returned `threshold=None` on the stated assumption that
   *"SAELens releases are plain ReLU"*. That was true once. SAELens now

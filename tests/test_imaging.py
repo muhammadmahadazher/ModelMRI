@@ -453,3 +453,109 @@ def test_an_unconditional_denoiser_outranks_an_inferred_conditioning(tmp_path):
 
     found = imaging.detect(root)
     assert found.cross_attention_dim == 0
+
+
+# ------------------------------------- how the denoiser reaches the prompt
+
+
+def test_a_joint_attention_denoiser_is_named_as_one_before_it_is_opened(tmp_path):
+    """The picker's promise, made from JSON alone.
+
+    `FluxTransformer2DModel` is DiT-shaped and text-conditioned, and both
+    facts were enough to advertise `cross_attention` on it. It has no
+    cross-attention block: the prompt and the image go into ONE sequence and
+    the model attends over the pair, so there is no word-to-pixel matrix to
+    average. The old answer cost a full generation to discover.
+    """
+    root = _pipeline(
+        tmp_path, denoiser_class="FluxTransformer2DModel", slot="transformer"
+    )
+    found = imaging.detect(root)
+
+    assert found.attention_style == imaging.ATTENTION_JOINT
+    assert found.to_dict()["attention_style"] == imaging.ATTENTION_JOINT
+    assert "cross_attention" not in found.capabilities
+    # The CAUSAL half is untouched. `knockout` removes a word and regenerates
+    # at the same seed; it never touches an attention processor, and it works
+    # on this checkpoint exactly as it does on a UNet.
+    assert "token_knockout" in found.capabilities
+    assert "step_commit" in found.capabilities
+    assert "joint" in found.means().lower()
+
+
+def test_a_cross_attention_denoiser_keeps_its_word_maps(tmp_path):
+    """The other side of the same test. Narrowing that catches PixArt or a
+    UNet has taken the measurement this whole section is for."""
+    for denoiser_class, slot in (
+        ("UNet2DConditionModel", "unet"),
+        ("PixArtTransformer2DModel", "transformer"),
+        ("SanaTransformer2DModel", "transformer"),
+        ("HunyuanDiT2DModel", "transformer"),
+    ):
+        root = _pipeline(
+            tmp_path,
+            denoiser_class=denoiser_class,
+            slot=slot,
+            cross_attention_dim=1152,
+        )
+        found = imaging.detect(root)
+        assert found.attention_style == imaging.ATTENTION_CROSS, denoiser_class
+        assert "cross_attention" in found.capabilities, denoiser_class
+
+
+def test_a_denoiser_that_reaches_no_conditioning_at_all_is_offered_no_map(tmp_path):
+    """The OTHER half of `_NO_WORD_MAPS`, and it had no test of its own.
+
+    `joint` and `none` are both in that set and only `joint` was pinned, so
+    dropping `none` from it left every test green while an unconditional
+    denoiser went back to advertising a word-to-pixel map.
+
+    This is the shape that makes the difference visible: a pipeline that
+    names a text encoder — so `conditioning` is "text" and the word
+    capabilities survive that filter — around a `UNet2DModel`, which has no
+    cross-attention anywhere. Only the attention style can withhold the map
+    here, which is exactly what makes it the test for it. The panel's
+    "This model is UNCONDITIONAL" note is about this checkpoint, and the
+    capability list has to agree with it.
+    """
+    root = _pipeline(tmp_path, denoiser_class="UNet2DModel", slot="unet")
+    found = imaging.detect(root)
+
+    assert found.conditioning == "text", "the filter above this one must not fire"
+    assert found.attention_style == imaging.ATTENTION_NONE
+    assert "cross_attention" not in found.capabilities
+
+
+def test_a_class_this_build_has_not_checked_says_so_rather_than_promising(tmp_path):
+    """An unverified class must not be called joint — that would withhold a
+    measurement on a guess — and must not be called cross either, which is
+    the promise that cost the generation. It is reported as unverified, and
+    the runtime check on the loaded pipeline is what settles it."""
+    root = _pipeline(
+        tmp_path, denoiser_class="SomeFutureTransformer", slot="transformer"
+    )
+    found = imaging.detect(root)
+
+    assert found.attention_style == imaging.ATTENTION_UNVERIFIED
+    assert "cross_attention" in found.capabilities, (
+        "an unverified class keeps the offer; the loaded pipeline decides"
+    )
+
+
+def test_a_family_with_no_denoiser_has_no_attention_style_to_report(tmp_path):
+    """A ViT is not a denoiser and has no prompt. An `attention_style` on it
+    would be an answer to a question nobody asked of it."""
+    found = imaging.detect(_transformers(tmp_path, model_type="vit"))
+    assert found.attention_style == ""
+    assert found.to_dict()["attention_style"] == ""
+
+
+def test_every_class_in_the_denoiser_table_has_a_verified_attention_style():
+    """The two tables are one claim about each class, and a class in the
+    first with nothing in the second is the half-answer this workstream
+    exists to remove — it would be advertised in the picker with no statement
+    about whether its maps can be read."""
+    for name in imaging._DENOISER_CLASSES:
+        style = imaging._ATTENTION_STYLES.get(name)
+        assert style, f"{name} is offered with no verified attention style"
+        assert style != imaging.ATTENTION_UNVERIFIED, name

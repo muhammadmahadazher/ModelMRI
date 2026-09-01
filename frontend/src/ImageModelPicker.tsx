@@ -153,6 +153,61 @@ function FitBadge({ m }: { m: ImageLocalModel | ImageDiscoveredModel }) {
   );
 }
 
+/** Whether the word-to-pixel map can be read out of this one, BEFORE it is
+ *  opened.
+ *
+ *  This is the badge the whole pre-load half exists for. `imaging` calls SD3,
+ *  Flux, AuraFlow and CogVideoX DiT-shaped — true — and a DiT-shaped
+ *  checkpoint carried `cross_attention` on the strength of that. None of them
+ *  has a cross-attention block: they concatenate the prompt and the image
+ *  into one sequence, so the reader downloaded gigabytes, typed a prompt,
+ *  paid for a full generation and got a sentence that read as a fault in
+ *  their model. A row that says so costs nothing.
+ *
+ *  Silent for `"cross"` — an ordinary row makes the ordinary promise, and a
+ *  badge on every healthy checkpoint is a badge nobody reads. Silent for
+ *  `"none"` too: an unconditional or class-conditioned checkpoint says so in
+ *  its own label and `means`, and a second sentence about attention would be
+ *  answering a question that model was never asked.
+ *
+ *  `"unverified"` IS shown. The offer is kept — the loaded pipeline's own
+ *  `attn_processors` is what settles it — and a kept offer this build has not
+ *  checked is exactly the thing a reader should know before spending a
+ *  download on it.
+ */
+function AttentionBadge({ m }: { m: ImageLocalModel | ImageDiscoveredModel }) {
+  if (m.attention_style === "joint") {
+    return (
+      <span
+        className="meta image-attn attn-joint"
+        title={
+          "Joint (MM-DiT) attention: the prompt and the image go into one " +
+          "sequence and the model attends over the pair, so there is no " +
+          "separate word-to-pixel matrix to average. The knockout still " +
+          "works here — it removes a word and regenerates at the same seed."
+        }
+      >
+        no word maps
+      </span>
+    );
+  }
+  if (m.attention_style === "unverified") {
+    return (
+      <span
+        className="meta image-attn attn-unverified"
+        title={
+          "This build has not checked where this denoiser class attends, so " +
+          "the word-to-pixel map is still offered and the pipeline itself " +
+          "decides once it is loaded. Nothing is spent on finding out."
+        }
+      >
+        word maps unverified
+      </span>
+    );
+  }
+  return null;
+}
+
 /** Arrow keys move within the list, the way a listbox is supposed to.
  *
  *  Tab is already spoken for — it cycles the sheet, and the trap below keeps
@@ -253,6 +308,11 @@ function DiskRow({
         {m.known ? ` · ${m.family}` : ""}
       </span>
       <span className="spacer" />
+      {/* What it will and will not answer, before the download. It sits
+          ahead of the fit badge because it is a fact about the checkpoint
+          rather than about this machine, and the two are read in that
+          order: what is it, then will it run here, then what does it cost. */}
+      <AttentionBadge m={m} />
       <FitBadge m={m} />
       {/* Never "0.0 GB" for something nobody sized. */}
       <span className={`meta image-size${m.size_bytes === null ? " unknown" : ""}`}>

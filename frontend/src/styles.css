@@ -8262,6 +8262,36 @@ button:disabled,
   .image-fit .fit-dot { transition: background var(--dur-2, 160ms) var(--ease, ease); }
 }
 
+/* ------------------------------- what the row will and will not answer
+
+   A CAPABILITY, not a warning, and the weight says so. The row beside it is
+   perfectly loadable and three of its four measurements work — a Flux
+   checkpoint is not a broken one — so this is quieter than `.fit-over`,
+   which is about a click that cannot succeed. What it replaces is a row that
+   looked identical to an SDXL one right up until the reader had paid for a
+   generation.
+
+   The full sentence is on the `title`, for the same reason the fit badge
+   puts it there: two words on a scanned row can only be a signpost, and the
+   reader who stops on it needs the paragraph. */
+.image-attn {
+  white-space: nowrap;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 7px;
+  line-height: 1.6;
+  opacity: 0.85;
+}
+.attn-joint { color: var(--sem-agent); }
+/* Nobody has checked this one, which is the register `.fit-unknown` and
+   `.image-size.unknown` already use for "could not tell" — dimmed and
+   italic, never a colour that reads as a verdict. */
+.attn-unverified {
+  color: var(--ink-3);
+  font-style: italic;
+  border-style: dashed;
+}
+
 /* ------------------------------------------------- what a head is wired to do
 
    A SUB-SECTION, and the visual weight is the argument. The ranking above it

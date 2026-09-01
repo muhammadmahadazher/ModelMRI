@@ -374,6 +374,34 @@ def test_a_finished_download_reports_the_bytes_that_are_actually_there(
     assert row["complete"] is True
 
 
+def test_a_row_carries_what_the_picker_needs_to_warn_before_the_load(
+    tmp_path, monkeypatch
+):
+    """`attention_style` rides on the row, or the badge has nothing to read.
+
+    A joint-attention checkpoint loads perfectly and answers three of this
+    section's four questions, so it is not a blocked row and must not become
+    one. What it needs is the one clause that says the word-to-pixel map is
+    not among them — BEFORE the gigabytes, which is the whole argument for
+    identifying a checkpoint before opening it. The narrowed `capabilities`
+    beside it is the same fact in the form the panel reads.
+    """
+    joint = _cache_entry(tmp_path, "someone/flux", weights_mb=4)
+    joint.family = imaging.DIT_DIFFUSION
+    joint.architecture = "FluxTransformer2DModel"
+    joint.attention_style = imaging.ATTENTION_JOINT
+    joint.conditioning = "text"
+    _cache(monkeypatch, joint)
+
+    (row,) = image_catalog.local()
+    assert row["attention_style"] == imaging.ATTENTION_JOINT
+    assert "cross_attention" not in row["capabilities"]
+    assert "token_knockout" in row["capabilities"]
+    # And it is pickable: nothing here says the checkpoint is unusable.
+    assert row["complete"] is True
+    assert row["known"] is True
+
+
 def test_an_unknown_family_sorts_below_everything_that_was_identified(
     tmp_path, monkeypatch
 ):
@@ -654,6 +682,47 @@ def test_a_checkpoint_in_a_plain_folder_is_found(tmp_path):
 
     paths = [row["path"] for row in out["models"]]
     assert any(Path(p) == here for p in paths), paths
+
+
+def test_a_discovered_row_carries_the_same_warning_as_a_cached_one(tmp_path):
+    """The twin of `…what_the_picker_needs_to_warn_before_the_load`, on the
+    other listing.
+
+    Two row builders, one picker, one badge. `local()` was pinned and
+    `discovered()` was not, so `attention_style` could be dropped from the
+    loose-folder listing and every test stayed green — while a Flux cloned
+    into somebody's project directory listed beside an SDXL with no visible
+    difference between them, which is the exact sale that ended in a refusal
+    after a full generation.
+    """
+    here = tmp_path / "workdir" / "my-flux"
+    here.mkdir(parents=True)
+    (here / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "FluxPipeline",
+                "transformer": ["diffusers", "FluxTransformer2DModel"],
+                "text_encoder": ["transformers", "CLIPTextModel"],
+                "vae": ["diffusers", "AutoencoderKL"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    denoiser = here / "transformer"
+    denoiser.mkdir()
+    (denoiser / "config.json").write_text(
+        json.dumps({"_class_name": "FluxTransformer2DModel"}), encoding="utf-8"
+    )
+    (denoiser / "diffusion_pytorch_model.safetensors").write_bytes(b"x" * 2048)
+
+    out = image_catalog.discovered(roots=[tmp_path / "workdir"])
+
+    (row,) = [r for r in out["models"] if Path(r["path"]) == here]
+    assert row["attention_style"] == imaging.ATTENTION_JOINT
+    assert "cross_attention" not in row["capabilities"]
+    # And it is still pickable, for the same reason the cached one is.
+    assert "token_knockout" in row["capabilities"]
+    assert row["known"] is True
 
 
 def test_the_roots_it_looked_in_are_reported(tmp_path):

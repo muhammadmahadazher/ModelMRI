@@ -211,6 +211,27 @@ def capture(
             f"computed. Reconstructing them from hidden states afterwards "
             f"would be a different quantity from the one the model used."
         )
+    # BEFORE anything is installed and long before anything is generated.
+    #
+    # `imaging` calls SD3, Flux, AuraFlow and CogVideoX DiT-shaped, which is
+    # true, and DiT-shaped carried `cross_attention` on the strength of the
+    # family name. None of them has an `attn2`, so `_wrap` came back with
+    # nothing wrapped, the run finished with an empty store, and the refusal
+    # at the bottom of this function — written for a genuine gap in coverage —
+    # arrived after the reader had paid for up to fifty denoising passes and
+    # read as a fault in their model.
+    #
+    # The fact that settles it is a walk of `named_children`. It costs
+    # nothing and it is available here, so it is asked here. The one below
+    # stays: it is the honest answer for a denoiser that HAS capture sites
+    # and still produced no map, which is a different finding.
+    seen = capture_sites(denoiser)
+    if seen is not None and not seen.sites:
+        raise NotSupported(
+            f"{no_capture_site_sentence(seen)} Nothing was generated: this "
+            f"was read off the denoiser's own attention blocks before a "
+            f"single denoising pass was spent."
+        )
     if steps < 1:
         raise BadRequest("a run needs at least one denoising step.")
     requested = int(steps)
@@ -413,17 +434,168 @@ class _Collector:
         self._blocks = 0
 
 
+def is_capture_site(name: str) -> bool:
+    """Whether this processor key names a block the capture records from.
+
+    THE one rule, and it is a function because two callers need it. `_wrap`
+    asks it while installing; `capture_sites` asks it before anything is
+    installed, so that a denoiser with no such block can be refused for free
+    rather than after a generation. A list of names re-typed on the other
+    side of a wire is the defect this project's own tests exist to catch.
+
+    `attn2` is diffusers' consistent name for the block whose KEYS are the
+    conditioning, across UNet and DiT alike. Self-attention among latents
+    answers a different question — which pixels look at which pixels — and
+    averaging the two into one map would combine two quantities that are not
+    the same quantity.
+    """
+    return ".attn2." in name or name.endswith("attn2.processor")
+
+
+@dataclass(frozen=True)
+class CaptureSites:
+    """What a walk of one denoiser's attention blocks found."""
+
+    #: The denoiser's class, because that is what any sentence about this is
+    #: about. Not the repo id: two checkpoints of the same architecture have
+    #: the same answer, and naming the checkpoint reads as a fault in it.
+    denoiser: str
+    #: Every block `capture` would record from, by processor key.
+    sites: tuple[str, ...] = ()
+    #: Every attention block the walk saw, sites and otherwise. Carried
+    #: because "none of them is a cross-attention block" is a claim that
+    #: needs a denominator: zero out of zero and zero out of fifty-seven are
+    #: different findings and the second is the one worth a sentence.
+    blocks: int = 0
+
+
+def capture_sites(denoiser) -> CaptureSites | None:
+    """Where `capture` would find cross-attention, or `None` for "cannot say".
+
+    THREE-VALUED, for the reason `image_steps._call_surface` is: the answer
+    decides whether to REFUSE, so absence has to mean absence. A denoiser
+    this cannot walk proves nothing about whether it has cross-attention, and
+    a two-valued version returning `()` for both "no cross-attention blocks"
+    and "could not look" would silently withhold the map from every wrapper
+    around a working pipeline.
+
+    `attn_processors` is a walk of `named_children` — no forward pass, no
+    map allocated — so this is free at the moment the pipeline object exists,
+    which is what makes a preflight possible at all.
+
+    ## Why the NAME is not enough on its own
+
+    SD 3.5 Large sets `dual_attention_layers`, and those blocks carry an
+    `attn2` that `is_capture_site` matches. It is a plain SELF-attention over
+    the image stream (`cross_attention_dim=None`) called with no
+    `encoder_hidden_states`, so `_Capturing` records nothing from it — and a
+    name-only test would keep the capability and hand the reader the same
+    empty capture this exists to prevent. So each matching block is asked
+    whether it is a cross-attention, through diffusers' own
+    `is_cross_attention` flag. A block that cannot be asked still counts:
+    the name matched, that is the only evidence there is, and withholding on
+    a question nobody could put is a guess.
+    """
+    if denoiser is None:
+        return None
+    try:
+        # `getattr(..., None)` is NOT enough on its own: `attn_processors` is
+        # a PROPERTY, so a walk that raises anything other than AttributeError
+        # comes straight back out through the default. And it is somebody
+        # else's recursive walk over somebody else's modules — one raising is
+        # a fact about this build's ability to look, not about the
+        # architecture, so it lands on `None` with the rest of them.
+        processors = getattr(denoiser, "attn_processors", None)
+        if processors is None:
+            return None
+        names = list(processors)
+    except Exception:
+        return None
+
+    # AN EMPTY MAP IS NOT AN ANSWER. A walk that succeeds and finds no
+    # attention block at all has told us about this surface, not about the
+    # architecture — and the sentence this would license says the denoiser
+    # mixes text and image in joint attention blocks, which would be a
+    # diagnosis invented out of nothing. `hasattr(set_attn_processor)` above
+    # and the empty-capture refusal in `capture` both still apply to such a
+    # denoiser, and both are honest about what they know.
+    if not names:
+        return None
+
+    # One walk for the modules, matched back to the keys by path. Cheap for
+    # the same reason the processor walk is, and skipped entirely when the
+    # denoiser does not offer one.
+    try:
+        modules = dict(denoiser.named_modules())
+    except Exception:
+        modules = {}
+
+    sites = []
+    for name in names:
+        if not is_capture_site(name):
+            continue
+        block = modules.get(name.removesuffix(".processor"))
+        if getattr(block, "is_cross_attention", True) is False:
+            continue
+        sites.append(name)
+    return CaptureSites(
+        denoiser=type(denoiser).__name__, sites=tuple(sites), blocks=len(names)
+    )
+
+
+def no_capture_site_sentence(seen: CaptureSites) -> str:
+    """Why a denoiser with no capture site has no word-to-pixel map.
+
+    ONE authored sentence for two readers, and they need the same words: the
+    loaded status publishes it as `unavailable["cross_attention"]` so the
+    control is absent with a reason, and `capture` raises it when the route
+    is called anyway. Two hand-written versions of an architectural fact
+    drift, and the drift is invisible because each reader only ever sees one.
+
+    Written for the case `seen.sites` is empty; the callers check first.
+    `capture_sites` never returns a `CaptureSites` with no blocks in it at
+    all, so the count below is always at least one and the sentence never
+    claims something about a denoiser it saw nothing of.
+
+    What it may not do is repeat the hedge in the post-hoc refusal at the end
+    of `capture` ("may attend to its conditioning somewhere this does not
+    reach"). That
+    sentence is what a reader gets after paying for a generation, and its
+    vagueness is the reason they go looking for a newer build. This one is a
+    fact established before a pass was spent, and it says so.
+    """
+    blocks = f"{seen.blocks} attention block{'' if seen.blocks == 1 else 's'}"
+    return (
+        f"`{seen.denoiser}` has {blocks} and "
+        f"none of them is a cross-attention block. diffusers names that block "
+        f"`attn2` and it is the only place the prompt appears as attention "
+        f"KEYS; a JOINT-attention denoiser has none by construction, because "
+        f"the prompt and the image are concatenated into one sequence and "
+        f"attended over together. So there is no word-to-pixel matrix here to "
+        f"average, and the columns of one pulled out of the joint map would be "
+        f"image patches as often as words. The model is not at fault and the "
+        f"images it makes are unaffected — it attends to the prompt, and this "
+        f"build cannot yet separate that out of a joint map. The knockout can: "
+        f"it removes a word and regenerates at the same seed, which answers "
+        f"the causal version of the same question on this checkpoint."
+    )
+
+
 def _wrap(processors: dict, store: _Collector) -> dict:
     """A capturing processor for every CROSS-attention block, and only those.
 
-    Self-attention among latents answers a different question — which pixels
-    look at which pixels — and averaging the two into one map would combine
-    two quantities that are not the same quantity. `attn2` is diffusers'
-    consistent name for the cross-attention block across UNet and DiT.
+    EVERY key comes back, wrapped or not: `set_attn_processor` raises when the
+    dict it is handed is shorter than the module's own processor count, so
+    returning only the wrapped subset would break every pipeline.
+
+    The membership test is `is_capture_site` rather than a condition written
+    out here, so that the preflight in `capture` and the one in
+    `image_runtime._measurable` can never come to answer a different question
+    from the one this installs on.
     """
     wrapped = {}
     for name, processor in processors.items():
-        if ".attn2." in name or name.endswith("attn2.processor"):
+        if is_capture_site(name):
             wrapped[name] = _Capturing(processor, store)
         else:
             wrapped[name] = processor

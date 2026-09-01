@@ -319,6 +319,28 @@ def _measurable(pipe, offered: tuple) -> tuple[list, dict]:
                     f"be a different quantity from the one the model used."
                 )
                 continue
+        if cap == "cross_attention" and denoiser is not None:
+            # THE LIVE ANSWER, and it outranks the class table `imaging` read
+            # from JSON. An MM-DiT — SD3, Flux, AuraFlow, CogVideoX — has no
+            # `attn2` at all: the prompt and the image share one sequence, so
+            # there is no separate word-to-pixel matrix, and the capture came
+            # back empty after a full generation the reader had paid for.
+            #
+            # `capture_sites` is three-valued and `None` KEEPS the capability.
+            # A denoiser this cannot walk proves nothing about whether it has
+            # cross-attention, and refusing on that would take the map away
+            # from every wrapper around a working pipeline. The `denoiser is
+            # not None` guard above is the same rule one level up.
+            #
+            # `token_knockout` is deliberately NOT in this branch. It removes
+            # a word, regenerates at the identical seed and RMS-differences
+            # the images; it never touches an attention processor, and it is
+            # the causal half of the pair — the stronger measurement, which
+            # this section's own standard says the map is only a proxy for.
+            seen = image_attention.capture_sites(denoiser)
+            if seen is not None and not seen.sites:
+                withheld[cap] = image_attention.no_capture_site_sentence(seen)
+                continue
         kept.append(cap)
     return kept, withheld
 

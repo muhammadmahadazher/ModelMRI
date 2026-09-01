@@ -23,6 +23,7 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient
 
+from modelmri import image_runtime as ir
 from modelmri.server import create_app
 
 
@@ -936,3 +937,53 @@ def test_the_load_route_prices_the_resident_image_pipeline_too(client):
         handle.pipe = None
 
     assert priced["already_held_bytes"] == (64 * 64 + 64) * 4
+
+
+# ------------------------- which sentence a withheld capability publishes
+
+
+def test_a_withheld_capability_publishes_the_checkpoint_s_own_sentence(client):
+    """The family sentence is a claim about an ARCHITECTURE FAMILY, and the
+    families are not uniform enough for it.
+
+    `dit_diffusion` covers PixArt, Sana and Hunyuan -- all three carry `attn2`
+    and all three produce word maps -- as well as SD3 and Flux, which do not.
+    So "this checkpoint is dit_diffusion, which has no cross attention to
+    measure" is stated as a fact about the family and is false for half of it.
+
+    `image_runtime` already walks the LOADED denoiser and writes the honest
+    sentence into `unavailable[capability]`, naming the number of attention
+    blocks it actually looked at. That sentence had two readers by design --
+    the loaded status and `capture` -- and the HTTP path was not one of them,
+    so the route answered with the family guess while the measured answer sat
+    on the same object.
+    """
+    handle = client.app.state.image
+    handle.pipe = object()
+    handle.status_ = ir.ImageStatus(
+        loaded=True,
+        repo="black-forest-labs/FLUX.1-schnell",
+        family="dit_diffusion",
+        capabilities=["token_knockout"],
+        unavailable={
+            "cross_attention": (
+                "`FluxTransformer2DModel` mixes text and image in joint "
+                "attention blocks; all 57 attention blocks were read and none "
+                "of them is a cross-attention site."
+            )
+        },
+    )
+    try:
+        r = client.post("/api/image/attention", json={"prompt": "a cat", "steps": 2})
+    finally:
+        handle.pipe = None
+        handle.status_ = None
+
+    assert r.status_code == 409, r.text
+    said = r.json()["error"]
+    assert "57 attention blocks" in said, said
+    # The family guess must not be what the reader gets.
+    assert "which has no cross attention to measure" not in said, said
+    # And it is the architecture that is named, never the download: a
+    # checkpoint id in this sentence reads as an accusation against the model.
+    assert "black-forest-labs/FLUX.1-schnell" not in said, said

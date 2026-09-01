@@ -511,6 +511,12 @@ def local() -> list[dict]:
                 "known": found.known,
                 "architecture": found.architecture,
                 "capabilities": list(found.capabilities),
+                # WHY a row's capabilities are shorter than its family's, on
+                # the row rather than only after the load. A picker listing a
+                # Flux checkpoint beside an SDXL one with no visible
+                # difference between them is what sold the generation that
+                # ended in a refusal.
+                "attention_style": found.attention_style,
                 "reason": found.reason,
                 # Unknown stays unknown. A cache entry holding only configs is
                 # a real state — an interrupted download — and reporting it as
@@ -616,6 +622,10 @@ def discovered(roots=None) -> dict:
                 "known": found.known,
                 "architecture": found.architecture,
                 "capabilities": list(found.capabilities),
+                # The same badge as the cached list above. A checkpoint found
+                # in a folder is picked from the same sheet and deserves the
+                # same warning before it is opened.
+                "attention_style": found.attention_style,
                 "reason": found.reason,
                 "size_bytes": bytes_on_disk or None,
                 "complete": (bytes_on_disk > 0) if sized else None,

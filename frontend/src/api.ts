@@ -1387,6 +1387,15 @@ export interface ImageModelInfo {
    *  takes a number from a fixed list and has no prompt at all. */
   conditioning?: string;
   n_classes?: number | null;
+  /** HOW the denoiser reaches the prompt, from the class name alone and so
+   *  available BEFORE a download: `"cross"` — a separate cross-attention
+   *  block, and the word-to-pixel map can be read out of it; `"joint"` —
+   *  MM-DiT, the prompt and the image share one sequence and there is no
+   *  separate matrix to average; `"none"` — the conditioning does not enter
+   *  through attention at all; `"unverified"` — a class this build has not
+   *  checked, which KEEPS the offer and leaves it to the loaded pipeline.
+   *  `""` for anything with no denoiser to have a style. */
+  attention_style: string;
   known: boolean;
   reason: string;
   means: string;
@@ -2452,6 +2461,10 @@ export interface ImageLocalModel {
   known: boolean;
   architecture: string;
   capabilities: string[];
+  /** Why this row's `capabilities` may be shorter than its family's — see
+   *  `ImageModelInfo.attention_style`. Read BEFORE the load, which is the
+   *  whole reason it is on a picker row. */
+  attention_style: string;
   reason: string;
   /** `null` is UNKNOWN. A cache entry that could not be sized is still worth
    *  listing, and it is not a model that weighs nothing. */
@@ -2556,6 +2569,9 @@ export interface ImageDiscoveredModel {
   known: boolean;
   architecture: string;
   capabilities: string[];
+  /** The same pre-load answer `ImageLocalModel` carries. A checkpoint found
+   *  in a folder is picked from the same sheet. */
+  attention_style: string;
   reason: string;
   /** `null` is UNKNOWN — see `ImageLocalModel.size_bytes`. Never render it as
    *  a size. */

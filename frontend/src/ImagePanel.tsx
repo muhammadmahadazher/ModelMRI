@@ -382,6 +382,10 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
   const withheld = Object.entries(status?.unavailable ?? {}).filter(([c]) =>
     OWNED[kind].includes(c),
   );
+  // Whether the server has already said, in its own words, why there is no
+  // word-to-pixel map here. That answer outranks anything this file can
+  // infer from `cross_attention_dim` — see the note beside `crossAttentionNote`.
+  const crossWithheld = "cross_attention" in (status?.unavailable ?? {});
   const canCapture =
     mine && caps.has("cross_attention") && status?.cross_attention_dim !== 0;
   const canKnock =
@@ -1030,7 +1034,17 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
       </div>
 
       <p className="meta">{status.means}</p>
-      {kind !== "vision" && <p className="meta">{crossAttentionNote(dim)}</p>}
+      {/* SUPPRESSED when the server has already withheld the map.
+          `crossAttentionNote(null)` says "the map below is still offered,
+          and the run itself will say if there was nothing to capture" —
+          which is exactly what an MM-DiT used to do and exactly what the
+          preflight now prevents. Printed above a withheld block that says
+          the opposite, it reads as the panel arguing with itself; the
+          server's own sentence for this checkpoint is a few lines down and
+          it is the better one. */}
+      {kind !== "vision" && !crossWithheld && (
+        <p className="meta">{crossAttentionNote(dim)}</p>
+      )}
 
       {/* TWO DIFFERENT NOTHINGS, and they used to share one sentence.
           "The server could not name this architecture" was printed for
@@ -1167,9 +1181,26 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
 
           {/* BEFORE the run, not after it. Every line is the server's own
               sentence: what a render costs, what every arm of a knockout
-              costs, and what keeping a latent per step would hold. */}
+              costs, and what keeping a latent per step would hold.
+
+              EVERY line is gated on its own capability, and the gate is on
+              the RENDER rather than only on the fetch. None of these three
+              states is ever cleared — the effect above sets each when its
+              capability is present and there is no `setRenderCost(null)`
+              anywhere — and this panel is mounted once for the whole session,
+              so a state populated by one checkpoint is still sitting there
+              when the next one is loaded. Until the map and the knockout
+              could be withheld separately that was unreachable: they left
+              together, so this whole block went with them. On an MM-DiT they
+              part company — the knockout survives, the map does not — and a
+              Flux loaded after an SDXL printed "one capture · 20 denoising
+              passes" underneath the server's own sentence saying no map can
+              be captured here, with no capture button anywhere on screen.
+              A cost quoted for a measurement this architecture cannot make is
+              a number about nothing, and one carried over from a different
+              checkpoint is worse: it is a number about a different model. */}
           <div className="image-cost">
-            {renderCost && (
+            {renderCost && canCapture && (
               <p className="meta">
                 <b>one capture</b> · {renderCost.means}
               </p>
@@ -1179,7 +1210,7 @@ export default function ImagePanel({ kind = "diffusion" }: { kind?: ImageKind } 
                 <b>a knockout of this prompt</b> · {armsCost.means}
               </p>
             )}
-            {traceCost && (
+            {traceCost && canTrace && (
               <p className="meta">
                 <b>keeping a latent per step</b> · {traceCost.means}
               </p>

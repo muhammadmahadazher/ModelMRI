@@ -3875,8 +3875,20 @@ def create_app(
         handle.require()
         status = handle.status()
         if what not in status.capabilities:
+            # `unavailable` carries the sentence the LOADED CHECKPOINT earned —
+            # `no_capture_site_sentence` names the attention blocks it actually
+            # walked. Prefer it, because the fallback under it is a claim about
+            # a whole architecture FAMILY and the family is not that uniform:
+            # PixArt, Sana and Hunyuan are all `dit_diffusion` and all three
+            # carry `attn2`, so "dit_diffusion has no cross attention" is stated
+            # as a fact and is false for half the family. The fallback survives
+            # for a capability withheld for some reason the loader had no
+            # sentence for, and it no longer opens with the repo id: a
+            # checkpoint is not what is missing the site, its architecture is,
+            # and naming the download reads as an accusation against the model.
             raise Refusal(
-                f"{status.repo or 'this model'} is "
+                (status.unavailable or {}).get(what)
+                or f"this checkpoint is "
                 f"{status.family or 'an architecture'}, which has no "
                 f"{what.replace('_', ' ')} to measure. Drawing one anyway "
                 f"would be a picture of something that does not exist."
