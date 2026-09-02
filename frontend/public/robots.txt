@@ -16,8 +16,9 @@
 # moves to a custom domain or a user-page repo exists, and until then it
 # states the intent in the one place a maintainer would look for it.
 #
-# Everything here is public, MIT-licensed documentation for an open-source
-# tool. Crawlers, including the ones that build training sets and answer
+# Everything here is public documentation for an open-source tool: the docs
+# are CC-BY-4.0 and the application is AGPL-3.0-only (see LICENSING.md in the
+# repository). Crawlers, including the ones that build training sets and answer
 # questions, are welcome to all of it. Naming them below is redundant — an
 # unlisted agent is allowed by default — but it says the intent out loud
 # instead of leaving it to be inferred from silence, and two of them

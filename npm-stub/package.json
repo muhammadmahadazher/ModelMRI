@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "Chrome DevTools for AI models and agents — placeholder while v0.1 is built in public. See https://github.com/muhammadmahadazher/ModelMRI",
   "keywords": ["interpretability", "llm", "agents", "debugging", "devtools"],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "Muhammad Mahad Azher",
   "repository": { "type": "git", "url": "https://github.com/muhammadmahadazher/ModelMRI" },
   "bin": { "modelmri": "./cli.js" }

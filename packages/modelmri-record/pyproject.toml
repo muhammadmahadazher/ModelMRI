@@ -4,13 +4,17 @@ version = "0.1.4"
 description = "Record agent runs — LLM calls, tool calls, subagents — and view them on a ModelMRI timeline. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Muhammad Mahad Azher" }]
 keywords = ["agents", "tracing", "observability", "llm", "debugging"]
+# No `License ::` classifier: `license` above is an SPDX expression (PEP 639),
+# and PyPI rejects an upload that carries a license classifier beside one.
+# No `License ::` classifier: `license` above is an SPDX expression (PEP 639),
+# and PyPI rejects an upload that carries a license classifier beside one.
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Topic :: Software Development :: Debuggers",
 ]

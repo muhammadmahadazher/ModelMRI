@@ -1,9 +1,20 @@
 ModelMRI
 Copyright 2026 Muhammad Mahad Azher
 
+Licensed under the GNU Affero General Public License, version 3 only
+(AGPL-3.0-only), except the packages and files listed in LICENSING.md, which
+are licensed under the Apache License, Version 2.0. The license texts are in
+LICENSES/.
+
+Versions distributed before the commit tagged `mit-final` were released under
+the MIT License and remain available under it: modelmri up to and including
+0.12.0, modelmri-record up to and including 0.1.4, the modelmri npm shim
+0.0.1, and every commit up to that tag.
+
 This product includes software developed by ModelMRI contributors and
 third-party open-source packages identified by the lockfiles in this
-repository.
+repository. The built application bundles the Archivo Black typeface, which
+is licensed under the SIL Open Font License 1.1; see THIRD_PARTY_NOTICES.md.
 
 Model weights, sparse autoencoders, and datasets loaded at runtime are not part
 of this distribution and remain under their own licenses. In particular:

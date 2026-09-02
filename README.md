@@ -8,7 +8,7 @@ See inside any local LLM, VLM or robot policy while it runs.</p>
   <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/dm/modelmri?color=2563eb&label=downloads" alt="PyPI downloads"></a>
   <a href="https://pypi.org/project/modelmri/"><img src="https://img.shields.io/pypi/pyversions/modelmri" alt="Python versions"></a>
   <a href="https://github.com/muhammadmahadazher/ModelMRI/actions/workflows/ci.yml"><img src="https://github.com/muhammadmahadazher/ModelMRI/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT licence"></a>
+  <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-AGPL--3.0--only-blue" alt="AGPL-3.0-only licence"></a>
 </p>
 
 <p align="center">
@@ -76,7 +76,7 @@ modelmri scan ./my_model            # is anything in there executable?
 modelmri open finding.mri           # someone sent you a result
 ```
 
-Python 3.10+ · Windows, macOS, Linux · MIT.
+Python 3.10+ · Windows, macOS, Linux · AGPL-3.0-only (Community) · Apache-2.0 SDKs and `.mri` codec — see [LICENSING.md](LICENSING.md).
 
 <p align="center">
   <img src="docs/media/picker.gif#gh-dark-mode-only" alt="The model picker listing models already on disk" width="820">
@@ -784,4 +784,4 @@ the domain where nobody has an independent way to notice.
 
 Notes, mistakes, and what broke: [modelmri.substack.com](https://modelmri.substack.com)
 
-MIT © Muhammad Mahad Azher
+AGPL-3.0-only © 2026 Muhammad Mahad Azher · SDK packages and the .mri codec Apache-2.0 · [LICENSING.md](LICENSING.md)

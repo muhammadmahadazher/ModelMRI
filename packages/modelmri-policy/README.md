@@ -25,7 +25,7 @@ best-effort, because an action chunk is a claim about what a robot would do,
 and one served across a version boundary is a different policy's answer
 wearing this one's name.
 
-MIT.
+Apache-2.0. Part of [ModelMRI](https://github.com/muhammadmahadazher/ModelMRI), whose application is AGPL-3.0-only; this package is Apache-2.0 on purpose, so that the sidecar carries no copyleft into your own environment.
 
 ## There is no lockfile here, deliberately
 

@@ -120,4 +120,4 @@ Any causal LM on the Hub should work; those are the ones actually tested.
 
 ## Licence
 
-MIT.
+AGPL-3.0-only (Community) · Apache-2.0 SDKs and `.mri` codec — see [Licensing](licensing.md).

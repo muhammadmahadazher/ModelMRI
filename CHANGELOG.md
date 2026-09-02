@@ -6,6 +6,20 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **License.** ModelMRI is now AGPL-3.0-only (was MIT) from 0.13.0.
+  `modelmri-record` and `modelmri-policy` are Apache-2.0 (were MIT), and so
+  are the `npx modelmri` shim and the five `.mri` codec files inside the
+  application. Versions distributed before this change keep their MIT terms;
+  the last MIT commit is tagged `mit-final`. Why, and what it means for you:
+  [LICENSING.md](LICENSING.md).
+
+  Release order: this change merges first. `modelmri-record` 0.2.0 is
+  published after it, so that 0.2.0 ships under Apache-2.0 — and before the
+  next `modelmri` release, whose dependency floor rises to
+  `modelmri-record>=0.2.0`, or `pip install modelmri` breaks on the floor.
+
 ### Fixed
 
 - **Two steering directions with different names could end up as one file, and
