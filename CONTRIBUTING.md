@@ -127,7 +127,54 @@ people's agents, where a dependency is a liability. A PR that adds one to
 - Include a screenshot or short recording for visual changes.
 - Imperative mood in commit messages.
 
+## Provenance
+
+Every method here is implemented independently from the paper that
+describes it, and the paper is named — in the module docstring and in the
+changelog entry. Sources are for checking claims, not for lifting designs.
+No code is copied from a repository that does not ship a usable license;
+`modelmri/model_diff.py` declines to port two crosscoder implementations for
+exactly that reason and says so. If your contribution brings anything you
+did not write — code, data, text, a font, a fixture — say so in the pull
+request, name where it came from and under what license, and make sure that
+license allows it to sit under this repository's. The full list of what the
+project ships from elsewhere is [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## AI-assisted contributions
+
+Using an AI assistant to write code, tests or documentation is fine here,
+and much of this repository was built that way. What does not change is who
+is responsible: the human who opens the pull request. Concretely, you —
+not the tool — have:
+
+- **read and understood** every line you are submitting, and can explain
+  why it is there;
+- **run it**, including the regression test against the unfixed code;
+- **validated the measurement** — the one rule above applies to generated
+  code exactly as it applies to typed code, and a generated implementation
+  of a published method is checked against the primary source (the paper,
+  the reference `cfg.json`, the format specification), not against what the
+  assistant said the method does;
+- **checked the license position** — generated code that reproduces a
+  third-party implementation is third-party code, and the provenance rule
+  applies to it; if you cannot tell where it came from, do not submit it;
+- **disclosed sources** the assistant drew on when you know them, and the
+  fact of assistance when it is material to review.
+
+A pull request that its author cannot explain is not accepted, whoever or
+whatever wrote it.
+
+## Licensing and the CLA
+
 By contributing, you agree that your contribution is licensed under the
 license of the files you change — AGPL-3.0-only for the application,
-Apache-2.0 for the packages listed in [LICENSING.md](LICENSING.md) — pending
-the Contributor License Agreement (`CLA.md`).
+Apache-2.0 for the packages listed in [LICENSING.md](LICENSING.md). New
+files carry an `SPDX-License-Identifier` header saying which.
+
+A Contributor License Agreement is drafted in [CLA.md](CLA.md): a license,
+not an assignment — you keep your copyright, and the project promises that
+your accepted work stays available under the license it was contributed
+under. It is pending legal review and **is not in force**; nobody is asked
+to sign it until it is, and the asking will be done on the pull request by
+a CLA bot from the first external contribution onward. Until then the
+paragraph above is the whole inbound rule.

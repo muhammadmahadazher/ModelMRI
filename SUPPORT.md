@@ -17,5 +17,10 @@ ModelMRI bug is when the *instrumentation* is wrong — attention attributed to
 the wrong tokens, features from the wrong hook point, a panel describing a
 generation that a different model produced.
 
+Commercial licensing and support are available — open a
+[GitHub issue](https://github.com/muhammadmahadazher/ModelMRI/issues/new)
+titled *commercial licensing* and the maintainer will follow up privately.
+What the licenses mean for you is in [LICENSING.md](LICENSING.md).
+
 For vulnerabilities, follow [SECURITY.md](SECURITY.md) and do not use a public
 issue.

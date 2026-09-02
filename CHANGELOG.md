@@ -6,6 +6,26 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Governance and community documents.** `GOVERNANCE.md` says who decides
+  what, today and as roles are filled, and which changes are high-governance.
+  `CLA.md` is a draft Contributor License Agreement on the Harmony templates
+  (a license, not an assignment; accepted work stays open) — pending legal
+  review and not in force. `CONTRIBUTOR_REWARDS.md` writes down the intent to
+  fund a reward pool from commercial success, with no percentage and an
+  explicit non-entitlement paragraph. `TRADEMARKS.md` is a draft policy for an
+  unregistered mark. `THIRD_PARTY_NOTICES.md` lists what ships from elsewhere
+  (two OFL fonts), what is loaded at runtime instead, and the provenance rule.
+  `CODE_OF_CONDUCT.md` moves to Contributor Covenant 3.0 with the project's own
+  paragraph on disagreeing with methods rather than people and a reporting
+  channel that exists. `SECURITY.md` fixes the supported-versions table, says
+  what counts as a security report here, and what to expect after one.
+  `CONTRIBUTING.md` gains Provenance, AI-assisted contributions, and the
+  licensing rule. The pull-request template asks about SPDX headers,
+  third-party material, AI-assisted work and security; `CODEOWNERS` names the
+  high-governance paths; the docs nav gains a Project section.
+
 ### Changed
 
 - **License.** ModelMRI is now AGPL-3.0-only (was MIT) from 0.13.0.
