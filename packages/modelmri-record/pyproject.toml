@@ -1,6 +1,12 @@
 [project]
 name = "modelmri-record"
-version = "0.1.4"
+# Read from `modelmri_record/__init__.py` (see [tool.hatch.version] below)
+# rather than written here. Two literals is two chances to ship a wrong one,
+# and this package's copy is not inert: `__version__` is stamped into every
+# recorded document as `meta.recorder`. `modelmri` has been single-sourced this
+# way for as long as there has been a test holding it there; this package was
+# the one that had drifted out of that rule.
+dynamic = ["version"]
 description = "Record agent runs — LLM calls, tool calls, subagents — and view them on a ModelMRI timeline. Stdlib only."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,6 +44,9 @@ Issues = "https://github.com/muhammadmahadazher/ModelMRI/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "modelmri_record/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["modelmri_record"]

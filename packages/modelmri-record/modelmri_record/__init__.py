@@ -46,7 +46,18 @@ from pathlib import Path
 
 from .redact import Redactor, default_redactor, redact_document
 
-__version__ = "0.1.4"
+# The one place this version is written. `pyproject.toml` reads it from here
+# through hatchling rather than restating it, because this string is not only
+# packaging metadata: it is stamped into every delivered document as
+# `meta.recorder`, and a document claiming a version that was never released is
+# a provenance stamp nobody can check.
+#
+# 0.2.0 and not 0.1.5: the wire format GREW. `KINDS` gained `retrieval`,
+# `embedding`, `rerank` and `guardrail`, and gained the `KINDS` export itself,
+# so a viewer pinned below this cannot name four of the kinds a recorder above
+# it can write. That is a minor bump under semver, and `modelmri`'s floor moves
+# with it in the same commit.
+__version__ = "0.2.0"
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:5900/api/traces/import"
 

@@ -53,6 +53,40 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   next `modelmri` release, whose dependency floor rises to
   `modelmri-record>=0.2.0`, or `pip install modelmri` breaks on the floor.
 
+- **`modelmri-record` 0.1.4 → 0.2.0, and `modelmri` now requires it.** A minor
+  bump because the wire format grew rather than changed: `KINDS` gained
+  `retrieval`, `embedding`, `rerank` and `guardrail`, plus the `KINDS` export
+  itself. Nothing a 0.1.x recorder wrote has become unreadable.
+
+  The floor moved from `>=0.1.3` to `>=0.2.0` because it was letting through a
+  recorder this package cannot actually work with.
+  `modelmri.step_kinds.VALID_KINDS` and `modelmri_record.KINDS` are two separate
+  literals in two packages that cannot import each other — the recorder is
+  stdlib-only by contract, proved by a test that spawns a fresh interpreter —
+  and the suite asserts the two sets are **equal, in both directions**. `KINDS`
+  first shipped in 0.1.4, so at `>=0.1.3` a resolver could hand somebody a
+  recorder with no `KINDS` at all; below 0.2.0 it could hand them one that
+  cannot record four of the kinds the agents panel offers. A RAG agent would
+  have had nothing to file a retrieval step under.
+
+  Publishing the recorder is a manual step: `release.yml` runs `uv build` at
+  the repository root, which builds `modelmri` alone, and the recorder is
+  deliberately not a uv workspace member. Nothing publishes it automatically.
+
+  This also makes the version-skew diagnostic added in 0.12.0 useful for the
+  first time. It reads `meta.recorder` and, on a step kind the viewer does not
+  know, says which recorder wrote the run. While the host and the recorder
+  shipped identical versions the sentence was correct and could never fire
+  between them; now the two can legitimately differ.
+
+- **`modelmri-record`'s version is single-sourced.** It was written twice, in
+  `pyproject.toml` and in `modelmri_record/__init__.py`, with nothing checking
+  that the two agreed — the drift `modelmri` has had a test against for
+  releases. The pyproject now reads it from the module through hatchling. The
+  copy that matters is `__version__`: it is stamped into every delivered
+  document as `meta.recorder`, and a document claiming a version that was never
+  released is a provenance stamp nobody can check.
+
 ### Fixed
 
 - **Two steering directions with different names could end up as one file, and

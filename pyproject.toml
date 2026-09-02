@@ -62,10 +62,21 @@ dependencies = [
   "huggingface_hub>=0.26",
   # One recorder, not two. modelmri.record re-exports this; the in-tree copy
   # had drifted and was missing credential redaction, on the import path the
-  # README documents. Stdlib-only and 10.9 KiB.
+  # README documents. Stdlib-only and 30.6 KiB.
   # 0.1.3 adds trace(meta=...), which the shipped demo trace uses to mark
   # itself as sample data rather than a run you recorded.
-  "modelmri-record>=0.1.3",
+  #
+  # 0.2.0 is a HARD floor, not a preference. `modelmri.step_kinds.VALID_KINDS`
+  # and `modelmri_record.KINDS` are two separate literals in two packages that
+  # cannot import each other — the recorder is stdlib-only by contract, proved
+  # by a test that spawns a fresh interpreter — and `tests/test_step_kinds.py`
+  # asserts they are EQUAL, both directions. `KINDS` first shipped in 0.1.4 and
+  # gained `retrieval`, `embedding`, `rerank` and `guardrail` in 0.2.0, so at
+  # the old `>=0.1.3` a resolver could hand somebody a recorder with no `KINDS`
+  # at all, and one that cannot record the four kinds this package's own agents
+  # panel offers. `tests/test_smoke.py` now holds this floor at or above the
+  # recorder in this tree, so the two move together.
+  "modelmri-record>=0.2.0",
 ]
 
 [project.urls]
