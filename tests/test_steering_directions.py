@@ -574,10 +574,34 @@ def test_saving_a_fit_that_beat_nothing_is_refused(rt, monkeypatch):
 
 
 def test_a_saved_fit_carries_the_evidence_that_judged_it(rt):
+    """The evidence travels with the vector, whenever there is a vector.
+
+    WHETHER A RANDOM MODEL'S DIRECTION BEATS ITS OWN SHUFFLED NULL IS A CLAIM
+    ABOUT ACTIVATIONS, NOT ABOUT CODE. These weights are untrained and the
+    pairs differ in one token, so the separation is whatever that
+    initialisation happens to give — and the permutation test is doing its job
+    when it says that is not enough. Measured: it beats the null on
+    windows/py3.13 and does not on macos/py3.11 or py3.12, which is how this
+    arrived, as a red CI against a green local run.
+
+    The guard this replaces read `if out["best_layer"] is None`, which cannot
+    happen on this call: `save_as` was passed, and the runtime REFUSES rather
+    than returning a fit with nothing to save — `test_saving_a_fit_that_beat_
+    nothing_is_refused` above pins exactly that sentence. So the guard was dead
+    code and the path that actually occurs was unguarded.
+
+    Only that one refusal is skipped, by its own words, and everything else is
+    re-raised: a fit that fell over for any other reason is still a failure
+    here, and the assertions below still run on every machine where a layer
+    wins.
+    """
     positive, negative = _pairs()
-    out = rt.fit_steering_direction(positive, negative, save_as="loved-vs-hated")
-    if out["best_layer"] is None:
-        pytest.skip("no layer beat its null on this untrained model")
+    try:
+        out = rt.fit_steering_direction(positive, negative, save_as="loved-vs-hated")
+    except Refusal as err:
+        if "worth saving" not in str(err):
+            raise
+        pytest.skip(f"no layer beat its null on this untrained model: {err}")
     assert out["saved"]["name"] == "loved-vs-hated"
     _, payload, _ = sv.load(
         "loved-vs-hated", hidden_size=D_MODEL, model="tiny/gpt2-under-test"

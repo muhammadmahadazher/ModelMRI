@@ -9449,6 +9449,29 @@ main > .panel[data-mri-group-label]::after {
   text-align: left;
   color: inherit;
 }
+/* A FOLD THAT CANNOT BE OPENED YET IS STILL A CONTROL, AND MUST NOT READ AS A
+   PARAGRAPH.
+   `.fold-head` paints no background and no border on purpose — it is a heading
+   row, and the affordance it relies on is `cursor: pointer`. `button:disabled`
+   further down takes that away and replaces it with `not-allowed`, which is
+   correct and which nobody sees until they try. What is left on screen is
+   text, and `tests/ui_check.py`'s "every button looks like a button" is right
+   to call that bare: the check exists because Tailwind's preflight leaves a
+   classless <button> transparent, borderless and cursor-default, and a
+   disabled fold arrives at exactly that state by a different road.
+
+   Found on CI rather than here: the steering panel is the first fold that is
+   mounted while disabled on a server with no model, so it is the first one a
+   browser ever saw in this state. The counterfactual and fidelity folds take
+   the same `disabled` prop and sit inside sections that do not mount until a
+   generation exists, which is why this went unseen since 779a74c.
+
+   An outline rather than a border, so nothing reflows between the two states. */
+.fold-head:disabled {
+  outline: 1px solid var(--line);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
 .fold-head h3 {
   margin: 0;
   white-space: nowrap;
