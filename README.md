@@ -532,7 +532,7 @@ modelmri where         # where did it put my stuff?
 ```bash
 pip install modelmri              # core: playground, attention, features, steering, agents
 pip install "modelmri[vla-lite]"  # + robot datasets (av, pyarrow, pillow)
-pip install modelmri-record       # just the agent recorder — stdlib only, an 10.9 KiB wheel
+pip install modelmri-record       # just the agent recorder — stdlib only, a 30.6 KiB wheel
 modelmri doctor                   # what this machine can and cannot run, measured
 modelmri serve
 ```

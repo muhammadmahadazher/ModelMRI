@@ -12,7 +12,7 @@ no older release is guaranteed a backport.
 | package | current |
 |---|---|
 | `modelmri` | 0.12.x |
-| `modelmri-record` | 0.1.x |
+| `modelmri-record` | 0.2.x |
 
 ## Report a vulnerability
 

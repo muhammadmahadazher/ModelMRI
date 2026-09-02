@@ -24,7 +24,7 @@ Then open <http://127.0.0.1:5900>.
 
 !!! tip "Just want to trace an agent?"
     You don't need the viewer's dependencies. `pip install modelmri-record` is
-    stdlib only — 10.9 KiB, no torch. See [Recording agents](guides/agents.md).
+    stdlib only — 30.6 KiB, no torch. See [Recording agents](guides/agents.md).
 
 ---
 

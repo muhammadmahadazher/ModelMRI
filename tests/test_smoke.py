@@ -1815,6 +1815,86 @@ def test_the_version_is_single_sourced():
     assert pj["tool"]["hatch"]["version"]["path"] == "modelmri/__init__.py"
 
 
+def _recorder_pyproject():
+    """The recorder's own pyproject, parsed."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # tomllib is 3.11+; the dev group backfills 3.10
+        import tomli as tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    return tomllib.loads(
+        (root / "packages" / "modelmri-record" / "pyproject.toml").read_text("utf-8")
+    )
+
+
+def test_the_recorders_version_is_single_sourced_too():
+    """The rule above, applied to the other package in this repository.
+
+    `modelmri` single-sources its version from `modelmri/__init__.py` and a
+    test holds it there, for the reason that test states: four hand-maintained
+    copies is four chances to ship a wrong one. `modelmri-record` carried two
+    -- a literal in its pyproject and `__version__` in its `__init__` -- and
+    nothing checked that they agreed.
+
+    They are not decorative. `__version__` is what gets stamped into every
+    recorded document as `meta.recorder`, and the pyproject literal is what
+    PyPI and every resolver see. A document claiming to come from a version
+    that was never released is a provenance stamp that cannot be checked.
+    """
+    pj = _recorder_pyproject()
+    assert "version" in pj["project"].get("dynamic", []), (
+        "modelmri-record's pyproject declares a literal version again -- it "
+        "will drift from __version__, which is what documents are stamped with"
+    )
+    assert pj["tool"]["hatch"]["version"]["path"] == "modelmri_record/__init__.py"
+
+
+def test_the_recorder_floor_admits_no_recorder_older_than_this_one():
+    """`pip install modelmri` must not be able to fetch a recorder whose wire
+    format this modelmri disagrees with.
+
+    `tests/test_step_kinds.py` asserts `modelmri_record.KINDS == VALID_KINDS`
+    -- EXACT equality, both directions -- because the two lists are separate
+    literals in two packages that cannot import each other (the recorder is
+    stdlib-only by contract). Any recorder whose set differs breaks that
+    contract, and the floor is the only thing standing between a user and one.
+
+    It was `>=0.1.3` while `KINDS` first shipped in 0.1.4, so the declared
+    dependency permitted a recorder with no `KINDS` at all -- and, for anyone
+    who actually got it, a recorder that cannot record `retrieval`,
+    `embedding`, `rerank` or `guardrail`. The panel would offer four kinds the
+    installed recorder could never write.
+
+    Compared against the recorder in this tree rather than a number written
+    here, so the check follows the bump instead of having to be remembered
+    alongside it.
+    """
+    import re
+    from pathlib import Path
+
+    import modelmri_record
+
+    root = Path(__file__).resolve().parents[1]
+    pyproject = (root / "pyproject.toml").read_text("utf-8")
+    found = re.search(r'"modelmri-record>=([0-9][^"]*)"', pyproject)
+    assert found, "modelmri no longer declares a floor for modelmri-record"
+
+    def parts(v):
+        # Release segment only: "0.2.0" and "0.2.0.dev1" order the same way
+        # here, and this comparison is about the wire format, not the build.
+        return tuple(int(n) for n in re.findall(r"\d+", v)[:3])
+
+    floor, shipped = found.group(1), modelmri_record.__version__
+    assert parts(floor) >= parts(shipped), (
+        f"modelmri allows modelmri-record>={floor}, but the recorder this "
+        f"modelmri is built and tested against is {shipped}. A user resolving "
+        f"the floor can get a recorder whose KINDS this package's own tests "
+        f"assert it equals."
+    )
+
+
 def test_metadata_agrees_with_the_package_version():
     """CITATION.cff is what people cite; a stale one misattributes the work."""
     import re

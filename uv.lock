@@ -1075,7 +1075,6 @@ provides-extras = ["policy"]
 
 [[package]]
 name = "modelmri-record"
-version = "0.1.4"
 source = { editable = "packages/modelmri-record" }
 
 [[package]]
