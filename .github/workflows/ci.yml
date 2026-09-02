@@ -3,22 +3,32 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `paths:` filter here, and its absence is load-bearing.
+  #
+  # There used to be one, listing everything that can affect behaviour so a
+  # documentation-only change did not spend twelve minutes proving a four-way
+  # OS matrix and a Playwright browser still work. That was a real saving and
+  # it is genuinely gone.
+  #
+  # It cannot stay, because `main` is now a protected branch and these jobs are
+  # its required checks. GitHub does not run a workflow whose paths filter
+  # excludes every changed file, and a required check that never runs does not
+  # pass — it sits at "Expected", forever, with no way to merge and nothing on
+  # the page explaining why. So the filter's cost is not twelve minutes of
+  # runner time; it is a pull request that can never land.
+  #
+  # That is not hypothetical for this repository. Its own rules require a
+  # CHANGELOG entry and a GAPS.md annotation per unit of work, and neither path
+  # was in the list, so a PR carrying only those two files -- an ordinary
+  # bookkeeping commit -- would have hung on the first attempt.
+  #
+  # The alternatives were considered and cost more than they save: a companion
+  # "skip" workflow duplicating every job name (including the four expanded
+  # matrix names) drifts the day someone edits one of them, and a `changes` job
+  # driving `if:` conditions either re-implements path matching in bash with the
+  # list written twice, or pulls in a third-party action -- in a repository
+  # whose Security workflow exists to audit exactly that.
   pull_request:
-    # Documentation-only changes cannot break the test suite, and running a
-    # four-way OS matrix plus a Playwright browser to prove that wastes about
-    # twelve minutes per push. Anything that can affect behaviour is listed;
-    # when in doubt the path is included, because a missed run is worse than
-    # a redundant one.
-    paths:
-      - "modelmri/**"
-      - "packages/**"
-      - "tests/**"
-      - "frontend/**"
-      - "scripts/**"
-      - "examples/**"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/ci.yml"
 
 # Cancel superseded runs. Without this every push to a branch started a full
 # matrix and the old one kept going -- on a branch with ten commits that is
@@ -144,20 +154,30 @@ jobs:
           # the dependencies actually changed.
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      # Lint only. This job used to build as well, and so does `ui` below --
-      # the same Vite build ran twice per PR for no extra coverage, because a
-      # build that fails here fails there identically. Lint is the fast signal
-      # (about 20 seconds against three minutes), so it stays on its own and
-      # the build lives where its output is actually used.
-      - name: Lint (skips until frontend exists)
+      # Typecheck only. This job used to build as well, and so does `ui` below
+      # -- the same Vite build ran twice per PR for no extra coverage, because
+      # a build that fails here fails there identically. The fast signal stays
+      # on its own and the build lives where its output is actually used.
+      #
+      # It used to run `npm run lint --if-present`, and there has never been a
+      # `lint` script in frontend/package.json, nor an ESLint, Biome or
+      # Prettier config anywhere in the tree. `--if-present` is precisely the
+      # flag that turns that into silence: the job installed forty-two packages
+      # and then verified nothing, while reporting green and calling itself
+      # "Lint". A check that cannot fail is worse than no check, because the
+      # branch-protection page counts it.
+      #
+      # `tsc --noEmit` is the check this job was reaching for: it is the one
+      # the three build scripts already run, it takes about the twenty seconds
+      # the old comment claimed, and it fails on a real defect. Adding a
+      # linter is a larger question -- a dependency, a config, and whatever
+      # it says about twenty-nine thousand lines of existing TSX -- and it is
+      # not this pull request's to answer.
+      - name: Typecheck
         run: |
-          if [ -f frontend/package.json ]; then
-            cd frontend
-            npm ci
-            npm run lint --if-present
-          else
-            echo "Frontend not scaffolded yet — skipping."
-          fi
+          cd frontend
+          npm ci
+          npm run typecheck
 
   # Things only a browser can see. The bug this job exists for lived entirely
   # in a mount effect: every backend test passed while the page opened a
@@ -184,12 +204,13 @@ jobs:
           # torch alone is several hundred megabytes to resolve and fetch.
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - name: Build the UI and the viewer
+      - name: Build the UI, the viewer and the demo
         run: |
           cd frontend
           npm ci
           npm run build
           npm run build:viewer
+          npm run build:demo
       # `--with-deps` used to be on this line. It shells out to apt-get for
       # Chromium's shared libraries, and on 2026-08-19 that call stopped
       # returning: two runs on two different runners sat in this step until
@@ -218,6 +239,29 @@ jobs:
       # parses one file both ways and compares every cell.
       - name: The viewer agrees with the tool, cell for cell
         run: uv run python tests/viewer_check.py
+
+      # The third UI gate, and until this line the only one that ran AFTER the
+      # merge rather than before it.
+      #
+      # `demo_check.py` lived solely in pages.yml, which triggers on
+      # `push: main`. So a pull request that broke the demo went green, merged,
+      # and turned the Pages deploy red on `main` -- where the fix is another
+      # pull request and the demo is already broken for whoever visits it. The
+      # demo is the only ModelMRI most people ever touch; its gate belongs on
+      # the side of the merge where breaking it is still cheap.
+      #
+      # It costs almost nothing to move here. The script imports base64, json,
+      # os, re, sys and pathlib and reads the built bundle -- no torch, no
+      # model, no server -- so all it needed was `npm run build:demo`, added to
+      # the build step above. It runs beside viewer_check because they are the
+      # same kind of gate and both want the environment `uv sync --dev` has
+      # already prepared.
+      #
+      # pages.yml keeps its own copy. That one guards the artifact actually
+      # being published, which is a different question from whether this change
+      # broke it.
+      - name: The demo answers everything the tool does
+        run: uv run python tests/demo_check.py
 
       - name: Serve and check
         run: |
