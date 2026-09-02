@@ -298,14 +298,18 @@ def _preflight(hf_id: str, accel, confirm: bool) -> None:
 # Re-exported rather than relocated-and-rewritten because
 # `runtime.move_to_device` is the name eight tests and two call sites
 # already use, and moving a function is not a reason to move its callers.
-# The redundant `as` is the re-export spelling, not a typo: PEP 484's
-# explicit form, which says "this name is part of THIS module's surface"
-# to every tool that reads it. A bare F401 suppression said it to ruff
-# alone -- and a per-line ruff suppression is invisible to CodeQL, which
-# answered with `py/unused-import` on the very next scan.
-from .device_move import DEVICE_PUBLISH_EVERY_S as DEVICE_PUBLISH_EVERY_S  # noqa: E402
-from .device_move import move_to_device as move_to_device  # noqa: E402
-from .device_move import resident_bytes as resident_bytes  # noqa: E402
+# `move_to_device` only. It is imported because THIS module calls it, in
+# `load`, so it is an ordinary import rather than a re-export.
+#
+# `resident_bytes` and `DEVICE_PUBLISH_EVERY_S` were re-exported here when
+# they moved to `device_move`, to spare their callers an edit. CodeQL then
+# reported `py/unused-import` on both, and it was right: nothing in this
+# module reads either, the publish interval had lost its last reader when
+# `test_device_move` started patching it on `device_move` (which it must,
+# or the patch is a no-op), and `resident_bytes` had only that same test.
+# A re-export nobody reads is a writer with no reader, which is the defect
+# this project names most often. The test imports them from `device_move`.
+from .device_move import move_to_device  # noqa: E402
 
 
 def _repo_dir(hf_id: str) -> Path:

@@ -110,10 +110,10 @@ def test_the_denominator_counts_a_tied_weight_once():
     also what the move actually costs. 16x8 embedding + 8x8 + 8 bias + 8
     buffer, at 4 bytes each: 512 + 256 + 32 + 32.
     """
-    assert runtime.resident_bytes(Tiny(tie=True)) == 832
+    assert device_move.resident_bytes(Tiny(tie=True)) == 832
     # And untying really does add exactly the head's own copy back, so the
     # de-duplication above is doing something rather than agreeing by luck.
-    assert runtime.resident_bytes(Tiny(tie=False)) == 832 + 16 * 8 * 4
+    assert device_move.resident_bytes(Tiny(tie=False)) == 832 + 16 * 8 * 4
 
 
 def test_it_publishes_while_it_works_and_not_only_at_the_end(monkeypatch):
@@ -136,7 +136,7 @@ def test_it_publishes_while_it_works_and_not_only_at_the_end(monkeypatch):
     monkeypatch.setattr(device_move, "DEVICE_PUBLISH_EVERY_S", 0.0)
 
     model = Tiny()
-    total = runtime.resident_bytes(model)  # read before the move, like the code
+    total = device_move.resident_bytes(model)  # read before the move, like the code
     moved = runtime.move_to_device(model, META)
 
     assert moved == total
@@ -230,13 +230,13 @@ def test_a_model_whose_tensors_cannot_be_sized_still_moves(monkeypatch):
         buffers = None  # type: ignore[assignment]
 
     for shape in (Unsizable(), NoBuffers()):
-        assert runtime.resident_bytes(shape) == 0, type(shape).__name__
+        assert device_move.resident_bytes(shape) == 0, type(shape).__name__
         assert runtime.move_to_device(shape, META) == 0
         assert shape.moved_to is META
     published.clear()
 
     model = Unsizable()
-    assert runtime.resident_bytes(model) == 0, "unknown, not a partial sum"
+    assert device_move.resident_bytes(model) == 0, "unknown, not a partial sum"
     assert runtime.move_to_device(model, META) == 0
     assert model.moved_to is META, "the move still has to happen"
     assert published == [], "and nothing is claimed about how far along it got"
@@ -255,7 +255,7 @@ def test_one_unsizable_tensor_makes_the_whole_answer_unknown():
         def parameters(self, recurse: bool = True):
             return [*super().parameters(recurse=recurse), object()]
 
-    assert runtime.resident_bytes(HalfKnown()) == 0
+    assert device_move.resident_bytes(HalfKnown()) == 0
 
 
 def test_buffers_are_moved_and_counted_like_parameters():
@@ -264,6 +264,6 @@ def test_buffers_are_moved_and_counted_like_parameters():
     fails at the first forward pass with a device-mismatch error that names
     neither the buffer nor the load."""
     model = Tiny()
-    assert runtime.resident_bytes(model) == 832  # the buffer's 32 included
+    assert device_move.resident_bytes(model) == 832  # the buffer's 32 included
     assert runtime.move_to_device(model, META) == 832
     assert model.scale.is_meta

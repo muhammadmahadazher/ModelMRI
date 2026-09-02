@@ -15,11 +15,17 @@ The honest fix was not to suppress seven notes. It was to notice that
 and publishes bytes, and its only dependencies are `progress` and the clock. A
 leaf module is where it belonged, and with it here the graph is a DAG.
 
-`runtime` re-exports all three names, so `runtime.move_to_device` and
-`runtime.resident_bytes` still resolve for every existing caller and test.
-`DEVICE_PUBLISH_EVERY_S` is re-exported too, and there is a trap in that which
-`tests/test_device_move.py` documents at its own patch site: rebinding the name
-on `runtime` no longer changes what this module reads.
+`runtime` imports `move_to_device` because it calls it. It does NOT re-export
+`resident_bytes` or `DEVICE_PUBLISH_EVERY_S`: both were re-exported at first to
+spare their callers an edit, and both then had no reader in `runtime` at all —
+a writer with no reader, which is the defect this project names most often, and
+which CodeQL reported as `py/unused-import`. Their one caller is
+`tests/test_device_move.py`, and it names this module directly.
+
+That test documents the trap at its own patch site, and it is the reason the
+publish interval must be patched here: rebinding it on `runtime` would rebind a
+name this module never reads, and the test would go on passing while checking
+less.
 """
 
 from __future__ import annotations
