@@ -1268,7 +1268,16 @@ export interface DirectionFit {
     device_kind: string;
   };
   means: string;
-  saved?: { name: string; path: string; dims: number };
+  saved?: {
+    name: string;
+    path: string;
+    dims: number;
+    /** True when this overwrote a direction already stored under the same
+     *  name. The store refuses a name that would land on a DIFFERENT
+     *  direction's file, so this is only ever a deliberate replacement —
+     *  but it is still a destructive one, and the panel says which happened. */
+    replaced: boolean;
+  };
   receipt?: Receipt | null;
 }
 
@@ -4641,7 +4650,16 @@ export interface ProbeReport {
    *  multiple comparison, so this many clear by chance. */
   expected_false_positives: number;
   means: string;
-  saved?: { name: string; path: string; dims: number };
+  saved?: {
+    name: string;
+    path: string;
+    dims: number;
+    /** True when this overwrote a direction already stored under the same
+     *  name. The store refuses a name that would land on a DIFFERENT
+     *  direction's file, so this is only ever a deliberate replacement —
+     *  but it is still a destructive one, and the panel says which happened. */
+    replaced: boolean;
+  };
   receipt?: Receipt | null;
 }
 

@@ -356,11 +356,15 @@ export default function ProbePanel({ epoch }: { epoch: number }) {
 
           {data.saved && (
             <p className="meta">
-              Saved <b>{data.saved.name}</b> — the layer-{data.best_layer}{" "}
-              direction, {data.saved.dims} dimensions, in the same space the
-              steering panel pushes through. It is a direction that separates
-              your two groups, which is not the same as a direction that causes
-              the difference; steering it is how you find out.
+              {data.saved.replaced ? "Replaced" : "Saved"}{" "}
+              <b>{data.saved.name}</b> — the layer-{data.best_layer} direction,{" "}
+              {data.saved.dims} dimensions, in the same space the steering panel
+              pushes through.
+              {data.saved.replaced &&
+                " A direction was already stored under that name; this one is now in its place."}{" "}
+              It is a direction that separates your two groups, which is not the
+              same as a direction that causes the difference; steering it is how
+              you find out.
             </p>
           )}
 

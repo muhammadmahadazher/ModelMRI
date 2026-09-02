@@ -535,3 +535,127 @@ def test_an_unmeasured_norm_gives_no_relative_strength_rather_than_zero():
     measurement must never say."""
     assert sv.relative_strength(30.0, None) is None
     assert sv.relative_strength(30.0, 0.0) is None
+
+
+# ------------------------------------------------- one filename, several names
+#
+# `_slug` maps every character outside `[A-Za-z0-9_-]` to `-` and truncates to
+# 80. That is the right shape for "a name becomes a filename", and it is
+# many-to-one: three separate ways for two directions a user thinks of as
+# distinct to land on the same file, where `save` wrote straight over whatever
+# was already there and returned success.
+#
+# The tests below are the three ways, plus the case that must keep working
+# (re-saving under the same name), plus the one where the store cannot answer
+# the question at all.
+
+
+def _saved_names(store):
+    """Every original name the store is actually holding, read off disk."""
+    return sorted(
+        json.loads(p.read_text(encoding="utf-8"))["name"] for p in store.glob("*.json")
+    )
+
+
+def test_two_names_that_punctuate_differently_do_not_share_one_file(store):
+    """`"sycophancy v2"` and `"sycophancy-v2"` both slug to `sycophancy-v2`."""
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("sycophancy v2", vec, META)
+
+    with pytest.raises(Refusal, match="sycophancy v2"):
+        sv.save("sycophancy-v2", vec, META)
+
+    # The first one is still there, unedited, and still answers to its own name.
+    assert _saved_names(store) == ["sycophancy v2"]
+    _, payload, _ = sv.load("sycophancy v2", hidden_size=D, model="Qwen/Qwen3-1.7B")
+    assert payload["name"] == "sycophancy v2"
+
+
+def test_a_case_variant_does_not_overwrite_the_direction_it_shadows(store):
+    """`Sycophancy` and `sycophancy` are two files on Linux and one on Windows
+    and macOS, and a store people copy between machines cannot mean two
+    different things depending on where it is sitting."""
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save("Sycophancy", vec, META)
+
+    with pytest.raises(Refusal, match="Sycophancy"):
+        sv.save("sycophancy", vec, META)
+
+    assert _saved_names(store) == ["Sycophancy"]
+
+
+def test_two_long_names_sharing_a_prefix_do_not_collapse_into_one(store):
+    """The truncation at 80 characters is the third way in: two names that
+    differ only after the cut are one filename."""
+    stem = (
+        "refusal-behaviour-under-a-very-long-and-carefully-described-experimental-condi"
+    )
+    first, second = f"{stem}tion-alpha", f"{stem}tion-beta"
+    assert sv._slug(first) == sv._slug(second)  # the premise of the test
+
+    _, vec = sv.fit_direction(separated(), 6)
+    sv.save(first, vec, META)
+
+    with pytest.raises(Refusal, match="alpha"):
+        sv.save(second, vec, META)
+
+    assert _saved_names(store) == [first]
+
+
+def test_re_saving_the_same_name_replaces_it_and_says_so(store):
+    """The collision check must not make a direction unfixable. Saving over
+    your own name is the ordinary way to correct one, and it stays allowed —
+    it just stops being silent about what it did."""
+    _, first = sv.fit_direction(separated(seed=0), 6)
+    out = sv.save("politeness", first, META)
+    assert out["replaced"] is False
+
+    _, second = sv.fit_direction(separated(seed=1), 6)
+    again = sv.save("politeness", second, META)
+    assert again["replaced"] is True
+
+    back, _, _ = sv.load("politeness", hidden_size=D, model="Qwen/Qwen3-1.7B")
+    assert torch.allclose(back.float(), second.float(), atol=1e-6)
+    assert _saved_names(store) == ["politeness"]
+
+
+def test_a_stored_file_whose_name_cannot_be_read_is_not_overwritten(store):
+    """`catalogue()` already treats an unreadable file as damaged rather than
+    dropping it, so damaged files exist. One sitting on the slug we are about
+    to write cannot be asked whose it is — and a direction is somebody's
+    measurement, so the answer is to say so, not to guess and overwrite."""
+    (store / "politeness.json").write_text("{not json", encoding="utf-8")
+
+    _, vec = sv.fit_direction(separated(), 6)
+    with pytest.raises(Refusal, match="politeness.json"):
+        sv.save("politeness", vec, META)
+
+    assert (store / "politeness.json").read_text(encoding="utf-8") == "{not json"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",  # not JSON at all
+        "[]",  # valid JSON, but not an object, so it has no .get
+        '"politeness"',  # valid JSON, a bare string
+        "{}",  # an object that never says what it is
+        '{"name": 7}',  # a name that is not a name
+    ],
+    ids=["broken", "array", "string", "no-name", "name-not-a-string"],
+)
+def test_a_file_that_cannot_name_itself_is_refused_not_overwritten(store, content):
+    """Every shape that survives the read but cannot answer "whose are you?".
+
+    Only the first of these raises inside `json.loads`. The rest do not, and an
+    earlier draft called `.get` on whatever came back — an AttributeError on a
+    list, a TypeError on a string. A crash where a refusal belongs is still a
+    direction lost, only noisier.
+    """
+    (store / "politeness.json").write_text(content, encoding="utf-8")
+
+    _, vec = sv.fit_direction(separated(), 6)
+    with pytest.raises(Refusal, match="politeness.json"):
+        sv.save("politeness", vec, META)
+
+    assert (store / "politeness.json").read_text(encoding="utf-8") == content

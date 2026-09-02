@@ -1001,9 +1001,12 @@ export default function SteeringPanel({
                   ))}
                 {fit.saved && (
                   <p className="meta">
-                    Saved <b>{fit.saved.name}</b> — {fit.saved.dims} dimensions,
-                    in the store above and in the same space this panel pushes
+                    {fit.saved.replaced ? "Replaced" : "Saved"}{" "}
+                    <b>{fit.saved.name}</b> — {fit.saved.dims} dimensions, in
+                    the store above and in the same space this panel pushes
                     through.
+                    {fit.saved.replaced &&
+                      " A direction was already stored under that name; this one is now in its place."}
                   </p>
                 )}
                 <p className="meta">{fit.means}</p>

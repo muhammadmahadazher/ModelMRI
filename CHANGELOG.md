@@ -6,6 +6,40 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two steering directions with different names could end up as one file, and
+  the second overwrote the first without saying so.** A name becomes a filename
+  through `_slug`, which maps every character outside `[A-Za-z0-9_-]` to `-` and
+  cuts the result at 80. That is many-to-one, and there are three separate ways
+  in: `"sycophancy v2"` and `"sycophancy-v2"` both become `sycophancy-v2`;
+  `"Sycophancy"` and `"sycophancy"` are one file on Windows and macOS and two on
+  Linux; and two names differing only past the eightieth character are the same
+  eighty characters. `save` wrote through all three and returned success, so the
+  losing direction was gone with nothing on screen to say it had ever been there.
+
+  `save` now looks for the file its slug would land on and asks whose it is —
+  the stored JSON has carried the original `name` since the store's first
+  version. A *different* name is refused, naming both directions and the file,
+  and nothing is written. Re-saving under the **same** name is still allowed,
+  because that is how a direction gets corrected; it just returns
+  `replaced: true`, and the steering and probe panels say "Replaced" rather than
+  "Saved" with a line explaining what happened to the previous one.
+
+  The comparison folds case deliberately, so the store means the same thing on
+  every filesystem — these files get copied between machines, and one that holds
+  two directions on Linux and one on Windows is a worse answer than one that
+  refuses the ambiguity everywhere.
+
+  A file the store cannot read is refused rather than overwritten. `catalogue()`
+  has always listed damaged files instead of dropping them, so one can be sitting
+  on the slug, and a direction is somebody's measurement — the honest answer to
+  "I cannot tell whose this is" is to say so and name the file, not to guess.
+
+  The lookup takes its path from the directory listing rather than from the
+  request, which is the rule the last phase's path-injection work established: a
+  guard in front of a join is still a join.
+
 ### Changed
 
 - **The frontend CI job ran forty-two package installs and checked nothing.** It

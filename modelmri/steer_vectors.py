@@ -781,6 +781,63 @@ def _existing(name: str):
     return None
 
 
+def _occupant(name: str):
+    """The stored file this name's slug would be written over, and whose it is.
+
+    `_slug` IS MANY-TO-ONE, and `save` used to write straight through it. Every
+    character outside `[A-Za-z0-9_-]` becomes `-` and the result is cut at 80,
+    so there are three separate ways for two directions a user thinks of as
+    distinct to arrive at one filename:
+
+        "sycophancy v2" and "sycophancy-v2"        -> sycophancy-v2
+        "Sycophancy" and "sycophancy"              -> one file on Windows and
+                                                      macOS, two on Linux
+        two names differing only past character 80 -> the same 80 characters
+
+    In all three the second `save` overwrote the first and returned success.
+    Nothing said so, and the loser was somebody's measurement — the exact
+    silent-wrongness this module exists to refuse.
+
+    Returns `(path, stored_name)` when a file is already standing there, or
+    None when the slug is free. `stored_name` is None for a file this version
+    cannot read, which is a real state: `catalogue()` already lists damaged
+    files rather than dropping them, so one can be occupying the slug.
+
+    A LOOKUP, NOT A JOIN — the same reason `_existing` is written this way.
+    The path handed back comes off `glob`, so nothing derived from the request
+    is used to read a file.
+
+    The comparison folds case, and that is a decision rather than an accident.
+    Two names differing only in case are one file on Windows and macOS and two
+    on Linux, and these files get copied between machines and shared: a store
+    that means something different depending on which filesystem it is sitting
+    on is worse than one that refuses the ambiguity everywhere. `_existing`
+    stays case-sensitive, because after this nothing can create the pair it
+    would have to disambiguate.
+    """
+    import json
+
+    directory = store_dir()
+    if not directory.is_dir():
+        return None
+    wanted = _slug(name).casefold()
+    for path in directory.glob("*.json"):
+        if path.stem.casefold() != wanted:
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            payload = None
+        # `json.loads` succeeding does not mean an object came back — a file
+        # holding `[]` parses fine and has no `.get`. Every shape that cannot
+        # name itself lands on None and is refused rather than overwritten:
+        # unreadable, valid JSON that is not an object, an object with no
+        # `name`, and a `name` that is not a string.
+        stored = payload.get("name") if isinstance(payload, dict) else None
+        return path, stored if isinstance(stored, str) else None
+    return None
+
+
 def save(name: str, direction, meta: dict) -> dict:
     """Write a direction with the provenance needed to judge it later.
 
@@ -802,6 +859,32 @@ def save(name: str, direction, meta: dict) -> dict:
             "steering with the wrong one produces plausible nonsense."
         )
 
+    # Whose file is standing on this slug, before anything is written over it.
+    # Re-saving under your own name stays allowed — that is how a direction
+    # gets corrected — but it stops being silent, so a caller can tell the
+    # difference between writing a new one and replacing one.
+    occupied = _occupant(name)
+    replaced = False
+    if occupied is not None:
+        standing, stored_name = occupied
+        if stored_name is None:
+            raise Refusal(
+                f"{standing.name} is already in the direction store and cannot "
+                "be read, so there is no way to tell whether it is this "
+                f"direction or a different one. Nothing was written. Delete "
+                f"{standing.name} if it is yours, then save again."
+            )
+        if stored_name != name:
+            raise Refusal(
+                f"the name {name!r} becomes the same filename as the saved "
+                f"direction {stored_name!r} ({standing.name}), so saving it "
+                "here would overwrite that one. Nothing was written. Pick a "
+                f"name that differs by more than punctuation, case or the "
+                "characters past the eightieth, or delete "
+                f"{stored_name!r} first."
+            )
+        replaced = True
+
     paths.ensure(store_dir())
     path = _store_path(name)
     payload = {
@@ -818,7 +901,12 @@ def save(name: str, direction, meta: dict) -> dict:
         **meta,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return {"name": name, "path": str(path), "dims": len(payload["values"])}
+    return {
+        "name": name,
+        "path": str(path),
+        "dims": len(payload["values"]),
+        "replaced": replaced,
+    }
 
 
 def remove(name: str) -> dict:
