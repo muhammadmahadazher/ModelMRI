@@ -108,4 +108,4 @@ a crash or a `SIGTERM` is exactly the run you most wanted to look at.
 
 ## Licence
 
-MIT. Part of [ModelMRI](https://github.com/muhammadmahadazher/ModelMRI).
+Apache-2.0. Part of [ModelMRI](https://github.com/muhammadmahadazher/ModelMRI), whose application is AGPL-3.0-only; this package is Apache-2.0 on purpose, so that instrumenting your agent carries no copyleft.

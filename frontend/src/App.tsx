@@ -458,7 +458,7 @@ export default function App() {
             wrong since 0.4.0 — a version string nobody remembers to bump is a
             version string that lies. */}
         <span>{version ? `MRI-${version}` : "MRI"}</span>
-        <span>MIT ©2026</span>
+        <span>©2026 · AGPL-3.0-only</span>
         <StoragePanel />
         <span className="spacer" />
         {/* The panels can only get better if the gap between what you wanted

@@ -7,7 +7,8 @@ dynamic = ["version"]
 description = "Chrome DevTools for AI models and agents — see attention, features, and agent steps inside any local model."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Muhammad Mahad Azher", email = "mahadazher@gmail.com" }]
 keywords = [
   "interpretability",
@@ -30,13 +31,16 @@ keywords = [
 # ones CI runs, and "OS Independent" is claimed because the CI matrix covers
 # Windows, macOS and Linux — not because the package happens to be pure
 # Python. A classifier is a claim like any other.
+#
+# No `License ::` classifier, on purpose: `license` above is an SPDX
+# expression (PEP 639), and PyPI rejects an upload that carries a license
+# classifier next to one. The expression is the claim.
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Environment :: Web Environment",
   "Intended Audience :: Developers",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",

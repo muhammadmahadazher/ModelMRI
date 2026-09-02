@@ -1,8 +1,8 @@
 site_name: ModelMRI
-site_description: Chrome DevTools for AI models and agents — attention, features, steering, and a flight recorder for your agents. Local-first, MIT.
+site_description: Chrome DevTools for AI models and agents — attention, features, steering, and a flight recorder for your agents. Local-first, AGPL-3.0-only.
 site_url: https://muhammadmahadazher.github.io/ModelMRI/docs/
 site_author: Muhammad Mahad Azher
-copyright: MIT licensed. Figures in these docs are measurements, not estimates.
+copyright: AGPL-3.0-only (Community) · Apache-2.0 SDK packages and .mri codec · docs CC-BY-4.0. Figures in these docs are measurements, not estimates.
 repo_url: https://github.com/muhammadmahadazher/ModelMRI
 repo_name: muhammadmahadazher/ModelMRI
 edit_uri: edit/main/docs/
@@ -58,6 +58,8 @@ nav:
       - modelmri-record: reference/record.md
   - FAQ: faq.md
   - Troubleshooting: troubleshooting.md
+  - Licensing: licensing.md
+  - Licensing: licensing.md
 
 markdown_extensions:
   - admonition

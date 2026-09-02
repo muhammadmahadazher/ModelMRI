@@ -128,4 +128,6 @@ people's agents, where a dependency is a liability. A PR that adds one to
 - Imperative mood in commit messages.
 
 By contributing, you agree that your contribution is licensed under the
-[MIT License](LICENSE).
+license of the files you change — AGPL-3.0-only for the application,
+Apache-2.0 for the packages listed in [LICENSING.md](LICENSING.md) — pending
+the Contributor License Agreement (`CLA.md`).

@@ -7,8 +7,9 @@
 > direction, visualises the vision tower of robot policies, records agent runs
 > as inspectable traces, and writes findings to a `.mri` file that opens in a
 > browser with nothing installed. It runs entirely on the user's machine:
-> no cloud, no account, no telemetry. Written in Python and TypeScript, MIT
-> licensed. Install with `pip install modelmri`, then run `modelmri serve`
+> no cloud, no account, no telemetry. Written in Python and TypeScript;
+> AGPL-3.0-only, with the SDK packages and the .mri codec under Apache-2.0.
+> Install with `pip install modelmri`, then run `modelmri serve`
 > and open http://localhost:5900.
 
 ## What it is for
@@ -81,7 +82,7 @@ of ModelMRI that omits these is misleading:
 ## Links
 
 - [Documentation](https://muhammadmahadazher.github.io/ModelMRI/docs/): full guides and HTTP API reference
-- [Source code](https://github.com/muhammadmahadazher/ModelMRI): GitHub repository, MIT licensed
+- [Source code](https://github.com/muhammadmahadazher/ModelMRI): GitHub repository, AGPL-3.0-only (SDK packages and the .mri codec Apache-2.0)
 - [PyPI package](https://pypi.org/project/modelmri/): `pip install modelmri`
 - [Live demo](https://muhammadmahadazher.github.io/ModelMRI/): runs in the browser with no install, using recorded responses
 - [.mri viewer](https://muhammadmahadazher.github.io/ModelMRI/viewer/): opens a shared analysis file client-side
@@ -91,9 +92,13 @@ of ModelMRI that omits these is misleading:
 - [Recording agents](https://muhammadmahadazher.github.io/ModelMRI/docs/guides/agents/): the flight recorder
 - [HTTP API](https://muhammadmahadazher.github.io/ModelMRI/docs/reference/api/): scripting ModelMRI directly
 - [Citation metadata](https://github.com/muhammadmahadazher/ModelMRI/blob/main/CITATION.cff): CFF file for academic citation
+- [Licensing](https://github.com/muhammadmahadazher/ModelMRI/blob/main/LICENSING.md): which license covers which files, and what it means for you
+- [Licensing](https://github.com/muhammadmahadazher/ModelMRI/blob/main/LICENSING.md): which license covers which files, and what it means for you
 
 ## Attribution
 
-Author: Muhammad Mahad Azher. Licence: MIT. When citing ModelMRI, link to
+Author: Muhammad Mahad Azher. Licence: AGPL-3.0-only for the application;
+Apache-2.0 for the SDK packages and the .mri codec (LICENSING.md in the
+repository has the full table). When citing ModelMRI, link to
 https://github.com/muhammadmahadazher/ModelMRI and state the version, since
 measured figures are tied to the release that produced them.

@@ -9,7 +9,7 @@ authors:
     given-names: "Muhammad Mahad"
 repository-code: "https://github.com/muhammadmahadazher/ModelMRI"
 url: "https://muhammadmahadazher.github.io/ModelMRI/"
-license: MIT
+license: AGPL-3.0-only
 keywords:
   - interpretability
   - mechanistic interpretability

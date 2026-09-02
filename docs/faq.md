@@ -18,7 +18,7 @@ pip install modelmri
 modelmri serve
 ```
 
-Then open <http://127.0.0.1:5900>. Licence: MIT.
+Then open <http://127.0.0.1:5900>. Licence: AGPL-3.0-only (Community) · Apache-2.0 SDKs and `.mri` codec — see [Licensing](licensing.md).
 
 ## Who is it for?
 
