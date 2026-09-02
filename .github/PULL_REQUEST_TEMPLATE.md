@@ -18,8 +18,17 @@ pixels, the control's state AFTER the operation and not only during it.
 - [ ] `uv run pytest tests packages/modelmri-record/tests -q`
 - [ ] `cd frontend && npm run build` (strict `tsc` included)
 - [ ] Regression coverage added, and confirmed red against the unfixed code
+- [ ] Every new test branch mutation-checked — break the code the assertion
+      names and watch that assertion, not a neighbour, go red
+- [ ] Edge cases: empty, absent, degenerate, and the unit the number carries
 - [ ] Docs updated if behaviour, commands, APIs, or panels changed
-- [ ] Screenshot or recording attached for visual changes
+- [ ] `CHANGELOG.md` entry, and `docs/reference/api.md` regenerated if routes moved
+      (`uv run python scripts/gen_api_docs.py --check`)
+- [ ] Code-scanning alerts checked after this PR's CodeQL run — Highs and Errors
+      fixed here, every Note given a decision (fix, or dismiss with a reason)
+- [ ] Screenshot or recording attached for visual changes, in **both** palettes
+- [ ] Every state the change can reach is implemented and seen: loading,
+      empty, refused, error, stale — not just the one where it works
 
 ## Correctness of the measurement
 

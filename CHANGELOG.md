@@ -8,6 +8,48 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Changed
 
+- **The frontend CI job ran forty-two package installs and checked nothing.** It
+  called `npm run lint --if-present`, and there has never been a `lint` script in
+  `frontend/package.json`, nor an ESLint, Biome or Prettier config anywhere in the
+  tree. `--if-present` is the flag that turns that into silence: the job passed in
+  about twenty seconds, reported green, and called itself "Lint". A check that
+  cannot fail is worse than no check, because a branch-protection rule counts it
+  as protection.
+
+  It runs `npm run typecheck` now — a new script, `tsc --noEmit -p tsconfig.json`,
+  which is exactly what the three build scripts were already invoking inline and
+  now call by name. Same twenty seconds, and it fails on a real defect. Whether
+  this repository should also have a linter is a larger question than a CI fix.
+
+- **The demo's gate moved to the side of the merge where breaking it is cheap.**
+  `tests/demo_check.py` ran only in `pages.yml`, which triggers on `push: main`.
+  So a pull request that broke the demo went green, merged, and turned the Pages
+  deploy red on `main` — where the fix is another pull request and the demo is
+  already broken for whoever visits it. The demo is the only ModelMRI most people
+  ever touch, and it was the one UI gate nothing checked before merge.
+
+  It now runs in CI's `ui` job beside `viewer_check.py`, which costs one extra
+  `npm run build:demo`: the script reads the built bundle using nothing but
+  `base64`, `json`, `os`, `re`, `sys` and `pathlib` — no torch, no model, no
+  server. `pages.yml` keeps its own copy, because guarding the artifact actually
+  being published is a different question from whether a change broke it.
+
+- **CI runs on every pull request, because `main` is a protected branch now.**
+  The `pull_request` trigger carried a `paths:` filter so a documentation-only
+  change did not spend twelve minutes proving a four-way OS matrix still works.
+  That saving was real, and it is gone on purpose: GitHub does not run a workflow
+  whose paths filter excludes every changed file, and a *required* check that
+  never runs does not pass — it sits at "Expected" with no way to merge and
+  nothing on the page saying why. Neither `CHANGELOG.md` nor `GAPS.md` was in the
+  list, so a pull request carrying only the bookkeeping this project asks for
+  would have hung on the first attempt.
+
+- **The pull-request template asks for the checks this project actually makes.**
+  Mutation-checking every new test branch, edge cases, the CHANGELOG entry and
+  the regenerated API reference, the code-scanning alert decisions, both palettes
+  on a visual change, and every state a change can reach — loading, empty,
+  refused, error, stale — rather than only the one where it works.
+
 - **The package's import graph has no cycles, and a test says so.** Deferred
   imports — `from . import x` inside the function that needs it — are how this
   package has always broken load-time cycles, and they work. What they do not do

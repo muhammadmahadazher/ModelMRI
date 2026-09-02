@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit -p tsconfig.json && vite build",
-    "build:demo": "tsc --noEmit -p tsconfig.json && vite build --mode demo",
-    "build:viewer": "tsc --noEmit -p tsconfig.json && vite build --mode viewer",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "npm run typecheck && vite build",
+    "build:demo": "npm run typecheck && vite build --mode demo",
+    "build:viewer": "npm run typecheck && vite build --mode viewer",
     "preview": "vite preview"
   },
   "dependencies": {
