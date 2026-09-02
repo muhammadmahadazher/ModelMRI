@@ -298,11 +298,14 @@ def _preflight(hf_id: str, accel, confirm: bool) -> None:
 # Re-exported rather than relocated-and-rewritten because
 # `runtime.move_to_device` is the name eight tests and two call sites
 # already use, and moving a function is not a reason to move its callers.
-from .device_move import (  # noqa: E402
-    DEVICE_PUBLISH_EVERY_S,  # noqa: F401  (re-exported for callers and tests)
-    move_to_device,
-    resident_bytes,  # noqa: F401  (re-exported; used by server.py and tests)
-)
+# The redundant `as` is the re-export spelling, not a typo: PEP 484's
+# explicit form, which says "this name is part of THIS module's surface"
+# to every tool that reads it. A bare F401 suppression said it to ruff
+# alone -- and a per-line ruff suppression is invisible to CodeQL, which
+# answered with `py/unused-import` on the very next scan.
+from .device_move import DEVICE_PUBLISH_EVERY_S as DEVICE_PUBLISH_EVERY_S  # noqa: E402
+from .device_move import move_to_device as move_to_device  # noqa: E402
+from .device_move import resident_bytes as resident_bytes  # noqa: E402
 
 
 def _repo_dir(hf_id: str) -> Path:

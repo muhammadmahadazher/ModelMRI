@@ -145,7 +145,8 @@ class CustomStatus:
 # which CodeQL's own cyclic-import query had not reported. Re-exported
 # rather than relocated, because `custom.AdapterError` is what server.py
 # and the tests have always spelled.
-from .custom_base import AdapterError, leaf_modules  # noqa: E402
+from .custom_base import AdapterError as AdapterError  # noqa: E402
+from .custom_base import leaf_modules as leaf_modules  # noqa: E402
 
 # ---------------------------------------------------------------- path safety
 

@@ -749,6 +749,38 @@ def _store_path(name: str):
     return path
 
 
+def _existing(name: str):
+    """The stored file this name refers to, found in the store's own listing.
+
+    A LOOKUP, NOT A JOIN, and that is the whole difference. `_store_path` has
+    to build a path because `save` writes a file that does not exist yet;
+    `remove` and `load` are asking about a file that either exists or does not,
+    and the answer to that is already on disk. Matching `_slug(name)` against
+    the stems `glob` returns means the path those two hand to `unlink` and
+    `read_text` comes from the DIRECTORY, not from the request — there is no
+    string from the URL anywhere in it.
+
+    That is a real property and not a formality. `_store_path`'s containment
+    check is a guard placed in front of a join; this has nothing to guard,
+    because nothing was joined. It is also what CodeQL's `py/path-injection`
+    was pointing at: it kept reporting `remove` after the containment check
+    landed, and it was right that a URL segment still reached `unlink`, even
+    though the value could not escape. Now it does not reach it at all.
+
+    Returns None for "not here", which both callers already have a sentence
+    for. `glob` rather than `iterdir` so a directory that has been deleted
+    underneath us is an empty answer rather than an exception.
+    """
+    directory = store_dir()
+    if not directory.is_dir():
+        return None
+    wanted = _slug(name)
+    for path in directory.glob("*.json"):
+        if path.stem == wanted:
+            return path
+    return None
+
+
 def save(name: str, direction, meta: dict) -> dict:
     """Write a direction with the provenance needed to judge it later.
 
@@ -796,8 +828,8 @@ def remove(name: str) -> dict:
     one out — and a delete that silently succeeds on a name that was never
     there teaches a reader their typo worked.
     """
-    path = _store_path(name)
-    if not path.is_file():
+    path = _existing(name)
+    if path is None:
         raise Refusal(
             f"there is no saved direction called {name!r}, so there is "
             "nothing here to delete."
@@ -820,8 +852,8 @@ def load(name: str, *, hidden_size: int, model: str = ""):
 
     import torch
 
-    path = _store_path(name)
-    if not path.is_file():
+    path = _existing(name)
+    if path is None:
         raise Refusal(f"no saved direction called {name!r} in {store_dir()}.")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
