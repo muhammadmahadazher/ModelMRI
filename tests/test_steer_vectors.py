@@ -420,6 +420,73 @@ def test_a_name_cannot_escape_the_store_on_the_way_out(tmp_path, monkeypatch):
         assert separator not in sv._slug("../../etc/passwd")
 
 
+def test_every_path_the_store_builds_is_proven_to_be_inside_it(tmp_path, monkeypatch):
+    """The guarantee stated where the delete happens, not inferred from `_slug`.
+
+    `_slug` is a whitelist and the test above proves it holds against the
+    payload that matters. What it does not do is SAY so anywhere a reader — or
+    an analyser — can see: CodeQL read `store_dir() / f"{_slug(name)}.json"`
+    followed by `path.unlink()` and reported `py/path-injection` at high
+    severity on both lines, correctly, because a generator expression is not a
+    sanitiser it can recognise. `_store_path` resolves and checks containment,
+    which is the same property in a form that is checkable rather than
+    reasoned about.
+
+    Every payload below is one CodeQL's taint path would carry: the route is
+    `DELETE /api/steer/directions/{name}`, so `name` is a URL segment.
+    """
+    inside = tmp_path / "vectors"
+    inside.mkdir()
+    monkeypatch.setattr(sv, "store_dir", lambda: inside)
+    root = inside.resolve()
+
+    for payload in (
+        "../../etc/passwd",
+        r"..\..\Windows\System32\config\SAM",
+        "/etc/shadow",
+        "C:/Windows/win.ini",
+        "....//....//x",
+        "a/../../../b",
+        "~/.ssh/id_rsa",
+        "%2e%2e%2fetc",
+        "x\x00.json",
+    ):
+        assert sv._store_path(payload).is_relative_to(root), payload
+
+    # And a name with nothing usable in it is refused rather than resolved to
+    # some default file, which is the other way a path can go somewhere the
+    # caller did not name.
+    for empty in ("..", ".", "///", "---"):
+        with pytest.raises(BadRequest, match="at least one letter or digit"):
+            sv._store_path(empty)
+
+
+def test_the_containment_check_is_load_bearing_and_not_decoration(
+    tmp_path, monkeypatch
+):
+    """The guard has to fail on its own, or the test above is proving `_slug`.
+
+    Every assertion in `…proven_to_be_inside_it` passes with the containment
+    check DELETED, because `_slug` already makes the escape impossible — which
+    is exactly what makes that test weak as a check on the new code. The only
+    way to see the guard work is to take away the thing that makes it
+    redundant. `_slug` is monkeypatched to the identity here, standing in for
+    the future edit that loosens it, and the guard is then the one thing
+    between a URL segment and `unlink`.
+    """
+    inside = tmp_path / "vectors"
+    inside.mkdir()
+    monkeypatch.setattr(sv, "store_dir", lambda: inside)
+    monkeypatch.setattr(sv, "_slug", lambda name: name)
+
+    with pytest.raises(BadRequest, match="inside the direction store"):
+        sv._store_path("../../escaped")
+
+    # A benign name still resolves under the identity slug, so the guard is
+    # refusing the escape rather than refusing everything.
+    assert sv._store_path("ordinary").is_relative_to(inside.resolve())
+
+
 def test_asking_where_the_store_is_does_not_create_it(tmp_path, monkeypatch):
     """`paths.py`: "nothing here creates a directory as a side effect of being
     asked a question". The catalogue is a read, and a read that writes into

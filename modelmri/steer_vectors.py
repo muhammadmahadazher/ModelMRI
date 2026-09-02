@@ -705,6 +705,50 @@ def _slug(name: str) -> str:
     return cleaned[:80]
 
 
+def _store_path(name: str):
+    """`store_dir()/<slug>.json`, proven to be inside the store before it is used.
+
+    THE SLUG ALREADY MAKES THIS UNREACHABLE, and the check is here anyway.
+    `_slug` is a WHITELIST — every character that is not alphanumeric, `-` or
+    `_` becomes `-` — so a separator, a colon and a dot cannot survive it, and
+    `..` arrives as `--` and is then stripped to nothing and refused. Measured
+    against twelve traversal payloads (`../../etc/passwd`, the Windows
+    separator form, an absolute path, a drive letter, a doubled-up
+    `....//....//`, a NUL byte, a percent-encoded `%2e%2e%2f`): none produced a
+    path outside the store, and `..` and `.` were refused outright.
+
+    So why write it. Two reasons, and neither is the vulnerability.
+
+    First, the guarantee was implicit in a comprehension. `remove()` calls
+    `path.unlink()` on a name that arrives from `DELETE
+    /api/steer/directions/{name}`, which is an unauthenticated local route —
+    the strongest thing in the store's blast radius — and the only thing
+    standing between that and the filesystem was a reader's willingness to
+    reason about a generator expression. A containment check states the
+    property where the delete happens, in one line a reader can check without
+    reasoning at all.
+
+    Second, CodeQL cannot see it. `py/path-injection` flagged both the join and
+    the unlink at high severity, and it is right to: it has no way to know that
+    comprehension is a sanitiser. Suppressing that with a `# nosec` would be
+    asserting the answer; `resolve()` plus `is_relative_to` is the answer, and
+    it is the form the analysis recognises. An alert dismissed by assertion
+    stays dismissed when the sanitiser later changes.
+
+    Raises rather than returns on a miss: if this ever fires, the slug has
+    stopped doing its job, and the honest response to a filename that escaped
+    its directory is not to carry on with a different one.
+    """
+    root = store_dir().resolve()
+    path = (root / f"{_slug(name)}.json").resolve()
+    if not path.is_relative_to(root):
+        raise BadRequest(
+            f"the name {name!r} does not resolve to a file inside the "
+            "direction store, so nothing will be read or written for it."
+        )
+    return path
+
+
 def save(name: str, direction, meta: dict) -> dict:
     """Write a direction with the provenance needed to judge it later.
 
@@ -726,7 +770,8 @@ def save(name: str, direction, meta: dict) -> dict:
             "steering with the wrong one produces plausible nonsense."
         )
 
-    path = paths.ensure(store_dir()) / f"{_slug(name)}.json"
+    paths.ensure(store_dir())
+    path = _store_path(name)
     payload = {
         "name": name,
         # STAMPED HERE, because `catalogue()` sorts on it and promises
@@ -751,7 +796,7 @@ def remove(name: str) -> dict:
     one out — and a delete that silently succeeds on a name that was never
     there teaches a reader their typo worked.
     """
-    path = store_dir() / f"{_slug(name)}.json"
+    path = _store_path(name)
     if not path.is_file():
         raise Refusal(
             f"there is no saved direction called {name!r}, so there is "
@@ -775,7 +820,7 @@ def load(name: str, *, hidden_size: int, model: str = ""):
 
     import torch
 
-    path = store_dir() / f"{_slug(name)}.json"
+    path = _store_path(name)
     if not path.is_file():
         raise Refusal(f"no saved direction called {name!r} in {store_dir()}.")
     try:

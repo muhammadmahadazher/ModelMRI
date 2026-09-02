@@ -602,12 +602,20 @@ def test_a_saved_fit_carries_the_evidence_that_judged_it(rt):
         if "worth saving" not in str(err):
             raise
         pytest.skip(f"no layer beat its null on this untrained model: {err}")
-    assert out["saved"]["name"] == "loved-vs-hated"
-    _, payload, _ = sv.load(
-        "loved-vs-hated", hidden_size=D_MODEL, model="tiny/gpt2-under-test"
-    )
-    for key in ("beats_null", "p_value", "effect", "residual_norm", "saved_at"):
-        assert key in payload, key
+    # `else`, not a bare continuation. `pytest.skip` raises, so the assertions
+    # below are unreachable when the arm above fires — but nothing in the
+    # source says so, and CodeQL read it exactly as written: "Local variable
+    # 'out' may be used before it is initialized" (py/uninitialized-local-
+    # variable, alert #444). It cannot know `skip` is NoReturn, and a reader
+    # cannot either without knowing pytest. Putting the assertions in the
+    # `else` states the control flow instead of relying on it.
+    else:
+        assert out["saved"]["name"] == "loved-vs-hated"
+        _, payload, _ = sv.load(
+            "loved-vs-hated", hidden_size=D_MODEL, model="tiny/gpt2-under-test"
+        )
+        for key in ("beats_null", "p_value", "effect", "residual_norm", "saved_at"):
+            assert key in payload, key
 
 
 # ------------------------------------------- the panel that reads them back
