@@ -20,7 +20,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from modelmri import runtime  # noqa: E402  (after the torch guard, deliberately)
+from modelmri import device_move, runtime  # noqa: E402  (after the torch guard)
 
 META = torch.device("meta")
 
@@ -125,7 +125,15 @@ def test_it_publishes_while_it_works_and_not_only_at_the_end(monkeypatch):
         return True
 
     monkeypatch.setattr(runtime.progress.TRACKER, "publish", record)
-    monkeypatch.setattr(runtime, "DEVICE_PUBLISH_EVERY_S", 0.0)
+    # PATCHED ON `device_move`, NOT ON `runtime`, AND THE DIFFERENCE IS THE
+    # WHOLE TEST. `move_to_device` moved to a leaf module to break the
+    # package's one import cycle, and `runtime` re-exports the name — so
+    # `setattr(runtime, "DEVICE_PUBLISH_EVERY_S", 0.0)` now rebinds a second
+    # reference that the function never reads. It would still pass on the
+    # publish at the start and the one at the end, and stop checking the thing
+    # it exists for: that a move publishes WHILE it works. `assert len(seen) >
+    # 2` is what would have caught it, and only just.
+    monkeypatch.setattr(device_move, "DEVICE_PUBLISH_EVERY_S", 0.0)
 
     model = Tiny()
     total = runtime.resident_bytes(model)  # read before the move, like the code

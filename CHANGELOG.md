@@ -6,6 +6,39 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The package's import graph has no cycles, and a test says so.** Deferred
+  imports — `from . import x` inside the function that needs it — are how this
+  package has always broken load-time cycles, and they work. What they do not do
+  is remove the cycle; they make it not matter *yet*, and the difference shows up
+  the day somebody hoists one of those imports to the top of its file for
+  tidiness.
+
+  CodeQL reported `py/cyclic-import` on seven of them. Seven notes, **one
+  edge**: `runtime` reaches for `model_diff`, `gguf_load` and `behavdiff`,
+  `model_diff` for `behavdiff`, `behavdiff` for `gguf_load` — all forward — and
+  then `gguf_load` reached back for `runtime.move_to_device` and closed the loop.
+  That function never needed anything from `runtime`, so it lives in
+  `device_move.py` now, with `resident_bytes` and the publish interval beside it.
+
+  `tests/test_import_graph.py` walks every module, collects intra-package imports
+  at any depth, and fails with the cycle written out. It found a **second** loop
+  CodeQL had not reported — `custom ↔ custom_ablate`, where `custom_ablate`
+  needed `AdapterError` and `leaf_modules` while `custom` called back into it —
+  fixed the same way, through `custom_base.py`.
+
+  Both moves are re-exports: `runtime.move_to_device`, `runtime.resident_bytes`,
+  `custom.AdapterError` and `custom.leaf_modules` all still resolve, because
+  moving a function is not a reason to move its callers.
+
+  One test had to change with them, and the reason is worth recording.
+  `test_it_publishes_while_it_works_and_not_only_at_the_end` patched
+  `runtime.DEVICE_PUBLISH_EVERY_S` — which, after the move, rebinds a name the
+  function no longer reads. It would still have passed, on the publish at the
+  start and the one at the end, while quietly no longer checking the thing it
+  exists for. It patches `device_move` now, and says why at the patch site.
+
 ### Fixed
 
 - **The steering panel's own default contrast pairs could not be fitted.** Open

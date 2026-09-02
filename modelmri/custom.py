@@ -39,8 +39,6 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .errors import BadRequest
-
 log = logging.getLogger("modelmri")
 
 # Saturation is distance from an activation's REAL bounds, so the bounds have
@@ -140,21 +138,14 @@ class CustomStatus:
         return asdict(self)
 
 
-class AdapterError(BadRequest):
-    """Something about the file or its contents is wrong, and we say what.
-
-    A `BadRequest`, and therefore still a ValueError, so every handler that
-    caught it before catches it unchanged. The classification is the point:
-    each of these is a fact about the path in the request or the file it names
-    — not a Python module, no `load()`, a state_dict where a model was
-    expected — which is 422 with the sentence, exactly what `/api/custom/load`
-    and `/api/custom/run` answer today.
-
-    What it is NOT is the exception raised *by* the adapter. That one is the
-    user's own code failing, and server.py deliberately names its class rather
-    than hiding it behind the generic 500 — see the note there.
-    """
-
+# `AdapterError` and `leaf_modules` live in `custom_base.py` and are
+# re-exported here. They moved because `custom_ablate` needs both, and
+# importing them from this module was the back-edge that made
+# custom <-> custom_ablate a cycle -- found by tests/test_import_graph.py,
+# which CodeQL's own cyclic-import query had not reported. Re-exported
+# rather than relocated, because `custom.AdapterError` is what server.py
+# and the tests have always spelled.
+from .custom_base import AdapterError, leaf_modules  # noqa: E402
 
 # ---------------------------------------------------------------- path safety
 
@@ -606,15 +597,6 @@ def _model_device(model) -> str:
         return str(next(model.parameters()).device)
     except (StopIteration, AttributeError):
         return "cpu"  # a model with no parameters is on no device in particular
-
-
-def leaf_modules(model) -> list[tuple[str, object]]:
-    """Modules with no children, in declaration order, named as you named them."""
-    out = []
-    for name, mod in model.named_modules():
-        if name and not list(mod.children()):
-            out.append((name, mod))
-    return out
 
 
 def suggest_input(model) -> tuple[list[int] | None, str]:

@@ -325,7 +325,7 @@ def read_samples(module: Any, *, min_samples: int = MIN_SAMPLES):
         # that: `load()` raising, `example_input()` raising, and now this.
         #
         # Caught by that test rather than by review.
-        from .custom import AdapterError
+        from .custom_base import AdapterError
 
         raise AdapterError(
             f"sample_inputs() raised {type(err).__name__}: {err}"  # leak-ok: the reader's own adapter code
@@ -536,7 +536,7 @@ def sweep_layers(
     """Mean-ablate every leaf module and report how far the answer moved."""
     import torch
 
-    from .custom import leaf_modules
+    from .custom_base import leaf_modules
 
     if task not in TASKS:
         raise AblationError(f"unknown task {task!r}")

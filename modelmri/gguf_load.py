@@ -659,7 +659,7 @@ def load(
         # at bus speed rather than the mmap being pulled off a disk. It is
         # still gigabytes, and a reader watching one stage report bytes and
         # the other report nothing would reasonably read that as a hang.
-        from .runtime import move_to_device
+        from .device_move import move_to_device
 
         move_to_device(model, device)
     except Exception as err:
