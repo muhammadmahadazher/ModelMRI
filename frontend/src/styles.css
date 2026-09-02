@@ -10145,6 +10145,51 @@ main > .panel[data-mri-group-label]::after {
   border-radius: 2px;
   background: var(--color-mute);
 }
+/* A LAYER WITH NO DIRECTION IN IT AT ALL, which is a different thing from a
+   weak one. Its `effect` is 0 and `p_value` is absent, and the bar rule above
+   floors its width at 0.4% -- so drawn as a bar it became a sliver at the
+   axis, which reads as "measured, and it was nearly nothing". It was not
+   measured. There was no direction to project onto and no null to clear.
+
+   Same recipe as `.tl-block.no-dur` up in the timeline, deliberately: hatched
+   rather than re-hued, because there is no spare hue for "absent" and a hatch
+   survives at any width, and mirrored off `--color-paper` so both palettes and
+   every contrast tier follow from the tokens. The verdict column says it in
+   words as well.
+
+   THE RECIPE DOES NOT TRANSPLANT WHOLE, which is what the first version of
+   this rule did. `.tl-block.no-dur` paints its stripes over an OPAQUE kind
+   colour, and its `opacity: 0.75` is a step down from `.tl-block`'s own 0.9 —
+   a 17% relative dim. Copied here, the 0.75 became an absolute dim laid over a
+   base that was already only 26% alpha, and the two compounded. Measured
+   (sRGB compositing over the track, all six tiers): stripe against gap came
+   out 1.15:1 in light standard, against the 2.18:1 the same gradient delivers
+   in the timeline — a texture nobody sees — and the whole "no result" plate
+   sat at 1.29:1 against its track while the ordinary null band it stands in
+   for reads 1.42:1. The row with nothing to say was drawn FAINTER than the
+   rows that had something.
+
+   So: no element opacity, and the fill carries the plate. At 60% the hatch
+   measures 1.76:1 (light standard) to 2.97:1 (dark high) stripe-against-gap,
+   in the same family as the source recipe's 2.18–3.52, and the plate reads
+   2.42:1 to 4.35:1 against the track — present without competing with a
+   `--color-feat` bar, which is the only thing on this chart that should be
+   loud. Still `--color-mute`, the null band's own token, because this is the
+   space the band would have occupied. */
+.st-nodir {
+  position: absolute;
+  inset: 0;
+  background-color: color-mix(in oklab, var(--color-mute) 60%, transparent);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 2px,
+    color-mix(in oklab, var(--color-paper) 65%, transparent) 2px 4px
+  );
+}
+/* The row label and the (absent) effect are dimmed with it, so the eye can
+   skip the layers that had nothing to say without reading them first. */
+.st-rows li.st-none .st-l,
+.st-rows li.st-none .st-eff { opacity: 0.72; }
 .st-rows li.st-clears .st-bar { background: var(--color-feat); }
 .st-rows li.st-best .st-bar { background: var(--color-feat); }
 .st-rows li.st-best .st-l { color: var(--color-feat); font-weight: 700; }

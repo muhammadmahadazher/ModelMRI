@@ -63,6 +63,27 @@ was fitted from will separate them, because it was built to. The split is the
 difference between "this direction encodes the property" and "this direction
 memorised these sentences".
 
+**A layer with nothing in it is a row, not a failed sweep.** The residual
+stream ENTERING block 0 is the last token's own embedding, so two sets of real
+sentences — which all end with a full stop — are the same vector there, and
+`_fit` is right to say there is no direction between them. `sweep` used to let
+that one ordinary answer abort the other twenty-nine, which is how the panel's
+own default contrast pairs came back as a 409 with nothing fitted anywhere. It
+is now one row: `effect` 0, `beats_null` false, and NO `p_value`, `null_mean`
+or `null_max` at all — a layer that was never scored has no permutation
+quantile and no shuffles to take a worst of, and zero is the most confident
+number in that range — plus a note naming the layer and the cause. The sweep
+refuses only when EVERY requested layer is like that, because that is the case
+where there is no table to read.
+
+**Both estimators have to be able to say it.** `caa` finds nothing to fit
+because the mean difference is the zero vector; `repe` had no way to say it at
+all, because the SVD of all-zero differences returns zero singular values and
+an arbitrary orthonormal basis, so PC1 came back a unit vector and the whole
+row-not-a-refusal path was dead behind the method dropdown. Each branch of
+`_fit` now tests the thing that is actually degenerate for it, and both raise
+the same sentence.
+
 **Coefficients are not portable.** A scale of 5 means nothing across models or
 even across layers: residual norms differ by an order of magnitude between
 early and late layers of the same network. Every applied strength here is
@@ -103,13 +124,28 @@ class Direction:
     # Cosine separation on the HELD-OUT half, and the same statistic on
     # `NULL_REFITS` label-shuffled refits.
     effect: float
-    null_mean: float
-    null_max: float
+    null_mean: float | None
+    null_max: float | None
     beats_null: bool
     # The standard permutation p-value, (1 + #{null >= |effect|}) / (1 + draws).
     # `beats_null` is the same gate expressed as a boolean, and a boolean hides
     # how close the call was — 1/9 and 9/9 both read as "no" today.
-    p_value: float
+    #
+    # None when the layer was never scored at all. A layer whose two sets have
+    # identical mean activations has no direction to project onto and no null
+    # to take a quantile of, and 0.0 there would be the most confident number
+    # in the range — published, ranked and believed. `to_dict` drops the key
+    # entirely rather than shipping a null, so a reader's `"p_value" in row`
+    # is the honest question and `api.ts` types the field optional.
+    #
+    # `null_mean` and `null_max` above are None for the same layer and for the
+    # same reason, which is a correction: they shipped as 0.0 beside a note
+    # that said "no null was run at this layer", so the row contradicted
+    # itself. Nothing was shuffled, nothing was refitted, and "the worst
+    # label-shuffled refit reached 0.000" is a sentence about eight draws that
+    # were never drawn. `vla_ood.OodReference` already spells the same concept
+    # the same way — `null_max: float | None`, None when no null was run.
+    p_value: float | None
     n_pairs: int
     n_fit: int
     n_score: int
@@ -119,7 +155,17 @@ class Direction:
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        row = asdict(self)
+        # ABSENT, not null and not zero — see `p_value` above. These three are
+        # everything the null produced, and a layer that never had a null
+        # produced none of it; every other field on this row is a measurement
+        # that was actually taken. `p_value` is the one a consumer keys off to
+        # tell "no result" from "a result of zero", because it is the field
+        # the chart and the store already read.
+        for absent in ("p_value", "null_mean", "null_max"):
+            if row[absent] is None:
+                del row[absent]
+        return row
 
 
 def _last_token_states(model, blocks, ids_list, layers: list[int]):
@@ -156,6 +202,38 @@ def _capture_into(block, layer: int, sink: dict):
         sink[layer] = args[0].detach()
 
     return block.register_forward_pre_hook(pre)
+
+
+class NoDirection(Refusal):
+    """The two sets have identical mean activations — there is nothing to fit.
+
+    A SUBCLASS RATHER THAN A FLAG, because `sweep` has to tell this refusal
+    apart from the others `fit_direction` raises. "not enough pairs" and "this
+    model has no layer 40" are statements about the whole request and have to
+    abort it. This one is a statement about ONE LAYER, and at layer 0 it is the
+    ordinary answer for any two sets of real sentences: they end with a full
+    stop, and entering block 0 the residual stream is that token's own
+    embedding. A sweep that threw away twenty-nine measured layers because the
+    thirtieth had nothing in it is the defect this class exists to make hard to
+    write again.
+
+    Still a `Refusal`, and still carrying the estimator's own sentence: called
+    directly, `fit_direction` refuses exactly as it did before, and the
+    `except Refusal` in its own null loop keeps catching this unchanged.
+    """
+
+
+# ONE SENTENCE, TWO ESTIMATORS. `caa` reaches it through a zero mean
+# difference and `repe` through paired differences that are all zero, and
+# everything downstream — the note on the degenerate row, `_nothing_to_fit`'s
+# whole-request refusal, the panel's verdict column — tells one story about
+# what happened. Two spellings of the same fact become two stories the first
+# time one of them is edited. Both conditions imply the other's wording is
+# true: differences that are all zero have a zero mean.
+_NO_DIRECTION_SENTENCE = (
+    "the positive and negative sets have identical mean activations at this "
+    "layer, so there is no direction between them to fit."
+)
 
 
 def _fit(pos, neg, method: str):
@@ -200,7 +278,28 @@ def _fit(pos, neg, method: str):
         # pair axis is the small one -- half of at least 8 pairs against a
         # d_model in the thousands -- and `full_matrices=False` makes the cost
         # scale with that axis rather than with d_model.
-        _, _, vh = torch.linalg.svd(diffs, full_matrices=False)
+        _, singular, vh = torch.linalg.svd(diffs, full_matrices=False)
+        # THE `norm == 0.0` GUARD AT THE BOTTOM CANNOT FIRE FOR THIS BRANCH,
+        # which is why the degenerate case is caught here instead. Handed
+        # all-zero differences — layer 0 with a shared final token, the exact
+        # case the sweep's no-direction row exists for — LAPACK returns zero
+        # singular values and an ARBITRARY orthonormal V, so `vh[0]` comes back
+        # a perfectly good unit vector. MEASURED, twelve identical pairs: it
+        # returned `e_0` with a norm of exactly 1.0, and the sweep published
+        # `effect 0.0, p_value 1.0` carrying the note "this direction does not
+        # beat its own label-shuffled refits" — a verdict about eight shuffles
+        # that had each estimated a basis vector, on a direction nobody fitted.
+        # The panel then drew it as a bar. `caa` refused the same input, so the
+        # whole no-direction path was live on one estimator and dead on the
+        # other, with the defect intact behind the dropdown.
+        #
+        # The condition is this estimator's own rather than CAA's transplanted:
+        # `repe` estimates PC1 of the paired DIFFERENCES, so what makes it
+        # degenerate is every difference being zero, not the two means
+        # coinciding. Sets whose differences vary but average to nothing still
+        # have a real first component, and this leaves that case alone.
+        if float(singular[0]) == 0.0:
+            raise NoDirection(_NO_DIRECTION_SENTENCE)
         direction = vh[0]
         # PCA has no sign convention; align it with the mean difference so
         # "positive" means the same thing it means for CAA.
@@ -211,10 +310,7 @@ def _fit(pos, neg, method: str):
 
     norm = float(direction.norm())
     if norm == 0.0:
-        raise Refusal(
-            "the positive and negative sets have identical mean activations at "
-            "this layer, so there is no direction between them to fit."
-        )
+        raise NoDirection(_NO_DIRECTION_SENTENCE)
     return direction / norm
 
 
@@ -336,6 +432,175 @@ def fit_direction(
     ), direction
 
 
+def _no_direction_note(layer: int) -> str:
+    """What a layer with no direction says about itself, naming the layer.
+
+    The layer number is IN the sentence and not only in the row's `layer`
+    field, because notes are read away from their row — the panel prints them
+    under the chart, `to_dict` hands them to anything that stores the fit — and
+    "the two sets have identical mean activations" with no layer attached is
+    exactly the sentence that sent this defect to review.
+    """
+    embedding = (
+        " Entering layer 0 the residual stream is the last token's own "
+        "embedding, before the model has computed anything, so any two sets "
+        "whose prompts end with the same token — a full stop, usually — are "
+        "the same vector here."
+        if layer == 0
+        else ""
+    )
+    return (
+        f"no direction at layer {layer}: the two sets have identical mean "
+        "activations there, so there was nothing to fit and nothing to score."
+        + embedding
+        + " The p-value and the two null statistics are absent rather than "
+        "zero — no null was run at this layer, and zero would be the most "
+        "confident number in each of those ranges."
+    )
+
+
+def _no_direction_row(states, layer: int, *, method: str) -> Direction:
+    """The row a layer with no direction gets. Same shape as every other row.
+
+    Every field here is either a measurement or an absence, and none of them is
+    a verdict nobody reached.
+
+    `effect` is 0.0. In the case this actually happens in — layer 0, where
+    every prompt's state is the same embedding — that is the reading and not a
+    placeholder: the two sets are one cloud, and the separation between a cloud
+    and itself is zero along every direction.
+
+    `null_mean` and `null_max` are ABSENT, alongside `p_value`. They were 0.0,
+    and that was the one dishonest thing left on this row: no labels were
+    shuffled and no refit was scored here, so "the worst label-shuffled refit
+    reached 0.000" — which is what the chart's own tooltip says out of that
+    field — described eight draws that did not happen. An unknown is not a
+    zero. Together the three absences are what carries "no result"; the note
+    says it in words for a reader who has only the JSON.
+
+    `residual_norm` is measured, by the same definition `fit_direction` uses:
+    the stream has a norm at this layer whether or not anything separates in
+    it, and a receipt is not less true for being about a layer with no answer.
+
+    `beats_null` is False, and it is a CLASSIFICATION rather than a verdict
+    about a null: it is this row saying it is not a survivor, which is what
+    keeps it out of `best_layer` by construction — `sweep` picks the strongest
+    among rows that beat their null — so nothing downstream ever reaches for
+    the `p_value` that is not here. The words a reader sees for it are the
+    note's and the panel's ("no direction here"), never "did not beat its
+    null", which would be a claim about a comparison nobody made.
+    """
+    import torch
+
+    pos, neg = states
+    n = int(pos.shape[0])
+    # The split `fit_direction` would have used, reported so the row reads like
+    # the others rather than like a hole in the table.
+    half = n // 2
+    return Direction(
+        layer=layer,
+        method=method,
+        effect=0.0,
+        null_mean=None,
+        null_max=None,
+        beats_null=False,
+        p_value=None,
+        n_pairs=n,
+        n_fit=int(half),
+        n_score=int(n - half),
+        residual_norm=round(float(torch.cat([pos, neg]).norm(dim=-1).mean()), 3),
+        notes=[_no_direction_note(layer)],
+    )
+
+
+def _nothing_to_fit(layers: list[int]) -> str:
+    """The sentence for a sweep where EVERY requested layer had no direction.
+
+    One such layer among thirty is a row. All of them is a table with no
+    reading in it, and that is a refusal — but the sentence has to do the work
+    `_fit`'s could not, because `_fit` knows about one layer and not about the
+    request: name the layers, name the cause, say what to do instead. The
+    single-layer form is the one a reader reaches by asking for `layers=[0]`
+    after reading that layer 0 is the embedding.
+    """
+    named = ", ".join(str(layer) for layer in layers)
+    if len(layers) == 1:
+        head = (
+            f"layer {layers[0]} is the only layer this fit asked for, and the "
+            f"two sets have identical mean activations at layer {layers[0]}, so "
+            "there is no direction between them to fit."
+        )
+    else:
+        head = (
+            f"every layer this fit asked for — {named} — has identical mean "
+            "activations for the two sets, so there is no direction between "
+            "them to fit anywhere in this sweep."
+        )
+    # Two causes, and a request can hit both at once — so this is additive
+    # rather than a choice. Blaming a shared final token for a degenerate layer
+    # 12 would be an explanation nobody checked: the embedding argument is
+    # about layer 0 and says nothing about what happens above it.
+    why = ""
+    if 0 in layers:
+        why += (
+            " Entering layer 0 the residual stream is the last token's own "
+            "embedding, before the model has computed anything, so two sets "
+            "whose prompts all end with the same token — a full stop, which is "
+            "how sentences end — are the same vector there."
+        )
+    if any(layer > 0 for layer in layers):
+        # "MORE THAN THAT" NEEDS A THAT, and the that is the clause above,
+        # which is only written when layer 0 was among the layers asked for.
+        # `layers=[7]` therefore opened with "Above layer 0 identical means say
+        # more than that", pointing at a sentence the reader was never shown —
+        # and that request reaches here straight off the route, since `layers`
+        # comes through from the body with nothing done to it but a bounds
+        # check. The above-zero clause states its own premise when it has to
+        # stand alone, and keeps the shorter back-reference when it does not.
+        why += (
+            " Above layer 0 identical means say more than that: "
+            if 0 in layers
+            else " Above layer 0 the residual stream is no longer the raw "
+            "embedding, so identical means there say something stronger: "
+        )
+        why += (
+            "the two sets left the same trace in a network that had already "
+            "computed something, which is what happens when the two sets are "
+            "the same text, or differ only in something this model does not "
+            "represent."
+        )
+    if layers == [0]:
+        what = (
+            " Ask for layer 1 or above, where the model has computed something "
+            "for the two sets to differ in, or end the two sets on different "
+            "words."
+        )
+    elif len(layers) == 1:
+        what = (
+            " Sweep the whole stack rather than this one layer — a layer with "
+            "nothing between the two sets comes back as one row with no result, "
+            "not as a failed fit — or give the two sets prompts that differ in "
+            "more than their labels."
+        )
+    else:
+        # NOT "sweep the whole stack" HERE, which is what this used to say. A
+        # fit with no `layers` in the body sweeps every layer the model has
+        # (`runtime.fit_steering_direction`), so for the panel's own button
+        # this branch IS the whole stack, and the first thing the refusal told
+        # that reader to do was the thing they had just done — a remedy that
+        # reproduces the refusal word for word. Nor is widening the sweep
+        # advice this function can stand behind: it has looked at every layer
+        # in the request and has nothing to say about one it did not look at.
+        # What is always true when every layer looked at had nothing in it is
+        # that the two sets did not differ.
+        what = (
+            " Give the two sets prompts that differ in more than their labels "
+            "— as written they left the same trace at every layer this fit "
+            "looked at."
+        )
+    return head + why + what
+
+
 def sweep(model, blocks, positive_ids, negative_ids, layers, *, method: str = "caa"):
     """Fit a direction at every layer and report which ones survive their null.
 
@@ -349,12 +614,38 @@ def sweep(model, blocks, positive_ids, negative_ids, layers, *, method: str = "c
     neg_states = _last_token_states(model, blocks, negative_ids, layers)
 
     rows, vectors = [], {}
+    no_direction: list[int] = []
     for layer in layers:
-        judgement, direction = fit_direction(
-            (pos_states[layer], neg_states[layer]), layer, method=method
-        )
+        try:
+            judgement, direction = fit_direction(
+                (pos_states[layer], neg_states[layer]), layer, method=method
+            )
+        except NoDirection:
+            # ONE LAYER WITH NOTHING IN IT IS A ROW. This loop used to let the
+            # refusal out, and since layer 0 is the last token's embedding —
+            # identical for any two sets of sentences that end the same way —
+            # the panel's own defaults refused at the first layer and reported
+            # nothing about the other twenty-nine, which were fine. The
+            # precedent for treating a degenerate estimate as an outcome rather
+            # than a failure is already inside `fit_direction`: its null loop
+            # skips a shuffle that collapses and scores the rest.
+            no_direction.append(layer)
+            rows.append(
+                _no_direction_row(
+                    (pos_states[layer], neg_states[layer]), layer, method=method
+                ).to_dict()
+            )
+            continue
         rows.append(judgement.to_dict())
         vectors[layer] = direction
+
+    # And the one case where it is the whole answer: a table whose every row
+    # says "no result" is not a table, and the reader is owed the sentence
+    # rather than thirty rows of nothing. `no_direction` is checked for
+    # emptiness first so that a caller passing no layers at all gets the empty
+    # sweep it asked for instead of this.
+    if no_direction and len(no_direction) == len(layers):
+        raise Refusal(_nothing_to_fit(no_direction))
 
     survivors = [r for r in rows if r["beats_null"]]
     return {

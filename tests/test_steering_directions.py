@@ -627,6 +627,20 @@ PANEL = (
 )
 
 
+def _panel_code() -> str:
+    """The panel WITHOUT its comments.
+
+    Two of the pins below assert that a phrase is gone, and this file's own
+    convention is to explain a defect where it was fixed — so the sentence
+    being banned is quoted verbatim in the comment sitting above its
+    replacement, and a plain substring search finds it there and fails. The
+    comment is the receipt; searching the code means searching the code.
+    """
+    import re
+
+    return re.sub(r"/\*.*?\*/", "", PANEL.read_text(encoding="utf-8"), flags=re.S)
+
+
 def test_the_panel_never_launders_an_absent_number_through_a_zero():
     """`measured()` already takes `number | null | undefined` and answers "—".
     Its own docstring says the `?? 0` at the call sites was the defect and the
@@ -652,3 +666,327 @@ def test_the_sliders_relative_label_is_divided_from_the_slider():
     assert "scaled(s.relative)" not in source, (
         "the slider's own label is being read off the applied coefficient"
     )
+
+
+# --------------------------- a layer with no direction is a ROW, not a crash
+
+# THE DEFECT THESE PIN. Open the panel, leave its own default contrast pairs
+# alone, click "Fit the direction": 409, "the positive and negative sets have
+# identical mean activations at this layer". Nothing fitted, anywhere, on a
+# 30-layer model where 29 layers had a perfectly good direction.
+#
+# The estimator was right. `_last_token_states` captures the stream ENTERING
+# each block, and entering block 0 that is the last token's own embedding, so
+# any two sets whose prompts end with the same token — a full stop, which is
+# how sentences end — are literally the same vector at layer 0. `_fit` says so
+# and refuses, which is correct: there is no direction there.
+#
+# What was wrong is that `sweep` treated that one ordinary answer as a failed
+# measurement and threw away the other 29. A layer with nothing between the
+# two sets is a ROW WITH NO RESULT, in exactly the way this package already
+# reports a layer that does not beat its null.
+
+
+def _shared_final_token_pairs(n: int = 12):
+    """Twelve pairs whose prompts all end on the same token, at the same
+    position — the ordinary case for real sentences, and the one that used to
+    abort the whole sweep.
+
+    Both halves matter. `Tok` is deterministic from the text and reads
+    `text[:24]`, so a shared FINAL CHARACTER is a shared final token; and this
+    model is a GPT-2, whose embedding is `wte + wpe`, so a shared final
+    position is needed too or the positional term alone would separate the two
+    sets at layer 0 and the fixture would not reproduce anything. Every string
+    here is exactly 24 characters and every one of them ends in a full stop.
+
+    The bodies differ as loudly as this vocabulary allows, so that the layers
+    which DO have something to fit clear their nulls by a wide margin rather
+    than by a coin flip: measured on this fixture, layer 1 separates 68.4
+    against a worst shuffle of 1.72.
+    """
+    positive = [f"yes yes yes yes yes {i}".ljust(23)[:23] + "." for i in range(n)]
+    negative = [f"no no no no no no {i}".ljust(23)[:23] + "." for i in range(n)]
+    return positive, negative
+
+
+@pytest.mark.parametrize("method", list(sv.METHODS))
+def test_a_layer_with_no_direction_is_a_row_not_a_failed_sweep(rt, method):
+    """29 measured layers are not discarded because the 30th had nothing.
+
+    PARAMETRIZED OVER EVERY SHIPPED METHOD, because the first version of this
+    ran on `caa` alone and the whole path was dead under `repe`. `repe` reads
+    PC1 of the paired differences, and an SVD of all-zero differences returns
+    zero singular values with an arbitrary orthonormal V — so it produced a
+    unit basis vector instead of refusing, `sweep` never reached its
+    no-direction branch, and layer 0 came back `p_value 1.0` with a bar on the
+    chart and the words "inside its null" beside it. The method is a dropdown
+    on the panel, so that was one click from the reproduction this whole
+    section exists for.
+    """
+    positive, negative = _shared_final_token_pairs()
+    out = rt.fit_steering_direction(positive, negative, method=method)
+
+    assert out["ran"] is True
+    assert len(out["layers"]) == N_LAYERS
+
+    zero = out["layers"][0]
+    assert zero["layer"] == 0
+    assert zero["effect"] == 0
+    assert zero["beats_null"] is False
+    # AN UNKNOWN IS NOT A ZERO. No labels were shuffled and no refit was
+    # scored at this layer, so there is no permutation p-value to publish, no
+    # mean of the nulls and no worst of them — and 0.0 is the most confident
+    # number in each of those ranges. Absent from the row, not present and
+    # lying: `null_max` in particular is what the chart's own tooltip renders
+    # as "the worst label-shuffled refit reached 0.000".
+    for absent in ("p_value", "null_mean", "null_max"):
+        assert absent not in zero, (absent, zero)
+
+    note = " ".join(zero["notes"])
+    # THE SUBJECT of the sentence, not a mention of the layer somewhere in it:
+    # a note that had stopped naming its own layer still passed `"layer 0" in
+    # note`, because the explanation that follows says "entering layer 0 the
+    # residual stream is...". That is the mutation this line exists to catch.
+    assert note.startswith("no direction at layer 0"), note
+    assert "identical mean activations" in note, note
+
+    # The whole point: the layers that had something are untouched, and one of
+    # them is the answer.
+    assert out["best_layer"] is not None
+    assert out["best_layer"] > 0
+    assert out["survived"] >= 1
+    for row in out["layers"][1:]:
+        assert isinstance(row["p_value"], float), row
+        assert isinstance(row["null_max"], float), row
+
+
+def test_asking_only_for_a_layer_with_no_direction_refuses_and_names_it(rt):
+    """One degenerate layer out of thirty is a row. One out of one is a no.
+
+    The sentence is the deliverable here. "identical mean activations at this
+    layer" — the estimator's own words, which the OLD refusal also used — does
+    not tell a reader WHICH layer, WHY, or what to do instead, and a test that
+    matched on that phrase would pass against the defect it was written to
+    stop. So every assertion below is on wording the old sentence never had.
+    """
+    positive, negative = _shared_final_token_pairs()
+    with pytest.raises(Refusal) as caught:
+        rt.fit_steering_direction(positive, negative, layers=[0])
+
+    sentence = caught.value.sentence
+    assert "the only layer this fit asked for" in sentence, sentence
+    assert "layer 0" in sentence, sentence
+    # The cause, named: a shared final token, and what layer 0 is.
+    assert "same token" in sentence, sentence
+    assert "embedding" in sentence, sentence
+    # And what to do instead.
+    assert "layer 1" in sentence, sentence
+
+
+def test_a_fit_with_nothing_between_the_two_sets_names_every_layer(rt):
+    """The other half of the rule: refuse only when EVERY layer is degenerate.
+
+    Two identical sets have nothing between them anywhere, not merely at the
+    embedding, and a sweep of rows that all say "no result" is a table with no
+    reading in it. That is a refusal — and it names the layers it tried, so
+    the reader can see it was all of them and not the first one.
+    """
+    positive, _ = _shared_final_token_pairs()
+    with pytest.raises(Refusal) as caught:
+        rt.fit_steering_direction(positive, list(positive))
+
+    sentence = caught.value.sentence
+    assert "every layer this fit asked for" in sentence, sentence
+    for layer in range(N_LAYERS):
+        assert str(layer) in sentence, sentence
+    # AND IT DOES NOT PRESCRIBE WHAT WAS JUST DONE. A fit with no `layers` in
+    # the body sweeps every layer the model has, so this refusal's reader has
+    # just swept the whole stack — and the first remedy the sentence offered
+    # was "Sweep the whole stack rather than these layers", which reproduces
+    # this refusal word for word. A refusal has to name what to do.
+    assert "Sweep the whole stack" not in sentence, sentence
+    assert "differ in more than their labels" in sentence, sentence
+
+
+def test_a_refusal_above_layer_zero_explains_itself_without_a_back_reference():
+    """A back-reference needs something to refer back to, and the clause it
+    points at is only ever printed when layer 0 was asked for.
+
+    The cause clause is additive by design — the embedding argument is true of
+    block 0 and of nothing else — so a request that excludes layer 0 prints
+    only the above-zero half. That half opened with "Above layer 0 identical
+    means say more than that", pointing at a sentence the reader was never
+    shown. Reachable from the route: `layers` arrives from the request body
+    and is only bounds-checked.
+    """
+    dangling = "say more than that"
+    premise = "no longer the raw embedding"
+
+    for layers in ([7], [1, 2], list(range(1, N_LAYERS))):
+        sentence = sv._nothing_to_fit(layers)
+        assert dangling not in sentence, (layers, sentence)
+        assert premise in sentence, (layers, sentence)
+        for layer in layers:
+            assert str(layer) in sentence, (layers, sentence)
+
+    # And the back-reference is kept where it has something to refer to, which
+    # is the only reason the shorter wording is worth having at all.
+    with_zero = sv._nothing_to_fit([0, 1, 2])
+    assert dangling in with_zero, with_zero
+    assert premise not in with_zero, with_zero
+
+
+def test_the_no_direction_note_is_about_the_layer_it_is_on():
+    """A note travels away from its row — the panel prints it under the chart,
+    a saved fit carries it — so it names its own layer, and it does not repeat
+    the layer-0 explanation at a layer that explanation is not true of. The
+    residual stream is the embedding entering block 0 and nowhere else."""
+    zero = sv._no_direction_note(0)
+    deep = sv._no_direction_note(7)
+    assert zero.startswith("no direction at layer 0"), zero
+    assert deep.startswith("no direction at layer 7"), deep
+    assert "embedding" in zero, zero
+    assert "embedding" not in deep, deep
+
+
+class TailTok(Tok):
+    """`Tok`, keeping the sentence's LAST character.
+
+    The fixture tokenizer reads `text[:24]`, and every one of the panel's
+    defaults is longer than that — so the full stop all 24 of them end with is
+    truncated away, and with it the exact property that made the shipped
+    defaults refuse on a real model. A real tokenizer sees the whole sentence
+    and its final token IS that full stop.
+
+    Keeping the last character, with 23 before it so the model's 32 positions
+    still fit, reproduces on this fixture what SmolLM2-135M does for real. The
+    test below is worth nothing without it: under plain `Tok` the defaults
+    truncate to 24 different final characters and never reach the branch.
+    """
+
+    def __call__(self, text: str, return_tensors: str = "pt"):
+        clipped = text[:23] + text[-1] if len(text) > 24 else text
+        return super().__call__(clipped, return_tensors)
+
+
+def _panel_defaults() -> tuple[list[str], list[str]]:
+    """The two default contrast sets, READ OUT OF THE PANEL.
+
+    Copied strings would pin a fossil: the point of the test below is that the
+    text the reader is handed on their first click still fits, so it has to be
+    the text the panel actually ships today. Same reasoning, and the same
+    file, as the two tests above that read `PANEL` for its arithmetic.
+    """
+    import re
+
+    source = PANEL.read_text(encoding="utf-8")
+    sets = []
+    for name in ("POSITIVE_DEFAULT", "NEGATIVE_DEFAULT"):
+        block = re.search(rf"const {name} = \[(.*?)\]\.join", source, re.S)
+        assert block, f"{name} is not where this test looks for it in {PANEL.name}"
+        sets.append(re.findall(r'"((?:[^"\\]|\\.)*)"', block.group(1)))
+    return sets[0], sets[1]
+
+
+def test_the_panels_own_defaults_fit_rather_than_refuse(rt):
+    """The first click on a fresh panel must not be a 409.
+
+    This is the reproduction from the review, in process: the panel's twelve
+    shipped pairs, every one of them ending in a full stop, through the same
+    route the button calls. It refused on a real model and it refuses on this
+    fixture for the identical reason, which is what makes a three-layer GPT-2
+    a fair stand-in for a thirty-layer Llama here.
+    """
+    positive, negative = _panel_defaults()
+    assert len(positive) == len(negative) >= sv.MIN_PAIRS, (
+        f"the panel ships {len(positive)} against {len(negative)} lines"
+    )
+
+    rt.tokenizer = TailTok()
+    out = rt.fit_steering_direction(positive, negative, method="caa")
+    assert out["ran"] is True
+    assert len(out["layers"]) == N_LAYERS
+    # Whatever else this untrained model does with them, no row may carry a
+    # p-value it did not measure.
+    for row in out["layers"]:
+        assert "p_value" not in row or isinstance(row["p_value"], float), row
+    # A COVERAGE GUARD, not a product requirement. Every assertion above is
+    # satisfied by a fit where nothing degenerate happened at all, so this test
+    # could go on passing while quietly ceasing to exercise the branch it was
+    # written for — by someone shortening a default below `TailTok`'s 24
+    # characters, or by someone reading the new note and "fixing" the defaults
+    # to end on different words. If that happens the right move is to delete
+    # this line and say so, not to leave a green test standing guard over
+    # nothing.
+    assert any("p_value" not in row for row in out["layers"]), (
+        "the panel's shipped defaults no longer collide at layer 0, so this "
+        "test has stopped reproducing the defect it exists for — see TailTok"
+    )
+
+
+def test_the_panel_draws_a_layer_with_no_direction_as_no_data(rt):
+    """Every writer needs a reader, and the reader for the row above is the
+    chart. A degenerate row has `effect` 0, and a 0.4%-wide bar at the axis is
+    how "there was nothing to measure" gets drawn as "measured, and weak" —
+    the same lie in pixels that a `p_value` of 0.0 would be in JSON. The
+    hatched no-data treatment already in this stylesheet (`.tl-block.no-dur`)
+    is the house recipe for it, and "inside its null" is the wrong label for a
+    row that never had a null."""
+    source = PANEL.read_text(encoding="utf-8")
+    assert "st-nodir" in source, "the chart has no no-data treatment"
+    assert "no direction here" in source
+    css = (PANEL.parent / "styles.css").read_text(encoding="utf-8")
+    assert ".st-nodir" in css
+    rule = css.split(".st-nodir {")[1].split("}")[0]
+    assert "repeating-linear-gradient" in rule
+    # NO ELEMENT OPACITY ON THE PLATE. The recipe was lifted from
+    # `.tl-block.no-dur`, where `opacity: 0.75` is a step down from the
+    # block's own 0.9 over an OPAQUE fill. Over a translucent one the two
+    # dims compound: measured over the track, the hatch came out 1.15:1
+    # stripe-against-gap in light standard, against 2.18:1 for the same
+    # gradient in the timeline, and the whole "no result" plate read fainter
+    # (1.29:1) than the ordinary null band it stands in for (1.42:1).
+    assert "opacity" not in rule, rule
+
+
+def test_the_chart_does_not_count_a_never_nulled_layer_as_one_that_failed():
+    """The headline over the chart is the sentence a reader reads first.
+
+    "{survived} of {layers.length} layers beat their own null" put the layers
+    that never HAD a null into the population that failed to clear one — so a
+    30-layer sweep with a degenerate layer 0 said "12 of 30", which tells the
+    reader 18 layers were tested and lost when 17 were and one was never
+    entered. That is the same claim the row verdict had to stop making, one
+    element higher up. Text-pinned, like the two above: there is no frontend
+    runner in this repo.
+    """
+    source = _panel_code()
+    assert "of {fit.layers.length} layers beat their own null" not in source, (
+        "the denominator counts layers that never had a null to beat"
+    )
+    # The denominator is the layers that were actually scored, and the rest
+    # are counted and named rather than folded in.
+    assert 'fit.layers.filter((l) => typeof l.p_value === "number").length' in source
+    assert "had no direction to test" in source
+    # "No layer's separation beat its own label-shuffled refits" is the same
+    # error in the other branch: it is printed whenever `best_layer` is null,
+    # which a sweep containing degenerate rows reaches.
+    assert "No layer's separation beat its own" not in source, source
+
+
+def test_the_note_a_degenerate_row_carries_is_printed_and_not_only_hovered():
+    """Every writer needs a reader.
+
+    `_no_direction_note` is three sentences carrying the whole explanation —
+    why layer 0 is the last token's own embedding, why the p-value is absent
+    rather than zero. The panel printed notes only for `fit.best_layer`, and a
+    degenerate row is `beats_null: false` by construction so it can never BE
+    the best layer. The note therefore reached the reader through one channel:
+    `title` on a non-interactive span. Mouse-only — not keyboard-reachable,
+    not in the accessible name, invisible on touch.
+    """
+    source = _panel_code()
+    notes = source.split(".flatMap((l) => l.notes)")[0]
+    filtered = notes[notes.rindex("fit.layers") :]
+    assert 'typeof l.p_value !== "number"' in filtered, filtered
+    assert "l.layer === fit.best_layer" in filtered, filtered

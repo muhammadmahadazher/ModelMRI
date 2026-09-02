@@ -189,6 +189,45 @@ function NullBadge({ row }: { row: SavedDirection }) {
   );
 }
 
+/** The headline over the chart, and its denominator is the whole point.
+ *
+ *  "{survived} of {fit.layers.length} layers beat their own null" counted the
+ *  layers that never HAD a null in the population that failed to clear one —
+ *  so a 30-layer sweep with a degenerate layer 0 said "12 of 30", telling the
+ *  reader 18 layers were tested and lost when 17 were and one was never
+ *  entered. That is the same claim the row verdict below had to stop making,
+ *  restated in the sentence a reader reads first. The layers with nothing in
+ *  them are counted separately and named, because they are a third state and
+ *  not a worse version of the second. */
+function FitVerdict({ fit }: { fit: DirectionFit }) {
+  const nulled = fit.layers.filter((l) => typeof l.p_value === "number").length;
+  const none = fit.layers.length - nulled;
+  const aside = none > 0 ? ` · ${none} had no direction to test` : "";
+  if (fit.best_layer === null) {
+    return (
+      <div className="st-verdict none">
+        <b>Nothing cleared.</b> No layer that had a null beat it, so there is
+        no direction here — not a weak one, none. That is a result, and it is
+        the one this estimator is built to be able to give.
+        {none > 0 && (
+          <>
+            {" "}
+            The other {none} of {fit.layers.length} had no null to beat: the
+            two sets have identical mean activations there, so nothing was
+            fitted and nothing was scored.
+          </>
+        )}
+      </div>
+    );
+  }
+  return (
+    <div className="st-verdict">
+      Strongest at <b>layer {fit.best_layer}</b> · {fit.survived} of {nulled}{" "}
+      layers beat their own null{aside}
+    </div>
+  );
+}
+
 /** The fit table, drawn. Signed effect, null band around zero, chosen layer lit.
  *
  *  The band is drawn FIRST and behind: it is the thing the bar has to clear,
@@ -199,7 +238,15 @@ function FitChart({ fit }: { fit: DirectionFit }) {
   // or the worst shuffle. Floored at 0.5 so a fit where everything is tiny
   // does not get magnified into a dramatic-looking chart of nothing.
   const reach = Math.max(
-    ...fit.layers.map((l) => Math.max(Math.abs(l.effect), l.null_max)),
+    ...fit.layers.map((l) =>
+      // A layer with no direction contributes only its `effect`, which is 0:
+      // it has no null, so there is no band of its own for the axis to have
+      // to contain. `typeof` rather than `?? 0` so nothing here can quietly
+      // start treating an absent measurement as a small one.
+      typeof l.null_max === "number"
+        ? Math.max(Math.abs(l.effect), l.null_max)
+        : Math.abs(l.effect),
+    ),
     0.5,
   );
   const x = (v: number) => 50 + (50 * v) / reach;
@@ -218,36 +265,72 @@ function FitChart({ fit }: { fit: DirectionFit }) {
       <ol className="st-rows stagger">
         {[...fit.layers].reverse().map((row: DirectionLayer, i) => {
           const best = row.layer === fit.best_layer;
+          // NOTHING WAS SCORED AT THIS LAYER — which is not a weak result and
+          // must not be drawn as one. The backend publishes no `p_value` for a
+          // layer whose two sets had identical mean activations: there was no
+          // direction to project onto and no null to take a quantile of. That
+          // ABSENCE is the field to read, not the effect — an effect of
+          // exactly 0.0 is a legitimate measurement everywhere else, and the
+          // `Math.max(…, 0.4)` below would paint it as a sliver of bar that
+          // says "measured, and weak".
+          const nothing = typeof row.p_value !== "number";
+          // The band's own half-width. Present on every row that was scored,
+          // which is every row that reaches the branch drawing it; the 0 is
+          // the type's floor and not a reading, and nothing renders it.
+          const nullMax = typeof row.null_max === "number" ? row.null_max : 0;
           const from = Math.min(50, x(row.effect));
           const to = Math.max(50, x(row.effect));
           return (
             <li
               key={row.layer}
               className={
-                (best ? "st-best " : "") + (row.beats_null ? "st-clears" : "st-inside")
+                (best ? "st-best " : "") +
+                (nothing ? "st-none" : row.beats_null ? "st-clears" : "st-inside")
               }
               style={{ "--i": i } as CSSProperties}
             >
               <span className="mid st-l">L{row.layer}</span>
               <span className="st-track">
-                <span
-                  className="st-band"
-                  style={{
-                    left: `${x(-row.null_max)}%`,
-                    width: `${x(row.null_max) - x(-row.null_max)}%`,
-                  }}
-                  title={`the worst label-shuffled refit reached ${measured(row.null_max, 3)}`}
-                />
-                <span className="st-zero" />
-                <span
-                  className="st-bar"
-                  style={{ left: `${from}%`, width: `${Math.max(to - from, 0.4)}%` }}
-                  title={`separation ${measured(row.effect, 3)} on ${row.n_score} held-out pairs`}
-                />
+                {nothing ? (
+                  // The hatch this stylesheet already uses for a step whose
+                  // duration was never recorded: there is no honest width for
+                  // an unknown, so the difference is carried by the fill and
+                  // not by the size. The note is the backend's own sentence.
+                  <>
+                    <span className="st-nodir" title={row.notes.join(" ")} />
+                    <span className="st-zero" />
+                  </>
+                ) : (
+                  <>
+                    <span
+                      className="st-band"
+                      style={{
+                        left: `${x(-nullMax)}%`,
+                        width: `${x(nullMax) - x(-nullMax)}%`,
+                      }}
+                      title={`the worst label-shuffled refit reached ${measured(nullMax, 3)}`}
+                    />
+                    <span className="st-zero" />
+                    <span
+                      className="st-bar"
+                      style={{ left: `${from}%`, width: `${Math.max(to - from, 0.4)}%` }}
+                      title={`separation ${measured(row.effect, 3)} on ${row.n_score} held-out pairs`}
+                    />
+                  </>
+                )}
               </span>
-              <span className="mid st-eff">{measured(row.effect, 2)}</span>
+              <span className="mid st-eff">
+                {nothing ? "—" : measured(row.effect, 2)}
+              </span>
               <span className="meta st-verd">
-                {row.beats_null ? `p=${prob(row.p_value)}` : "inside its null"}
+                {/* "inside its null" is the wrong words for a row that never
+                    had a null, and it is the sentence a reader would take as
+                    a measurement. */}
+                {typeof row.p_value === "number"
+                  ? row.beats_null
+                    ? `p=${prob(row.p_value)}`
+                    : "inside its null"
+                  : "no direction here"}
               </span>
             </li>
           );
@@ -879,34 +962,37 @@ export default function SteeringPanel({
 
             {fit.ran ? (
               <>
-                <div className={`st-verdict${fit.best_layer === null ? " none" : ""}`}>
-                  {fit.best_layer === null ? (
-                    <>
-                      <b>Nothing cleared.</b> No layer's separation beat its own
-                      label-shuffled refits, so there is no direction here — not
-                      a weak one, none. That is a result, and it is the one this
-                      estimator is built to be able to give.
-                    </>
-                  ) : (
-                    <>
-                      Strongest at <b>layer {fit.best_layer}</b> · {fit.survived}{" "}
-                      of {fit.layers.length} layers beat their own null
-                    </>
-                  )}
-                </div>
+                <FitVerdict fit={fit} />
                 <FitChart fit={fit} />
                 <p className="meta">
                   The translucent band is where the same estimator landed with
                   the labels shuffled, drawn symmetrically because the null is
                   measured in absolute separation. A bar ending inside it is
                   what this pipeline produces from these activations regardless
-                  of the labels. With eight refits the smallest attainable
-                  p-value is 0.111, so <b>this is a screen and not a
-                  significance test</b> — measured on structureless data, 16% of
-                  what <code>caa</code> reports as real is noise.
+                  of the labels. A hatched row had no band and no bar: its two
+                  sets have identical mean activations at that layer, so
+                  nothing was fitted and nothing was scored there. With eight
+                  refits the smallest attainable p-value is 0.111, so <b>this
+                  is a screen and not a significance test</b> — measured on
+                  structureless data, 16% of what <code>caa</code> reports as
+                  real is noise.
                 </p>
                 {fit.layers
-                  .filter((l) => l.layer === fit.best_layer)
+                  /* The best layer's notes, AND every note from a layer with
+                     nothing in it. A degenerate row is `beats_null: false` by
+                     construction and so can never be the best layer, which
+                     left the sentence the backend writes about it — why layer
+                     0 is the token's own embedding, why its p-value is absent
+                     rather than zero — reachable only as the `title` on a
+                     hatched span: mouse-only, not keyboard-reachable, not in
+                     the accessible name, invisible on touch. Every writer
+                     needs a reader. Each note names its own layer, so several
+                     of them read correctly in sequence. */
+                  .filter(
+                    (l) =>
+                      l.layer === fit.best_layer ||
+                      typeof l.p_value !== "number",
+                  )
                   .flatMap((l) => l.notes)
                   .map((n) => (
                     <p className="hint warn" key={n}>

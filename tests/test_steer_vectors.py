@@ -99,10 +99,42 @@ def test_unmatched_sets_are_refused():
         sv.fit_direction((pos, neg[:8]), 0)
 
 
-def test_identical_sets_have_no_direction_and_say_so():
+@pytest.mark.parametrize("method", ["caa", "repe"])
+def test_identical_sets_have_no_direction_and_say_so(method):
+    """PARAMETRIZED OVER BOTH METHODS, and that is the whole test.
+
+    It ran on the default (`caa`) only, and `caa` was never the method with the
+    problem. `repe` takes the first principal component of the paired
+    DIFFERENCES, and the SVD of an all-zero matrix returns zero singular values
+    beside an arbitrary orthonormal V — so `vh[0]` came back a unit vector with
+    a norm of exactly 1.0, the `norm == 0.0` guard could not fire, and the
+    estimator handed out a basis vector as a fitted direction. Measured on
+    twelve identical pairs: `e_0`, and downstream a row reading `effect 0.0,
+    p_value 1.0` under the note "this direction does not beat its own
+    label-shuffled refits" — a verdict about eight shuffles that had each
+    estimated a basis vector too.
+
+    A `NoDirection` specifically, not any refusal: `sweep` tells this apart
+    from "not enough pairs" to decide whether one layer or the whole request is
+    what has no answer, and a plain `Refusal` here would abort the sweep.
+    """
     same = torch.randn(12, D)
-    with pytest.raises(Refusal, match="no direction between them"):
-        sv.fit_direction((same, same.clone()), 0)
+    with pytest.raises(sv.NoDirection, match="no direction between them"):
+        sv.fit_direction((same, same.clone()), 0, method=method)
+
+
+@pytest.mark.parametrize("method", ["caa", "repe"])
+def test_neither_estimator_invents_a_direction_from_nothing(method):
+    """One level below the refusal: `_fit` itself must not return a vector.
+
+    The refusal above is the behaviour; this is the reason it is safe. A
+    returned unit vector is not merely a wrong answer, it is one that would
+    have been stored — `sweep` keeps `vectors[layer]` for the caller to steer
+    with — so what is checked here is that nothing comes back at all.
+    """
+    same = torch.randn(12, D)
+    with pytest.raises(sv.NoDirection):
+        sv._fit(same, same.clone(), method)
 
 
 def test_an_unknown_method_is_a_bad_request():

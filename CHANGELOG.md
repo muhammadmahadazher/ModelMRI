@@ -6,6 +6,42 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The steering panel's own default contrast pairs could not be fitted.** Open
+  the panel, leave the twelve shipped pairs in place, click *Fit the direction*,
+  and every layer came back as one 409: *"the positive and negative sets have
+  identical mean activations at this layer."* Nothing was fitted anywhere,
+  although twenty-nine of thirty layers had a perfectly good direction.
+
+  The estimator was right and the sweep was wrong. `_last_token_states` captures
+  the residual stream **entering** each block, so entering layer 0 it is the last
+  token's own embedding — and every real sentence ends with a full stop, so both
+  sets are the same vector there. `_fit` says so correctly. `sweep` then let that
+  one ordinary answer abort the other twenty-nine.
+
+  A layer with nothing between the two sets is now **one row, not a failed
+  sweep**: `effect` 0, `beats_null` false, and **no `p_value`, `null_mean` or
+  `null_max` at all** — a layer that was never scored has no permutation quantile
+  and no shuffles to take a worst of, and zero is the most confident number in
+  each of those ranges. A note on the row names the layer and the cause. The
+  sweep refuses only when *every* requested layer is degenerate, and a
+  single-layer request still refuses — naming the layer, the cause, and which
+  layers to try instead.
+
+  Two things this turned up beyond the reported defect. `null_mean` and
+  `null_max` had been shipping as **0.0 beside a note saying no null was run**,
+  so the row contradicted itself and the chart's own tooltip read *"the worst
+  label-shuffled refit reached 0.000"* about eight draws that never happened.
+  And `repe` could not express the degenerate case at all — the SVD of all-zero
+  differences returns an arbitrary orthonormal basis, so PC1 came back a unit
+  vector and the whole row-not-a-refusal path was dead behind the method
+  dropdown. Each estimator now tests what is actually degenerate for it.
+
+  In the panel the row draws with the existing hatched no-data recipe and reads
+  **"no direction here"** — never a minimum-width bar, which said "measured, and
+  weak", and never "inside its null", which claimed a null that was never run.
+
 ### Added
 
 - **The SAE behind this project's own published numbers is in the registry at

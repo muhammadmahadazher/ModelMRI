@@ -1216,14 +1216,28 @@ export interface DirectionLayer {
   method: string;
   /** Standardised separation on the HELD-OUT half. */
   effect: number;
-  null_mean: number;
-  /** The worst of the label-shuffled refits. `effect` has to clear it. */
-  null_max: number;
+  /** OPTIONAL, for the same reason `p_value` below is: a layer with no
+   *  direction had no labels shuffled and no refit scored, so there is no
+   *  mean of the nulls and no worst of them. They shipped as 0, which read as
+   *  "the worst shuffle reached 0.000" — a statement about eight draws that
+   *  were never drawn. */
+  null_mean?: number;
+  /** The worst of the label-shuffled refits. `effect` has to clear it.
+   *  Absent on a layer that never had a null; see `null_mean`. */
+  null_max?: number;
   beats_null: boolean;
   /** `(1 + #{null >= |effect|}) / (1 + draws)`, so its FLOOR is 1/(K+1) =
    *  0.111 at eight refits. It is a screen and not a significance test — the
-   *  measured false-positive rate on structureless data is 16% for caa. */
-  p_value: number;
+   *  measured false-positive rate on structureless data is 16% for caa.
+   *
+   *  OPTIONAL, and that is the signal. A layer whose two sets have identical
+   *  mean activations — layer 0, for any two sets of sentences that end the
+   *  same way, because entering block 0 the stream is that token's embedding
+   *  — was never scored and has no null to take a quantile of, so
+   *  `steer_vectors.Direction.to_dict` omits the field rather than sending a
+   *  zero. Absence is how the chart tells "no result" from "a result of
+   *  zero"; `effect` on such a row is 0 and must not be drawn as a bar. */
+  p_value?: number;
   n_pairs: number;
   n_fit: number;
   n_score: number;
