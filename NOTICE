@@ -13,8 +13,10 @@ the MIT License and remain available under it: modelmri up to and including
 
 This product includes software developed by ModelMRI contributors and
 third-party open-source packages identified by the lockfiles in this
-repository. The built application bundles the Archivo Black typeface, which
-is licensed under the SIL Open Font License 1.1; see THIRD_PARTY_NOTICES.md.
+repository. The built application bundles the Geist and JetBrains Mono
+typefaces, both licensed under the SIL Open Font License 1.1; their license
+texts sit beside the font files in frontend/src/fonts/. See
+THIRD_PARTY_NOTICES.md.
 
 Model weights, sparse autoencoders, and datasets loaded at runtime are not part
 of this distribution and remain under their own licenses. In particular:
