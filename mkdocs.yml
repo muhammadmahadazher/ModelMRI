@@ -58,7 +58,14 @@ nav:
       - modelmri-record: reference/record.md
   - FAQ: faq.md
   - Troubleshooting: troubleshooting.md
-  - Licensing: licensing.md
+  - Project:
+      - Licensing: licensing.md
+      - Governance: https://github.com/muhammadmahadazher/ModelMRI/blob/main/GOVERNANCE.md
+      - Contributing: https://github.com/muhammadmahadazher/ModelMRI/blob/main/CONTRIBUTING.md
+      - Security: https://github.com/muhammadmahadazher/ModelMRI/blob/main/SECURITY.md
+      - Code of conduct: https://github.com/muhammadmahadazher/ModelMRI/blob/main/CODE_OF_CONDUCT.md
+      - Contributor License Agreement (draft): https://github.com/muhammadmahadazher/ModelMRI/blob/main/CLA.md
+      - Trademarks (draft): https://github.com/muhammadmahadazher/ModelMRI/blob/main/TRADEMARKS.md
 
 markdown_extensions:
   - admonition

@@ -29,6 +29,14 @@ pixels, the control's state AFTER the operation and not only during it.
 - [ ] Screenshot or recording attached for visual changes, in **both** palettes
 - [ ] Every state the change can reach is implemented and seen: loading,
       empty, refused, error, stale — not just the one where it works
+- [ ] New files carry an `SPDX-License-Identifier` header, and `reuse lint`
+      passes
+- [ ] Third-party material — code, data, text, fonts — is disclosed with its
+      source and license (see CONTRIBUTING.md, *Provenance*), or there is none
+- [ ] AI-assisted work has been read, run and understood by the human
+      submitting it, and checked against the primary source it implements
+- [ ] Security implications considered: what code runs, what paths are read,
+      what leaves the machine
 
 ## Correctness of the measurement
 

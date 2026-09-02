@@ -11,7 +11,7 @@ no older release is guaranteed a backport.
 
 | package | current |
 |---|---|
-| `modelmri` | 0.6.x |
+| `modelmri` | 0.12.x |
 | `modelmri-record` | 0.1.x |
 
 ## Report a vulnerability
@@ -24,6 +24,51 @@ Include the affected version or commit, the impact, reproduction steps, and a
 minimal proof of concept. Please don't test against anyone else's machine or
 account.
 
+### What counts
+
+Anything that makes ModelMRI do something on your machine, or with your
+data, that you did not ask for. In this tool that concretely means:
+
+- **loading a checkpoint executes something it should not** — a pickle or
+  other deserialization path that runs code, a `trust_remote_code` bypass,
+  a malicious `.bin`, GGUF or safetensors file that gets past the scanner or
+  the loader;
+- **archive and container attacks** — a zip, tar or model directory that
+  escapes where it is unpacked, or exhausts memory or disk on the way;
+- **path traversal and arbitrary reads** — any request that reads or lists
+  a file outside the roots the server was given;
+- **SSRF** — the server fetching a URL it was tricked into fetching;
+- **localhost and origin bypass** — a web page or another process reaching
+  the server from where the loopback binding should have kept it out;
+- **remote code execution** through any route, including the custom-adapter
+  loader and the policy sidecar;
+- **authentication bypass**, in any deployment that has put authentication
+  in front of the server;
+- **credential and trace leakage** — a token written where it should not be,
+  a secret shape the redactor misses, a trace that leaves the machine;
+- **`.mri` parser attacks** — a crafted file that crashes, hangs or
+  misleads the reader, the viewer or `modelmri verify`;
+- **model and plugin supply chain** — an adapter, SAE or registry entry
+  resolving to something other than what it names;
+- **dependency vulnerabilities** in what the wheel or the built app pulls in;
+- **desktop sandboxing**, where a packaged desktop build exists, and
+  **cloud worker isolation**, where a hosted deployment exists — neither
+  ships from this repository today, and reports about either are still
+  welcome when they do.
+
+A wrong number on screen is a bug, and a serious one, but it is not a
+security report unless an attacker can cause it; file those as issues.
+
+### What to expect
+
+Coordinated disclosure: report privately, give the maintainer a reasonable
+chance to understand and fix the problem before it is public, and the fix
+ships with a GitHub security advisory that credits you unless you ask
+otherwise. This project is maintained by one person and promises no response
+time; it does promise that a private report is read, answered, and not
+ignored. If something has been sitting without an answer, a second message
+through the same form is the right move, not a public issue.
+
 ## The trust model, stated plainly
 
 **ModelMRI is a local single-user tool.** The server binds `127.0.0.1` by
@@ -34,6 +79,13 @@ If you bind it to another interface, you have given everyone who can reach that
 port the ability to load models, execute the code described below, and read
 your recorded traces. Don't do that without putting your own authentication in
 front of it.
+
+**If you host ModelMRI for other people**, you are operating a service, and
+the trust model above no longer describes your situation: every request is
+from someone you did not vet, the tool was not hardened for that, and the
+authentication, isolation and limits are yours to put in place. If you have
+modified ModelMRI, section 13 of the AGPL applies to the people using your
+version over the network — see [LICENSING.md](LICENSING.md).
 
 ## Loading a model executes code
 

@@ -10,3 +10,16 @@
 
 # The one place ModelMRI runs code it did not write. Read twice.
 /modelmri/custom.py @muhammadmahadazher
+
+# High-governance paths (GOVERNANCE.md): the Project Lead's approval is
+# recorded on every change here. With one maintainer this documents what is
+# high-governance rather than gating it.
+/LICENSE* @muhammadmahadazher
+/LICENSING.md @muhammadmahadazher
+/LICENSES/ @muhammadmahadazher
+/REUSE.toml @muhammadmahadazher
+/CLA.md @muhammadmahadazher
+/GOVERNANCE.md @muhammadmahadazher
+/packages/**/pyproject.toml @muhammadmahadazher
+/modelmri/session.py @muhammadmahadazher
+/.github/workflows/ @muhammadmahadazher
