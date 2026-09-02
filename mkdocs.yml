@@ -59,7 +59,6 @@ nav:
   - FAQ: faq.md
   - Troubleshooting: troubleshooting.md
   - Licensing: licensing.md
-  - Licensing: licensing.md
 
 markdown_extensions:
   - admonition
