@@ -10,8 +10,6 @@ authors = [{ name = "Muhammad Mahad Azher" }]
 keywords = ["robotics", "vla", "lerobot", "interpretability", "policy"]
 # No `License ::` classifier: `license` above is an SPDX expression (PEP 639),
 # and PyPI rejects an upload that carries a license classifier beside one.
-# No `License ::` classifier: `license` above is an SPDX expression (PEP 639),
-# and PyPI rejects an upload that carries a license classifier beside one.
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",

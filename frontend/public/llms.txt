@@ -93,7 +93,6 @@ of ModelMRI that omits these is misleading:
 - [HTTP API](https://muhammadmahadazher.github.io/ModelMRI/docs/reference/api/): scripting ModelMRI directly
 - [Citation metadata](https://github.com/muhammadmahadazher/ModelMRI/blob/main/CITATION.cff): CFF file for academic citation
 - [Licensing](https://github.com/muhammadmahadazher/ModelMRI/blob/main/LICENSING.md): which license covers which files, and what it means for you
-- [Licensing](https://github.com/muhammadmahadazher/ModelMRI/blob/main/LICENSING.md): which license covers which files, and what it means for you
 
 ## Attribution
 
