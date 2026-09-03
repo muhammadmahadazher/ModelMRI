@@ -322,7 +322,7 @@ def test_apache_code_imports_nothing_new_from_the_application(path: Path) -> Non
     )
 
 
-@pytest.mark.parametrize("path", [ROOT / p for p in CODEC_FILES], ids=lambda p: rel(p))
+@pytest.mark.parametrize("path", [ROOT / p for p in CODEC_FILES], ids=rel)
 def test_the_codec_closure_admits_nothing_new(path: Path) -> None:
     """The five codec files import only the standard library and each other."""
     allowed = known(path)
