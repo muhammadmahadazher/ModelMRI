@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -1080,12 +1081,91 @@ def test_cost_prices_the_run_in_forward_and_backward_passes(ids, tok):
     )
     assert priced.backward_passes == 64
     assert priced.forward_passes == 4
-    assert priced.step_seconds > priced.forward_seconds > 0
-    assert priced.ratio > 1.0
+    # Both probes are real and both are timed, so both are positive. What is
+    # NOT asserted here is which of them is larger.
+    #
+    # It used to be — `step_seconds > forward_seconds` and `ratio > 1.0` — and
+    # that is a claim about the machine rather than about this code. On this
+    # toy model the forward probe measures between 0.043 and 0.132 ms, and
+    # `budget.probe_pass` times ONE call of it with `perf_counter` and has no
+    # repeat. Measured here, forty consecutive runs never inverted (ratio 2.50
+    # to 44.49, median 4.77), which is exactly why it read as solid — and then
+    # a macOS py3.12 runner inverted it at a242417 and turned `main` red by
+    # 0.03 ms. A shared runner scheduling something else during a 50-microsecond
+    # measurement is not a defect in `cost`.
+    #
+    # Everything that assertion was really protecting is checked below without
+    # a stopwatch: the unit is forward-and-backward passes, and `ratio` is
+    # derived from the two measurements rather than being the "about 2x"
+    # everyone repeats. `test_the_ratio_is_only_ever_the_two_measured_times`
+    # pins that arithmetic exactly, on timings it controls.
+    assert priced.forward_seconds > 0
+    assert priced.step_seconds > 0
+    assert priced.ratio == priced.step_seconds / priced.forward_seconds
     assert priced.estimate.passes == 64
     assert "forward-and-backward" in priced.estimate.basis
     assert any("forward-AND-backward" in n for n in priced.estimate.notes)
     assert "forward-and-backward" in priced.to_dict()["means"]
+
+
+@pytest.mark.parametrize(
+    ("forward", "step", "expected"),
+    [
+        (0.001, 0.004, 4.0),  # the ordinary case: a step costs more
+        (0.004, 0.001, 0.25),  # inverted, which a loaded runner really does produce
+        (0.002, 0.002, 1.0),  # indistinguishable at this resolution
+        (0.0, 0.004, None),  # a forward too fast to time: no ratio exists
+    ],
+    ids=["step-costs-more", "inverted", "equal", "forward-unmeasurable"],
+)
+def test_the_ratio_is_only_ever_the_two_measured_times(
+    ids, tok, monkeypatch, forward, step, expected
+):
+    """`ratio` is division, and the numbers come off the machine.
+
+    The point of reporting it at all is that it is MEASURED — the module's
+    docstring refuses to quote the "about 2x" everyone repeats — so the thing
+    worth pinning is that nothing else gets mixed in, and that it survives the
+    cases a real machine produces.
+
+    Timed by hand here rather than by running the model, because the ordering
+    of two sub-millisecond probes is a property of the runner and not of this
+    code; the assertion that used to live in
+    `test_cost_prices_the_run_in_forward_and_backward_passes` turned `main` red
+    on macOS for exactly that reason. The inverted row is that runner.
+
+    The last row is a branch nothing reached before. `cost` guards the division
+    with `if fwd and fwd > 0`, so a forward pass too fast for the clock yields
+    no ratio rather than a ZeroDivisionError inside a price — and `None` is the
+    honest answer, because there is no ratio to report.
+    """
+    from modelmri import budget, gradients
+
+    calls = []
+
+    def fake_probe(run, device_kind):
+        # Still RUNS the body: the memory figures, the retained-bytes count and
+        # the estimate all come from a real pass, and only the clock is
+        # replaced. A fake that skipped the work would be measuring nothing.
+        real = probe(run, device_kind)
+        seconds = (forward, step)[len(calls)]
+        calls.append(seconds)
+        return replace(real, seconds=seconds)
+
+    probe = budget.probe_pass
+    monkeypatch.setattr(budget, "probe_pass", fake_probe)
+
+    priced = gradients.cost(
+        ToyLM("tanh"), tok, ids, baseline="zero", target_kind="logit", steps=8
+    )
+
+    assert calls == [forward, step], "the forward probe is timed first"
+    assert priced.forward_seconds == forward
+    assert priced.step_seconds == step
+    assert priced.ratio == expected
+    # The unit is unaffected by any of this: it is counted, not timed.
+    assert priced.backward_passes == 8
+    assert priced.forward_passes == 4
 
 
 def test_cost_counts_what_the_loop_actually_holds_across_steps(ids, tok):
