@@ -8,6 +8,19 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
 
 ### Added
 
+- **The license boundary is machine-checked.** Every first-party source file
+  carries an SPDX header — AGPL-3.0-only for the application, Apache-2.0 for
+  the packages, the shim, the samples and the five `.mri` codec files — and
+  `REUSE.toml` covers everything that cannot carry one, so `reuse lint` passes
+  with nothing unlicensed. CI runs it on every pull request beside
+  `tests/test_licensing.py`, which checks by `ast` that the Apache-2.0 code
+  imports nothing new from the application, records the six crossings that
+  predate the check with where each one goes, and fails when one is paid but
+  not delisted. `THIRD_PARTY_NOTICES.md` gains its dependency table from
+  `scripts/third_party_notices.py`, a test refuses a direct dependency without
+  a notice, and `dependency-review-action` flags license changes and known
+  vulnerabilities in a pull request's dependency diff.
+
 - **Governance and community documents.** `GOVERNANCE.md` says who decides
   what, today and as roles are filled, and which changes are high-governance.
   `CLA.md` is a draft Contributor License Agreement on the Harmony templates

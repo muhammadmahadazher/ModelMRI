@@ -26,6 +26,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # What a pull request changes in the dependency tree: new packages, their
+  # licenses, and any known vulnerability in them, from GitHub's dependency
+  # graph diff of base against head. pip-audit and npm audit below judge
+  # the tree as it is; this judges the change. Pull requests only: there is
+  # no diff on a push to main or on the weekly schedule.
+  dependency-review:
+    name: What this pull request changes in the dependency tree
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          # The licenses the dependency audit in LICENSING.md blocks on. A
+          # license the action cannot classify is reported, not failed.
+          deny-licenses: SSPL-1.0, BUSL-1.1, Elastic-2.0, CC-BY-NC-4.0, CC-BY-NC-SA-4.0, CC-BY-NC-ND-4.0
+          comment-summary-in-pr: never
+
   dependencies:
     name: Known vulnerabilities in what we depend on
     runs-on: ubuntu-latest

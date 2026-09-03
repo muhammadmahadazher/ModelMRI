@@ -31,10 +31,9 @@ disagree, the license text governs. The full texts are in
 | `spec/mri/**`, once it exists | Apache-2.0 for schemas, codecs and validators; CC-BY-4.0 for the specification text | the `.mri` format specification |
 | ModelMRI Cloud / Enterprise | proprietary | managed compute, hosted execution, collaboration, organisations, RBAC, SSO/SAML/SCIM, audit, registries, fleet, scheduling, policy and compliance, support, VPC and on-prem — none of it is in this repository |
 
-A file's own `SPDX-License-Identifier` header, where it has one, is the
-authoritative statement for that file, and files that cannot carry a header
-are covered by `REUSE.toml`. Both are being added (see *Checking*, below);
-until they have landed, this table is the statement.
+A file's own `SPDX-License-Identifier` header is the authoritative statement
+for that file; the files that cannot carry a header are covered by
+`REUSE.toml`; this table is the map both of them follow.
 
 ## The commitment
 
@@ -101,9 +100,17 @@ writing.
 
 ## Checking
 
-Every first-party source file will carry an `SPDX-License-Identifier` header,
-files that cannot carry one will be covered by `REUSE.toml`, and CI will run
-`reuse lint` on every pull request beside a test that the Apache-2.0 packages
-import nothing from the AGPL application. That work is in progress; once it
-has landed, `uvx reuse lint` on a checkout of this repository checks the whole
-tree, and a red result is a bug.
+Every first-party source file carries an `SPDX-License-Identifier` header,
+the files that cannot carry one are covered by `REUSE.toml`, and CI runs
+`reuse lint` on every pull request beside `tests/test_licensing.py`, which
+checks by path and by import that the Apache-2.0 packages and the `.mri`
+codec import nothing new from the AGPL application — the crossings that
+predate the check are listed in that file with where each one goes, and the
+list only shrinks. To check a checkout yourself:
+
+```bash
+uvx --from "reuse[charset-normalizer]" reuse lint
+uv run pytest tests/test_licensing.py
+```
+
+A red result is a bug.

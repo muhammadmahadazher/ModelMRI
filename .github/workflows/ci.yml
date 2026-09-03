@@ -46,6 +46,30 @@ permissions:
   contents: read
 
 jobs:
+  # The license boundary, checked without the application installed. That
+  # is the claim LICENSING.md makes -- the Apache-2.0 packages and the .mri
+  # codec stay importable without the AGPL application -- and the cheapest
+  # way to keep a claim true is to run its check where it cannot quietly be
+  # false: no `uv sync`, no torch, an ephemeral interpreter with pytest and
+  # nothing else. `reuse lint` reads the tree the same way. The same test
+  # file also runs inside `backend`'s full suite; this job exists so the
+  # boundary has a stable, cheap, required check of its own.
+  licensing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.0.1
+      - name: Every file states its license
+        run: uvx --from "reuse[charset-normalizer]" reuse lint
+      - name: The boundary holds (headers, imports, notices)
+        # --noconftest: the root conftest's one fixture resets application
+        # state these tests never touch, and loading it would pull the
+        # application into the one job whose point is to run without it.
+        run: uv run --no-project --python 3.13 --with pytest --with pytest-xdist python -m pytest tests/test_licensing.py -q -n 0 -p no:cacheprovider --noconftest
+
   backend:
     runs-on: ubuntu-latest
     # Bounded for the reason `crossplatform` gives: the full suite plus lint, format and the generated-docs check.
