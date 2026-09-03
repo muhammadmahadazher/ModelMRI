@@ -121,6 +121,26 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   request, which is the rule the last phase's path-injection work established: a
   guard in front of a join is still a join.
 
+- **A gradient-cost test priced two sub-millisecond probes against each other
+  and turned `main` red on a runner that was busy.** `gradients.cost` times one
+  forward pass and one complete forward-and-backward step, and the test asserted
+  the step was the slower of the two. On the toy fixture the forward probe
+  measures around a tenth of a millisecond, `budget.probe_pass` times a single
+  call, and a macOS runner inverted the pair by 0.03 ms — a fact about that
+  machine, not about this code. Measured here, forty consecutive runs never
+  inverted, which is why it read as safe for as long as it did.
+
+  The test now asserts what is true regardless of the host: both probes are
+  real and positive, the unit is forward-and-backward passes, and `ratio` is
+  exactly the quotient of the two measurements — which is the property the
+  module actually claims, that the figure is measured rather than the "about
+  2x" everyone repeats. Nothing in `gradients.py` changed.
+
+  A new parametrised test pins that arithmetic on timings it controls, including
+  the case where the forward pass is too fast to time at all: `cost` guards the
+  division and reports no ratio rather than raising inside a price. That guard
+  had no test.
+
 ### Changed
 
 - **The frontend CI job ran forty-two package installs and checked nothing.** It
