@@ -9,4 +9,4 @@ Run `modelmri serve` and open http://localhost:5900
     https://github.com/muhammadmahadazher/ModelMRI
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0.dev0"

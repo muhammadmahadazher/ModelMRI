@@ -545,3 +545,48 @@ def test_an_intact_file_still_opens():
     parsed = session.parse(_build())
     assert parsed.attention
     assert parsed.attention_slice(0, 0)["matrix"]
+
+
+# ------------------------------------- the tool version is carried, not parsed
+
+
+def test_a_development_version_survives_a_round_trip_unchanged(monkeypatch):
+    """`main` versions itself `0.13.0.dev0`, and nothing may read that as X.Y.Z.
+
+    The version reaches two places a reader later trusts: `session.build`
+    stamps it into the `.mri` header (`session.py:2593`) and `receipts` stamps
+    it into every measurement (`receipts.py:426`). Both are declared `str` and
+    neither is compared, sorted or split anywhere — `mri_diff` says so in
+    prose, carrying the producer's numbers "and not judged", because deriving a
+    verdict from one "would report a producer's version bump as a change in the
+    model".
+
+    That is a property nothing tested. A PEP 440 development version is the
+    cheapest way to break it: any code that reached for the middle number, or
+    compared two versions as tuples, fails on `0.13.0.dev0` and passes on
+    `0.12.0`. So the assertion is byte equality after a real build/parse cycle,
+    not a `startswith`.
+    """
+    import modelmri
+
+    dev = "0.13.0.dev0"
+    monkeypatch.setattr(modelmri, "__version__", dev)
+
+    parsed = session.parse(_build())
+    assert parsed.meta["modelmri"] == dev, (
+        f"the .mri header carries {parsed.meta['modelmri']!r}, "
+        "not the version that wrote it"
+    )
+
+
+def test_a_receipt_carries_a_development_version_verbatim(monkeypatch):
+    """The other half: a receipt is what a reader checks a number against, and
+    it states the tool that produced it. Same rule, same reason."""
+    import modelmri
+    from modelmri import receipts
+
+    dev = "0.13.0.dev0"
+    monkeypatch.setattr(modelmri, "__version__", dev)
+
+    receipt = receipts.Receipt(op="test", tool_version=dev)
+    assert receipt.to_dict()["tool_version"] == dev

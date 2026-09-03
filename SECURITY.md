@@ -14,6 +14,10 @@ no older release is guaranteed a backport.
 | `modelmri` | 0.12.x |
 | `modelmri-record` | 0.2.x |
 
+Those are released lines. `main` is the AGPL-3.0-only development tree and versions itself
+`0.13.0.dev0`; 0.13.0 will be the first AGPL-3.0-only release, and every version listed above
+was distributed under MIT.
+
 ## Report a vulnerability
 
 Do not open a public issue. Use GitHub's private reporting flow:
