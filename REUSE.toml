@@ -1,0 +1,101 @@
+# REUSE.toml — the license of every file in this repository that cannot carry
+# an SPDX header of its own (REUSE Specification 3.3). Source files carry
+# their own header, and where a file has one the header wins over these
+# tables ("closest"). Between tables, the last one that matches a file wins,
+# so the catch-all comes first and the specific cases follow it.
+#
+# The map itself is LICENSING.md; this file is that map in a form
+# `reuse lint` can check on every pull request.
+
+version = 1
+SPDX-PackageName = "ModelMRI"
+SPDX-PackageSupplier = "Muhammad Mahad Azher"
+SPDX-PackageDownloadLocation = "https://github.com/muhammadmahadazher/ModelMRI"
+
+# Everything not named below is part of the application: configuration,
+# workflows, lockfiles, demo fixtures, the built-app placeholder, metadata.
+[[annotations]]
+path = "**"
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Muhammad Mahad Azher"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+# The Apache-2.0 packages, the launcher shim, and the samples — whole
+# subtrees. Source files inside carry their own Apache header; this covers
+# the pyproject files, READMEs, package tests and anything else beside them.
+[[annotations]]
+path = [
+  "packages/modelmri-record/**",
+  "packages/modelmri-policy/**",
+  "npm-stub/**",
+  "examples/**",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Muhammad Mahad Azher"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Documentation and media, and the project's own documents at the root.
+# Code samples inside them may also be used under Apache-2.0 (LICENSING.md).
+[[annotations]]
+path = [
+  "docs/**",
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "SUPPORT.md",
+  "GOVERNANCE.md",
+  "LICENSING.md",
+  "TRADEMARKS.md",
+  "CONTRIBUTOR_REWARDS.md",
+  "THIRD_PARTY_NOTICES.md",
+  "LOG.md",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Muhammad Mahad Azher"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# Texts adopted from elsewhere keep their own terms.
+[[annotations]]
+path = "CODE_OF_CONDUCT.md"
+precedence = "override"
+SPDX-FileCopyrightText = [
+  "Contributor Covenant 3.0, stewarded by the Organization for Ethical Source",
+  "2026 Muhammad Mahad Azher",
+]
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+[[annotations]]
+path = "CLA.md"
+precedence = "override"
+SPDX-FileCopyrightText = [
+  "Harmony Contributor License Agreement templates, version 1.0 (harmonyagreements.org)",
+  "2026 Muhammad Mahad Azher",
+]
+SPDX-License-Identifier = "CC-BY-3.0"
+
+# Fonts bundled into the built application; their license texts sit beside
+# them and are covered by the same tables.
+[[annotations]]
+path = ["frontend/src/fonts/Geist-Variable.woff2", "frontend/src/fonts/Geist-OFL.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2024 The Geist Project Authors (https://github.com/vercel/geist-font)"
+SPDX-License-Identifier = "OFL-1.1"
+
+[[annotations]]
+path = ["frontend/src/fonts/JetBrainsMono-Variable.woff2", "frontend/src/fonts/JetBrainsMono-OFL.txt"]
+precedence = "override"
+SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
+SPDX-License-Identifier = "OFL-1.1"
+
+# Switzer is committed but referenced by nothing, and its licence — the Indian
+# Type Foundry Free Font License, via Fontshare — permits use but not
+# redistribution of the font files, so its text is deliberately NOT in
+# LICENSES/: `reuse lint` stays red on exactly this file until it is removed.
+# Without this table the catch-all above would call it AGPL-3.0-only, which
+# would be false.
+[[annotations]]
+path = "frontend/src/fonts/Switzer-Variable.woff2"
+precedence = "override"
+SPDX-FileCopyrightText = "Indian Type Foundry (Switzer, distributed through Fontshare)"
+SPDX-License-Identifier = "LicenseRef-ITF-Free-Font-License"

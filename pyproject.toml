@@ -151,6 +151,9 @@ dev = [
     # rule being *added* to a family that is selected, so an upgrade is still
     # a change worth reading the diff of.
     "ruff>=0.15.20",
+    # `uv run reuse lint` locally is the same check CI runs; the extra is the
+    # encoding detector reuse needs on a machine without libmagic or `file`.
+    "reuse[charset-normalizer]>=6",
     "pytest>=8",
     # Parallel test execution. The suite is 883 tests over ~30 files and was
     # taking 345s serially, of which 68s is collection -- almost all of that
