@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Opening a `.mri` must drive the real panels, not a parallel read-only mode.
 
 The point of routing replay through `runtime.attention()` is that every panel

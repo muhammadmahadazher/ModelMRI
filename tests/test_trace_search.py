@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Search, truncation markers, and a duration that can be absent.
 
 Three defects of the same family. A filter that quietly matches nothing looks

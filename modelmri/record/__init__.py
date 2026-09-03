@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The agent recorder — re-exported from the standalone `modelmri-record`.
 
 This module used to be a second copy of the recorder, kept in step by hand.

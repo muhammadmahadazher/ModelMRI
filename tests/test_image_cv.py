@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The computer-vision instrument, tested against nets whose answers are known.
 
 Every model here is a real `nn.Module` with a real forward pass — a tiny

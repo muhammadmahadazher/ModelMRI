@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Generate a realistic demo agent trace — the "failed at step N" story.
 
 Run while `modelmri serve` is up:  uv run python examples/record_demo.py

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A saved direction that nothing can apply is a write with no reader.
 
 `steer_vectors.py` has fitted, scored and persisted contrastive directions

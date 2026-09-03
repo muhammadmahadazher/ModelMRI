@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What a fine-tune actually changed — read off the adapter, not guessed.
 
 People download a LoRA and get a name, a file size and a thumbnail. What they

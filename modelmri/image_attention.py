@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Which words the image is looking at, and when.
 
 A diffusion model attends to the prompt at every denoising step, through

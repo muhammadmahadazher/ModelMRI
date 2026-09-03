@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """HuggingFace Hub access: sign in, search models, see what you can use.
 
 ModelMRI never asks for your password. You paste a HuggingFace *access

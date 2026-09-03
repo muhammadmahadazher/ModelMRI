@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Did this change the model, or did it change the last digits?
 
 `modelmri diff before.mri after.mri` compares two saved analyses of the same

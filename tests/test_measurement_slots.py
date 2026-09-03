@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A measurement must not read somebody else's forward pass.
 
 Two more sites of the defect `tests/test_patch_concurrency.py` records. A

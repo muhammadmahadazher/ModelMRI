@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What quantisation cost the model's *behaviour*, not just its weights.
 
 `quantdiff.py` answers how far the numbers moved. This answers the question

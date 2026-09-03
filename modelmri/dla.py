@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """How many logits did each head put behind the token the model actually said?
 
 The ablation ranking answers "what breaks if I remove this head". Direct logit

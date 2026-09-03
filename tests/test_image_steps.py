@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where the denoiser committed, and every step of that this refuses to claim.
 
 A commit step is a number somebody will act on by dragging a slider down, so

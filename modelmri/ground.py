@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Did the answer come from the document, or from the weights?
 
 Every local-LLM app with RAG shows you WHICH CHUNKS WERE RETRIEVED. None of

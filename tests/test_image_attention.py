@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Cross-attention out of a real diffusion model.
 
 The pipeline here is small and REAL: a genuine `UNet2DConditionModel` with

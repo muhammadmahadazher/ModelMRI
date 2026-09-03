@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`modelmri open` must stay cheap, and must stay a file reader.
 
 The command exists so that someone sent a 54 KB recording can read it. It

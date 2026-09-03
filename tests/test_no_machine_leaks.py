@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Nothing may be baked in. The tool must behave the same on any machine.
 
 Two guarantees, both enforced rather than asserted in a comment:

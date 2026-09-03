@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What hub.py and discover.py say when something goes wrong.
 
 Both modules answer questions about the world outside this process — a Hub

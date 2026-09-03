@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Does tests/test_custom.py actually test anything?
 
     uv run python tests/mutation_check.py

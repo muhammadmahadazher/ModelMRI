@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The sidecar: one process, one policy, one small contract on loopback.
 
 Stdlib `http.server` on purpose. This runs inside a venv whose whole reason to

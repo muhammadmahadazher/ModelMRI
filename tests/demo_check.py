@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The hosted demo is the only ModelMRI most people will ever touch.
 
 It is also, until this file, the least verified surface in the repo: the

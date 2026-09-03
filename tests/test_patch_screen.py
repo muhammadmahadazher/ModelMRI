@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The screen's arithmetic, and the places it is allowed to be wrong.
 
 No model download. Two hand-built models instead, and the reason is that a

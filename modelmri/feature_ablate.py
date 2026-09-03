@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Which features actually changed the answer?
 
 The features panel ranks by raw activation. That answers "what fired", and it

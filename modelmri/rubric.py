@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Score recorded runs against exact predicates. No model, so no judgement.
 
 Every competitor's "evaluation" of an agent run asks a language model whether

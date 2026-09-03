@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Exact predicates over recorded runs, and the refusals that keep them exact.
 
 The sharpest rule under test is the roadmap's own caveat: duration outliers

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The three robot-action measurements, and what each of them refuses.
 
 An action curve is the most persuasive-looking thing this project draws: two

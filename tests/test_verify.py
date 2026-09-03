@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A verifier that cannot fail is worthless.
 
 Most of these build a `.mri` that says something the model does not, and check

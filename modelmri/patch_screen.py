@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A cheap approximation of `patch.trace`, published with its own error.
 
 `patch.trace` pays a real forward pass for every cell of a COMPONENTS x layers

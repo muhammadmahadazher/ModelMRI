@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Finishing a sweep that stopped, and the three ways that is WRONG.
 
 `sweep.save` has existed since the sweep did and nothing ever read it back, so

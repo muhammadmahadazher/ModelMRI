@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The weight table and the scanner, over HTTP.
 
 Netron reads a file and TensorBoard's Debugger V2 needs a run instrumented in

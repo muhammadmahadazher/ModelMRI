@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What does head 14/3 do on YOUR text, and what does it push toward?
 
 "Head 14/3 ranked first" is not a finding. `ablate.rank_heads` says a head

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Capture the README's screenshots and GIFs from a live ModelMRI.
 
 Screen-recorded demos rot: the UI moves, the recording doesn't, and a year

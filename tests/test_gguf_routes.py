@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The GGUF load path above `gguf_load` itself: the runtime and the routes.
 
 `test_gguf_load.py` covers the arithmetic and the refusals. This covers the

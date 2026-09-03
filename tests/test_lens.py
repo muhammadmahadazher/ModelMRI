@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The logit lens's last row must be what the model actually said.
 
 That row is the only one a reader can check, and it anchors everything else the

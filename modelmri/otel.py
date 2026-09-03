@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Hand a recorded run to the collector the team already runs.
 
 This is not an "ahead" feature and should not be sold as one. It is the price

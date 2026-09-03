@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`python -m modelmri_policy` / the `modelmri-policy` script."""
 
 from __future__ import annotations

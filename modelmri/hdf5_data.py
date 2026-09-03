@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """ALOHA and robomimic HDF5, through the interface the LeRobot reader presents.
 
 `vla_data.py` reads LeRobot v3.0 and nothing else, and "LeRobot format" does

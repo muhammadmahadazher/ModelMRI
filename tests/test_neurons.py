@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A neuron browser is the panel that runs when the SAE panel cannot.
 
 Which means it is the one a reader is most likely to mistake for the SAE

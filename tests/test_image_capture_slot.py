@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Two captures on one pipeline would mix one run's steps into the other's.
 
 `image_steps.watch` installs a forward hook on the DENOISER MODULE and fills a

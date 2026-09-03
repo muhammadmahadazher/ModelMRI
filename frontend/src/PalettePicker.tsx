@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { CONTRASTS, PALETTES, useTheme } from "./theme";
 

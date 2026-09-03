@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What the policy's vision actually depended on — not what it looked at.
 
 The VLA panel paints attention, and by this project's own standard that is the

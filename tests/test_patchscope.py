@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The decode is the easy part. The controls are the feature.
 
 A good patchscope target prompt describes ANYTHING fluently — hand it a random

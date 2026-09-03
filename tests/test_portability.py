@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Paths must resolve on machines that are not this one.
 
 Every failure here was found by an audit of code I had already tested and

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`POST /api/vla/actions/compare` — the wire, not the arithmetic.
 
 `tests/test_vla_actions.py` proves the maths, and it can, because `vla_actions`

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """When the denoiser commits, and what the steps after that bought.
 
 Somebody asks for 50 steps because a slider said 50. Somewhere in that run the

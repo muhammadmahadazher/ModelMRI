@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What constrained decoding cost, against a real model and a real grammar.
 
 The headline test runs an ACTUAL constrained generation and asserts the output

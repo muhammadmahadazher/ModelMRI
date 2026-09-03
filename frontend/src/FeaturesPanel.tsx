@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import LensPanel from "./LensPanel";
 import { fmtKL, pair, scaled, percent } from "./measured";
 import { useEffect, useRef, useState } from "react";

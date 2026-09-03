@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Head ranking must be a measurement, not an ordered opinion.
 
 This is the feature most able to produce a confident, ordered, wrong list:

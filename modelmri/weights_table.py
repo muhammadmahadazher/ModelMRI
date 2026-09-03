@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every tensor in a model, and whether its numbers are still numbers.
 
 Two tools already do half of this, and neither does it to a model that is

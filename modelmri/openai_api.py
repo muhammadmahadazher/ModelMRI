@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An OpenAI-compatible `/v1` that returns what the model did, not just text.
 
 Every runner exposes `/v1`, and ModelMRI could not be dropped into any client

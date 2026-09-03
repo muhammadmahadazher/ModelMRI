@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Nothing the project did not author reaches the browser.
 
 The rule this file enforces is one the codebase already states, in the arm

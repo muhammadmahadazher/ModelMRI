@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What a vision model actually looked at, by covering things up.
 
 Every saliency picture this project could have drawn for a classifier is a

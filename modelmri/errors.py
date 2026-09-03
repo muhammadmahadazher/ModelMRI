@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Two words for "no", so the server can tell them apart from "broken".
 
 Every refusal in this project used to be a `RuntimeError`, and so is a CUDA

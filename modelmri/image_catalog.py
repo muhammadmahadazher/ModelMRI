@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Finding image models: what is downloadable, what is already here, what it costs.
 
 The text side has had this for a long time — `hub.search` for what exists,

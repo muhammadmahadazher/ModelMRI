@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Minimal Ollama client (stdlib only): list installed models, stream text.
 
 Ollama serves GGUF models over HTTP — great for *running* any open model

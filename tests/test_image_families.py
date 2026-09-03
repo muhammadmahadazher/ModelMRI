@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every image family the server can name belongs to a section, or is exempt.
 
 `ImagePanel` decides which of its two sections owns a loaded checkpoint by

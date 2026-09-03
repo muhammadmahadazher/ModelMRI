@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A cross-episode sweep, and the two things it refuses to become.
 
 Ranking over measured internals is the version of this nobody else can do —

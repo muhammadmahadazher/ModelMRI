@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Isolation the whole suite depends on but nothing was enforcing.
 
 `custom._SESSION_ROOTS` is module-level: the folders a person has asked this

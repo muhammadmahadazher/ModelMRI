@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A per-tensor table, and the one confusion it must never permit.
 
 The table half is arithmetic and the health half is a count, and both of them

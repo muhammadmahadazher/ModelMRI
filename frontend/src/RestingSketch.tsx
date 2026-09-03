@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 /** What a panel will show you, sketched, while it is still empty.
  *
  *  A resting panel was copy and a button inside a 46ch measure, which is the

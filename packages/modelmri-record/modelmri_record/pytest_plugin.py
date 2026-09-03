@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An `mri_trace` fixture, so a trace produced inside a test can gate a merge.
 
 Opik ships a PyTest integration, Laminar runs evals in CI, Braintrust has a

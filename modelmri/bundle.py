@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Redact and budget a bundle BEFORE it leaves the machine.
 
 `.mri` export is the one path in this project where data goes from a laptop to

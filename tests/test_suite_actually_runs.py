@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every `importorskip` in this suite must name something the dev env installs.
 
 `pytest.importorskip` is the right tool for a dependency a USER may not have.

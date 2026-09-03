@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where two robot checkpoints diverge, over identical frames.
 
 rollout-doctor warns when the harness, config, task set or sample size differ

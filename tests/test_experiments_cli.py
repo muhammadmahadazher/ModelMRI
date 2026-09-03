@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`modelmri experiments` as a CI gate, and what its exit codes mean.
 
 The roadmap asks for this to run on every pull request "in milliseconds, on a

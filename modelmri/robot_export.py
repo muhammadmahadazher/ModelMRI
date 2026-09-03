@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Write a ModelMRI measurement into a timeline a roboticist already opens.
 
 ## The decision this must not overturn

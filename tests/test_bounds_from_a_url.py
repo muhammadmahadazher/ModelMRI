@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A number in a query string may not reach torch unchecked.
 
 Every case here was reproduced against a live Qwen model before the guard

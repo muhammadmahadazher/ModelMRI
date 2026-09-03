@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Token attribution must be a measurement, not a highlighted sentence.
 
 This one is read as "these are the words that mattered", which is a claim

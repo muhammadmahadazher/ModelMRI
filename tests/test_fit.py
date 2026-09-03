@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The fit calculator has to be checkable by hand, or it is just a verdict.
 
 Every number it prints is arithmetic over values it read, so these tests do

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Moving a model onto an accelerator, with a meter on it.
 
 Split out of `runtime.py` to break the package's one import cycle, and the

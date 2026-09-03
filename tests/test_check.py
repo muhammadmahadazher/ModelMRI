@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Structural CI assertions, and the exit codes a build script reads.
 
 The sharpest rule in this file is that **nothing may exit 0 unless something

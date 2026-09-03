@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Two robot checkpoints over identical frames, and what the comparison refuses.
 
 rollout-doctor and TRI STEP both treat the policy as opaque, so neither can

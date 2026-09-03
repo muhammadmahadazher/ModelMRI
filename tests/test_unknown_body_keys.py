@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A request body that names a field no route has is a typo, not a default.
 
 Pydantic ignores unknown keys unless told not to, and the consequence was

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An image run inside a `.mri`: what travels, and what is refused.
 
 A6 on the roadmap, and the last unbuilt item in Theme A. Every other result

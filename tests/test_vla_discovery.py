@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A VLA viewer, not a SmolVLA viewer.
 
 Three things used to pin this panel to one policy: the tensor prefix

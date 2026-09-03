@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What matters in the network YOU trained.
 
 `custom.py` maps one forward pass: shapes, activation statistics, dead units,

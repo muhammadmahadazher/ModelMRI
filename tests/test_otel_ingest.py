@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Reading OTLP that somebody else's instrumentation produced.
 
 The point of ingest is that a team already running OpenLLMetry, OpenInference

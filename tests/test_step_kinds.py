@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The kinds a recorded step may be, and everything that has to agree on them.
 
 `VALID_KINDS` is a set in one leaf module, but it is not a fact held in one

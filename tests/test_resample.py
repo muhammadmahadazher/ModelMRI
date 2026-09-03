@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The third baseline, and the number that says the baseline is deciding.
 
 `ablate.py` has documented since it was written that zero and mean disagree —

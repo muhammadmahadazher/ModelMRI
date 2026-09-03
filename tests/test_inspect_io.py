@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Reading a UK AISI Inspect `.eval` log onto the timeline.
 
 Every fixture here is a real zip built with `zipfile`, because the whole

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Refusals that named the wrong cause, for the likeliest real failure.
 
 A refusal's whole value is that it tells somebody what to do next. One that

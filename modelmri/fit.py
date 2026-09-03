@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Will this model fit, and what is the longest context it can hold?
 
 `capacity.guard` already answers "will this DOWNLOAD fit", from the repo's

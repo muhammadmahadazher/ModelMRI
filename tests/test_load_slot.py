@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The refusal you get when a load is already running.
 
 Reported from the field, with screenshots: a 10.5 GB `google/gemma-2-2b` was

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Looking inside a checkpoint before loading it.
 
 The payloads here are REAL. Every dangerous pickle in this file is built with

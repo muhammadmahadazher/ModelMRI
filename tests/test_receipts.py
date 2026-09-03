@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What produced a number has to be right, or it is worse than absent.
 
 A receipt is trusted by whoever receives it — that is the entire point of the

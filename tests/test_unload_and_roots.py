@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Unload, and pointing the scan somewhere else.
 
 Both exist because of a gap a user found: the model that actually holds your

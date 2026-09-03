@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A finetune diff over a PROMPT SET, and what it refuses to say about one.
 
 `behavdiff` answers "what did quantising cost me", where both sides are the

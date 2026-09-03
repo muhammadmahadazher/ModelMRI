@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 console.log(
   "ModelMRI — Chrome DevTools for AI models and agents.\n" +
   "This is a placeholder reserving the package name.\n" +

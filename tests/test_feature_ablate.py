@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Feature ranking must be a measurement, not the bar chart in causal clothing.
 
 The features panel already produces an ordered list; this adds one that claims

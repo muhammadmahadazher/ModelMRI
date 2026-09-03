@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A regression check that cannot fail is a green tick that means nothing.
 
 Most of this file builds a second `.mri` that differs from the first in one

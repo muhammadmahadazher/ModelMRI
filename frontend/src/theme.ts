@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 /** Theme state, and the one thing everyone forgets: telling the canvases.
  *
  *  Three of our surfaces paint to <canvas> by reading CSS custom properties

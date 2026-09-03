@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Printing a measured number without printing it as zero.
 
 The Python half of what `frontend/src/measured.ts` does for the browser, and

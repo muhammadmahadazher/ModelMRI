@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A `.mri` carries the PATCHING graph, and what it refuses to carry.
 
 The graph costs thousands of forward passes to build — on Qwen3-1.7B at depth

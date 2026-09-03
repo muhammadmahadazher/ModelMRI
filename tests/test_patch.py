@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Activation patching: the refusals, and the arithmetic underneath them.
 
 No model download. The refusals are the part most likely to rot, because they

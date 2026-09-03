@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The agent-run section of a `.mri`, held to the same standard as `patch`.
 
 A `.mri` is meant to be forwarded, so `_trace` runs on bytes a stranger sent.

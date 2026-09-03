@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A distance is meaningless without the set it was measured against, and this file holds that.
 
 `vla_ood.py` answers "how far outside its own dataset does this frame sit". Every

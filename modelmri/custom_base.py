@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The two pieces of the custom-adapter surface that both halves of it need.
 
 `custom.py` owns loading an adapter and `custom_ablate.py` owns ablating

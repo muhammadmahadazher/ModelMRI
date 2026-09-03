@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`POST /api/attention/counterfactual` — the route, not the search.
 
 `tests/test_counterfactual.py` proves the measurement. This file proves the

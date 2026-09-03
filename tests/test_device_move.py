@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The copy onto the accelerator, and the meter it now keeps.
 
 `model.to(device)` was one opaque call reporting nothing, and on this

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Ask a robot policy what it would DO, in a process that is not this one.
 
 `vla.py` holds the vision tower and can say where a policy LOOKED. It cannot

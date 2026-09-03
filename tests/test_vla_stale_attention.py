@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The cached attention map must belong to the frame being occluded.
 
 `VLA._attn` holds whatever was analysed LAST. A cross-episode sweep overwrites

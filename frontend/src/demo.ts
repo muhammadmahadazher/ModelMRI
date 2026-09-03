@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 /** Demo mode: serve pre-baked real responses instead of calling the API.
  *
  *  Built with `--mode demo` for GitHub Pages, so the whole tool is explorable

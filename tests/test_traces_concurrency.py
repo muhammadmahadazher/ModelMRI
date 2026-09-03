@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One connection, many threads, and whose job it is to serialise them.
 
 `TraceStore.__init__` opens a single sqlite3 connection with

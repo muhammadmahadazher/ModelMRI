@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import { useEffect, useState } from "react";
 import { AvailableCorpora, errorText, getAvailableCorpora } from "./api";
 import { bytesSI } from "./measured";

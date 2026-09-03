@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One rule for printing a measured number, and it lives in one place.
 
 The Python half of what `frontend/src/measured.ts` does for the browser, and

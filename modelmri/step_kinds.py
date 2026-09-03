@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The kinds a recorded step may be, and nothing else.
 
 A leaf module on purpose. `traces.py` validates against this set when writing

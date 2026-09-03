@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A download you cannot stop, and one that could never work.
 
 Written after a click on `zai-org/GLM-5.2` in the picker began fetching

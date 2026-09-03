@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The agents panel used to be unreachable from the app it lives in.
 
 Loading a model, typing a prompt and generating — the thing the whole page

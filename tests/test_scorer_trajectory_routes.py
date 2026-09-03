@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Two modules that existed, were tested, and could not be reached.
 
 `scorers.py` (82 KB) and `trajectory.py` (44 KB) had no route on any surface —

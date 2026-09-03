@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Hold a robot policy in its own process, so ModelMRI can ask what it would do.
 
 Separate from `modelmri` because lerobot pins torch and numpy hard enough that

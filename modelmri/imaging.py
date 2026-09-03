@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What kind of image model is this, before anything tries to open it.
 
 Every panel on the image side depends on this answer. A UNet diffusion model

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`modelmri eval-import`: an Inspect log becomes an experiment file.
 
 The verb that gives `modelmri experiments` something to compare. Its exit

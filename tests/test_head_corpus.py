@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A head's behaviour on real text, and the four ways that reads wrong.
 
 `ablate.rank_heads` measures one prompt. `head_types` measures random repeated

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Occlusion attribution, tested against networks whose blind spots are known.
 
 Three real `nn.Module`s, none of them mocks: a two-convolution network that

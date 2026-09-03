@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """modelmri-record — capture agent runs for the ModelMRI timeline.
 
 Zero-config, never crashes the host app. Two ways in:

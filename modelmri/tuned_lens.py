@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A lens trained on your own text, shown beside the plain one — never instead.
 
 The plain logit lens reads the residual stream through the unembedding it was

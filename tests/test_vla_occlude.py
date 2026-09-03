@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Causal occlusion on a camera frame, tested against a tower with a known blind spot.
 
 The tower here reads ONE region of the image and ignores the rest by

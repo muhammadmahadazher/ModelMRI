@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A download you can watch, in a slot a model load cannot overwrite.
 
 `/api/ollama/pull` consumed the daemon's progress stream and threw every

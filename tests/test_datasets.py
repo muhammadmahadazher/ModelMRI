@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Datasets, experiments, and the arithmetic of comparing two runs.
 
 The failure this file is mostly about is a comparison that LOOKS complete and

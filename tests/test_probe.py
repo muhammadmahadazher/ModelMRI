@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A probe curve that goes up is easy. Knowing when it means nothing is not.
 
 The value of this module is the two references it draws behind the curve, so

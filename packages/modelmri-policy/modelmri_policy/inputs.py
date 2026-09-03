@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Turning a request into the tensors a policy expects, or refusing to.
 
 Every function here is about the same question: is what arrived actually what

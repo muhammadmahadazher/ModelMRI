@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The loop that turns a number into a distribution.
 
 The failure this file is mostly about is a sweep that LOOKS complete and is

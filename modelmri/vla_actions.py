@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What a policy would DO, next to what a human actually did.
 
 Three measurements — plus a fourth that rides inside the first and never

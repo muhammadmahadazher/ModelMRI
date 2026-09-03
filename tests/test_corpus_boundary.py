@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where a corpus may be read from, when the request arrived over HTTP.
 
 CodeQL raised `py/path-injection` against the flow that ends in

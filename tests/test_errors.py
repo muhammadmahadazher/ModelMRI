@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The error contract: which "no" is which, and what never reaches the browser.
 
 Three things are pinned here, and the third is the one that matters.

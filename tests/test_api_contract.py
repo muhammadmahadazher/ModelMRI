@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Does a route send the keys `api.ts` says it sends?
 
 Nothing checked this. `json<T>(r)` in `api.ts` is a bare type cast — it

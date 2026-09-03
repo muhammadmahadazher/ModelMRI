@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The reader is shared between requests, and one of its methods freed memory.
 
 `LeRobotV3Reader` is held on `app.state.vla_reader` and every `/api/vla/*`

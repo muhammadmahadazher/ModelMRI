@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What the last run cost, and how much of that was this tool watching.
 
 Every local runner shows tokens/sec. What none of them shows is the cost of

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Will this image model run here — and the ways that answer goes wrong.
 
 `image_fit` is read beside a Load button, so every number it produces is acted
