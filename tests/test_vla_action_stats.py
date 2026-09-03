@@ -667,36 +667,89 @@ def _ramp(n: int) -> list[list[float]]:
     return [[float(i), 1.5, float(i % 3), float(i % 7) * 0.25] for i in range(n)]
 
 
-def test_the_peak_does_not_grow_with_the_row_count(tmp_path):
-    """The claim in the module comment, measured rather than asserted in prose.
+def test_the_streaming_path_holds_one_batch_however_many_rows_there_are(
+    tmp_path, monkeypatch
+):
+    """The claim in the module comment, measured on what the code DOES.
 
-    The same fixture at 20,000 and at 80,000 rows: four times the data through
-    a path whose peak is one batch plus a fixed set of accumulators, so the
-    peak must barely move. Then the same 80,000 rows through `_frame_table()`,
-    which builds a dict of every row — right for PushT's 1.4 MB and impossible
-    for lerobot/droid's 26 million rows.
+    `_stream_action_rows` states it: "`to_pylist()` materialises exactly one
+    batch, the caller folds it into accumulators, and it is unreachable before
+    the next one is read." So four times the data must arrive as four times as
+    many batches of the SAME width, never as wider ones -- which is what a
+    regression to list-building would look like.
 
-    MEASURED on this machine: 3.2 MB streaming at 20,000 rows, 3.2 MB at
-    80,000 (and still 3.2 MB at 400,000, which is too slow to run here), against
-    9.1 MB / 27.6 MB / 135.3 MB for the frame table over the same rows. The
-    bounds below are deliberately loose — 1.5x for the growth, 4x for the
-    ratio at 80,000 — so this fails on a regression to list-building rather
-    than on a pyarrow release changing its batch allocation.
+    This used to be asserted through `tracemalloc`: the peak at 80,000 rows had
+    to be under 1.5x the peak at 20,000. That is a claim about an allocator on
+    whatever machine happens to be running, and it broke -- a macOS py3.12
+    runner measured 3.2 MB against 8.9 MB and turned CI red on a pull request
+    that changed a version string and nothing else. Re-running the identical
+    commit passed. Measured here, the ratio is 1.00 in eight consecutive
+    trials, which is exactly why it read as safe for as long as it did.
+
+    The peak was always a proxy for "how many rows are live at once", and that
+    number is knowable directly. Both bounds are on it now, so this fails on
+    the regression it was written for and cannot fail on a runner having a bad
+    minute or on a pyarrow release changing how it allocates underneath.
     """
+    from modelmri import vla_data
+
+    widths: list[int] = []
+    real = vla_data._stream_action_rows
+
+    def spy(files, batch_size, limit):
+        for rows in real(files, batch_size, limit):
+            widths.append(len(rows))
+            yield rows
+
+    monkeypatch.setattr(vla_data, "_stream_action_rows", spy)
+
     small = reader(tmp_path, "small", rows=_ramp(20_000))
     large = reader(tmp_path, "large", rows=_ramp(80_000))
 
-    at_20k = _peak(small.dataset_action_stats)
-    at_80k = _peak(large.dataset_action_stats)
-    whole = _peak(large._frame_table)
+    widths.clear()
+    small.dataset_action_stats()
+    at_20k = list(widths)
 
-    assert large.dataset_action_stats()["rows_read"] == 80_000
-    assert at_80k < at_20k * 1.5, (
-        f"four times the rows moved the peak from {at_20k / 1e6:.1f} MB to "
-        f"{at_80k / 1e6:.1f} MB — something in the streaming path is keeping "
-        f"rows"
+    widths.clear()
+    out = large.dataset_action_stats()
+    at_80k = list(widths)
+
+    assert out["rows_read"] == 80_000
+
+    # THE BOUND. Nothing wider than one batch is ever materialised, at either
+    # size -- `to_pylist()` is the only place rows become Python objects.
+    assert max(at_80k) <= vla_data.ACTION_ROW_BATCH
+    assert max(at_80k) == max(at_20k), (
+        f"the widest batch grew from {max(at_20k)} rows to {max(at_80k)} when "
+        f"the dataset did -- something in the streaming path is sizing itself "
+        f"off the row count"
     )
-    assert at_80k * 4 < whole, (
-        f"streaming peaked at {at_80k / 1e6:.1f} MB against the frame table's "
-        f"{whole / 1e6:.1f} MB over the identical rows"
+
+    # Four times the rows arrive as MORE batches, not bigger ones. Two passes
+    # over each dataset (the accumulators, then the histogram), so both sums
+    # count double: 80,000 rows twice.
+    assert sum(at_80k) == 4 * sum(at_20k) == 160_000
+    # Not `4 * len(at_20k)`: the fixture is split into shards and a batch never
+    # spans two, so each shard contributes a partial last batch and the count
+    # is not a clean multiple. What must hold is that the extra rows became
+    # extra batches.
+    assert len(at_80k) > len(at_20k)
+
+
+def test_the_frame_table_does_the_opposite_and_is_meant_to(tmp_path):
+    """The contrast the streaming path exists for, also without a stopwatch.
+
+    `_frame_table` concatenates every shard into one dict -- right for PushT's
+    1.4 MB and impossible for lerobot/droid's 26 million rows. Asserting that
+    it holds every row states the difference structurally; the byte ratio this
+    replaces was taken with the same `tracemalloc` call that made the test
+    above unreliable, and on that runner's numbers it would have failed too.
+    """
+    large = reader(tmp_path, "large", rows=_ramp(80_000))
+
+    table = large._frame_table()
+
+    assert len(table["action"]) == 80_000, (
+        "the frame table is supposed to hold every row -- if it ever streams, "
+        "the streaming path above has lost the thing it is contrasted against"
     )
