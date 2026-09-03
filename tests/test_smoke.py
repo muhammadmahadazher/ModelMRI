@@ -988,7 +988,75 @@ def test_the_model_picker_and_the_load_meter_agree_on_size(tmp_path, monkeypatch
     assert listed["acme/dup"] == 0.0  # 1 MB, not 2
 
 
-def test_the_recorder_wheel_size_is_stated_identically_everywhere():
+# How far the built wheel may sit from the figure the prose quotes.
+#
+# Not a fudge factor: it separates BUILD METADATA from CONTENT. A wheel carries
+# a `WHEEL` file naming the backend that made it ("Generator: hatchling 1.27.0"),
+# so a hatchling release changes the archive by a handful of bytes without a
+# line of this project moving, and zlib's output can differ by a similar margin
+# between interpreter builds. That is tens of bytes — well under 0.1 KiB.
+#
+# The drifts this test exists to catch are two orders larger. Measured, in the
+# order they happened: 15.2 KiB of ordinary uncorrected drift, 4.3 KiB when an
+# Apache-2.0 LICENSE went inside the wheel, and 0.34 KiB when two-line SPDX
+# headers went on every source file. 0.2 KiB clears the metadata noise several
+# times over and still fails on the smallest of those — though only by 0.14
+# KiB, so a future change smaller than a couple of hundred bytes of source
+# would pass unremarked. That is the honest limit of weighing an archive.
+#
+# Line endings, checked rather than assumed: every file in the package is LF on
+# disk and LF in the blob (`.gitattributes` sets `* text=auto eol=lf`), so a
+# Linux runner builds the same bytes this does and the figure is not
+# platform-dependent.
+WHEEL_SIZE_TOLERANCE_KIB = 0.2
+
+
+def _build_recorder_wheel(tmp_path):
+    """Build `modelmri-record` into `tmp_path` and return the wheel.
+
+    FAILS rather than skips when it cannot. A check that quietly skips is how
+    the previous version of this test came to be inert in CI for its whole
+    life, and a second silent exit would be the same mistake with a different
+    shape. If `uv` is missing, or the build fails, this says so in a sentence
+    and takes the suite down with it.
+
+    Deliberately NOT `--no-build-isolation` with hatchling in the dev group:
+    the recorder's whole claim is that it has no dependencies, and adding its
+    build backend to this project's development environment to weigh it would
+    make the measurement depend on the thing being measured.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    uv = shutil.which("uv")
+    assert uv, (
+        "this test builds the recorder wheel it weighs, and `uv` is not on "
+        "PATH. It is how the project is installed, tested and built, so its "
+        "absence is a broken environment rather than a reason to skip: with "
+        "no wheel there is nothing to check the four documented sizes against."
+    )
+
+    package = Path(__file__).resolve().parents[1] / "packages" / "modelmri-record"
+    out = Path(tmp_path) / "wheel"
+    done = subprocess.run(
+        [uv, "build", "--wheel", "--out-dir", str(out)],
+        cwd=str(package),
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, (
+        f"could not build the recorder wheel to weigh it (exit {done.returncode}). "
+        f"{done.stderr.strip() or done.stdout.strip()}"
+    )
+    wheels = sorted(out.glob("*.whl"))
+    assert len(wheels) == 1, (
+        f"expected one wheel in {out}, found {[w.name for w in wheels]}"
+    )
+    return wheels[0]
+
+
+def test_the_recorder_wheel_size_is_stated_identically_everywhere(tmp_path):
     """Four files quote the recorder wheel's size, and they drifted apart.
 
     A commit in this repo already corrected "7 KiB" once, with the note "a
@@ -997,8 +1065,9 @@ def test_the_recorder_wheel_size_is_stated_identically_everywhere():
     7 KiB while README.md said 9 KiB and the wheel was 8.94 KiB. Prose has no
     build step, so this is the build step.
 
-    Checks the four against each other always, and against the real wheel
-    whenever one has been built.
+    Checks the four against each other, and against a wheel this test builds,
+    every time. It used to weigh a wheel only `if wheels:` — globbing a
+    gitignored directory, so the artefact half never ran in CI at all.
     """
     import re
     from pathlib import Path
@@ -1018,15 +1087,25 @@ def test_the_recorder_wheel_size_is_stated_identically_everywhere():
         found[rel] = float(m.group(1))
 
     assert len(set(found.values())) == 1, f"the four disagree: {found}"
+    stated = next(iter(found.values()))
 
-    # And against the artefact itself, when there is one to weigh.
-    wheels = sorted((root / "packages" / "modelmri-record" / "dist").glob("*.whl"))
-    if wheels:
-        actual = wheels[-1].stat().st_size / 1024
-        stated = next(iter(found.values()))
-        assert abs(actual - stated) < 0.1, (
-            f"{wheels[-1].name} is {actual:.2f} KiB, the docs say {stated} KiB"
-        )
+    # And against a wheel THIS TEST BUILDS. It used to weigh whatever happened
+    # to be sitting in `packages/modelmri-record/dist/`, behind `if wheels:` —
+    # and that directory is gitignored, so a CI checkout never had one and the
+    # only half that can catch a drift never ran there. Measured consequence:
+    # the figure moved four times without any gate noticing, 10.9 -> 26.07 as
+    # ordinary drift, -> 30.23 when relicensing put an Apache-2.0 LICENSE
+    # inside the wheel, -> 30.57 when the SPDX headers went on. Every one was a
+    # packaging change nobody connected to a number in the README, which is
+    # exactly what this test exists to prevent.
+    built = _build_recorder_wheel(tmp_path)
+    actual = built.stat().st_size / 1024
+    assert abs(actual - stated) <= WHEEL_SIZE_TOLERANCE_KIB, (
+        f"{built.name} is {actual:.3f} KiB and the four files say {stated} KiB, "
+        f"a gap of {abs(actual - stated):.3f} KiB against a tolerance of "
+        f"{WHEEL_SIZE_TOLERANCE_KIB} KiB. Rebuild and update all four: "
+        "README.md, pyproject.toml, docs/index.md, docs/guides/agents.md."
+    )
 
 
 def test_load_progress_records_failure():

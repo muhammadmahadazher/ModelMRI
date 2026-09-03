@@ -154,6 +154,23 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   demo and viewer — are unchanged in size to the byte of gzip, which is the
   evidence that it was only ever tree weight.
 
+- **The test that guards the recorder's advertised wheel size now builds the
+  wheel it weighs.** It compared four prose files against whatever happened to
+  be sitting in `packages/modelmri-record/dist/`, behind an `if wheels:` — and
+  that directory is gitignored, so a CI checkout never had a wheel and the only
+  half that can catch a drift had never run there. The four files could agree
+  with each other while all four were wrong, which is what happened: the figure
+  moved from 10.9 to 26.07 KiB as ordinary drift, to 30.23 when relicensing put
+  an Apache-2.0 LICENSE inside the wheel, and to 30.57 when the SPDX headers
+  went on. Four moves, no gate.
+
+  The test now runs `uv build --wheel` into a temporary directory every time. If
+  `uv` is missing or the build fails it **fails with a sentence** rather than
+  skipping — a check that quietly skips is how this one came to be inert in the
+  first place. The tolerance is 0.2 KiB and it is stated with its reasoning: it
+  separates build metadata, tens of bytes for the backend's own version string,
+  from content, which is what the four recorded drifts were.
+
 ### Changed
 
 - **The frontend CI job ran forty-two package installs and checked nothing.** It
