@@ -171,6 +171,23 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   separates build metadata, tens of bytes for the backend's own version string,
   from content, which is what the four recorded drifts were.
 
+- **A second test that measured a resource instead of the code.** The VLA
+  action-stats suite asserted that the `tracemalloc` peak at 80,000 rows stayed
+  under 1.5x the peak at 20,000. That is a claim about an allocator on whatever
+  machine is running, and it broke: a macOS py3.12 runner measured 3.2 MB
+  against 8.9 MB and turned CI red on a pull request that changed a version
+  string and nothing else. A re-run of the identical commit passed. Measured
+  locally, the ratio is 1.00 in eight consecutive trials — which is why it read
+  as safe, exactly like the gradients timing assertion before it.
+
+  The peak was a proxy for "how many rows are live at once", and that is
+  knowable directly: the streaming generator is spied on, and the widest batch
+  it ever yields must equal the widest at a quarter of the size and never exceed
+  `ACTION_ROW_BATCH`, while the rows still add up. Four times the data arrives
+  as more batches, not wider ones — which is the regression the test was written
+  for, stated in what the code does. The frame-table contrast is now structural
+  too: it holds every row, asserted as a length rather than a byte ratio.
+
 ### Changed
 
 - **The frontend CI job ran forty-two package installs and checked nothing.** It
