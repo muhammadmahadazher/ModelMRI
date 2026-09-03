@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The control has to be able to say the measurement is uninformative.
 
 That is the whole reason it exists, and it is the sentence a tool has every

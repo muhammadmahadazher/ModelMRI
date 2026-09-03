@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Find models that are already sitting on this machine.
 
 The HuggingFace cache is only one place models live. People also just keep

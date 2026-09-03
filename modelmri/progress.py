@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Live progress for the current model load.
 
 A cold load is minutes long: the weights download, then a slow disk reads

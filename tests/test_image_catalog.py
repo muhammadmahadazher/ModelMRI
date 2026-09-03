@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Finding an image model, and the four things a row here must never claim.
 
 `image_catalog` reads a listing and a disk. Neither is a measurement, which is

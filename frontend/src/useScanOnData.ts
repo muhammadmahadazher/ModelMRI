@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import { useEffect, useRef } from "react";
 
 /** Flash a panel's specular scan when genuinely NEW data lands.

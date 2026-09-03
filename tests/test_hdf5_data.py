@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """ALOHA and robomimic HDF5, behind the interface the LeRobot reader presents.
 
 "LeRobot format" does not mean one thing — GR00T still ships a v3-to-v2

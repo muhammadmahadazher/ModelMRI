@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Structural facts about a run, computed exactly, offline, with no model asked.
 
 Laminar's Signals asks an LLM to extract a described behaviour. LangSmith

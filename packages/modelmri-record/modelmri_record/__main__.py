@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`python -m modelmri_record doctor` — is the SDK on THIS machine traceable?
 
 The recorder runs inside somebody else's process, where a failure to

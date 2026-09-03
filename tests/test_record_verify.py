@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Refuse to patch an SDK whose shape has moved.
 
 The failure this prevents is specific and nasty. The wrapper reads token

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Re-run somebody else's findings on your machine.
 
 `modelmri verify run.mri` takes a recording, re-runs every measurement in it

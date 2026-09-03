@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The README sells half the product if its pictures are one theme.
 
 That is the roadmap's own complaint about D1 — "GIFs in BOTH themes, the

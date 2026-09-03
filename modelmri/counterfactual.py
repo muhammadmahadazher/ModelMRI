@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The smallest edit to your words that makes the model say something ELSE.
 
 This package could already ask two questions about a prompt, and they are not

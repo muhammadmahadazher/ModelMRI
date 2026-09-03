@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Bring your own model.
 
 ModelMRI's other panels are transformer-shaped: attention heads, residual

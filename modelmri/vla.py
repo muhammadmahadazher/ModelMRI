@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """VLA (Vision-Language-Action) introspection — looking inside a robot policy.
 
 What this does: loads the **vision tower of a real policy checkpoint** and

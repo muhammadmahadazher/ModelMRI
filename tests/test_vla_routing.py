@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An episode is a span inside a file, and the file depends on the camera.
 
 The robot panel showed episode 0's video for every episode. `episodes()` read

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`/api/sae/fidelity` and its two prices — the surface, not the measurement.
 
 `tests/test_sae_fidelity.py` proves `saes.ce_recovered` itself. This file

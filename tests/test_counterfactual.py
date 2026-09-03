@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A counterfactual is a claim about a change, and a change is easy to fake.
 
 Three ways this module could produce a confident, wrong answer, and each has a

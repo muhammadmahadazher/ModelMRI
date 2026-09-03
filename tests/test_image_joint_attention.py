@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Joint-attention denoisers refuse before the generation, not after it.
 
 `imaging` calls SD3, Flux, AuraFlow and CogVideoX DiT-shaped, which is true,

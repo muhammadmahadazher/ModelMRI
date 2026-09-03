@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Prove a robot dataset is intact — or say exactly where it is not.
 
 THE BUG CLASS THIS EXISTS FOR IS ONE THIS PROJECT SHIPPED. `vla_data.py`

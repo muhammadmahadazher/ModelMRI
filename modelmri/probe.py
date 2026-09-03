@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where does this information appear — and is that curve any better than noise?
 
 Give it labelled examples and it fits a linear probe at every layer, producing

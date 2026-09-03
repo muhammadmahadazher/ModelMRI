@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One prompt is an anecdote. This is the loop that makes it a distribution.
 
 "A number measured once is a sample, not a property" is the line this project

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Custom properties that silently invalidate the declaration they're in.
 
 This project has now shipped this bug three times, and it is invisible every

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Regenerate docs/reference/api.md from the app's own OpenAPI schema.
 
     uv run python scripts/gen_api_docs.py [--check]

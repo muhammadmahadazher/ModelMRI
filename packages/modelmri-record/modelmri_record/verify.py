@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Check the SDK before patching it, and refuse rather than half-record.
 
 This is the systemic failure across agent tracing. AgentOps broke on

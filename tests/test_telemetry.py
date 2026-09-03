@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Telemetry must not invent the numbers it cannot take.
 
 Three traps. A memory column showing 0 is a claim that nothing was used, and

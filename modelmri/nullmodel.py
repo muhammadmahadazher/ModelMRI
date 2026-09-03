@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The same architecture, untrained. Does your finding survive it?
 
 Every ranking in this package answers "which head moved the answer most". None

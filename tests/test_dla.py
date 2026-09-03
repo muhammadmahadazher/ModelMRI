@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A chart that adds to 100% when the decomposition does not is a fabrication.
 
 Direct logit attribution is exact only if the final normalisation is linear,

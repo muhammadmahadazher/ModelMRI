@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A gradient attribution whose bars do not add up is a picture of nothing.
 
 Integrated gradients has exactly one property no intervention in this package

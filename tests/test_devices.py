@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Which card the numbers on screen are about.
 
 `_cuda_like` already records this failure for the DEFAULT path, in its own

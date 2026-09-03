@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where things live, resolved rather than assumed.
 
 Every location this program reads or writes was previously spelled out at its

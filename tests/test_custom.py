@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Custom-model support, checked against real tensors rather than mocks.
 
 Every assertion here comes from a network actually built and actually run. A

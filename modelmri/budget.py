@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What will this analysis cost, before you pay for it?
 
 Every ranking in this package is a loop of forward passes, and the loop knows

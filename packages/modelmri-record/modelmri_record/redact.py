@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Strip credentials out of a trace before it leaves the process.
 
 An agent recorder writes prompts to disk and posts them over a socket. Those

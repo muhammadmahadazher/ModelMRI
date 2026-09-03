@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Redaction and budget for a file that is about to leave the machine.
 
 The recorder redacts at DELIVERY. A bundle built here comes from steps already

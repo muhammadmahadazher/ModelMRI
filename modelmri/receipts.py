@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What produced a number, travelling with the number.
 
 Every panel in this tool already prints its setup in prose somewhere near the

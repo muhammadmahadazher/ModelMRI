@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Accelerator detection — use the GPU when there is one, fall back cleanly.
 
 Vendor coverage, in the order we prefer them:

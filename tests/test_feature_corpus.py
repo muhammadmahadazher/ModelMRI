@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A top activation is a top activation IN THIS CORPUS.
 
 The dashboards this competes with show features from a model and an SAE

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The corpora on this machine — listed by the server, opened by descent.
 
 WHY THIS EXISTS AT ALL. The routes that read a corpus used to take a path:

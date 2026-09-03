@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What constrained decoding cost you, per step.
 
 Ollama, llama.cpp (GBNF), vLLM and LM Studio all ship constrained decoding as a

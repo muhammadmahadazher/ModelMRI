@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A measurement must not read somebody else's forward pass.
 
 `patch.trace` registers forward hooks on the block MODULES and then runs

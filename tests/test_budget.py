@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The preflight has to be wrong in the safe direction, or not answer.
 
 Two failure modes are worth more than all the others here, and they are

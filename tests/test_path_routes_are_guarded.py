@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every route that turns a request string into a path on this disk is guarded.
 
 Reading a local corpus, a local document, a local checkpoint IS the feature

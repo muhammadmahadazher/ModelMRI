@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Reproduce the steering result from the README, end to end.
 
     modelmri serve                      # in one terminal

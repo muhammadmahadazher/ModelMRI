@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Read what is inside a GGUF, without loading it and without llama.cpp.
 
 The scanner has always found `.gguf` files and then said it could not open

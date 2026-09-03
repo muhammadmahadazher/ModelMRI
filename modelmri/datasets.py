@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The set of cases you care about, and two runs of it side by side.
 
 `sweep` runs one measurement over many prompts and reports the distribution.

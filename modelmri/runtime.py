@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Model loading, streaming generation, and attention capture.
 
 One ModelRuntime owns the currently loaded model + tokenizer. Generation

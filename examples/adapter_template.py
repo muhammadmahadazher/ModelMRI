@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Template: point ModelMRI at a model you trained yourself.
 
 Copy this next to your training code, edit load(), and pick it in the

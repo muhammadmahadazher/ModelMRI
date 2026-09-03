@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One column of an MLP, for the models nobody ever published an SAE for.
 
 `saes.py` and `feature_corpus.py` are the good version of this panel and they

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The Ollama tab should start somewhere, and its numbers should be real.
 
 The HuggingFace tab opens on curated picks annotated with whether they fit

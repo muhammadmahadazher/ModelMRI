@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Handing a recorded run to somebody else's collector.
 
 The load-bearing test here is the round trip. `to_otlp` and `from_otlp` read

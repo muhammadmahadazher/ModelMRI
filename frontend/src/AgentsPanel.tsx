@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { howLong } from "./measured";
 import { VIEWER } from "./viewer";

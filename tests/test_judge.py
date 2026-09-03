@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A judge that reads probability mass, against a real model.
 
 Two refusals carry this feature and both are tested against planted

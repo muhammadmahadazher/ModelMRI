@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`python -m ...` has to either run the thing or say it did not.
 
 Two entry points did neither, in opposite directions, and both failures are

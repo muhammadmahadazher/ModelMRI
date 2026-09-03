@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An anchor is a sufficiency claim, and sufficiency is the easy thing to fake.
 
 The failure this file exists to prevent is a panel that highlights three words

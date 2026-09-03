@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The lens has to report its own error, or it is a confident ranked list.
 
 The plain logit lens fails silently on some model families: it returns

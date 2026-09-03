@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`.mri` — an analysis you can send to someone who has no GPU.
 
 Everything ModelMRI shows you is currently ephemeral. You find the head that

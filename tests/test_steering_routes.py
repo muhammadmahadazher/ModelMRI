@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The five routes that make the vector store reachable.
 
 `tests/test_steer_vectors.py` proves the estimator and the store;

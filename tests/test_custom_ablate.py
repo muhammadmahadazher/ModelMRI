@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Causal ablation for a network somebody trained themselves.
 
 The models here have KNOWN answers — a branch wired to zero, a label that

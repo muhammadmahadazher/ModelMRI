@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What `verify` and `diff` can say about a grounding, and what they cannot.
 
 Grounding is the odd one out in both tools. Every other section is re-taken by

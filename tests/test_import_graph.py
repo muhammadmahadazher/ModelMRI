@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The package's import graph has no cycles, and this is what says so.
 
 A deferred import — `from . import x` inside the function that needs it — is

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A damage report that drops what it cannot measure is a flattering one.
 
 The failure mode here is quiet and one-directional: every tensor this cannot

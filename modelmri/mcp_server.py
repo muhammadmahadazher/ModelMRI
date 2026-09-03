@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Expose the measurements as MCP tools, so an agent can ask them directly.
 
 MCP has become a client-side convention — LM Studio is a host with OAuth, Jan

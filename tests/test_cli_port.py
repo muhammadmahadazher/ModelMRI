@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`--port` is checked when it is parsed, not when the socket is bound.
 
 `type=int` accepted anything an int can hold, so `--port -1` reached the

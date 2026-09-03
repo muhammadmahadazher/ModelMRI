@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Dataset-wide action statistics, and the four ways they can lie.
 
 `LeRobotV3Reader.action_stats()` has the matching name and computes nothing —

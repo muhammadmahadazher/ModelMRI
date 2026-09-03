@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 import { useEffect, useState } from "react";
 import { Anchors, errorText, Proportion, tokenAnchors } from "./api";
 import { measured } from "./measured";

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One picture, turned into the exact tensor a checkpoint was trained on.
 
 `vision_attr` deliberately does no image loading — "what the model is shown is

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What reaches a policy has to be what the policy was trained on.
 
 The refusals in `modelmri_policy.inputs` all guard the same failure, and it is

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """LeRobot v3.0 dataset reader — episodes, states, actions, and video frames.
 
 Deliberately does NOT depend on the `lerobot` package: the v3.0 on-disk

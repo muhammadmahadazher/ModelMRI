@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Open an attribution graph somebody else computed.
 
 circuit-tracer builds these and nothing outside its own Neuronpedia flow opens

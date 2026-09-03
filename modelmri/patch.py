@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where in the model does the answer actually get decided?
 
 Every other ranking in this tool takes one prompt and removes something from

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`session.build` must refuse what `session.parse` would refuse.
 
 Ten of the fourteen sections in a `.mri` already went through the READER's

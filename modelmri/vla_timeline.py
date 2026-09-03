@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One episode, several aligned tracks, one time axis.
 
 The robot panel shows a frame and a scrubber. That answers "what did the

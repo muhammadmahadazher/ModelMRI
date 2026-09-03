@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The wire contract between ModelMRI and a policy sidecar.
 
 Two processes, two environments, two pinned dependency sets. The whole reason

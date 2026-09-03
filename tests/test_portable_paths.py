@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Portability defects found by audit, each pinned to the failure it caused.
 
 Every test here reproduces a scenario CI does not naturally reach — a machine

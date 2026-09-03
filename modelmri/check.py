@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Gate a merge on structural facts about a recorded run.
 
 Opik ships a PyTest integration, Laminar runs evals in CI, Braintrust has a

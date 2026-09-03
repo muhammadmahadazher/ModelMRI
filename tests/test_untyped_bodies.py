@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """No route that reads an untyped body may 500 on the shape of that body.
 
 Twelve handlers take `await request.json()` rather than a Pydantic model. That

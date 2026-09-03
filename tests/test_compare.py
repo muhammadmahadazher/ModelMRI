@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Comparing two runs is only honest when the tokens are the same.
 
 A cell-by-cell difference of two attention matrices means something exactly

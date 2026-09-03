@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Token counts that stay nullable, and prices that never guess.
 
 The roadmap's caveat for this feature is the specification: "Token counts the

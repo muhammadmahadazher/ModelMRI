@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """One measurement, over every episode, so you can find the frame worth looking at.
 
 The VLA panel shows one episode at a time. That is fine for looking and

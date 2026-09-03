@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every check here is tested by BREAKING a dataset in the way it claims to catch.
 
 A check that passes on healthy data has proved nothing — the version of it

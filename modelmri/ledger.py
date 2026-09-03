@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Token counts a provider reported, rolled up — and never a price we guessed.
 
 Two rules, and the whole module is them.

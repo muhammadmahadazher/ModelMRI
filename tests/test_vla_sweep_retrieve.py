@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Reading a sweep back out WHOLE, or refusing to pretend it can.
 
 `stored()` answers "which rows are strongest". `retrieve()` answers "what was

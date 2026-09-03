@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A detector that labels everything is as useless as one with no null.
 
 The value of this module is entirely in what it REFUSES to label, so most of

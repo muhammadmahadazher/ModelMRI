@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Logit lens — what the model would have said if it had stopped at layer N.
 
 Most models have no sparse autoencoder and never will, so the features panel

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Agent trace storage: SQLite-backed, stdlib only.
 
 A Trace is a tree of Steps, each of one of the kinds in `step_kinds.py` — that

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The SAE must work out which activations it was trained on.
 
 An SAE fed the wrong input convention does not error. It returns features, in

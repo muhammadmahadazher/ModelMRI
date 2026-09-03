@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """How far outside its own dataset each frame of an episode sits — against a named reference set.
 
 "Frame 40 is unusual" is not a finding. Unusual *compared to what* is the whole

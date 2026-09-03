@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The browser viewer must produce exactly the numbers the tool produces.
 
     python scripts/build_frontend.py --viewer

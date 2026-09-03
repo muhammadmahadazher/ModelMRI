@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A translator fitted to agree with the model will agree with the model.
 
 That is the method, not a flaw in it — which is why the only number this

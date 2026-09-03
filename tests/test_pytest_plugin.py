@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The `mri_trace` fixture, exercised by running pytest inside pytest.
 
 `pytester` runs a real pytest session in a temp directory, so these are not

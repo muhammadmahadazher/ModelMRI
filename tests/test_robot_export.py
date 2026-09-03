@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A measurement leaving ModelMRI for somebody else's viewer.
 
 Every test here guards the same worry from a different side. Once a number is

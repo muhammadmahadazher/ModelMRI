@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The capability report. It runs on machines nobody here has, so it is
 written to degrade rather than guess, and these tests are about the degrading.
 """

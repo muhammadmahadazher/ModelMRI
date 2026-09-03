@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What does feature 14203 fire on, and what does it push toward?
 
 "Feature 14203 fired" is not a finding. This gives that feature three

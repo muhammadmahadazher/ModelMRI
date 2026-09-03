@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """FastAPI application: REST for control, WebSocket for token streams."""
 
 from __future__ import annotations

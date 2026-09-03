@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Reading a GGUF header, and refusing the ones that are not.
 
 Two things carry the weight here. Byte counts must be computed from whole

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The `.rrd` writer, verified by Rerun's own reader rather than by eye.
 
 `write_rrd` refused unconditionally until 2026-08-27, and the reason it gave

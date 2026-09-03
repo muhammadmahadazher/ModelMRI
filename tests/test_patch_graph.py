@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A patching graph, and the four things it must never quietly do.
 
 The graph is a subset by construction — edge count is quadratic in sites — so

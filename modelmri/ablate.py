@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Which heads actually changed the answer?
 
 The attention panel offers 144 heat maps and no reason to look at any

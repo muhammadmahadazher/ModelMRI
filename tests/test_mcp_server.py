@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """MCP over stdio, driven as a real JSON-RPC session.
 
 The invariant worth the most here: a refusal must reach the agent AS a

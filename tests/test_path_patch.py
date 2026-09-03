@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An ordered list of senders is easy to produce and easy to over-read.
 
 Path patching answers "what put it there" for a bright cell in the node grid.

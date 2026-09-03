@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`/v1` honours `response_format`, and every way it cannot is a named refusal.
 
 `grammar.py` has been a complete constrained-decoding instrument with nothing

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A PATCHING graph: what wrote what, across a whole prompt.
 
 `patch.trace` answers "does this site matter" one cell at a time, and

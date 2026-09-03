@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A difference of means always returns a direction. That is the problem.
 
 Feed this two arbitrary sets of sentences and it produces a vector with a norm,

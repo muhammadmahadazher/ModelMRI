@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Grounding inside a `.mri`: what travels, what does not, and what is refused.
 
 "The model answered from its weights, not from the document I gave it" is a

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Which sparse autoencoders exist, and which model each one fits.
 
 A SAE is trained against one model's residual stream at one layer. There is no

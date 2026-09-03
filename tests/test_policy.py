@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The policy sidecar, and the four things it must never quietly do.
 
 The action expert lives in another process because lerobot's pins cannot share

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Sentences to draw replacement activations from, and where they came from.
 
 The resample baseline replaces a head with what it really computes on some

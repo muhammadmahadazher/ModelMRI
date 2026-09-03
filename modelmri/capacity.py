@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Will this download fit, and could it ever load? One answer, one place.
 
 This module exists because of a specific incident: a click on

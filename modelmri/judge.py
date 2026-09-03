@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Score a rubric by reading the model's probability mass, not by sampling it.
 
 Langfuse, LangSmith, Opik and Weave all run LLM-as-judge, and all return a

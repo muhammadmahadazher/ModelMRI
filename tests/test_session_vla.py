@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Robot findings inside a `.mri`: what travels, and what is refused.
 
 There is no portable, no-account artifact for robot-policy internals anywhere

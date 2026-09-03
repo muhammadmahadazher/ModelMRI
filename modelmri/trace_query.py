@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Parse a search box into a query, without ever building SQL from user text.
 
 The search box accepts free text plus structured filters — `kind:tool_call`,

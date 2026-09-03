@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The generator must not eat the documentation it is checking.
 
 `scripts/gen_api_docs.py --check` runs in CI, and when it fails it prints one

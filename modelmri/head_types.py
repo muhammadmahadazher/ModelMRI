@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What kind of head is this — measured against a null, or not claimed at all.
 
 A head list is 144 anonymous numbers. Some of those heads are doing something

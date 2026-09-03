@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Steer a model that has no sparse autoencoder — which is almost all of them.
 
 The features panel can steer, and it needs an SAE. SAEs are published for a

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """`python -m modelmri` — so the conventional guess reaches the real CLI.
 
 There was no `if __name__ == "__main__"` anywhere under `modelmri/` and no

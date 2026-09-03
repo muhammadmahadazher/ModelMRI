@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Shaping an image run for a `.mri`, and the one property that matters.
 
 THE PROPERTY: everything `image_share` writes must be something

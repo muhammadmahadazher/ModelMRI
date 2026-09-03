@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A finetune comparison inside a `.mri`, and what it will not let through.
 
 This section is the odd one out in the format: every other one describes the

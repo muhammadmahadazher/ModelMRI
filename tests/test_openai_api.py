@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """An OpenAI-compatible `/v1`, and the refusals that make it trustworthy.
 
 The invariant worth the most: a parameter this cannot honour is REFUSED BY

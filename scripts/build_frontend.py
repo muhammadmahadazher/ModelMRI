@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Build the frontend, optionally in a working directory off the repo.
 
 Normally `npm run build` inside frontend/ is all you need, and that is what

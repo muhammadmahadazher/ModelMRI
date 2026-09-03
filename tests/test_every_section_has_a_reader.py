@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """A `.mri` section nobody can read is bytes nobody can see.
 
 FIVE TIMES this project has carried a section further than its readers:

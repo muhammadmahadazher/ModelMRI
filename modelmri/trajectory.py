@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Where a run went, beside where it was supposed to go — with no judge.
 
 `patterns.py` counts loops and retry storms; `rubric.py` counts kinds and

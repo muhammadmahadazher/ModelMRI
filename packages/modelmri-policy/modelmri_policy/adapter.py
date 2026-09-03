@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Every lerobot call in this package, in one file.
 
 lerobot's API churns — this is not a complaint, it is the design constraint

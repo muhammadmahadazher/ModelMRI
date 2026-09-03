@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """The `.mri` format: what it preserves, what it loses, and what it refuses.
 
 The failure this guards against is not a crash. It is a session that opens

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """What a computer-vision model actually answered, and what supported it.
 
 `imaging.py` has been able to NAME a classifier, a detector and a segmenter

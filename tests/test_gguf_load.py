@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-FileCopyrightText: 2026 Muhammad Mahad Azher
+
 """Loading a GGUF costs three times its file size, and the tool must say so.
 
 The single belief this module exists to correct is that a 4-bit GGUF loads as
