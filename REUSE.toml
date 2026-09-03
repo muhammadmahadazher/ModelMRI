@@ -87,15 +87,3 @@ path = ["frontend/src/fonts/JetBrainsMono-Variable.woff2", "frontend/src/fonts/J
 precedence = "override"
 SPDX-FileCopyrightText = "2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)"
 SPDX-License-Identifier = "OFL-1.1"
-
-# Switzer is committed but referenced by nothing, and its licence — the Indian
-# Type Foundry Free Font License, via Fontshare — permits use but not
-# redistribution of the font files, so its text is deliberately NOT in
-# LICENSES/: `reuse lint` stays red on exactly this file until it is removed.
-# Without this table the catch-all above would call it AGPL-3.0-only, which
-# would be false.
-[[annotations]]
-path = "frontend/src/fonts/Switzer-Variable.woff2"
-precedence = "override"
-SPDX-FileCopyrightText = "Indian Type Foundry (Switzer, distributed through Fontshare)"
-SPDX-License-Identifier = "LicenseRef-ITF-Free-Font-License"

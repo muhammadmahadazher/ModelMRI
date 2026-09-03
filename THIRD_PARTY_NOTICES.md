@@ -166,13 +166,13 @@ wheel, which carries the built application):
 In the repository but in no build, recorded so that the state is written
 down rather than discovered:
 
-- **Switzer** — `frontend/src/fonts/Switzer-Variable.woff2` is committed but
-  referenced by no stylesheet rule (only by comments), so it is not part of
-  any build. It is an Indian Type Foundry face distributed through Fontshare
-  under Fontshare's free-font licence, which is not the OFL, and its licence
-  text is not in the repository. The file will be removed, or its licence
-  restored beside it; until one of those has happened, this entry is the
-  notice.
+- **Switzer** — `frontend/src/fonts/Switzer-Variable.woff2` was committed
+  until the licensing-enforcement change and referenced by no stylesheet rule
+  (only by comments), so it was never part of any build. It is an Indian Type
+  Foundry face distributed through Fontshare under the ITF Free Font License,
+  which permits use but not redistribution of the font files; the file has
+  been removed for that reason. It remains in the repository's history before
+  that change, and nothing here is built from it.
 - **Archivo Black** — `@fontsource/archivo-black` (SIL OFL 1.1) is declared
   in `frontend/package.json` and imported by nothing, so it is in the
   dependency tree and in no build.
