@@ -21,7 +21,7 @@ disagree, the license text governs. The full texts are in
 | `modelmri/**`, except the five codec files below | AGPL-3.0-only | the server, runtime and CLI; every instrument and analysis method; the built app the server serves |
 | `frontend/**` | AGPL-3.0-only | the app, the live demo, and the `.mri` viewer application |
 | `tests/**`, `scripts/**`, `.github/**`, and the configuration and lockfiles at the root | AGPL-3.0-only | what builds, tests and ships the application |
-| `modelmri/session.py`, `modelmri/receipts.py`, `modelmri/errors.py`, `modelmri/fmt.py`, `modelmri/paths.py` | Apache-2.0 | the `.mri` codec — reading, writing, validating and hashing the format. These five files import only the standard library and each other. They live inside the application today and will move into their own package, `modelmri-mri` |
+| `modelmri/session.py`, `modelmri/receipts.py`, `modelmri/errors.py`, `modelmri/fmt.py`, `modelmri/paths.py` | Apache-2.0 | the `.mri` codec — reading, writing, validating and hashing the format. They are Apache-2.0 today; the handful of places where they still reach into the application are listed in tests/test_licensing.py as debts that can only shrink, and they move into their own package, modelmri-mri, with the codec extraction. They live inside the application today and will move into their own package, `modelmri-mri` |
 | `packages/modelmri-record/**` | Apache-2.0 | `modelmri-record`, the dependency-free recorder you import into your agent |
 | `packages/modelmri-policy/**` | Apache-2.0 | `modelmri-policy`, the robot-policy sidecar |
 | `npm-stub/**` | Apache-2.0 | the `npx modelmri` launcher shim; it contains no application code |
