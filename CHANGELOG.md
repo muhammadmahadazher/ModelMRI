@@ -141,6 +141,19 @@ Notable changes to `modelmri` and `modelmri-record`. Format follows
   division and reports no ratio rather than raising inside a price. That guard
   had no test.
 
+- **A font dependency that nothing imported.** `@fontsource/archivo-black` was
+  declared in `frontend/package.json` and reached by nothing: no `@fontsource`
+  import anywhere under `frontend/src`, and no rule naming Archivo in
+  `styles.css` or `index.html`. The display face it would have supplied is not
+  the one the app uses, and the fonts that are used are vendored as `.woff2`
+  beside their OFL texts.
+
+  It is gone from the manifest, from `frontend/package-lock.json` and from the
+  generated section of `THIRD_PARTY_NOTICES.md`. `react` and `react-dom` are now
+  the only runtime dependencies the application declares. All three builds — app,
+  demo and viewer — are unchanged in size to the byte of gzip, which is the
+  evidence that it was only ever tree weight.
+
 ### Changed
 
 - **The frontend CI job ran forty-two package installs and checked nothing.** It

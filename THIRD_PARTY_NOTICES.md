@@ -22,9 +22,9 @@ installed there says so rather than guessing.
 | `annotated-doc` | 0.0.4 | MIT | https://github.com/fastapi/annotated-doc | transitive | installed with the wheel, not inside it |
 | `annotated-types` | 0.7.0 | MIT License | https://github.com/annotated-types/annotated-types | transitive | installed with the wheel, not inside it |
 | `anyio` | 4.14.1 | MIT | https://github.com/agronholm/anyio | transitive | installed with the wheel, not inside it |
-| `attrs` | 26.1.0 | MIT (PyPI metadata) | https://pypi.org/project/attrs/ | dev group only | never installed with a wheel (development tooling) |
+| `attrs` | 26.1.0 | MIT | https://pypi.org/project/attrs/ | dev group only | never installed with a wheel (development tooling) |
 | `av` | 17.1.0 | BSD-3-Clause (PyPI metadata) | https://github.com/PyAV-Org/PyAV | direct: modelmri | installed with the wheel, not inside it |
-| `boolean-py` | 5.0 | BSD-2-Clause (PyPI metadata) | https://github.com/bastikr/boolean.py | dev group only | never installed with a wheel (development tooling) |
+| `boolean-py` | 5.0 | BSD-2-Clause | https://github.com/bastikr/boolean.py | dev group only | never installed with a wheel (development tooling) |
 | `certifi` | 2026.6.17 | Mozilla Public License 2.0 (MPL 2.0) | https://github.com/certifi/python-certifi | transitive | installed with the wheel, not inside it |
 | `charset-normalizer` | 3.5.0 | MIT | https://pypi.org/project/charset-normalizer/ | transitive | installed with the wheel, not inside it |
 | `click` | 8.4.2 | BSD-3-Clause | https://github.com/pallets/click/ | transitive | installed with the wheel, not inside it |
@@ -52,7 +52,7 @@ installed there says so rather than guessing.
 | `iniconfig` | 2.3.0 | MIT | https://github.com/pytest-dev/iniconfig | dev group only | never installed with a wheel (development tooling) |
 | `interegular` | 0.3.3 | MIT License | https://github.com/MegaIng/regex_intersections | transitive | installed with the wheel, not inside it |
 | `jinja2` | 3.1.6 | BSD License | https://github.com/pallets/jinja/ | transitive | installed with the wheel, not inside it |
-| `license-expression` | 30.4.4 | Apache-2.0 (PyPI metadata) | https://github.com/aboutcode-org/license-expression | dev group only | never installed with a wheel (development tooling) |
+| `license-expression` | 30.4.4 | Apache-2.0 | https://github.com/aboutcode-org/license-expression | dev group only | never installed with a wheel (development tooling) |
 | `lm-format-enforcer` | 0.11.3 | MIT License | https://github.com/noamgat/lm-format-enforcer | direct: modelmri | installed with the wheel, not inside it |
 | `markdown-it-py` | 4.2.0 | MIT License | https://github.com/executablebooks/markdown-it-py | transitive | installed with the wheel, not inside it |
 | `markupsafe` | 3.0.3 | BSD-3-Clause | https://github.com/pallets/markupsafe/ | transitive | installed with the wheel, not inside it |
@@ -90,13 +90,13 @@ installed there says so rather than guessing.
 | `pygments` | 2.20.0 | BSD-2-Clause | https://pygments.org | transitive | installed with the wheel, not inside it |
 | `pytest` | 9.1.1 | MIT | https://docs.pytest.org/en/latest/ | dev group only | never installed with a wheel (development tooling) |
 | `pytest-xdist` | 3.8.0 | MIT | https://github.com/pytest-dev/pytest-xdist | dev group only | never installed with a wheel (development tooling) |
-| `python-debian` | 1.1.1 | GPL-2.0-or-later (PyPI metadata) | https://salsa.debian.org/python-debian-team/python-debian | dev group only | never installed with a wheel (development tooling) |
+| `python-debian` | 1.1.1 | GPL-2.0-or-later | https://salsa.debian.org/python-debian-team/python-debian | dev group only | never installed with a wheel (development tooling) |
 | `python-dotenv` | 1.2.2 | BSD-3-Clause | https://github.com/theskumar/python-dotenv | transitive | installed with the wheel, not inside it |
-| `python-magic` | 0.4.27 | MIT License (PyPI metadata) | http://github.com/ahupp/python-magic | dev group only | never installed with a wheel (development tooling) |
+| `python-magic` | 0.4.27 | MIT License | http://github.com/ahupp/python-magic | dev group only | never installed with a wheel (development tooling) |
 | `pyyaml` | 6.0.3 | MIT License | https://pyyaml.org/ | transitive | installed with the wheel, not inside it |
 | `regex` | 2026.6.28 | Apache-2.0 AND CNRI-Python | https://github.com/mrabarnett/mrab-regex | transitive | installed with the wheel, not inside it |
 | `requests` | 2.34.2 | Apache Software License | https://github.com/psf/requests | transitive | installed with the wheel, not inside it |
-| `reuse` | 6.2.0 | CC0 1.0 Universal (CC0 1.0) Public Domain Dedication; DFSG approved; OSI Approved; Apache Software License; GNU General Public License v3 or later (GPLv3+); Other/Proprietary License (PyPI metadata) | https://reuse.software/ | dev group only | never installed with a wheel (development tooling) |
+| `reuse` | 6.2.0 | CC0 1.0 Universal (CC0 1.0) Public Domain Dedication; DFSG approved; OSI Approved; Apache Software License; GNU General Public License v3 or later (GPLv3+); Other/Proprietary License | https://reuse.software/ | dev group only | never installed with a wheel (development tooling) |
 | `rich` | 15.0.0 | MIT License | https://github.com/Textualize/rich | transitive | installed with the wheel, not inside it |
 | `ruff` | 0.15.20 | MIT | https://docs.astral.sh/ruff | dev group only | never installed with a wheel (development tooling) |
 | `safetensors` | 0.8.0 | Apache Software License | https://github.com/huggingface/safetensors | direct: modelmri, modelmri-policy | installed with the wheel, not inside it |
@@ -106,7 +106,7 @@ installed there says so rather than guessing.
 | `sympy` | 1.14.0 | BSD License | https://sympy.org | transitive | installed with the wheel, not inside it |
 | `tokenizers` | 0.22.2 | Apache Software License | https://github.com/huggingface/tokenizers | transitive | installed with the wheel, not inside it |
 | `tomli` | 2.4.1 | MIT (PyPI metadata) | https://github.com/hukkin/tomli | dev group only | never installed with a wheel (development tooling) |
-| `tomlkit` | 0.15.1 | MIT License (PyPI metadata) | https://github.com/python-poetry/tomlkit | dev group only | never installed with a wheel (development tooling) |
+| `tomlkit` | 0.15.1 | MIT License | https://github.com/python-poetry/tomlkit | dev group only | never installed with a wheel (development tooling) |
 | `torch` | 2.11.0+cu128 (from https://download.pytorch.org/whl/cu128) | BSD-3-Clause | https://pytorch.org | direct: modelmri, modelmri-policy | installed with the wheel, not inside it |
 | `torch` | 2.13.0 (from https://pypi.org/simple) | BSD-3-Clause | https://pytorch.org | direct: modelmri, modelmri-policy | installed with the wheel, not inside it |
 | `torchvision` | 0.26.0 (from https://pypi.org/simple) | BSD | https://github.com/pytorch/vision | direct: modelmri | installed with the wheel, not inside it |
@@ -129,12 +129,11 @@ installed there says so rather than guessing.
 
 | package | version | license | homepage | relation | shipped? |
 |---|---|---|---|---|---|
-| `@fontsource/archivo-black` | 5.3.0 | OFL-1.1 | https://www.npmjs.com/package/@fontsource/archivo-black | direct | bundled into the built app if imported |
 | `react` | 19.2.8 | MIT | https://www.npmjs.com/package/react | direct | bundled into the built app if imported |
 | `react-dom` | 19.2.8 | MIT | https://www.npmjs.com/package/react-dom | direct | bundled into the built app if imported |
 | `scheduler` | 0.27.0 | MIT | https://www.npmjs.com/package/scheduler | transitive | bundled into the built app if imported |
 
-### npm — build-time tools (112 packages in the lockfile in total; direct entries below, not shipped)
+### npm — build-time tools (111 packages in the lockfile in total; direct entries below, not shipped)
 
 | package | version | license | homepage | relation | shipped? |
 |---|---|---|---|---|---|
@@ -173,9 +172,12 @@ down rather than discovered:
   which permits use but not redistribution of the font files; the file has
   been removed for that reason. It remains in the repository's history before
   that change, and nothing here is built from it.
-- **Archivo Black** — `@fontsource/archivo-black` (SIL OFL 1.1) is declared
-  in `frontend/package.json` and imported by nothing, so it is in the
-  dependency tree and in no build.
+- **Archivo Black** — `@fontsource/archivo-black` (SIL OFL 1.1) was declared
+  in `frontend/package.json` and imported by nothing, so it sat in the
+  dependency tree and in no build. It has been removed. Nothing referenced the
+  family: no `@fontsource` import anywhere under `frontend/src`, and no rule
+  naming Archivo in `styles.css` or `index.html`. `react` and `react-dom` are
+  now the only runtime dependencies the application declares.
 
 ## Loaded at runtime, not distributed
 
